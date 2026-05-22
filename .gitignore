@@ -13,6 +13,9 @@ dist
 dist-ssr
 *.local
 
+# Google Apps Script source lives in Apps Script, not GitHub/Netlify
+apps-script/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
