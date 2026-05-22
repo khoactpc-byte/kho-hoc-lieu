@@ -1,0 +1,2383 @@
+import React, { useEffect, useMemo, useState } from 'react';
+import { addDoc, collection, deleteDoc, doc, onSnapshot, setDoc } from 'firebase/firestore';
+import {
+  ArrowDownAZ,
+  ArrowUpDown,
+  CalendarDays,
+  CheckCircle2,
+  ChevronDown,
+  Columns,
+  ExternalLink,
+  FileSpreadsheet,
+  Filter,
+  GraduationCap,
+  Image as ImageIcon,
+  KeyRound,
+  Pencil,
+  Plus,
+  RefreshCw,
+  Save,
+  Search,
+  Trash2,
+  UploadCloud,
+  UserRound,
+  X
+} from 'lucide-react';
+import { appId, db } from '../config/firebase';
+
+const STUDENT_FIELDS = [
+  { key: 'fullName', label: 'Họ và tên', required: true, sticky: true },
+  { key: 'birthDate', label: 'Ngày sinh' },
+  { key: 'gender', label: 'Giới tính' },
+  { key: 'identityCode', label: 'Mã định danh' },
+  { key: 'phone', label: 'Số điện thoại' },
+  { key: 'className', label: 'Lớp học', required: true },
+  { key: 'enrollmentYear', label: 'Năm nhập học' },
+  { key: 'address', label: 'Số nhà / Khu phố' },
+  { key: 'ward', label: 'Xã / Phường' },
+  { key: 'province', label: 'Tỉnh / Thành' },
+  { key: 'householdAddress', label: 'Số nhà / Khu phố hk' },
+  { key: 'householdWard', label: 'Xã / Phường hk' },
+  { key: 'householdProvince', label: 'Tỉnh / Thành hk' },
+  { key: 'fatherName', label: 'Tên cha' },
+  { key: 'fatherBirthYear', label: 'Năm sinh cha' },
+  { key: 'fatherJob', label: 'Nghề nghiệp cha' },
+  { key: 'fatherPhone', label: 'SĐT cha' },
+  { key: 'motherName', label: 'Tên mẹ' },
+  { key: 'motherBirthYear', label: 'Năm sinh mẹ' },
+  { key: 'motherJob', label: 'Nghề nghiệp mẹ' },
+  { key: 'motherPhone', label: 'SĐT mẹ' },
+  { key: 'temporaryStatus', label: 'Tình trạng tạm trú' },
+  { key: 'transport', label: 'Đi xe' },
+  { key: 'birthCertificateUrl', label: 'Link ảnh Khai sinh', type: 'link' },
+  { key: 'identityCardUrl', label: 'Link ảnh Căn cước', type: 'link' },
+  { key: 'transcriptUrl', label: 'Link ảnh Học bạ', type: 'link' },
+  { key: 'portraitUrl', label: 'Link ảnh thẻ', type: 'link' },
+  { key: 'hocLucLop6', label: 'Học lực lớp 6' },
+  { key: 'hanhKiemLop6', label: 'Hạnh kiểm lớp 6' },
+  { key: 'hocLucLop7', label: 'Học lực lớp 7' },
+  { key: 'hanhKiemLop7', label: 'Hạnh kiểm lớp 7' },
+  { key: 'hocLucLop8', label: 'Học lực lớp 8' },
+  { key: 'hanhKiemLop8', label: 'Hạnh kiểm lớp 8' }
+];
+
+const ADMIN_EDIT_FIELD_ORDER = [
+  'fullName',
+  'birthDate',
+  'gender',
+  'identityCode',
+  'phone',
+  'className',
+  'enrollmentYear',
+  'province',
+  'ward',
+  'address',
+  'householdProvince',
+  'householdWard',
+  'householdAddress',
+  'fatherName',
+  'fatherBirthYear',
+  'fatherJob',
+  'fatherPhone',
+  'motherName',
+  'motherBirthYear',
+  'motherJob',
+  'motherPhone',
+  'temporaryStatus',
+  'transport',
+  'hocLucLop6',
+  'hanhKiemLop6',
+  'hocLucLop7',
+  'hanhKiemLop7',
+  'hocLucLop8',
+  'hanhKiemLop8'
+];
+
+const DOCUMENT_FIELD_KEYS = new Set(['birthCertificateUrl', 'identityCardUrl', 'transcriptUrl', 'portraitUrl']);
+const STUDENT_FIELD_LABELS = Object.fromEntries(STUDENT_FIELDS.map(field => [field.key, field.label]));
+const ACADEMIC_RESULT_FIELD_KEYS = new Set([
+  'hocLucLop6',
+  'hanhKiemLop6',
+  'hocLucLop7',
+  'hanhKiemLop7',
+  'hocLucLop8',
+  'hanhKiemLop8'
+]);
+const ACADEMIC_RESULT_OPTIONS = ['', 'Tốt', 'Khá', 'Đạt'];
+
+const DEFAULT_VISIBLE_COLUMNS = [
+  'fullName',
+  'birthDate',
+  'gender',
+  'identityCode',
+  'phone',
+  'className',
+  'fatherPhone',
+  'motherPhone',
+  'identityCardUrl',
+  'portraitUrl'
+];
+
+const REGISTRATION_DEFAULT_VISIBLE_COLUMNS = [
+  'fullName',
+  'birthDate',
+  'gender',
+  'identityCode',
+  'phone',
+  'className',
+  'enrollmentYear',
+  'portraitUrl'
+];
+
+const COMPACT_VISIBLE_COLUMNS = [
+  'fullName',
+  'birthDate',
+  'gender',
+  'className',
+  'fatherPhone',
+  'motherPhone'
+];
+
+const MOBILE_VISIBLE_COLUMNS = [
+  'fullName',
+  'className'
+];
+
+const EMPTY_FILTER_VALUE = '__EMPTY__';
+const REGISTRATION_WEB_APP_URL = 'https://script.google.com/macros/s/AKfycby6e5ya2k105Oe7i65k9viysIZbHKOF-9CosueiNy1GvnHJbVw1lHB_0eezSxO91ls/exec';
+const STUDENT_DATA_SHEET_URL = 'https://docs.google.com/spreadsheets/d/1oIGnM9Dw_3bUl8xfTKYE0XKsBvJWHb-J7qvD11fDcMM/edit?gid=0#gid=0';
+const ADDRESS_DIRECTORY_CACHE_KEY = 'khl-address-directory-v2';
+
+const normalizeVietnameseName = (value = '') => String(value || '')
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .replace(/đ/g, 'd')
+  .replace(/Đ/g, 'd')
+  .toLowerCase()
+  .replace(/[^a-z0-9\s]/g, ' ')
+  .replace(/\s+/g, ' ')
+  .trim();
+
+const normalizeBirthDate = (value = '') => {
+  if (!value) return '';
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    const day = String(value.getDate()).padStart(2, '0');
+    const month = String(value.getMonth() + 1).padStart(2, '0');
+    return `${day}${month}${value.getFullYear()}`;
+  }
+  const raw = String(value || '').trim();
+  const iso = raw.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+  if (iso) return `${iso[3].padStart(2, '0')}${iso[2].padStart(2, '0')}${iso[1]}`;
+  const vn = raw.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})/);
+  if (vn) return `${vn[1].padStart(2, '0')}${vn[2].padStart(2, '0')}${vn[3]}`;
+  return raw.replace(/\D/g, '');
+};
+
+const formatDisplayDate = (value = '') => {
+  if (!value) return '';
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    const day = String(value.getDate()).padStart(2, '0');
+    const month = String(value.getMonth() + 1).padStart(2, '0');
+    return `${day}/${month}/${value.getFullYear()}`;
+  }
+  const raw = String(value || '').trim();
+  const iso = raw.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+  if (iso) return `${iso[3].padStart(2, '0')}/${iso[2].padStart(2, '0')}/${iso[1]}`;
+  return raw;
+};
+
+const HEADER_MAP = {
+  'dau thoi gian': 'timestamp',
+  'dấu thời gian': 'timestamp',
+  'ho va ten': 'fullName',
+  'họ và tên': 'fullName',
+  'ngay sinh': 'birthDate',
+  'ngày sinh': 'birthDate',
+  'gioi tinh': 'gender',
+  'giới tính': 'gender',
+  'ma dinh danh': 'identityCode',
+  'mã định danh': 'identityCode',
+  'so dien thoai': 'phone',
+  'số điện thoại': 'phone',
+  'lop hoc': 'className',
+  'lớp học': 'className',
+  'nam nhap hoc': 'enrollmentYear',
+  'năm nhập học': 'enrollmentYear',
+  'so nha / khu pho': 'address',
+  'số nhà / khu phố': 'address',
+  'xa / phuong': 'ward',
+  'xã / phường': 'ward',
+  'tinh / thanh': 'province',
+  'tỉnh / thành': 'province',
+  'so nha / khu pho kp': 'householdAddress',
+  'số nhà / khu phố kp': 'householdAddress',
+  'xa / phuong hk': 'householdWard',
+  'xã / phường hk': 'householdWard',
+  'tinh / thanh hk': 'householdProvince',
+  'tỉnh / thành hk': 'householdProvince',
+  'ten cha': 'fatherName',
+  'tên cha': 'fatherName',
+  'nam sinh cha': 'fatherBirthYear',
+  'năm sinh cha': 'fatherBirthYear',
+  'nghe nghiep cha': 'fatherJob',
+  'nghề nghiệp cha': 'fatherJob',
+  'sdt cha': 'fatherPhone',
+  'sđt cha': 'fatherPhone',
+  'ten me': 'motherName',
+  'tên mẹ': 'motherName',
+  'nam sinh me': 'motherBirthYear',
+  'năm sinh mẹ': 'motherBirthYear',
+  'nghe nghiep me': 'motherJob',
+  'nghề nghiệp mẹ': 'motherJob',
+  'sdt me': 'motherPhone',
+  'sđt mẹ': 'motherPhone',
+  'tinh trang tam tru': 'temporaryStatus',
+  'tình trạng tạm trú': 'temporaryStatus',
+  'di xe': 'transport',
+  'đi xe': 'transport',
+  'link anh khai sinh': 'birthCertificateUrl',
+  'link ảnh khai sinh': 'birthCertificateUrl',
+  'link anh hoc ba': 'transcriptUrl',
+  'link ảnh học bạ': 'transcriptUrl',
+  'link hoc ba': 'transcriptUrl',
+  'link học bạ': 'transcriptUrl',
+  'link anh chan dung': 'portraitUrl',
+  'link ảnh chân dung': 'portraitUrl',
+  'link anh/ anh the': 'portraitUrl',
+  'link ảnh/ ảnh thẻ': 'portraitUrl',
+  'link anh can cuoc': 'identityCardUrl',
+  'link ảnh căn cước': 'identityCardUrl',
+  'hoc luc lop 6': 'hocLucLop6',
+  'học lực lớp 6': 'hocLucLop6',
+  'hanh kiem lop 6': 'hanhKiemLop6',
+  'hạnh kiểm lớp 6': 'hanhKiemLop6',
+  'hoc luc lop 7': 'hocLucLop7',
+  'học lực lớp 7': 'hocLucLop7',
+  'hanh kiem lop 7': 'hanhKiemLop7',
+  'hạnh kiểm lớp 7': 'hanhKiemLop7',
+  'hoc luc lop 8': 'hocLucLop8',
+  'học lực lớp 8': 'hocLucLop8',
+  'hanh kiem lop 8': 'hanhKiemLop8',
+  'hạnh kiểm lớp 8': 'hanhKiemLop8'
+};
+
+const emptyStudent = {
+  fullName: '',
+  birthDate: '',
+  gender: '',
+  identityCode: '',
+  phone: '',
+  className: '',
+  enrollmentYear: '',
+  address: '',
+  ward: '',
+  province: '',
+  householdAddress: '',
+  householdWard: '',
+  householdProvince: '',
+  fatherName: '',
+  fatherBirthYear: '',
+  fatherJob: '',
+  fatherPhone: '',
+  motherName: '',
+  motherBirthYear: '',
+  motherJob: '',
+  motherPhone: '',
+  temporaryStatus: '',
+  transport: '',
+  birthCertificateUrl: '',
+  identityCardUrl: '',
+  transcriptUrl: '',
+  portraitUrl: '',
+  hocLucLop6: '',
+  hanhKiemLop6: '',
+  hocLucLop7: '',
+  hanhKiemLop7: '',
+  hocLucLop8: '',
+  hanhKiemLop8: '',
+  accessCode: '',
+  isClassLeader: false,
+  status: 'active'
+};
+
+const safePlainValue = (value = '') => {
+  if (value === undefined || value === null) return '';
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return formatDisplayDate(value);
+  if (Array.isArray(value)) return value.map(item => safePlainValue(item)).filter(Boolean).join('\n');
+  if (typeof value === 'object') {
+    const directValue = value.url || value.link || value.href || value.value || value.text || value.name || '';
+    if (directValue) return safePlainValue(directValue);
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return '';
+    }
+  }
+  return String(value || '').trim();
+};
+
+const pickText = (...values) => {
+  for (const value of values) {
+    const text = safePlainValue(value);
+    if (text) return text;
+  }
+  return '';
+};
+
+const registrationToStudentData = (registration = {}, currentSchoolYear = '') => ({
+  ...emptyStudent,
+  fullName: pickText(registration.fullName, registration.hoVaTen),
+  birthDate: formatDisplayDate(pickText(registration.birthDate, registration.ngaySinh)),
+  gender: pickText(registration.gender, registration.gioiTinh),
+  identityCode: pickText(registration.identityCode, registration.maDinhDanh).replace(/^'/, ''),
+  phone: pickText(registration.phone, registration.soDienThoai).replace(/^'/, ''),
+  className: pickText(registration.className, registration.lopHoc),
+  enrollmentYear: pickText(registration.enrollmentYear, registration.tinhTrangHocSinh, registration.hocTuNam),
+  address: pickText(registration.address, registration.soNha),
+  ward: pickText(registration.ward, registration.xaPhuong),
+  province: pickText(registration.province, registration.tinhThanh),
+  householdAddress: pickText(registration.householdAddress, registration.soNhaHK),
+  householdWard: pickText(registration.householdWard, registration.xaPhuongHK),
+  householdProvince: pickText(registration.householdProvince, registration.tinhThanhHK),
+  fatherName: pickText(registration.fatherName, registration.tenCha),
+  fatherBirthYear: pickText(registration.fatherBirthYear, registration.namSinhCha),
+  fatherJob: pickText(registration.fatherJob, registration.ngheNghiepCha),
+  fatherPhone: pickText(registration.fatherPhone, registration.sdtCha).replace(/^'/, ''),
+  motherName: pickText(registration.motherName, registration.tenMe),
+  motherBirthYear: pickText(registration.motherBirthYear, registration.namSinhMe),
+  motherJob: pickText(registration.motherJob, registration.ngheNghiepMe),
+  motherPhone: pickText(registration.motherPhone, registration.sdtMe).replace(/^'/, ''),
+  temporaryStatus: pickText(registration.temporaryStatus, registration.tinhTrangTamTru),
+  transport: pickText(registration.transport, registration.diXe),
+  birthCertificateUrl: pickText(registration.birthCertificateUrl, registration.anhKhaiSinh),
+  identityCardUrl: pickText(registration.identityCardUrl, registration.anhCanCuoc),
+  transcriptUrl: pickText(registration.transcriptUrl, registration.anhHocBa),
+  portraitUrl: pickText(registration.portraitUrl, registration.anhChanDung),
+  hocLucLop6: pickText(registration.hocLucLop6),
+  hanhKiemLop6: pickText(registration.hanhKiemLop6),
+  hocLucLop7: pickText(registration.hocLucLop7),
+  hanhKiemLop7: pickText(registration.hanhKiemLop7),
+  hocLucLop8: pickText(registration.hocLucLop8),
+  hanhKiemLop8: pickText(registration.hanhKiemLop8),
+  status: 'active',
+  schoolYear: currentSchoolYear
+});
+
+const normalizeStudentRecord = (student = {}, fallbackSchoolYear = '') => {
+  const normalized = { ...student };
+  Object.keys(emptyStudent).forEach(key => {
+    if (key === 'isClassLeader') {
+      normalized.isClassLeader = Boolean(student.isClassLeader);
+      return;
+    }
+    normalized[key] = safePlainValue(student[key] ?? emptyStudent[key]);
+  });
+  normalized.id = safePlainValue(student.id);
+  normalized.previousStudentId = safePlainValue(student.previousStudentId);
+  normalized.schoolYear = safePlainValue(student.schoolYear || fallbackSchoolYear);
+  normalized.birthDate = formatDisplayDate(normalized.birthDate);
+  normalized.identityCode = normalized.identityCode.replace(/^'/, '');
+  normalized.phone = normalized.phone.replace(/^'/, '');
+  normalized.fatherPhone = normalized.fatherPhone.replace(/^'/, '');
+  normalized.motherPhone = normalized.motherPhone.replace(/^'/, '');
+  normalized.accessCode = normalized.accessCode.replace(/\s+/g, '').toUpperCase();
+  normalized.status = normalized.status === 'dropped' ? 'dropped' : 'active';
+  return normalized;
+};
+
+const sanitizeStudentChanges = (changes = {}) => {
+  if (!changes || typeof changes !== 'object' || Array.isArray(changes)) return {};
+  return Object.fromEntries(Object.entries(changes)
+    .filter(([key]) => Object.prototype.hasOwnProperty.call(emptyStudent, key) || key === 'schoolYear' || key === 'previousStudentId')
+    .map(([key, value]) => [key, key === 'isClassLeader' ? Boolean(value) : safePlainValue(value)]));
+};
+
+const normalizeHeader = (value = '') => String(value || '')
+  .trim()
+  .toLowerCase()
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .replace(/đ/g, 'd')
+  .replace(/\s+/g, ' ');
+
+const normalizeSearch = (value = '') => normalizeHeader(value).replace(/[^\w\s]/g, '');
+
+const uniqueTextItems = (items = []) => [...new Set(items.map(item => String(item || '').trim()).filter(Boolean))];
+
+const getGradeFromClass = (className = '') => {
+  const match = String(className || '').trim().match(/(?:^|\D)(1[0-2]|[1-9])(?:\D|$)/);
+  return match ? match[1] : '';
+};
+
+const getVietnameseNameParts = (fullName = '') => {
+  const words = String(fullName || '').trim().split(/\s+/).filter(Boolean);
+  const givenName = words.pop() || '';
+  return {
+    givenName,
+    familyAndMiddle: words.join(' '),
+    fullName: String(fullName || '').trim()
+  };
+};
+
+const compareVietnameseName = (a = {}, b = {}) => {
+  const nameA = getVietnameseNameParts(a.fullName);
+  const nameB = getVietnameseNameParts(b.fullName);
+  const givenCompare = normalizeHeader(nameA.givenName).localeCompare(normalizeHeader(nameB.givenName), 'vi', { sensitivity: 'base' });
+  if (givenCompare !== 0) return givenCompare;
+  const middleCompare = normalizeHeader(nameA.familyAndMiddle).localeCompare(normalizeHeader(nameB.familyAndMiddle), 'vi', { sensitivity: 'base' });
+  if (middleCompare !== 0) return middleCompare;
+  return nameA.fullName.localeCompare(nameB.fullName, 'vi', { sensitivity: 'base' });
+};
+
+const compareClassThenName = (a = {}, b = {}) => {
+  const gradeA = Number(getGradeFromClass(a.className) || 0);
+  const gradeB = Number(getGradeFromClass(b.className) || 0);
+  if (gradeA !== gradeB) return gradeA - gradeB;
+  const classCompare = String(a.className || '').localeCompare(String(b.className || ''), 'vi', { numeric: true, sensitivity: 'base' });
+  if (classCompare !== 0) return classCompare;
+  return compareVietnameseName(a, b);
+};
+
+const getYear2 = (year = '') => {
+  const match = String(year || '').match(/\d{4}/);
+  return match ? match[0].slice(-2) : String(new Date().getFullYear()).slice(-2);
+};
+
+const getYearStart = (year = '') => {
+  const match = String(year || '').match(/\d{4}/);
+  return match ? Number(match[0]) : null;
+};
+
+const getCodePrefix = (student = {}, schoolYear = '') => {
+  const enrollmentYear = student.enrollmentYear || student.schoolYear || schoolYear;
+  const enrollmentStart = getYearStart(enrollmentYear);
+  const currentStart = getYearStart(student.schoolYear || schoolYear);
+  const currentGrade = Number(getGradeFromClass(student.className) || 0);
+  const yearsPassed = enrollmentStart && currentStart ? Math.max(0, currentStart - enrollmentStart) : 0;
+  const entryGrade = currentGrade ? Math.max(1, currentGrade - yearsPassed) : 0;
+  const year = getYear2(enrollmentYear);
+  const grade = entryGrade || getGradeFromClass(student.className) || '0';
+  return `HS${year}${grade}`;
+};
+
+const nextSequentialCode = (student = {}, existingCodes = new Set(), schoolYear = '') => {
+  const prefix = getCodePrefix(student, schoolYear);
+  let number = 1;
+  existingCodes.forEach(code => {
+    const match = String(code || '').match(new RegExp(`^${prefix}(\\d{2})$`));
+    if (match) number = Math.max(number, Number(match[1]) + 1);
+  });
+  let code = `${prefix}${String(number).padStart(2, '0')}`;
+  while (existingCodes.has(code)) {
+    number += 1;
+    code = `${prefix}${String(number).padStart(2, '0')}`;
+  }
+  return code;
+};
+
+const assignSequentialCodesByOrder = (studentsForOrder = [], targets = [], existingCodes = new Set(), schoolYear = '') => {
+  const targetSet = new Set(targets);
+  const usedCodes = new Set(existingCodes);
+  const prefixCounts = new Map();
+  const result = new Map();
+
+  [...studentsForOrder].sort(compareClassThenName).forEach(student => {
+    const prefix = getCodePrefix(student, schoolYear);
+    const orderNumber = (prefixCounts.get(prefix) || 0) + 1;
+    prefixCounts.set(prefix, orderNumber);
+    if (!targetSet.has(student)) return;
+
+    let number = orderNumber;
+    let code = `${prefix}${String(number).padStart(2, '0')}`;
+    while (usedCodes.has(code)) {
+      number += 1;
+      code = `${prefix}${String(number).padStart(2, '0')}`;
+    }
+    usedCodes.add(code);
+    result.set(student, code);
+  });
+
+  return result;
+};
+
+const getPreviousSchoolYear = (schoolYear = '') => {
+  const years = String(schoolYear || '').match(/\d{4}/g);
+  if (!years || years.length < 2) return '';
+  return `${Number(years[0]) - 1}-${Number(years[1]) - 1}`;
+};
+
+const promoteClassName = (className = '') => {
+  const text = String(className || '').trim();
+  const match = text.match(/^(\D*)([6-9])(\D?.*)$/);
+  if (!match) return text;
+  const grade = Number(match[2]);
+  if (grade >= 9) return '';
+  return `${match[1]}${grade + 1}${match[3] || ''}`;
+};
+
+const getStudentIdentity = (student = {}) => (
+  (/^\d{12}$/.test(String(student.identityCode || '').replace(/^'/, '').trim()) ? String(student.identityCode || '').replace(/^'/, '').trim() : '')
+  || student.previousStudentId
+  || `${normalizeSearch(student.fullName)}_${String(student.birthDate || '').trim()}`
+);
+
+const makeAccessCode = (student = {}, existingCodes = new Set()) => {
+  return nextSequentialCode(student, existingCodes, student.schoolYear);
+};
+
+const parseSheetPaste = (text = '', currentSchoolYear = '') => {
+  const rows = String(text || '').split(/\r?\n/).map(row => row.trim()).filter(Boolean);
+  if (rows.length < 2) return [];
+  const splitter = rows[0].includes('\t') ? '\t' : ',';
+  const headers = rows[0].split(splitter).map(header => HEADER_MAP[normalizeHeader(header)] || '');
+  return rows.slice(1).map(row => {
+    const cells = row.split(splitter);
+    const item = { ...emptyStudent, schoolYear: currentSchoolYear, status: 'active' };
+    headers.forEach((key, index) => {
+      if (key) item[key] = String(cells[index] || '').trim();
+    });
+    return item;
+  }).filter(item => item.fullName || item.identityCode);
+};
+
+const extractDriveFileId = (url = '') => {
+  const match = String(url || '').match(/\/file\/d\/([a-zA-Z0-9_-]+)|[?&]id=([a-zA-Z0-9_-]+)/);
+  return match ? (match[1] || match[2]) : '';
+};
+
+const splitDocumentUrls = (value = '') => String(value || '')
+  .split(/\s*,\s*|\n+/)
+  .map(item => item.trim())
+  .filter(Boolean);
+
+const firstDocumentUrl = (value = '') => splitDocumentUrls(value)[0] || '';
+
+const getPreviewImageUrl = (url = '') => {
+  const firstUrl = firstDocumentUrl(url);
+  const id = extractDriveFileId(firstUrl);
+  if (id) return `https://drive.google.com/thumbnail?id=${id}&sz=w700`;
+  return firstUrl;
+};
+
+const getDriveEmbedUrl = (url = '') => {
+  const firstUrl = firstDocumentUrl(url);
+  const id = extractDriveFileId(firstUrl);
+  return id ? `https://drive.google.com/file/d/${id}/preview` : '';
+};
+
+const escapeXml = (value = '') => String(value ?? '')
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;')
+  .replace(/'/g, '&apos;');
+
+const columnName = (index) => {
+  let value = index + 1;
+  let name = '';
+  while (value > 0) {
+    const mod = (value - 1) % 26;
+    name = String.fromCharCode(65 + mod) + name;
+    value = Math.floor((value - mod - 1) / 26);
+  }
+  return name;
+};
+
+const crcTable = (() => {
+  const table = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    table[n] = c >>> 0;
+  }
+  return table;
+})();
+
+const crc32 = (bytes) => {
+  let crc = 0xffffffff;
+  for (let i = 0; i < bytes.length; i++) crc = crcTable[(crc ^ bytes[i]) & 0xff] ^ (crc >>> 8);
+  return (crc ^ 0xffffffff) >>> 0;
+};
+
+const le16 = (value) => [value & 0xff, (value >>> 8) & 0xff];
+const le32 = (value) => [value & 0xff, (value >>> 8) & 0xff, (value >>> 16) & 0xff, (value >>> 24) & 0xff];
+
+const concatBytes = (chunks) => {
+  const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  chunks.forEach(chunk => {
+    out.set(chunk, offset);
+    offset += chunk.length;
+  });
+  return out;
+};
+
+const createZipBlob = (files) => {
+  const encoder = new TextEncoder();
+  const localParts = [];
+  const centralParts = [];
+  let offset = 0;
+  const now = new Date();
+  const dosTime = (now.getHours() << 11) | (now.getMinutes() << 5) | Math.floor(now.getSeconds() / 2);
+  const dosDate = ((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate();
+
+  files.forEach(file => {
+    const nameBytes = encoder.encode(file.name);
+    const data = encoder.encode(file.content);
+    const crc = crc32(data);
+    const localHeader = new Uint8Array([
+      ...le32(0x04034b50), ...le16(20), ...le16(0), ...le16(0), ...le16(dosTime), ...le16(dosDate),
+      ...le32(crc), ...le32(data.length), ...le32(data.length), ...le16(nameBytes.length), ...le16(0)
+    ]);
+    localParts.push(localHeader, nameBytes, data);
+    const centralHeader = new Uint8Array([
+      ...le32(0x02014b50), ...le16(20), ...le16(20), ...le16(0), ...le16(0), ...le16(dosTime), ...le16(dosDate),
+      ...le32(crc), ...le32(data.length), ...le32(data.length), ...le16(nameBytes.length), ...le16(0), ...le16(0),
+      ...le16(0), ...le16(0), ...le32(0), ...le32(offset)
+    ]);
+    centralParts.push(centralHeader, nameBytes);
+    offset += localHeader.length + nameBytes.length + data.length;
+  });
+
+  const central = concatBytes(centralParts);
+  const end = new Uint8Array([
+    ...le32(0x06054b50), ...le16(0), ...le16(0), ...le16(files.length), ...le16(files.length),
+    ...le32(central.length), ...le32(offset), ...le16(0)
+  ]);
+  return new Blob([concatBytes(localParts), central, end], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+};
+
+const createXlsxBlob = (rows, title = '') => {
+  const safeRows = rows.length ? rows : [['']];
+  const maxCols = Math.max(...safeRows.map(row => row.length), 1);
+  const sheetRows = safeRows.map((row, rowIndex) => {
+    const cells = row.map((cell, colIndex) => {
+      const ref = `${columnName(colIndex)}${rowIndex + 1}`;
+      const style = rowIndex === 0 && title ? ' s="2"' : (rowIndex === (title ? 1 : 0) ? ' s="1"' : '');
+      return `<c r="${ref}" t="inlineStr"${style}><is><t>${escapeXml(cell)}</t></is></c>`;
+    }).join('');
+    const height = rowIndex === 0 && title ? ' ht="28" customHeight="1"' : '';
+    return `<row r="${rowIndex + 1}"${height}>${cells}</row>`;
+  }).join('');
+  const dimension = `A1:${columnName(maxCols - 1)}${safeRows.length}`;
+  const mergeCells = title && maxCols > 1 ? `<mergeCells count="1"><mergeCell ref="A1:${columnName(maxCols - 1)}1"/></mergeCells>` : '';
+  const worksheet = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="${dimension}"/><sheetViews><sheetView workbookViewId="0"/></sheetViews><sheetFormatPr defaultRowHeight="18"/><sheetData>${sheetRows}</sheetData>${mergeCells}</worksheet>`;
+  return createZipBlob([
+    { name: '[Content_Types].xml', content: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>' },
+    { name: '_rels/.rels', content: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>' },
+    { name: 'xl/workbook.xml', content: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Danh sách" sheetId="1" r:id="rId1"/></sheets></workbook>' },
+    { name: 'xl/_rels/workbook.xml.rels', content: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>' },
+    { name: 'xl/styles.xml', content: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="3"><font><sz val="11"/><name val="Arial"/></font><font><b/><sz val="11"/><name val="Arial"/></font><font><b/><sz val="16"/><name val="Arial"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFDDEBFF"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="3"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="1" borderId="0" xfId="0" applyFont="1" applyFill="1"/><xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf></cellXfs></styleSheet>' },
+    { name: 'xl/worksheets/sheet1.xml', content: worksheet }
+  ]);
+};
+
+const safeFilePart = (value = '') => String(value || '')
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .replace(/đ/g, 'd')
+  .replace(/Đ/g, 'D')
+  .replace(/[^\w-]+/g, '-')
+  .replace(/-+/g, '-')
+  .replace(/^-|-$/g, '')
+  .toLowerCase();
+
+const fieldValueForExport = (student = {}, field = {}) => {
+  if (field.key === 'birthDate') return formatDisplayDate(safePlainValue(student[field.key]));
+  return safePlainValue(student[field.key]);
+};
+
+const buildExportTitle = ({ currentSchoolYear, classFilter, statusFilter, columnFilters, query, selectedCount, visibleFields }) => {
+  const parts = ['DANH SÁCH HỌC SINH'];
+  if (classFilter !== 'all') parts.push(`LỚP ${String(classFilter).toUpperCase()}`);
+  parts.push(`NĂM HỌC ${currentSchoolYear}`);
+  if (statusFilter !== 'all') parts.push(statusFilter === 'dropped' ? 'BỎ HỌC' : 'ĐANG HỌC');
+  Object.entries(columnFilters || {}).forEach(([key, value]) => {
+    if (!value) return;
+    const field = visibleFields.find(item => item.key === key) || STUDENT_FIELDS.find(item => item.key === key);
+    const label = field?.label || key;
+    parts.push(`${label}: ${value === EMPTY_FILTER_VALUE ? 'TRỐNG' : value}`);
+  });
+  if (query) parts.push(`TÌM: ${query}`);
+  if (selectedCount) parts.push(`${selectedCount} HỌC SINH ĐÃ CHỌN`);
+  return parts.join(' - ').toUpperCase();
+};
+
+const callSheetAction = (action = '', paramsObject = {}) => new Promise((resolve, reject) => {
+  if (typeof document === 'undefined') {
+    resolve(null);
+    return;
+  }
+  const callbackName = `studentSheetSync_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  const params = new URLSearchParams({
+    action,
+    callback: callbackName,
+    t: String(Date.now())
+  });
+  Object.entries(paramsObject).forEach(([key, value]) => {
+    if (value !== undefined && value !== null) params.set(key, String(value));
+  });
+  const script = document.createElement('script');
+  const cleanup = () => {
+    delete window[callbackName];
+    script.remove();
+  };
+  window[callbackName] = (response = {}) => {
+    cleanup();
+    if (response.success) resolve(response);
+    else reject(new Error(response.message || 'Không cập nhật được Google Sheet.'));
+  };
+  script.onerror = () => {
+    cleanup();
+    reject(new Error('Không gọi được Apps Script để cập nhật Google Sheet.'));
+  };
+  script.src = `${REGISTRATION_WEB_APP_URL}?${params.toString()}`;
+  document.body.appendChild(script);
+});
+
+const loadRegistrationDataAction = (action = '', paramsObject = {}) => new Promise((resolve, reject) => {
+  if (typeof document === 'undefined') {
+    resolve({});
+    return;
+  }
+  const callbackName = `studentAddressData_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  const params = new URLSearchParams({
+    action,
+    callback: callbackName,
+    t: String(Date.now())
+  });
+  Object.entries(paramsObject).forEach(([key, value]) => {
+    if (value !== undefined && value !== null) params.set(key, String(value));
+  });
+  const script = document.createElement('script');
+  const cleanup = () => {
+    delete window[callbackName];
+    script.remove();
+  };
+  const timeout = window.setTimeout(() => {
+    cleanup();
+    reject(new Error('Không tải được dữ liệu tỉnh/phường.'));
+  }, 9000);
+  window[callbackName] = (response = {}) => {
+    window.clearTimeout(timeout);
+    cleanup();
+    resolve(response || {});
+  };
+  script.onerror = () => {
+    window.clearTimeout(timeout);
+    cleanup();
+    reject(new Error('Không gọi được dữ liệu tỉnh/phường.'));
+  };
+  script.src = `${REGISTRATION_WEB_APP_URL}?${params.toString()}`;
+  document.body.appendChild(script);
+});
+
+const toSheetStudentParams = (student = {}, schoolYear = '') => ({
+  identityCode: String(student.identityCode || '').replace(/^'/, ''),
+  fullName: student.fullName || '',
+  birthDate: formatDisplayDate(student.birthDate || ''),
+  gender: student.gender || '',
+  phone: String(student.phone || '').replace(/^'/, ''),
+  className: student.className || '',
+  enrollmentYear: student.enrollmentYear || '',
+  address: student.address || '',
+  ward: student.ward || '',
+  province: student.province || '',
+  householdAddress: student.householdAddress || '',
+  householdWard: student.householdWard || '',
+  householdProvince: student.householdProvince || '',
+  fatherName: student.fatherName || '',
+  fatherBirthYear: student.fatherBirthYear || '',
+  fatherJob: student.fatherJob || '',
+  fatherPhone: String(student.fatherPhone || '').replace(/^'/, ''),
+  motherName: student.motherName || '',
+  motherBirthYear: student.motherBirthYear || '',
+  motherJob: student.motherJob || '',
+  motherPhone: String(student.motherPhone || '').replace(/^'/, ''),
+  temporaryStatus: student.temporaryStatus || '',
+  transport: student.transport || '',
+  birthCertificateUrl: student.birthCertificateUrl || '',
+  transcriptUrl: student.transcriptUrl || '',
+  portraitUrl: student.portraitUrl || '',
+  identityCardUrl: student.identityCardUrl || '',
+  hocLucLop6: student.hocLucLop6 || '',
+  hanhKiemLop6: student.hanhKiemLop6 || '',
+  hocLucLop7: student.hocLucLop7 || '',
+  hanhKiemLop7: student.hanhKiemLop7 || '',
+  hocLucLop8: student.hocLucLop8 || '',
+  hanhKiemLop8: student.hanhKiemLop8 || '',
+  status: student.status || 'active',
+  schoolYear: schoolYear || student.schoolYear || '',
+  dropoutYear: student.status === 'dropped' ? (schoolYear || student.schoolYear || '') : ''
+});
+
+const syncStudentToSheet = (student = {}, schoolYear = '') => callSheetAction('syncStudent', toSheetStudentParams(student, schoolYear));
+
+const STUDENT_DOCUMENTS = [
+  { key: 'portraitUrl', label: 'Ảnh thẻ' },
+  { key: 'birthCertificateUrl', label: 'Khai sinh' },
+  { key: 'identityCardUrl', label: 'Căn cước' },
+  { key: 'transcriptUrl', label: 'Học bạ' }
+];
+
+export default function HocSinhManager({ students = [], currentSchoolYear, user, showNotification, onBack, onOpenAttendance }) {
+  const [query, setQuery] = useState('');
+  const [studentTab, setStudentTab] = useState('current');
+  const [classFilter, setClassFilter] = useState('all');
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [sortMode, setSortMode] = useState('className');
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [selectedRegistrationIds, setSelectedRegistrationIds] = useState(new Set());
+  const [pendingRegistrations, setPendingRegistrations] = useState([]);
+  const [profileRequests, setProfileRequests] = useState([]);
+  const [isLoadingRegistrations, setIsLoadingRegistrations] = useState(false);
+  const [showCodeChoiceModal, setShowCodeChoiceModal] = useState(false);
+  const [showFilters, setShowFilters] = useState(false);
+  const [columnFilters, setColumnFilters] = useState({});
+  const [openFilterKey, setOpenFilterKey] = useState(null);
+  const [editing, setEditing] = useState(null);
+  const [showImport, setShowImport] = useState(false);
+  const [showColumns, setShowColumns] = useState(false);
+  const [showMoreActions, setShowMoreActions] = useState(false);
+  const [showExportChoice, setShowExportChoice] = useState(false);
+  const [addressDirectory, setAddressDirectory] = useState({ provinces: [], communes: {} });
+  const [visibleColumns, setVisibleColumns] = useState(() => {
+    if (typeof window !== 'undefined' && window.innerWidth < 640) return MOBILE_VISIBLE_COLUMNS;
+    return DEFAULT_VISIBLE_COLUMNS;
+  });
+  const [importText, setImportText] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
+  const safeStudents = useMemo(
+    () => (Array.isArray(students) ? students : []).map(student => normalizeStudentRecord(student, currentSchoolYear)),
+    [students, currentSchoolYear]
+  );
+
+  const studentsCollection = collection(db, 'artifacts', appId, 'public', 'data', 'students');
+  const profileRequestsCollection = collection(db, 'artifacts', appId, 'public', 'data', 'student_profile_requests');
+  useEffect(() => {
+    return onSnapshot(profileRequestsCollection, snapshot => {
+      setProfileRequests(snapshot.docs
+        .map(item => {
+          const data = item.data() || {};
+          return {
+            id: item.id,
+            ...data,
+            studentId: safePlainValue(data.studentId),
+            studentName: safePlainValue(data.studentName),
+            accessCode: safePlainValue(data.accessCode),
+            className: safePlainValue(data.className),
+            changes: sanitizeStudentChanges(data.changes)
+          };
+        })
+        .filter(item => (item.status || 'pending') === 'pending')
+        .filter(item => Object.keys(sanitizeStudentChanges(item.changes)).length > 0)
+        .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)));
+    });
+  }, []);
+  const previousSchoolYear = useMemo(() => getPreviousSchoolYear(currentSchoolYear), [currentSchoolYear]);
+  const yearStudents = useMemo(
+    () => safeStudents.filter(student => String(student.schoolYear || currentSchoolYear) === String(currentSchoolYear)),
+    [safeStudents, currentSchoolYear]
+  );
+  const previousYearStudents = useMemo(
+    () => previousSchoolYear
+      ? safeStudents.filter(student => String(student.schoolYear || '') === String(previousSchoolYear))
+      : [],
+    [safeStudents, previousSchoolYear]
+  );
+  const visibleStudentFields = useMemo(
+    () => STUDENT_FIELDS.filter(field => visibleColumns.includes(field.key)),
+    [visibleColumns]
+  );
+  const profileRequestsByStudent = useMemo(() => {
+    const map = new Map();
+    profileRequests.forEach(request => {
+      if (!request.studentId) return;
+      const current = map.get(request.studentId) || [];
+      current.push(request);
+      map.set(request.studentId, current);
+    });
+    return map;
+  }, [profileRequests]);
+  const existingCodes = useMemo(() => new Set(safeStudents.map(student => student.accessCode).filter(Boolean)), [safeStudents]);
+  const editFieldMap = useMemo(() => new Map(STUDENT_FIELDS.map(field => [field.key, field])), []);
+  const adminEditFields = useMemo(
+    () => ADMIN_EDIT_FIELD_ORDER.map(key => editFieldMap.get(key)).filter(Boolean),
+    [editFieldMap]
+  );
+  const addressProvinceOptions = useMemo(() => uniqueTextItems([
+    ...addressDirectory.provinces,
+    ...safeStudents.flatMap(student => [student.province, student.householdProvince]),
+    editing?.province,
+    editing?.householdProvince
+  ]).sort((a, b) => a.localeCompare(b, 'vi', { sensitivity: 'base' })), [addressDirectory.provinces, safeStudents, editing?.province, editing?.householdProvince]);
+  const getWardOptions = (province = '', currentValue = '', household = false) => {
+    const provinceName = String(province || '').trim();
+    const sheetOptions = addressDirectory.communes[provinceName] || [];
+    const studentOptions = safeStudents
+      .filter(student => !provinceName || student.province === provinceName || student.householdProvince === provinceName)
+      .flatMap(student => household ? [student.householdWard, student.ward] : [student.ward, student.householdWard]);
+    return uniqueTextItems([...sheetOptions, ...studentOptions, currentValue])
+      .sort((a, b) => a.localeCompare(b, 'vi', { sensitivity: 'base' }));
+  };
+  const editCurrentWardOptions = useMemo(
+    () => getWardOptions(editing?.province, editing?.ward, false),
+    [addressDirectory.communes, safeStudents, editing?.province, editing?.ward]
+  );
+  const editHouseholdWardOptions = useMemo(
+    () => getWardOptions(editing?.householdProvince, editing?.householdWard, true),
+    [addressDirectory.communes, safeStudents, editing?.householdProvince, editing?.householdWard]
+  );
+  const registrationRows = useMemo(
+    () => pendingRegistrations.map(item => ({
+      ...registrationToStudentData(item, currentSchoolYear),
+      id: safePlainValue(item.tempId),
+      tempId: safePlainValue(item.tempId),
+      duplicateReason: safePlainValue(item.duplicateReason),
+      duplicateStudentName: safePlainValue(item.duplicateStudentName),
+      duplicateAccessCode: safePlainValue(item.duplicateAccessCode)
+    })),
+    [pendingRegistrations, currentSchoolYear]
+  );
+  const findRegistrationDuplicate = (registration = {}) => {
+    const identityCode = String(registration.identityCode || registration.maDinhDanh || '').replace(/^'/, '').trim();
+    if (/^\d{12}$/.test(identityCode)) {
+      const byIdentity = safeStudents.find(student => String(student.identityCode || '').replace(/^'/, '').trim() === identityCode);
+      if (byIdentity) return { student: byIdentity, reason: 'Trùng mã định danh' };
+    }
+
+    const name = normalizeVietnameseName(registration.fullName || registration.hoVaTen || '');
+    const birthDate = normalizeBirthDate(registration.birthDate || registration.ngaySinh || '');
+    if (name && birthDate) {
+      const byNameBirth = safeStudents.find(student =>
+        normalizeVietnameseName(student.fullName || '') === name &&
+        normalizeBirthDate(student.birthDate || '') === birthDate
+      );
+      if (byNameBirth) return { student: byNameBirth, reason: 'Trùng họ tên + ngày sinh' };
+    }
+    return null;
+  };
+
+  const decorateRegistration = (item = {}, index = 0) => {
+    const duplicate = findRegistrationDuplicate(item);
+    return {
+      ...item,
+      tempId: safePlainValue(item.id || item.rowNumber || `${pickText(item.identityCode, item.fullName) || 'row'}_${index}`),
+      hiddenBecauseIdentityDuplicate: duplicate?.reason === 'Trùng mã định danh',
+      duplicateReason: duplicate?.reason || '',
+      duplicateStudentName: duplicate?.student?.fullName || '',
+      duplicateAccessCode: duplicate?.student?.accessCode || ''
+    };
+  };
+
+  useEffect(() => {
+    if (studentTab === 'registrations' && !pendingRegistrations.length && !isLoadingRegistrations) {
+      loadPendingRegistrations();
+    }
+  }, [studentTab]);
+
+  useEffect(() => {
+    setColumnFilters({});
+    setOpenFilterKey(null);
+    setClassFilter('all');
+    setStatusFilter('all');
+    if (studentTab === 'registrations') {
+      const compact = typeof window !== 'undefined' && window.innerWidth < 640;
+      setVisibleColumns(compact ? MOBILE_VISIBLE_COLUMNS : REGISTRATION_DEFAULT_VISIBLE_COLUMNS);
+    }
+  }, [studentTab]);
+
+  useEffect(() => {
+    if (!editing || addressDirectory.provinces.length) return;
+    try {
+      const cached = JSON.parse(localStorage.getItem(ADDRESS_DIRECTORY_CACHE_KEY) || 'null');
+      if (cached?.provinces?.length) {
+        setAddressDirectory({
+          provinces: uniqueTextItems(cached.provinces),
+          communes: cached.communes || {}
+        });
+        return;
+      }
+    } catch {}
+    let active = true;
+    loadRegistrationDataAction('addressDirectory')
+      .then(response => {
+        if (!active) return;
+        if (response.provinces?.length || response.communes) {
+          const nextDirectory = {
+            provinces: uniqueTextItems(response.provinces || response.items || []),
+            communes: response.communes || {}
+          };
+          setAddressDirectory(nextDirectory);
+          localStorage.setItem(ADDRESS_DIRECTORY_CACHE_KEY, JSON.stringify(nextDirectory));
+          return;
+        }
+        return loadRegistrationDataAction('provinces').then(fallback => {
+          if (!active) return;
+          setAddressDirectory(prev => ({ ...prev, provinces: uniqueTextItems(fallback.items || fallback.provinces || []) }));
+        });
+      })
+      .catch(() => {
+        loadRegistrationDataAction('provinces')
+          .then(fallback => {
+            if (!active) return;
+            setAddressDirectory(prev => ({ ...prev, provinces: uniqueTextItems(fallback.items || fallback.provinces || []) }));
+          })
+          .catch(() => {});
+      });
+    return () => { active = false; };
+  }, [editing, addressDirectory.provinces.length]);
+
+  useEffect(() => {
+    if (!editing) return;
+    const targets = uniqueTextItems([editing.province, editing.householdProvince])
+      .filter(province => !Object.prototype.hasOwnProperty.call(addressDirectory.communes, province));
+    if (!targets.length) return;
+    targets.forEach(province => {
+      loadRegistrationDataAction('communes', { province })
+        .then(response => {
+          setAddressDirectory(prev => ({
+            ...prev,
+            communes: {
+              ...prev.communes,
+              [province]: uniqueTextItems(response.items || response.communes || [])
+            }
+          }));
+        })
+        .catch(() => {
+          setAddressDirectory(prev => ({
+            ...prev,
+            communes: {
+              ...prev.communes,
+              [province]: []
+            }
+          }));
+        });
+    });
+  }, [editing?.province, editing?.householdProvince, addressDirectory.communes]);
+  const duplicateRegistrationCount = useMemo(
+    () => pendingRegistrations.filter(item => item.duplicateReason).length,
+    [pendingRegistrations]
+  );
+
+  const activeSourceRows = studentTab === 'registrations' ? registrationRows : yearStudents;
+  const classOptions = useMemo(
+    () => [...new Set(activeSourceRows.map(student => student.className).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'vi')),
+    [activeSourceRows]
+  );
+
+  const filteredStudents = useMemo(() => {
+    const needle = normalizeSearch(query);
+    return [...activeSourceRows
+      .filter(student => studentTab === 'registrations' || statusFilter === 'all' || (student.status || 'active') === statusFilter)
+      .filter(student => classFilter === 'all' || student.className === classFilter)
+      .filter(student => visibleStudentFields.every(field => {
+        const filterValue = columnFilters[field.key];
+        if (!filterValue) return true;
+        if (filterValue === EMPTY_FILTER_VALUE) return !String(student[field.key] || '').trim();
+        return String(student[field.key] || '') === filterValue;
+      }))
+      .filter(student => {
+        if (!needle) return true;
+        return normalizeSearch([
+          student.fullName,
+          student.className,
+          student.accessCode,
+          student.identityCode,
+          student.phone,
+          student.fatherPhone,
+          student.motherPhone
+        ].join(' ')).includes(needle);
+      })]
+      .sort((a, b) => {
+        const statusCompare = (a.status === 'dropped' ? 1 : 0) - (b.status === 'dropped' ? 1 : 0);
+        if (statusCompare !== 0) return statusCompare;
+        return sortMode === 'fullName' ? compareVietnameseName(a, b) : compareClassThenName(a, b);
+      });
+  }, [activeSourceRows, studentTab, query, classFilter, statusFilter, visibleStudentFields, columnFilters, sortMode]);
+
+  const statsScope = useMemo(
+    () => classFilter === 'all' ? yearStudents : yearStudents.filter(student => student.className === classFilter),
+    [yearStudents, classFilter]
+  );
+  const stats = useMemo(() => ({
+    total: statsScope.length,
+    active: statsScope.filter(student => (student.status || 'active') === 'active').length,
+    dropped: statsScope.filter(student => student.status === 'dropped').length,
+    noCode: statsScope.filter(student => !student.accessCode).length
+  }), [statsScope]);
+
+  const getFilterOptions = (fieldKey) => {
+    const source = activeSourceRows
+      .filter(student => studentTab === 'registrations' || statusFilter === 'all' || (student.status || 'active') === statusFilter)
+      .filter(student => classFilter === 'all' || student.className === classFilter)
+      .filter(student => Object.entries(columnFilters).every(([key, value]) => {
+        if (!value || key === fieldKey) return true;
+        if (value === EMPTY_FILTER_VALUE) return !String(student[key] || '').trim();
+        return String(student[key] || '') === value;
+      }));
+    return [...new Set(source.map(student => {
+      const value = String(student[fieldKey] || '').trim();
+      return value || EMPTY_FILTER_VALUE;
+    }))]
+      .sort((a, b) => {
+        if (a === EMPTY_FILTER_VALUE) return -1;
+        if (b === EMPTY_FILTER_VALUE) return 1;
+        return String(a).localeCompare(String(b), 'vi', { numeric: true, sensitivity: 'base' });
+      });
+  };
+
+  const openCreate = () => setEditing({ ...emptyStudent, schoolYear: currentSchoolYear, enrollmentYear: String(new Date().getFullYear()) });
+  const openEdit = (student) => setEditing(normalizeStudentRecord({ ...emptyStudent, ...student }, currentSchoolYear));
+  const closeEdit = () => setEditing(null);
+  const updateEditingField = (key, value) => {
+    setEditing(prev => {
+      if (!prev) return prev;
+      const next = { ...prev, [key]: value };
+      if (key === 'province' && prev.province !== value) next.ward = '';
+      if (key === 'householdProvince' && prev.householdProvince !== value) next.householdWard = '';
+      return next;
+    });
+  };
+  const filteredIds = useMemo(
+    () => filteredStudents
+      .filter(student => !(studentTab === 'registrations' && student.duplicateReason))
+      .map(student => student.id)
+      .filter(Boolean),
+    [filteredStudents, studentTab]
+  );
+  const activeSelectedIds = studentTab === 'registrations' ? selectedRegistrationIds : selectedIds;
+  const selectedCount = selectedIds.size;
+  const allFilteredSelected = filteredIds.length > 0 && filteredIds.every(id => activeSelectedIds.has(id));
+
+  const toggleSelectStudent = (studentId) => {
+    const setter = studentTab === 'registrations' ? setSelectedRegistrationIds : setSelectedIds;
+    setter(prev => {
+      const next = new Set(prev);
+      if (next.has(studentId)) next.delete(studentId);
+      else next.add(studentId);
+      return next;
+    });
+  };
+
+  const toggleSelectAllFiltered = () => {
+    const setter = studentTab === 'registrations' ? setSelectedRegistrationIds : setSelectedIds;
+    setter(prev => {
+      const next = new Set(prev);
+      if (allFilteredSelected) filteredIds.forEach(id => next.delete(id));
+      else filteredIds.forEach(id => next.add(id));
+      return next;
+    });
+  };
+
+  const updateVisibleColumns = (fieldKey) => {
+    setVisibleColumns(prev => {
+      if (prev.includes(fieldKey)) {
+        if (fieldKey === 'fullName') return prev;
+        return prev.filter(key => key !== fieldKey);
+      }
+      return [...prev, fieldKey];
+    });
+  };
+
+  const saveStudent = async () => {
+    const editingFullName = safePlainValue(editing?.fullName);
+    const editingClassName = safePlainValue(editing?.className);
+    if (!editingFullName) {
+      showNotification?.('Cần nhập họ tên học sinh.', 'error');
+      return;
+    }
+    if (!editingClassName) {
+      showNotification?.('Cần nhập lớp học.', 'error');
+      return;
+    }
+    setIsSaving(true);
+    try {
+      const payload = normalizeStudentRecord({
+        ...editing,
+        fullName: editingFullName,
+        className: editingClassName,
+        schoolYear: editing.schoolYear || currentSchoolYear,
+        updatedAt: Date.now(),
+        updatedBy: user?.uid || ''
+      }, currentSchoolYear);
+      if (!payload.accessCode) {
+        const codeMap = assignSequentialCodesByOrder([...yearStudents, payload], [payload], existingCodes, currentSchoolYear);
+        payload.accessCode = codeMap.get(payload) || makeAccessCode(payload, existingCodes);
+      }
+      if (payload.id) {
+        const { id, ...data } = payload;
+        await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'students', id), data, { merge: true });
+      } else {
+        const { id, ...data } = payload;
+        data.createdAt = Date.now();
+        data.createdBy = user?.uid || '';
+        await addDoc(studentsCollection, data);
+      }
+      try {
+        await syncStudentToSheet(payload, currentSchoolYear);
+        showNotification?.('Đã lưu hồ sơ học sinh và cập nhật Sheet.');
+      } catch (sheetError) {
+        showNotification?.(`Đã lưu Firebase, nhưng Sheet chưa cập nhật: ${sheetError.message}`, 'error');
+      }
+      closeEdit();
+    } catch (error) {
+      showNotification?.(`Chưa lưu được học sinh: ${error.message}`, 'error');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const resolveProfileRequestStudent = (request = {}) => {
+    if (!request.studentId) return null;
+    if (editing?.id === request.studentId) return normalizeStudentRecord({ ...emptyStudent, ...editing }, currentSchoolYear);
+    return safeStudents.find(student => student.id === request.studentId) || null;
+  };
+
+  const hideProfileRequestFieldLocally = (requestId = '', fieldKey = '') => {
+    if (!requestId) return;
+    setProfileRequests(prev => prev.flatMap(request => {
+      if (request.id !== requestId) return [request];
+      if (!fieldKey) return [];
+      const nextChanges = sanitizeStudentChanges(request.changes);
+      delete nextChanges[fieldKey];
+      return Object.keys(nextChanges).length ? [{ ...request, changes: nextChanges }] : [];
+    }));
+  };
+
+  const updateProfileRequestAfterFieldDecision = async (request = {}, fieldKey = '') => {
+    const remainingChanges = sanitizeStudentChanges(request.changes);
+    delete remainingChanges[fieldKey];
+    if (Object.keys(remainingChanges).length === 0) {
+      await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'student_profile_requests', request.id));
+      hideProfileRequestFieldLocally(request.id);
+      return;
+    }
+    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'student_profile_requests', request.id), {
+      changes: remainingChanges,
+      updatedAt: Date.now()
+    }, { merge: true });
+    hideProfileRequestFieldLocally(request.id, fieldKey);
+  };
+
+  const approveProfileField = async (request = {}, fieldKey = '') => {
+    if (!request?.id || !request.studentId || !fieldKey) return;
+    const nextValue = safePlainValue(request.changes?.[fieldKey]);
+    setIsSaving(true);
+    try {
+      const studentBefore = resolveProfileRequestStudent(request);
+      const nextStudent = { ...(studentBefore || {}), id: request.studentId, [fieldKey]: nextValue };
+      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'students', request.studentId), {
+        [fieldKey]: nextValue,
+        updatedAt: Date.now(),
+        updatedBy: user?.uid || ''
+      }, { merge: true });
+      await updateProfileRequestAfterFieldDecision(request, fieldKey);
+      if (editing?.id === request.studentId) {
+        setEditing(prev => prev ? ({ ...prev, [fieldKey]: nextValue }) : prev);
+      }
+      try {
+        await syncStudentToSheet(nextStudent, currentSchoolYear);
+      } catch (sheetError) {
+        showNotification?.(`Đã duyệt dòng này, nhưng Sheet chưa cập nhật: ${sheetError.message}`, 'error');
+        return;
+      }
+      showNotification?.(`Đã duyệt: ${STUDENT_FIELD_LABELS[fieldKey] || fieldKey}.`);
+    } catch (error) {
+      showNotification?.(`Chưa duyệt được dòng này: ${error.message}`, 'error');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const rejectProfileField = async (request = {}, fieldKey = '') => {
+    if (!request?.id || !fieldKey) return;
+    setIsSaving(true);
+    try {
+      await updateProfileRequestAfterFieldDecision(request, fieldKey);
+      showNotification?.(`Đã bỏ qua: ${STUDENT_FIELD_LABELS[fieldKey] || fieldKey}.`);
+    } catch (error) {
+      showNotification?.(`Chưa bỏ qua được dòng này: ${error.message}`, 'error');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const toggleDropout = async (student) => {
+    const nextStatus = student.status === 'dropped' ? 'active' : 'dropped';
+    setIsSaving(true);
+    try {
+      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'students', student.id), {
+        status: nextStatus,
+        updatedAt: Date.now(),
+        updatedBy: user?.uid || ''
+      }, { merge: true });
+      let sheetSynced = true;
+      try {
+        await syncStudentToSheet({ ...student, status: nextStatus }, currentSchoolYear);
+      } catch (sheetError) {
+        sheetSynced = false;
+        showNotification?.(`Firebase đã cập nhật, nhưng Sheet chưa cập nhật: ${sheetError.message}`, 'error');
+      }
+      setStatusFilter('all');
+      if (sheetSynced) {
+        showNotification?.(nextStatus === 'dropped' ? 'Đã đánh dấu học sinh bỏ học và cập nhật Sheet.' : 'Đã đưa học sinh học lại và cập nhật Sheet.');
+      }
+    } catch (error) {
+      showNotification?.(`Chưa cập nhật được: ${error.message}`, 'error');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const removeStudent = async (student) => {
+    if (!window.confirm(`Xóa hồ sơ "${student.fullName}"?`)) return;
+    setIsSaving(true);
+    try {
+      await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'students', student.id));
+      showNotification?.('Đã xóa hồ sơ học sinh.');
+    } catch (error) {
+      showNotification?.(`Chưa xóa được: ${error.message}`, 'error');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const removeSelectedStudents = async () => {
+    const targets = yearStudents.filter(student => selectedIds.has(student.id));
+    if (!targets.length) {
+      showNotification?.('Chưa chọn học sinh nào để xóa.', 'error');
+      return;
+    }
+    const ok = window.confirm(`Xóa ${targets.length} học sinh đã chọn khỏi database?\nThao tác này xóa hồ sơ khỏi Firebase, không chỉ ẩn khỏi bảng.`);
+    if (!ok) return;
+    setIsSaving(true);
+    try {
+      await Promise.all(targets.map(student => deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'students', student.id))));
+      setSelectedIds(new Set());
+      showNotification?.(`Đã xóa ${targets.length} học sinh đã chọn.`);
+    } catch (error) {
+      showNotification?.(`Chưa xóa được danh sách đã chọn: ${error.message}`, 'error');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const generateMissingCodes = async () => {
+    const targets = yearStudents.filter(student => !student.accessCode).sort(compareClassThenName);
+    if (!targets.length) {
+      showNotification?.('Tất cả học sinh trong năm học này đã có mã.');
+      return;
+    }
+    setIsSaving(true);
+    try {
+      const codeMap = assignSequentialCodesByOrder(yearStudents, targets, existingCodes, currentSchoolYear);
+      const codes = new Set(existingCodes);
+      await Promise.all(targets.map(student => {
+        const code = codeMap.get(student) || nextSequentialCode(student, codes, currentSchoolYear);
+        codes.add(code);
+        return setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'students', student.id), {
+          accessCode: code,
+          updatedAt: Date.now(),
+          updatedBy: user?.uid || ''
+        }, { merge: true });
+      }));
+      showNotification?.(`Đã tạo mã cho ${targets.length} học sinh.`);
+    } catch (error) {
+      showNotification?.(`Chưa tạo mã được: ${error.message}`, 'error');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const regenerateAllCodes = async () => {
+    const targets = [...yearStudents].sort(compareClassThenName);
+    if (!targets.length) {
+      showNotification?.('Chưa có học sinh trong năm học này để tạo mã.', 'error');
+      return;
+    }
+    const ok = window.confirm(`Xóa mã cũ và tạo lại mã mới cho ${targets.length} học sinh của năm ${currentSchoolYear}?\nMã mới sẽ theo dạng HS + năm nhập học + khối nhập học + STT, ví dụ HS22601.`);
+    if (!ok) return;
+
+    setIsSaving(true);
+    try {
+      const targetIds = new Set(targets.map(student => student.id));
+      const reservedCodes = new Set(safeStudents.filter(student => !targetIds.has(student.id)).map(student => student.accessCode).filter(Boolean));
+      const codeMap = assignSequentialCodesByOrder(targets, targets, reservedCodes, currentSchoolYear);
+      await Promise.all(targets.map(student => {
+        const code = codeMap.get(student) || nextSequentialCode(student, reservedCodes, currentSchoolYear);
+        reservedCodes.add(code);
+        return setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'students', student.id), {
+          accessCode: code,
+          updatedAt: Date.now(),
+          updatedBy: user?.uid || ''
+        }, { merge: true });
+      }));
+      showNotification?.(`Đã tạo lại mã mới cho ${targets.length} học sinh.`);
+    } catch (error) {
+      showNotification?.(`Chưa tạo lại mã được: ${error.message}`, 'error');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const syncPreviousYear = async () => {
+    if (!previousSchoolYear) {
+      showNotification?.('Chưa nhận được năm học trước để đồng bộ.', 'error');
+      return;
+    }
+    const sourceStudents = previousYearStudents.filter(student => (student.status || 'active') === 'active');
+    if (!sourceStudents.length) {
+      showNotification?.(`Chưa có dữ liệu năm ${previousSchoolYear} để đồng bộ.`, 'error');
+      return;
+    }
+
+    const currentKeys = new Set(yearStudents.map(getStudentIdentity).filter(Boolean));
+    const candidates = sourceStudents
+      .map(student => ({ student, nextClass: promoteClassName(student.className) }))
+      .filter(item => item.nextClass)
+      .filter(item => !currentKeys.has(getStudentIdentity(item.student)));
+
+    if (!candidates.length) {
+      showNotification?.(`Năm ${currentSchoolYear} đã có đủ dữ liệu từ ${previousSchoolYear}, hoặc lớp 9 đã ra trường.`);
+      return;
+    }
+
+    const ok = window.confirm(`Đồng bộ ${candidates.length} học sinh từ năm ${previousSchoolYear} sang ${currentSchoolYear}?\nLớp 6 lên 7, 7 lên 8, 8 lên 9. Học sinh lớp 9 năm trước sẽ không đưa sang.`);
+    if (!ok) return;
+
+    setIsSaving(true);
+    try {
+      const codes = new Set(existingCodes);
+      await Promise.all(candidates.sort((a, b) => compareClassThenName({ ...a.student, className: a.nextClass }, { ...b.student, className: b.nextClass })).map(({ student, nextClass }) => {
+        const {
+          id,
+          createdAt,
+          createdBy,
+          updatedAt,
+          updatedBy,
+          syncedFromSchoolYear,
+          previousStudentId,
+          ...baseData
+        } = student;
+        const payload = {
+          ...baseData,
+          className: nextClass,
+          schoolYear: currentSchoolYear,
+          previousStudentId: id || previousStudentId || '',
+          syncedFromSchoolYear: syncedFromSchoolYear || previousSchoolYear,
+          status: 'active',
+          accessCode: baseData.accessCode || nextSequentialCode({ ...baseData, className: nextClass, schoolYear: currentSchoolYear }, codes, currentSchoolYear),
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          createdBy: user?.uid || '',
+          updatedBy: user?.uid || ''
+        };
+        codes.add(payload.accessCode);
+        return addDoc(studentsCollection, payload);
+      }));
+      showNotification?.(`Đã đồng bộ ${candidates.length} học sinh sang năm ${currentSchoolYear}.`);
+    } catch (error) {
+      showNotification?.(`Chưa đồng bộ được: ${error.message}`, 'error');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const importFromPaste = async () => {
+    const parsed = parseSheetPaste(importText, currentSchoolYear);
+    if (!parsed.length) {
+      showNotification?.('Chưa đọc được dữ liệu. Hãy copy cả hàng tiêu đề từ Google Sheet rồi dán vào.', 'error');
+      return;
+    }
+    setIsSaving(true);
+    try {
+      const sortedParsed = parsed.sort(compareClassThenName);
+      const codeMap = assignSequentialCodesByOrder([...yearStudents, ...sortedParsed], sortedParsed, existingCodes, currentSchoolYear);
+      const codes = new Set(existingCodes);
+      await Promise.all(sortedParsed.map(student => {
+        const accessCode = codeMap.get(student) || nextSequentialCode(student, codes, currentSchoolYear);
+        codes.add(accessCode);
+        return addDoc(studentsCollection, {
+          ...student,
+          accessCode,
+          schoolYear: student.schoolYear || currentSchoolYear,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          createdBy: user?.uid || '',
+          updatedBy: user?.uid || ''
+        });
+      }));
+      showNotification?.(`Đã nhập ${parsed.length} học sinh từ bảng.`);
+      setImportText('');
+      setShowImport(false);
+    } catch (error) {
+      showNotification?.(`Chưa nhập được danh sách: ${error.message}`, 'error');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const prepareExportRows = (mode = 'current') => {
+    const selectedRows = filteredStudents.filter(student => activeSelectedIds.has(student.id));
+    const exportRows = selectedRows.length ? selectedRows : filteredStudents;
+    if (!exportRows.length) {
+      showNotification?.('Không có dòng nào để xuất.', 'error');
+      return null;
+    }
+    const exportFields = mode === 'all' ? STUDENT_FIELDS : visibleStudentFields;
+    const title = buildExportTitle({
+      currentSchoolYear,
+      classFilter,
+      statusFilter,
+      columnFilters,
+      query,
+      selectedCount: selectedRows.length,
+      visibleFields: exportFields
+    });
+    const headers = [...exportFields.map(field => field.label), 'Mã học sinh', 'Tình trạng', 'Năm học'];
+    const rows = [[title, ...Array(Math.max(headers.length - 1, 0)).fill('')], headers];
+    exportRows.forEach(student => {
+      rows.push([
+        ...exportFields.map(field => fieldValueForExport(student, field)),
+        student.accessCode || '',
+        student.status === 'dropped' ? 'Bỏ học' : 'Đang học',
+        student.schoolYear || currentSchoolYear
+      ]);
+    });
+    const blob = createXlsxBlob(rows, title);
+    const titlePart = safeFilePart(title).slice(0, 80) || `danh-sach-hoc-sinh-${currentSchoolYear}`;
+    const fileName = `${titlePart}${selectedRows.length ? '-da-chon' : ''}.xlsx`;
+    return { blob, fileName, count: exportRows.length, selectedCount: selectedRows.length, mode };
+  };
+
+  const downloadExportList = (mode = 'current') => {
+    const result = prepareExportRows(mode);
+    if (!result) return;
+    const url = URL.createObjectURL(result.blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = result.fileName;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    setShowExportChoice(false);
+    showNotification?.(`Đã xuất ${result.count} dòng ra Excel .xlsx dạng text, ${mode === 'all' ? 'tất cả cột' : 'theo cấu hình hiện tại'}.`);
+  };
+
+  const shareExportList = async (mode = 'current') => {
+    const result = prepareExportRows(mode);
+    if (!result) return;
+    const file = new File([result.blob], result.fileName, { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    if (navigator.canShare?.({ files: [file] }) && navigator.share) {
+      try {
+        await navigator.share({ files: [file], title: result.fileName });
+        setShowExportChoice(false);
+      } catch {
+        // User cancelled the share sheet.
+      }
+      return;
+    }
+    showNotification?.('Máy/trình duyệt này chưa hỗ trợ chia sẻ file trực tiếp. Mình tải file xuống để thầy gửi thủ công.', 'error');
+    downloadExportList(mode);
+  };
+
+  const loadPendingRegistrations = () => {
+    setIsLoadingRegistrations(true);
+    const callbackName = `__studentRegistrations_${Date.now()}`;
+    const script = document.createElement('script');
+    window[callbackName] = (payload) => {
+      const items = Array.isArray(payload) ? payload : (payload?.items || []);
+      const checkedItems = items.map(decorateRegistration);
+      const visibleItems = checkedItems.filter(item => !item.hiddenBecauseIdentityDuplicate);
+      const hiddenCount = checkedItems.length - visibleItems.length;
+      const duplicateCount = visibleItems.filter(item => item.duplicateReason).length;
+      setPendingRegistrations(visibleItems);
+      setSelectedRegistrationIds(new Set());
+      setIsLoadingRegistrations(false);
+      delete window[callbackName];
+      script.remove();
+      showNotification?.(`Đã tải ${visibleItems.length} hồ sơ mới cần duyệt.${hiddenCount ? ` Đã ẩn ${hiddenCount} hồ sơ trùng mã định danh.` : ''}${duplicateCount ? ` Có ${duplicateCount} hồ sơ trùng họ tên + ngày sinh cần kiểm tra.` : ''}`);
+    };
+    script.onerror = () => {
+      setIsLoadingRegistrations(false);
+      delete window[callbackName];
+      script.remove();
+      showNotification?.('Chưa tải được đăng ký mới. Hãy cập nhật Apps Script theo bản mình tạo.', 'error');
+    };
+    script.src = `${REGISTRATION_WEB_APP_URL}?action=listPending&callback=${callbackName}&t=${Date.now()}`;
+    document.body.appendChild(script);
+  };
+
+  const syncAllStudentsToSheet = async () => {
+    if (!yearStudents.length) {
+      showNotification?.('Chưa có học sinh để cập nhật Sheet.', 'error');
+      return;
+    }
+    if (!window.confirm(`Cập nhật ${yearStudents.length} hồ sơ của năm ${currentSchoolYear} lên Google Sheet?`)) return;
+    setIsSaving(true);
+    let successCount = 0;
+    const errors = [];
+    try {
+      for (const student of yearStudents) {
+        try {
+          await syncStudentToSheet(student, currentSchoolYear);
+          successCount += 1;
+        } catch (error) {
+          errors.push(`${student.fullName || student.accessCode || 'Học sinh'}: ${error.message}`);
+        }
+      }
+      if (errors.length) {
+        showNotification?.(`Đã cập nhật ${successCount}/${yearStudents.length} hồ sơ. Còn ${errors.length} hồ sơ lỗi, xem Console nếu cần.`, 'error');
+        console.warn('Lỗi cập nhật Sheet:', errors);
+      } else {
+        showNotification?.(`Đã cập nhật toàn bộ ${successCount} hồ sơ lên Google Sheet.`);
+      }
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const registrationToStudent = (registration = {}) => registrationToStudentData(registration, currentSchoolYear);
+
+  const approveRegistrations = async (registrations = []) => {
+    const targets = registrations.length ? registrations : pendingRegistrations.filter(item => selectedRegistrationIds.has(item.tempId));
+    if (!targets.length) {
+      showNotification?.('Chưa chọn hồ sơ đăng ký nào.', 'error');
+      return;
+    }
+    const blocked = targets.filter(item => item.duplicateReason || findRegistrationDuplicate(item));
+    const validTargets = targets.filter(item => !(item.duplicateReason || findRegistrationDuplicate(item)));
+    if (!validTargets.length) {
+      showNotification?.('Các hồ sơ đã chọn đều có dấu hiệu trùng. Thầy kiểm tra dòng cảnh báo trước khi chuyển.', 'error');
+      return;
+    }
+    setIsSaving(true);
+    try {
+      const newStudents = validTargets
+        .map(registrationToStudent)
+        .map(student => normalizeStudentRecord(student, currentSchoolYear))
+        .filter(student => student.fullName && student.className)
+        .sort(compareClassThenName);
+      const invalidCount = validTargets.length - newStudents.length;
+      if (!newStudents.length) {
+        showNotification?.('Ho so dang ky thieu ho ten hoac lop, chua the duyet vao database.', 'error');
+        return;
+      }
+      const codeMap = assignSequentialCodesByOrder([...yearStudents, ...newStudents], newStudents, existingCodes, currentSchoolYear);
+      const codes = new Set(existingCodes);
+      await Promise.all(newStudents.map(student => {
+        const accessCode = codeMap.get(student) || nextSequentialCode(student, codes, currentSchoolYear);
+        const { id, tempId, duplicateReason, duplicateStudentName, duplicateAccessCode, ...data } = student;
+        codes.add(accessCode);
+        return addDoc(studentsCollection, {
+          ...data,
+          accessCode,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          createdBy: user?.uid || '',
+          updatedBy: user?.uid || ''
+        });
+      }));
+      setSelectedRegistrationIds(new Set());
+      showNotification?.(`Đã duyệt ${newStudents.length} học sinh vào database.${blocked.length ? ` Bỏ qua ${blocked.length} hồ sơ có dấu hiệu trùng.` : ''}${invalidCount ? ` Bo qua ${invalidCount} ho so thieu ho ten hoac lop.` : ''}`);
+    } catch (error) {
+      showNotification?.(`Chưa duyệt được hồ sơ: ${error.message}`, 'error');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const approveProfileRequest = async (request) => {
+    if (!request?.studentId) return;
+    const cleanChanges = sanitizeStudentChanges(request.changes);
+    if (!Object.keys(cleanChanges).length) {
+      showNotification?.('Yeu cau nay khong co thong tin hop le de duyet.', 'error');
+      return;
+    }
+    setIsSaving(true);
+    try {
+      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'students', request.studentId), {
+        ...cleanChanges,
+        updatedAt: Date.now(),
+        updatedBy: user?.uid || ''
+      }, { merge: true });
+      await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'student_profile_requests', request.id));
+      hideProfileRequestFieldLocally(request.id);
+      showNotification?.('Đã duyệt và cập nhật hồ sơ học sinh.');
+    } catch (error) {
+      showNotification?.(`Chưa duyệt được yêu cầu: ${error.message}`, 'error');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const rejectProfileRequest = async (request) => {
+    if (!request?.id || !window.confirm('Từ chối yêu cầu sửa hồ sơ này?')) return;
+    setIsSaving(true);
+    try {
+      await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'student_profile_requests', request.id));
+      hideProfileRequestFieldLocally(request.id);
+      showNotification?.('Đã từ chối yêu cầu sửa hồ sơ.');
+    } catch (error) {
+      showNotification?.(`Chưa xóa được yêu cầu: ${error.message}`, 'error');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const editingProfileRequests = editing?.id ? (profileRequestsByStudent.get(editing.id) || []) : [];
+
+  return (
+    <div className="bg-white/95 rounded-2xl border border-indigo-100 shadow-xl overflow-hidden">
+      {onBack && (
+        <button type="button" onClick={onBack} className="sm:hidden fixed top-3 right-3 z-[120] w-10 h-10 rounded-full bg-rose-600 text-white shadow-xl flex items-center justify-center">
+          <X className="w-5 h-5" />
+        </button>
+      )}
+      <div className="bg-gradient-to-r from-indigo-50 to-blue-50 p-3 border-b border-indigo-100 flex flex-col lg:flex-row lg:items-start justify-between gap-3">
+        <div className="min-w-0 lg:flex-1 lg:pr-4">
+          <h3 className="font-black text-indigo-950 text-sm sm:text-base uppercase flex items-center gap-2">
+            <GraduationCap className="w-5 h-5 text-indigo-600" /> Database học sinh
+          </h3>
+          <p className="text-[11px] text-indigo-700/70 font-bold mt-0.5">
+            Năm học <b>{currentSchoolYear}</b>{classFilter !== 'all' ? ` - đang xem ${classFilter}` : ''}. Mã: HS + năm nhập học + khối nhập học + STT.
+          </p>
+          <div className="mt-2 flex items-center gap-2 overflow-x-auto">
+            <button type="button" onClick={() => setStudentTab('current')} className={`shrink-0 px-3 py-1.5 rounded-xl text-[10px] font-black uppercase ${studentTab === 'current' ? 'bg-indigo-600 text-white shadow-sm' : 'bg-white text-slate-600 border border-slate-200'}`}>Học sinh đã có</button>
+            <button type="button" onClick={() => setStudentTab('registrations')} className={`shrink-0 px-3 py-1.5 rounded-xl text-[10px] font-black uppercase ${studentTab === 'registrations' ? 'bg-emerald-600 text-white shadow-sm' : 'bg-white text-emerald-700 border border-emerald-100'}`}>Học sinh mới đăng ký ({pendingRegistrations.length})</button>
+            <button type="button" onClick={() => setStudentTab('profileRequests')} className={`relative shrink-0 px-3 py-1.5 rounded-xl text-[10px] font-black uppercase ${studentTab === 'profileRequests' ? 'bg-amber-600 text-white shadow-sm' : profileRequests.length ? 'bg-amber-50 text-amber-800 border border-amber-300 shadow-sm' : 'bg-white text-amber-700 border border-amber-100'}`}>
+              Yêu cầu sửa ({profileRequests.length})
+              {profileRequests.length > 0 && <span className="absolute -right-1 -top-1 w-3 h-3 rounded-full bg-rose-500 ring-2 ring-white animate-pulse" />}
+            </button>
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center justify-start gap-2 pb-1 lg:pb-0 lg:flex-nowrap lg:justify-end lg:overflow-x-auto lg:max-w-[calc(100vw-520px)] lg:shrink-0">
+          {onBack && (
+            <button type="button" onClick={onBack} title="Đóng database" className="hidden sm:flex sm:order-last shrink-0 w-10 h-10 bg-rose-600 text-white hover:bg-rose-700 rounded-full shadow-lg items-center justify-center transition-colors">
+              <X className="w-5 h-5" />
+            </button>
+          )}
+          {onOpenAttendance && (
+            <button type="button" onClick={onOpenAttendance} className="shrink-0 px-3 py-2 bg-cyan-600 text-white rounded-xl text-[10px] sm:text-xs font-black uppercase flex items-center justify-center gap-1.5 shadow-sm">
+              <CalendarDays className="w-4 h-4" /> Điểm danh
+            </button>
+          )}
+          <button type="button" onClick={() => setShowColumns(prev => !prev)} className="shrink-0 px-3 py-2 bg-white text-slate-700 border border-slate-200 rounded-xl text-[10px] sm:text-xs font-black uppercase flex items-center justify-center gap-1.5">
+            <Columns className="w-4 h-4" /> Cấu hình
+          </button>
+          {studentTab === 'current' && (
+            <button type="button" onClick={() => setShowCodeChoiceModal(true)} disabled={isSaving} className="shrink-0 px-3 py-2 bg-amber-50 text-amber-700 border border-amber-100 rounded-xl text-[10px] sm:text-xs font-black uppercase flex items-center justify-center gap-1.5 disabled:opacity-60">
+              <KeyRound className="w-4 h-4" /> Tạo mã
+            </button>
+          )}
+          <button type="button" onClick={() => setShowExportChoice(true)} className="shrink-0 px-3 py-2 bg-cyan-50 text-cyan-700 border border-cyan-100 rounded-xl text-[10px] sm:text-xs font-black uppercase flex items-center justify-center gap-1.5">
+            <FileSpreadsheet className="w-4 h-4" /> Xuất DS
+          </button>
+          <div className="relative shrink-0">
+            <button type="button" onClick={() => setShowMoreActions(prev => !prev)} className="shrink-0 px-3 py-2 bg-white text-slate-700 border border-slate-200 rounded-xl text-[10px] sm:text-xs font-black uppercase flex items-center justify-center gap-1.5">
+              <ChevronDown className={`w-4 h-4 transition-transform ${showMoreActions ? 'rotate-180' : ''}`} /> Mở rộng
+            </button>
+            {showMoreActions && (
+              <div className="fixed left-3 right-3 top-24 z-[200] mx-auto max-w-3xl rounded-2xl border border-slate-200 bg-white shadow-2xl p-3 grid grid-cols-2 sm:grid-cols-4 gap-2 max-h-[60vh] overflow-y-auto">
+                <button type="button" onClick={() => { window.open(STUDENT_DATA_SHEET_URL, '_blank', 'noopener,noreferrer'); setShowMoreActions(false); }} className="px-3 py-3 sm:py-2 rounded-xl text-center sm:text-left text-[11px] font-black uppercase text-emerald-700 bg-emerald-50 sm:bg-white hover:bg-emerald-50 flex flex-col sm:flex-row items-center justify-center sm:justify-start gap-1.5"><ExternalLink className="w-4 h-4" /> Mở dữ liệu</button>
+                {studentTab === 'current' && <button type="button" onClick={() => { setShowMoreActions(false); syncAllStudentsToSheet(); }} disabled={isSaving || yearStudents.length === 0} className="px-3 py-3 sm:py-2 rounded-xl text-center sm:text-left text-[11px] font-black uppercase text-teal-700 bg-teal-50 sm:bg-white hover:bg-teal-50 disabled:opacity-50 flex flex-col sm:flex-row items-center justify-center sm:justify-start gap-1.5"><RefreshCw className="w-4 h-4" /> Cập nhật Sheet</button>}
+                {studentTab === 'current' && <button type="button" onClick={() => { setShowMoreActions(false); syncPreviousYear(); }} disabled={isSaving || !previousSchoolYear} className="px-3 py-3 sm:py-2 rounded-xl text-center sm:text-left text-[11px] font-black uppercase text-emerald-700 bg-emerald-50 sm:bg-white hover:bg-emerald-50 disabled:opacity-50 flex flex-col sm:flex-row items-center justify-center sm:justify-start gap-1.5"><RefreshCw className="w-4 h-4" /> Đồng bộ năm trước</button>}
+                {studentTab === 'current' && <button type="button" onClick={() => { setShowMoreActions(false); setShowImport(prev => !prev); }} className="px-3 py-3 sm:py-2 rounded-xl text-center sm:text-left text-[11px] font-black uppercase text-indigo-700 bg-indigo-50 sm:bg-white hover:bg-indigo-50 flex flex-col sm:flex-row items-center justify-center sm:justify-start gap-1.5"><UploadCloud className="w-4 h-4" /> Nhập Sheet</button>}
+              </div>
+            )}
+          </div>
+          {studentTab === 'registrations' && (
+            <button type="button" onClick={loadPendingRegistrations} disabled={isLoadingRegistrations} className="shrink-0 px-3 py-2 bg-emerald-600 text-white rounded-xl text-[10px] sm:text-xs font-black uppercase flex items-center justify-center gap-1.5 disabled:opacity-60">
+              <RefreshCw className="w-4 h-4" /> {isLoadingRegistrations ? 'Đang tải...' : 'Tải mới'}
+            </button>
+          )}
+          {studentTab === 'registrations' && (
+            <button type="button" onClick={() => approveRegistrations()} disabled={isSaving || selectedRegistrationIds.size === 0} className="shrink-0 px-3 py-2 bg-indigo-600 text-white rounded-xl text-[10px] sm:text-xs font-black uppercase flex items-center justify-center gap-1.5 disabled:opacity-40">
+              <CheckCircle2 className="w-4 h-4" /> Duyệt chọn ({selectedRegistrationIds.size})
+            </button>
+          )}
+          {studentTab === 'current' && (
+            <button type="button" onClick={removeSelectedStudents} disabled={isSaving || selectedCount === 0} className="shrink-0 px-3 py-2 bg-rose-50 text-rose-700 border border-rose-100 rounded-xl text-[10px] sm:text-xs font-black uppercase flex items-center justify-center gap-1.5 disabled:opacity-40" title="Xóa các học sinh đang được tích chọn">
+              <Trash2 className="w-4 h-4" /> Xóa chọn {selectedCount ? `(${selectedCount})` : ''}
+            </button>
+          )}
+          {studentTab === 'current' && (
+            <button type="button" onClick={openCreate} className="shrink-0 px-3 py-2 bg-indigo-600 text-white rounded-xl text-[10px] sm:text-xs font-black uppercase shadow-md flex items-center justify-center gap-1.5">
+              <Plus className="w-4 h-4" /> Thêm
+            </button>
+          )}
+        </div>
+      </div>
+
+      {studentTab === 'profileRequests' ? (
+        <div className="p-3 sm:p-4 bg-white">
+          {profileRequests.length === 0 ? (
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-8 text-center text-slate-400 font-bold">
+              Chưa có yêu cầu sửa hồ sơ nào.
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {profileRequests.map(request => {
+                const currentStudent = resolveProfileRequestStudent(request);
+                return (
+                  <div key={request.id} className="rounded-2xl border border-amber-100 bg-amber-50/40 p-4">
+                    <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-3">
+                      <div>
+                        <div className="font-black text-slate-900">{request.studentName || currentStudent?.fullName || 'Học sinh'} <span className="text-xs text-slate-400">({request.accessCode || currentStudent?.accessCode || 'chưa có mã'})</span></div>
+                        <div className="text-xs font-bold text-slate-500">Lớp {request.className || currentStudent?.className || '-'} - gửi lúc {request.createdAt ? new Date(request.createdAt).toLocaleString('vi-VN') : ''}</div>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <button type="button" onClick={() => approveProfileRequest(request)} disabled={isSaving || !currentStudent} className="px-3 py-2 rounded-xl bg-emerald-600 text-white text-xs font-black uppercase shadow-sm flex items-center gap-1.5 disabled:opacity-50">
+                          <CheckCircle2 className="w-4 h-4" /> Đồng ý hết
+                        </button>
+                        <button type="button" onClick={() => rejectProfileRequest(request)} disabled={isSaving} className="px-3 py-2 rounded-xl bg-rose-50 text-rose-600 border border-rose-100 text-xs font-black uppercase flex items-center gap-1.5 disabled:opacity-50">
+                          <X className="w-4 h-4" /> Từ chối hết
+                        </button>
+                      </div>
+                    </div>
+                    <div className="mt-3 grid grid-cols-1 xl:grid-cols-2 gap-2">
+                      {Object.entries(sanitizeStudentChanges(request.changes)).map(([key, value]) => {
+                        const currentValue = safePlainValue(currentStudent?.[key]);
+                        const nextValue = safePlainValue(value);
+                        return (
+                          <div key={key} className="rounded-xl bg-white border border-amber-100 p-3">
+                            <div className="text-[10px] font-black uppercase text-slate-400 mb-2">{STUDENT_FIELD_LABELS[key] || key}</div>
+                            <div className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_auto] gap-2 sm:items-center">
+                              <div className="rounded-lg bg-slate-50 border border-slate-100 p-2 min-w-0">
+                                <div className="text-[9px] font-black uppercase text-slate-400">Cũ</div>
+                                <div className="text-xs font-bold text-slate-700 break-words">{currentValue || '(trống)'}</div>
+                              </div>
+                              <div className="rounded-lg bg-emerald-50 border border-emerald-100 p-2 min-w-0">
+                                <div className="text-[9px] font-black uppercase text-emerald-500">Mới</div>
+                                {String(key).toLowerCase().includes('url') ? (
+                                  <a href={nextValue} target="_blank" rel="noreferrer" className="text-xs font-black text-blue-600 hover:underline">Mở file/ảnh mới</a>
+                                ) : (
+                                  <div className="text-xs font-black text-emerald-800 break-words">{nextValue || '(trống)'}</div>
+                                )}
+                              </div>
+                              <div className="flex sm:flex-col gap-2">
+                                <button type="button" onClick={() => approveProfileField(request, key)} disabled={isSaving} title="Duyệt dòng này" className="w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center shadow-sm disabled:opacity-50">
+                                  <CheckCircle2 className="w-5 h-5" />
+                                </button>
+                                <button type="button" onClick={() => rejectProfileField(request, key)} disabled={isSaving} title="Từ chối dòng này" className="w-10 h-10 rounded-xl bg-rose-50 text-rose-600 border border-rose-100 flex items-center justify-center disabled:opacity-50">
+                                  <X className="w-5 h-5" />
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      ) : (
+      <>
+      <div className="flex flex-nowrap items-center gap-2 px-3 py-2 bg-slate-50/70 border-b border-slate-100 overflow-x-auto">
+        <Stat label="Tổng hồ sơ" value={stats.total} tone="blue" />
+        <Stat label="Đang học" value={stats.active} tone="emerald" />
+        <Stat label="Bỏ học" value={stats.dropped} tone="rose" />
+        <Stat label="Chưa có mã" value={stats.noCode} tone="amber" />
+      </div>
+
+      {showExportChoice && (
+        <div className="p-3 border-b border-cyan-100 bg-cyan-50/50">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <div>
+              <div className="text-xs font-black text-cyan-900 uppercase">Xuất danh sách Excel</div>
+              <p className="text-[11px] text-cyan-700 font-bold">Nếu đã tích học sinh, chỉ xuất các dòng đã tích. Nếu chưa tích, xuất theo bộ lọc đang xem.</p>
+            </div>
+            <button type="button" onClick={() => setShowExportChoice(false)} className="self-start sm:self-auto px-3 py-2 rounded-xl bg-white border border-cyan-100 text-[10px] font-black uppercase text-slate-600">Đóng</button>
+          </div>
+          <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <button type="button" onClick={() => downloadExportList('current')} className="px-3 py-3 rounded-xl bg-cyan-600 text-white text-xs font-black uppercase">Tải cấu hình hiện tại</button>
+            <button type="button" onClick={() => downloadExportList('all')} className="px-3 py-3 rounded-xl bg-white text-cyan-700 border border-cyan-100 text-xs font-black uppercase">Tải tất cả cột</button>
+            <button type="button" onClick={() => shareExportList('current')} className="px-3 py-3 rounded-xl bg-emerald-50 text-emerald-700 border border-emerald-100 text-xs font-black uppercase">Chia sẻ cấu hình hiện tại</button>
+            <button type="button" onClick={() => shareExportList('all')} className="px-3 py-3 rounded-xl bg-emerald-50 text-emerald-700 border border-emerald-100 text-xs font-black uppercase">Chia sẻ tất cả cột</button>
+          </div>
+        </div>
+      )}
+
+      {showColumns && (
+        <div className="p-4 border-b border-slate-100 bg-white">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-3">
+            <div>
+              <div className="text-xs font-black text-slate-900 uppercase">Cấu hình cột hiển thị</div>
+              <p className="text-[11px] text-slate-500 font-bold">Dữ liệu vẫn lưu đầy đủ, thầy cô chỉ chọn cột cần nhìn để bảng gọn hơn.</p>
+            </div>
+            <div className="flex gap-2">
+              <button type="button" onClick={() => setVisibleColumns(COMPACT_VISIBLE_COLUMNS)} className="px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-[10px] font-black uppercase text-slate-600">Gọn</button>
+              <button type="button" onClick={() => setVisibleColumns(STUDENT_FIELDS.map(field => field.key))} className="px-3 py-2 rounded-xl bg-indigo-50 border border-indigo-100 text-[10px] font-black uppercase text-indigo-700">Tất cả</button>
+              <button type="button" onClick={() => setVisibleColumns(typeof window !== 'undefined' && window.innerWidth < 640 ? MOBILE_VISIBLE_COLUMNS : DEFAULT_VISIBLE_COLUMNS)} className="px-3 py-2 rounded-xl bg-blue-50 border border-blue-100 text-[10px] font-black uppercase text-blue-700">Mặc định</button>
+              <button type="button" onClick={() => setShowColumns(false)} className="px-3 py-2 rounded-xl bg-white border border-slate-200 text-[10px] font-black uppercase text-slate-600 flex items-center gap-1.5"><X className="w-3.5 h-3.5" /> Đóng</button>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-2">
+            {STUDENT_FIELDS.map(field => (
+              <label key={field.key} className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-[11px] font-black ${visibleColumns.includes(field.key) ? 'bg-indigo-50 border-indigo-100 text-indigo-800' : 'bg-white border-slate-200 text-slate-500'}`}>
+                <input type="checkbox" checked={visibleColumns.includes(field.key)} disabled={field.key === 'fullName'} onChange={() => updateVisibleColumns(field.key)} className="accent-indigo-600" />
+                <span className="truncate">{field.label}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {studentTab === 'current' && showImport && (
+        <div className="p-4 border-b border-indigo-100 bg-indigo-50/40 space-y-3">
+          <div className="text-xs font-black text-indigo-900 uppercase">Nhập nhanh từ Google Sheet vào năm {currentSchoolYear}</div>
+          <p className="text-[11px] text-indigo-700 font-bold">
+            Mở Sheet, chọn hàng tiêu đề và các dòng học sinh, bấm Ctrl+C rồi dán vào khung dưới. App sẽ lưu vào Firebase và tự tạo mã học sinh.
+          </p>
+          <textarea value={importText} onChange={(e) => setImportText(e.target.value)} placeholder="Dán dữ liệu copy từ Google Sheet vào đây..." className="w-full min-h-[130px] rounded-2xl border border-indigo-100 bg-white p-3 text-xs font-bold focus:outline-none focus:border-indigo-400" />
+          <div className="flex justify-end gap-2">
+            <button type="button" onClick={() => setShowImport(false)} className="px-4 py-2 bg-white text-slate-600 border border-slate-200 rounded-xl text-xs font-black">Đóng</button>
+            <button type="button" onClick={importFromPaste} disabled={isSaving || !importText.trim()} className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-black disabled:opacity-60">Nhập danh sách</button>
+          </div>
+        </div>
+      )}
+
+      <>
+      <div className="p-2.5 sm:p-3 border-b border-slate-100 grid grid-cols-[1fr_110px] sm:grid-cols-2 lg:grid-cols-[1fr_150px_135px_130px] gap-2">
+        <div className="relative">
+          <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Tìm tên, lớp, mã học sinh, số điện thoại..." className="w-full pl-9 pr-3 py-2.5 rounded-xl border border-slate-200 text-sm font-bold focus:outline-none focus:border-indigo-400" />
+        </div>
+        <select value={classFilter} onChange={(e) => setClassFilter(e.target.value)} className="rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-black bg-white">
+          <option value="all">Tất cả lớp</option>
+          {classOptions.map(className => <option key={className} value={className}>{className}</option>)}
+        </select>
+        {studentTab === 'current' ? (
+          <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="hidden sm:block rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-black bg-white">
+            <option value="all">Tất cả</option>
+            <option value="active">Đang học</option>
+            <option value="dropped">Bỏ học</option>
+          </select>
+        ) : (
+          <div className="hidden sm:block rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2.5 text-sm font-black text-emerald-700">
+            {duplicateRegistrationCount ? `${duplicateRegistrationCount} hồ sơ cần kiểm tra` : 'Chỉ hiện hồ sơ mới'}
+          </div>
+        )}
+        <button type="button" onClick={() => { setShowFilters(prev => !prev); setOpenFilterKey(null); }} className={`hidden sm:flex rounded-xl border px-3 py-2.5 text-[11px] font-black uppercase items-center justify-center gap-1.5 ${showFilters ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm' : 'bg-white text-slate-600 border-slate-200'}`}>
+          <Filter className="w-4 h-4" /> Filter
+        </button>
+      </div>
+
+      {showFilters && (
+        <div className="px-3 pb-3 border-b border-slate-100 bg-white">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-6 gap-2">
+            {visibleStudentFields.map(field => (
+              <label key={field.key} className="flex flex-col gap-1">
+                <span className="text-[9px] font-black uppercase text-slate-400">{field.label}</span>
+                <select
+                  value={columnFilters[field.key] || ''}
+                  onChange={(e) => setColumnFilters(prev => ({ ...prev, [field.key]: e.target.value }))}
+                  className="rounded-xl border border-slate-200 px-3 py-2 text-xs font-bold bg-white focus:outline-none focus:border-indigo-400"
+                >
+                  <option value="">Tất cả</option>
+                  {getFilterOptions(field.key).map(option => <option key={option} value={option}>{option === EMPTY_FILTER_VALUE ? '(Trống)' : option}</option>)}
+                </select>
+              </label>
+            ))}
+          </div>
+          <div className="flex justify-end gap-2 mt-2">
+            <button type="button" onClick={() => setColumnFilters({})} className="px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-[10px] font-black uppercase text-slate-600">Xóa filter</button>
+            <button type="button" onClick={() => setShowFilters(false)} className="px-3 py-2 rounded-xl bg-white border border-slate-200 text-[10px] font-black uppercase text-slate-600">Đóng</button>
+          </div>
+        </div>
+      )}
+
+      <div className="overflow-x-auto max-h-[560px]">
+        <table className="w-full text-left text-xs min-w-[980px]">
+          <thead className="sticky top-0 bg-white border-b border-slate-100 z-10">
+            <tr className="text-slate-500 uppercase font-black">
+              <th className="px-4 py-3 w-12">
+                <input type="checkbox" checked={allFilteredSelected} onChange={toggleSelectAllFiltered} className="w-4 h-4 accent-indigo-600" title="Tích tất cả dòng đang lọc" />
+              </th>
+              {visibleStudentFields.map(field => (
+                <th key={field.key} className={`px-4 py-3 whitespace-nowrap ${field.key === 'fullName' ? 'min-w-[240px]' : 'min-w-[140px]'}`}>
+                  <div className="relative inline-flex items-center gap-1">
+                    {field.key === 'fullName' ? (
+                      <button type="button" onClick={() => setSortMode('fullName')} className={`inline-flex items-center gap-1.5 rounded-lg px-2 py-1 -ml-2 ${sortMode === 'fullName' ? 'bg-indigo-50 text-indigo-700' : 'text-slate-500 hover:bg-slate-50'}`} title="Sắp xếp theo tên gọi tiếng Việt">
+                        {field.label} <ArrowDownAZ className="w-3.5 h-3.5" />
+                      </button>
+                    ) : field.key === 'className' ? (
+                      <button type="button" onClick={() => setSortMode('className')} className={`inline-flex items-center gap-1.5 rounded-lg px-2 py-1 -ml-2 ${sortMode === 'className' ? 'bg-indigo-50 text-indigo-700' : 'text-slate-500 hover:bg-slate-50'}`} title="Sắp xếp theo khối/lớp rồi tên">
+                        {field.label} <ArrowUpDown className="w-3.5 h-3.5" />
+                      </button>
+                    ) : <span>{field.label}</span>}
+                    <button type="button" onClick={() => setOpenFilterKey(prev => prev === field.key ? null : field.key)} className={`rounded-md p-0.5 ${columnFilters[field.key] ? 'bg-indigo-100 text-indigo-700' : 'hover:bg-slate-100'}`} title={`Lọc ${field.label}`}>
+                      <ChevronDown className="w-3.5 h-3.5" />
+                    </button>
+                    {openFilterKey === field.key && (
+                      <div className="absolute left-0 top-full mt-1 z-30 w-52 rounded-xl border border-slate-200 bg-white p-2 shadow-xl normal-case">
+                        <select
+                          autoFocus
+                          value={columnFilters[field.key] || ''}
+                          onChange={(e) => { setColumnFilters(prev => ({ ...prev, [field.key]: e.target.value })); setOpenFilterKey(null); }}
+                          className="w-full rounded-lg border border-slate-200 px-2 py-2 text-xs font-bold bg-white text-slate-700"
+                        >
+                          <option value="">Tất cả</option>
+                          {getFilterOptions(field.key).map(option => <option key={option} value={option}>{option === EMPTY_FILTER_VALUE ? '(Trống)' : option}</option>)}
+                        </select>
+                        {columnFilters[field.key] && (
+                          <button type="button" onClick={() => { setColumnFilters(prev => ({ ...prev, [field.key]: '' })); setOpenFilterKey(null); }} className="mt-2 w-full rounded-lg bg-slate-50 px-2 py-1.5 text-[10px] font-black uppercase text-slate-600">Xóa lọc cột này</button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </th>
+              ))}
+              {studentTab === 'current' ? (
+                <>
+                  <th className="px-4 py-3 min-w-[120px]">Mã học</th>
+                  <th className="px-4 py-3 min-w-[110px]">Tình trạng</th>
+                  <th className="px-4 py-3 text-right min-w-[130px]">Sửa</th>
+                </>
+              ) : (
+                <>
+                  <th className="px-4 py-3 min-w-[190px]">Kiểm tra</th>
+                  <th className="px-4 py-3 text-right min-w-[130px]">Duyệt</th>
+                </>
+              )}
+            </tr>
+          </thead>
+          <tbody>
+            {filteredStudents.length === 0 ? (
+              <tr>
+                <td colSpan={visibleStudentFields.length + (studentTab === 'current' ? 4 : 3)} className="px-4 py-10 text-center text-slate-400 font-bold">
+                  {studentTab === 'current' ? 'Chưa có học sinh trong năm học hoặc bộ lọc này.' : 'Chưa có hồ sơ đăng ký mới cần duyệt trong bộ lọc này.'}
+                </td>
+              </tr>
+            ) : filteredStudents.map(student => (
+              <tr key={student.id} className={`border-b border-slate-50 ${studentTab === 'registrations' && student.duplicateReason ? 'bg-amber-50/70 hover:bg-amber-50' : 'hover:bg-indigo-50/40'} ${student.status === 'dropped' ? 'bg-rose-50/40 opacity-75 line-through decoration-rose-400 decoration-2' : ''}`}>
+                <td className="px-4 py-3 align-middle">
+                  <input type="checkbox" disabled={studentTab === 'registrations' && Boolean(student.duplicateReason)} checked={activeSelectedIds.has(student.id)} onChange={() => toggleSelectStudent(student.id)} className="w-4 h-4 accent-indigo-600 disabled:opacity-40" />
+                </td>
+                {visibleStudentFields.map(field => (
+                  <td key={field.key} className="px-4 py-3 align-middle">
+                    <StudentCell student={student} field={field} isClassLeader={studentTab === 'current' && Boolean(student.isClassLeader)} onOpenEdit={studentTab === 'registrations' ? (row) => setEditing({ ...emptyStudent, ...row, id: '' }) : openEdit} />
+                  </td>
+                ))}
+                {studentTab === 'current' ? (
+                  <>
+                    <td className="px-4 py-3">
+                      <button type="button" onClick={() => { navigator.clipboard?.writeText(student.accessCode || ''); showNotification?.('Đã copy mã học sinh.'); }} className="inline-flex items-center gap-1.5 bg-amber-50 text-amber-700 border border-amber-100 rounded-lg px-2 py-1 font-black whitespace-nowrap">
+                        <KeyRound className="w-3.5 h-3.5" /> {student.accessCode || 'Chưa có'}
+                      </button>
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className={`inline-flex items-center gap-1 rounded-full px-2 py-1 font-black whitespace-nowrap ${student.status === 'dropped' ? 'bg-rose-50 text-rose-700 border border-rose-100' : 'bg-emerald-50 text-emerald-700 border border-emerald-100'}`}>
+                        {student.status === 'dropped' ? 'Bỏ học' : 'Đang học'}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex justify-end gap-1.5">
+                        <button type="button" onClick={() => openEdit(student)} title="Sửa thông tin" className="p-2 rounded-lg bg-white border border-slate-200 text-blue-600 hover:bg-blue-50">
+                          <Pencil className="w-4 h-4" />
+                        </button>
+                        <button type="button" onClick={() => toggleDropout(student)} title={student.status === 'dropped' ? 'Đưa học lại' : 'Đánh dấu bỏ học'} className={`p-2 rounded-lg border ${student.status === 'dropped' ? 'bg-emerald-50 border-emerald-100 text-emerald-600' : 'bg-rose-50 border-rose-100 text-rose-600'}`}>
+                          <CheckCircle2 className="w-4 h-4" />
+                        </button>
+                        <button type="button" onClick={() => removeStudent(student)} title="Xóa hồ sơ" className="p-2 rounded-lg bg-white border border-slate-200 text-slate-400 hover:text-rose-600 hover:bg-rose-50">
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </td>
+                  </>
+                ) : (
+                  <>
+                    <td className="px-4 py-3">
+                      {student.duplicateReason ? (
+                        <div className="space-y-1">
+                          <span className="inline-flex rounded-full bg-amber-100 text-amber-800 border border-amber-200 px-2 py-1 font-black text-[10px] uppercase">{student.duplicateReason}</span>
+                          <div className="text-[11px] text-amber-700 font-bold">{student.duplicateStudentName || 'Đã có trong database'} {student.duplicateAccessCode ? `- ${student.duplicateAccessCode}` : ''}</div>
+                        </div>
+                      ) : (
+                        <span className="inline-flex rounded-full bg-emerald-50 text-emerald-700 border border-emerald-100 px-2 py-1 font-black text-[10px] uppercase">Hồ sơ mới</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex justify-end gap-1.5">
+                        <button type="button" onClick={() => setEditing({ ...emptyStudent, ...student, id: '' })} title="Xem hồ sơ" className="p-2 rounded-lg bg-white border border-slate-200 text-blue-600 hover:bg-blue-50">
+                          <Pencil className="w-4 h-4" />
+                        </button>
+                        <button type="button" onClick={() => approveRegistrations([student])} disabled={Boolean(student.duplicateReason)} className="px-3 py-2 rounded-xl bg-emerald-50 text-emerald-700 border border-emerald-100 font-black uppercase text-[10px] disabled:opacity-40 disabled:cursor-not-allowed">
+                          Chuyển sang
+                        </button>
+                      </div>
+                    </td>
+                  </>
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      </>
+      </>
+      )}
+
+      {editing && (
+        <div className="fixed inset-0 z-[90] bg-slate-900/60 backdrop-blur-sm p-3 sm:p-6 flex items-center justify-center">
+          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-5xl max-h-[92vh] overflow-hidden flex flex-col">
+            <div className="px-5 py-4 border-b bg-slate-50 flex items-center justify-between gap-3">
+              <div>
+                <h4 className="font-black text-slate-900 uppercase">Hồ sơ học sinh</h4>
+                <p className="text-xs text-slate-500 font-bold">Mã học sinh dùng để các em đăng nhập/làm bài ở các bước sau.</p>
+              </div>
+              <button type="button" onClick={closeEdit} className="p-2 rounded-xl bg-white border border-slate-200 text-slate-500 hover:text-rose-600"><X className="w-5 h-5" /></button>
+            </div>
+            <div className="p-4 sm:p-5 overflow-y-auto grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              <label className="flex flex-col gap-1">
+                <span className="text-[10px] font-black uppercase text-slate-400">Mã học sinh</span>
+                <div className="flex gap-2">
+                  <input value={editing.accessCode || ''} onChange={(e) => setEditing(prev => ({ ...prev, accessCode: e.target.value.toUpperCase().replace(/\s/g, '') }))} className="flex-1 border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-black focus:outline-none focus:border-indigo-400" />
+                  <button type="button" onClick={() => setEditing(prev => ({ ...prev, accessCode: makeAccessCode(prev, existingCodes) }))} className="px-3 rounded-xl bg-amber-50 text-amber-700 border border-amber-100"><KeyRound className="w-4 h-4" /></button>
+                </div>
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-[10px] font-black uppercase text-slate-400">Tình trạng</span>
+                <select value={editing.status || 'active'} onChange={(e) => setEditing(prev => ({ ...prev, status: e.target.value }))} className="border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-black bg-white">
+                  <option value="active">Đang học</option>
+                  <option value="dropped">Bỏ học</option>
+                </select>
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-[10px] font-black uppercase text-slate-400">Cán sự lớp</span>
+                <select value={editing.isClassLeader ? 'yes' : 'no'} onChange={(e) => setEditing(prev => ({ ...prev, isClassLeader: e.target.value === 'yes' }))} className="border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-black bg-white">
+                  <option value="no">Không</option>
+                  <option value="yes">Có quyền điểm danh</option>
+                </select>
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-[10px] font-black uppercase text-slate-400">Năm học quản lý</span>
+                <input value={editing.schoolYear || currentSchoolYear} onChange={(e) => setEditing(prev => ({ ...prev, schoolYear: e.target.value }))} className="border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-bold" />
+              </label>
+              <div className="lg:col-span-3 rounded-2xl border border-amber-100 bg-amber-50 px-3 py-2 text-[11px] font-bold text-amber-800">
+                Quy đổi đánh giá cũ: Trung bình = Đạt, Khá = Khá, Giỏi = Tốt.
+              </div>
+              {editingProfileRequests.length > 0 && (
+                <div className="lg:col-span-3 rounded-2xl border border-amber-200 bg-amber-50/70 p-3">
+                  <div className="flex items-center justify-between gap-2 mb-3">
+                    <div>
+                      <div className="text-xs font-black uppercase text-amber-900">Yêu cầu chỉnh sửa của học sinh</div>
+                      <div className="text-[11px] font-bold text-amber-700">Duyệt từng dòng: bấm ✓ để nhận, bấm X để bỏ qua dòng đó.</div>
+                    </div>
+                    <button type="button" onClick={() => setStudentTab('profileRequests')} className="px-3 py-2 rounded-xl bg-white border border-amber-100 text-[10px] font-black uppercase text-amber-700">Mở tab duyệt nhanh</button>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                    {editingProfileRequests.flatMap(request => Object.entries(sanitizeStudentChanges(request.changes)).map(([key, value]) => {
+                      const currentValue = safePlainValue(editing?.[key]);
+                      const nextValue = safePlainValue(value);
+                      return (
+                        <div key={`${request.id}_${key}`} className="rounded-xl bg-white border border-amber-100 p-3">
+                          <div className="text-[10px] font-black uppercase text-slate-400 mb-1">{STUDENT_FIELD_LABELS[key] || key}</div>
+                          <div className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_auto] gap-2 sm:items-center">
+                            <div className="rounded-lg bg-slate-50 border border-slate-100 p-2 min-w-0">
+                              <div className="text-[9px] font-black uppercase text-slate-400">Đang có</div>
+                              <div className="text-xs font-bold text-slate-700 break-words">{currentValue || '(trống)'}</div>
+                            </div>
+                            <div className="rounded-lg bg-emerald-50 border border-emerald-100 p-2 min-w-0">
+                              <div className="text-[9px] font-black uppercase text-emerald-500">Học sinh gửi</div>
+                              {String(key).toLowerCase().includes('url') ? (
+                                <a href={nextValue} target="_blank" rel="noreferrer" className="text-xs font-black text-blue-600 hover:underline">Mở file/ảnh mới</a>
+                              ) : (
+                                <div className="text-xs font-black text-emerald-800 break-words">{nextValue || '(trống)'}</div>
+                              )}
+                            </div>
+                            <div className="flex sm:flex-col gap-2">
+                              <button type="button" onClick={() => approveProfileField(request, key)} disabled={isSaving} title="Duyệt dòng này" className="w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center shadow-sm disabled:opacity-50">
+                                <CheckCircle2 className="w-5 h-5" />
+                              </button>
+                              <button type="button" onClick={() => rejectProfileField(request, key)} disabled={isSaving} title="Từ chối dòng này" className="w-10 h-10 rounded-xl bg-rose-50 text-rose-600 border border-rose-100 flex items-center justify-center disabled:opacity-50">
+                                <X className="w-5 h-5" />
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    }))}
+                  </div>
+                </div>
+              )}
+              <datalist id="admin-province-options">
+                {addressProvinceOptions.map(item => <option key={item} value={item} />)}
+              </datalist>
+              <datalist id="admin-current-ward-options">
+                {editCurrentWardOptions.map(item => <option key={item} value={item} />)}
+              </datalist>
+              <datalist id="admin-household-ward-options">
+                {editHouseholdWardOptions.map(item => <option key={item} value={item} />)}
+              </datalist>
+              {adminEditFields.map(field => {
+                const listId = field.key === 'province' || field.key === 'householdProvince'
+                  ? 'admin-province-options'
+                  : field.key === 'ward'
+                    ? 'admin-current-ward-options'
+                    : field.key === 'householdWard'
+                      ? 'admin-household-ward-options'
+                      : undefined;
+                const placeholder = field.key === 'ward' || field.key === 'householdWard'
+                  ? 'Chọn tỉnh trước, rồi gõ/chọn phường xã'
+                  : field.key === 'province' || field.key === 'householdProvince'
+                    ? 'Gõ hoặc chọn tỉnh/thành'
+                    : '';
+                return (
+                  <label key={field.key} className="flex flex-col gap-1">
+                    <span className="text-[10px] font-black uppercase text-slate-400">{field.label}{field.required ? ' *' : ''}</span>
+                    {ACADEMIC_RESULT_FIELD_KEYS.has(field.key) ? (
+                      <select value={editing[field.key] || ''} onChange={(e) => updateEditingField(field.key, e.target.value)} className="border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-black bg-white focus:outline-none focus:border-indigo-400">
+                        {ACADEMIC_RESULT_OPTIONS.map(option => <option key={option || '-'} value={option}>{option || '-'}</option>)}
+                      </select>
+                    ) : (
+                      <input value={editing[field.key] || ''} list={listId} placeholder={placeholder} onChange={(e) => updateEditingField(field.key, e.target.value)} className="border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-bold focus:outline-none focus:border-indigo-400" />
+                    )}
+                  </label>
+                );
+              })}
+              <div className="lg:col-span-3 rounded-2xl border border-indigo-100 bg-indigo-50/40 p-3">
+                <div className="text-[10px] font-black uppercase tracking-widest text-indigo-700 mb-3 flex items-center gap-2"><ImageIcon className="w-4 h-4" /> Ảnh và giấy tờ học sinh</div>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  {STUDENT_DOCUMENTS.map(docItem => (
+                    <DocumentPreview key={docItem.key} label={docItem.label} url={editing[docItem.key]} />
+                  ))}
+                </div>
+              </div>
+            </div>
+            <div className="px-5 py-4 border-t bg-slate-50 flex flex-col sm:flex-row justify-end gap-2">
+              <button type="button" onClick={closeEdit} className="px-5 py-3 bg-white border border-slate-200 text-slate-600 rounded-xl text-xs font-black">Hủy</button>
+              <button type="button" onClick={saveStudent} disabled={isSaving} className="px-5 py-3 bg-indigo-600 text-white rounded-xl text-xs font-black shadow-md flex items-center justify-center gap-2 disabled:opacity-60"><Save className="w-4 h-4" /> Lưu hồ sơ</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {showCodeChoiceModal && (
+        <div className="fixed inset-0 z-[95] bg-slate-900/60 backdrop-blur-sm p-4 flex items-center justify-center">
+          <div className="bg-white rounded-3xl shadow-2xl max-w-md w-full p-5">
+            <div className="flex items-center justify-between gap-3 mb-4">
+              <div><h4 className="font-black text-slate-900 uppercase">Tạo mã học sinh</h4><p className="text-xs text-slate-500 font-bold">Chọn cách tạo mã cho năm học hiện tại.</p></div>
+              <button type="button" onClick={() => setShowCodeChoiceModal(false)} className="p-2 rounded-xl bg-slate-50 text-slate-500"><X className="w-5 h-5" /></button>
+            </div>
+            <div className="grid grid-cols-1 gap-3">
+              <button type="button" onClick={() => { setShowCodeChoiceModal(false); generateMissingCodes(); }} className="text-left p-4 rounded-2xl bg-amber-50 border border-amber-100 text-amber-800 font-black">
+                Tạo mã mới cho học sinh chưa có mã
+                <div className="text-xs font-bold text-amber-700/70 mt-1">Giữ nguyên mã cũ, chỉ bổ sung cho hồ sơ trống.</div>
+              </button>
+              <button type="button" onClick={() => { setShowCodeChoiceModal(false); regenerateAllCodes(); }} className="text-left p-4 rounded-2xl bg-rose-50 border border-rose-100 text-rose-800 font-black">
+                Tạo lại mã cho tất cả
+                <div className="text-xs font-bold text-rose-700/70 mt-1">Ghi đè toàn bộ mã của năm học hiện tại.</div>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StudentCell({ student, field, onOpenEdit, isClassLeader = false }) {
+  const value = field.key === 'birthDate' ? formatDisplayDate(safePlainValue(student[field.key])) : safePlainValue(student[field.key]);
+  const fullName = safePlainValue(student.fullName);
+  const schoolYear = safePlainValue(student.schoolYear);
+
+  if (field.key === 'fullName') {
+    return (
+      <div className="flex items-center gap-3 min-w-[220px] cursor-pointer rounded-xl -m-1 p-1 hover:bg-indigo-50" onDoubleClick={() => onOpenEdit?.(student)} title="Nhấn đúp để sửa hồ sơ">
+        <div className="w-11 h-11 rounded-2xl bg-indigo-50 border border-indigo-100 overflow-hidden flex items-center justify-center flex-shrink-0">
+          <DriveImage url={student.portraitUrl} alt={fullName || 'Học sinh'} className="w-full h-full object-cover" fallback={<UserRound className="w-5 h-5 text-indigo-300" />} />
+        </div>
+        <div className="min-w-0">
+          <div className="font-black text-slate-800 truncate flex items-center gap-1.5">
+            <span className="truncate">{fullName || '(Chưa có tên)'}</span>
+            {isClassLeader && <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-amber-100 text-amber-600 text-xs shadow-sm flex-shrink-0" title="Cán sự lớp">★</span>}
+          </div>
+          <div className="text-[11px] text-slate-500 font-bold">{schoolYear}</div>
+        </div>
+      </div>
+    );
+  }
+
+  if (field.type === 'link') {
+    const fileUrl = firstDocumentUrl(value);
+    return value ? (
+      <a href={fileUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 rounded-lg bg-blue-50 text-blue-700 border border-blue-100 px-2 py-1 font-black whitespace-nowrap">
+        <ExternalLink className="w-3.5 h-3.5" /> Mở file
+      </a>
+    ) : <span className="text-slate-300 font-bold">-</span>;
+  }
+
+  return <span className="font-bold text-slate-700 whitespace-nowrap">{value || '-'}</span>;
+}
+
+const DriveImage = React.memo(function DriveImage({ url, alt, className, fallback }) {
+  const [fallbackMode, setFallbackMode] = useState(false);
+  const mainUrl = firstDocumentUrl(safePlainValue(url));
+  const embedUrl = getDriveEmbedUrl(mainUrl);
+  const imageUrl = getPreviewImageUrl(mainUrl);
+
+  if (!mainUrl) return fallback || null;
+  if (fallbackMode && embedUrl) {
+    return <iframe title={alt} src={embedUrl} className={`border-0 bg-white pointer-events-none ${className || ''}`} loading="lazy" />;
+  }
+  if (fallbackMode) return fallback || null;
+  return <img src={imageUrl} alt={alt} className={className} onError={() => setFallbackMode(true)} loading="lazy" decoding="async" fetchPriority="low" />;
+});
+
+function DocumentPreview({ label, url }) {
+  const fileUrls = splitDocumentUrls(safePlainValue(url));
+  const mainUrl = fileUrls[0] || '';
+  const embedUrl = getDriveEmbedUrl(mainUrl);
+  const imageUrl = getPreviewImageUrl(mainUrl);
+  const isPdf = /\.pdf(\?|$)/i.test(mainUrl) || label === 'Học bạ';
+
+  return (
+    <div className="rounded-2xl border border-white bg-white p-2 shadow-sm">
+      <div className="text-[10px] font-black uppercase text-slate-500 mb-2">{label}</div>
+      {mainUrl ? (
+        <>
+          <div className="aspect-[4/3] rounded-xl bg-slate-50 border border-slate-100 overflow-hidden flex items-center justify-center">
+            {embedUrl ? (
+              <iframe title={label} src={embedUrl} className="w-full h-full border-0 bg-white" loading="lazy" />
+            ) : isPdf ? (
+              <div className="w-full h-full flex items-center justify-center text-center px-4 text-[11px] font-bold text-slate-400">File PDF, bấm mở để xem</div>
+            ) : (
+              <img src={imageUrl} alt={label} className="w-full h-full object-cover" loading="lazy" decoding="async" />
+            )}
+          </div>
+          {fileUrls.length > 1 && (
+            <div className="mt-2 text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-2 py-1">
+              Có {fileUrls.length} file, đang xem file đầu tiên.
+            </div>
+          )}
+          <a href={mainUrl} target="_blank" rel="noopener noreferrer" className="mt-2 w-full inline-flex items-center justify-center gap-1.5 rounded-xl bg-indigo-50 text-indigo-700 border border-indigo-100 px-3 py-2 text-[10px] font-black uppercase">
+            <ExternalLink className="w-3.5 h-3.5" /> Mở file
+          </a>
+        </>
+      ) : (
+        <div className="aspect-[4/3] rounded-xl bg-slate-50 border border-dashed border-slate-200 flex items-center justify-center text-center px-3 text-[11px] font-bold text-slate-400">Chưa có link ảnh</div>
+      )}
+    </div>
+  );
+}
+
+function Stat({ label, value, tone }) {
+  const tones = {
+    blue: 'bg-blue-50 text-blue-700 border-blue-100',
+    emerald: 'bg-emerald-50 text-emerald-700 border-emerald-100',
+    rose: 'bg-rose-50 text-rose-700 border-rose-100',
+    amber: 'bg-amber-50 text-amber-700 border-amber-100'
+  };
+  return (
+    <div className={`rounded-full border px-3 py-1.5 flex items-center gap-2 ${tones[tone] || tones.blue}`}>
+      <div className="text-base font-black leading-none">{value}</div>
+      <div className="text-[9px] font-black uppercase tracking-widest whitespace-nowrap">{label}</div>
+    </div>
+  );
+}
