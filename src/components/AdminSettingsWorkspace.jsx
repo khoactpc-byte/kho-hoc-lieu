@@ -357,7 +357,7 @@ export default function AdminSettingsWorkspace({
                         Khóa nhập liệu năm {yearDraft || currentSchoolYear}
                       </span>
                       <span className={`block text-xs font-bold mt-1 ${isSystemYearLocked ? 'text-rose-700' : 'text-emerald-700'}`}>
-                        Khi tích khóa, học sinh không vào làm/nộp bài và giáo viên không ghi điểm/phát đề cho năm này. Bỏ tích rồi bấm Lưu để mở lại.
+                        Khi tích khóa, học sinh vẫn vào xem bài và gửi chỉnh sửa hồ sơ; hệ thống chỉ khóa nộp bài/làm bài kiểm tra, ghi điểm và phát đề cho năm này. Bỏ tích rồi bấm Lưu để mở lại.
                       </span>
                     </span>
                   </label>

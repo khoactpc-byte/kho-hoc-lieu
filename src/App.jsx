@@ -1019,10 +1019,6 @@ function App() {
     showNotification(student.fullName ? `Chào ${student.fullName}!` : 'Đã vào giao diện học sinh.');
   };
   const handleStudentCodeLogin = () => {
-    if (isCurrentSchoolYearInputLocked) {
-      showNotification(`Năm học ${currentSchoolYear} đang khóa nhập liệu. Admin mở khóa mới vào làm/nộp bài được.`, 'error');
-      return;
-    }
     const suffix = normalizeStudentAccessSuffix(studentAccessCode);
     const code = getStudentAccessLoginCode(suffix);
     const codeDigits = suffix;
@@ -1152,10 +1148,6 @@ function App() {
 
   const submitStudentProfileRequest = async () => {
     if (!activeStudentProfile?.id || isSubmittingProfileRequest) return;
-    if (!canWriteCurrentSchoolYear) {
-      showNotification(`Năm học ${currentSchoolYear} đang khóa nhập liệu. Admin mở khóa mới gửi chỉnh sửa được.`, 'error');
-      return;
-    }
     setIsSubmittingProfileRequest(true);
     try {
       const uploadedImageChanges = {};
