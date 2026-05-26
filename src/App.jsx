@@ -9,7 +9,7 @@ import {
   AlignLeft, AlignCenter, AlignRight, AlignJustify, Camera, ArrowUp, 
   ArrowDown, ChevronDown, ChevronUp, Pin, Briefcase, Pencil, Eye 
 } from 'lucide-react';
-import { collection, onSnapshot, addDoc, deleteDoc, doc, setDoc, updateDoc, getDoc, deleteField } from 'firebase/firestore';
+import { collection, onSnapshot, addDoc, deleteDoc, doc, setDoc, updateDoc, getDoc, deleteField, increment } from 'firebase/firestore';
 import { signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
 import { auth, db, appId } from './config/firebase';
 import { 
@@ -30,10 +30,12 @@ import {
   filterQuizResultsForContext,
   getDefaultSelfQuizDraft,
   gradeSelfQuizSubmission,
+  inferMultipleChoiceTotalPoints,
   makeEmptySelfQuizQuestion,
   normalizeQuizText,
   normalizeSelfQuizDraft,
   parseSelfQuizFromHtml,
+  rebalanceSelfQuizPoints,
   stripHtmlToText
 } from './utils/selfQuiz';
 import ClassOpsManager from './components/ClassOpsManager';
@@ -77,6 +79,8 @@ const STUDENT_PROFILE_IMAGE_FIELDS = [
   { key: 'identityCardUrl', label: 'Ảnh căn cước', filename: 'can_cuoc' },
   { key: 'transcriptUrl', label: 'Ảnh học bạ', filename: 'hoc_ba' }
 ];
+
+const LESSON_THEORY_TARGET_MS = 30 * 60 * 1000;
 
 const STUDENT_PROFILE_FIELD_LABELS = Object.fromEntries(
   [...STUDENT_PROFILE_EDIT_FIELDS, ...STUDENT_PROFILE_IMAGE_FIELDS].map(field => [field.key, field.label])
@@ -244,6 +248,7 @@ const findDocumentCorners = (imageData, width, height) => {
 
 const enhanceScannedImageData = (imageData, mode = 'document') => {
   const data = imageData.data;
+  if (mode !== 'photo') normalizeDocumentLighting(imageData);
   const histogram = new Array(256).fill(0);
   for (let index = 0; index < data.length; index += 4) {
     const lum = Math.round((data[index] * 0.299) + (data[index + 1] * 0.587) + (data[index + 2] * 0.114));
@@ -275,6 +280,48 @@ const enhanceScannedImageData = (imageData, mode = 'document') => {
       data[index] = value;
       data[index + 1] = value;
       data[index + 2] = value;
+    }
+  }
+  return imageData;
+};
+
+const normalizeDocumentLighting = (imageData) => {
+  const { width, height, data } = imageData;
+  const gray = new Uint8ClampedArray(width * height);
+  const integral = new Float64Array((width + 1) * (height + 1));
+  for (let y = 0; y < height; y += 1) {
+    let rowSum = 0;
+    for (let x = 0; x < width; x += 1) {
+      const index = y * width + x;
+      const offset = index * 4;
+      const lum = (data[offset] * 0.299) + (data[offset + 1] * 0.587) + (data[offset + 2] * 0.114);
+      gray[index] = lum;
+      rowSum += lum;
+      integral[(y + 1) * (width + 1) + x + 1] = integral[y * (width + 1) + x + 1] + rowSum;
+    }
+  }
+  const radius = Math.max(18, Math.round(Math.min(width, height) * 0.035));
+  for (let y = 0; y < height; y += 1) {
+    const y1 = Math.max(0, y - radius);
+    const y2 = Math.min(height - 1, y + radius);
+    for (let x = 0; x < width; x += 1) {
+      const x1 = Math.max(0, x - radius);
+      const x2 = Math.min(width - 1, x + radius);
+      const area = (x2 - x1 + 1) * (y2 - y1 + 1);
+      const sum = integral[(y2 + 1) * (width + 1) + x2 + 1]
+        - integral[y1 * (width + 1) + x2 + 1]
+        - integral[(y2 + 1) * (width + 1) + x1]
+        + integral[y1 * (width + 1) + x1];
+      const localBg = Math.max(70, sum / area);
+      const correction = 232 / localBg;
+      const index = (y * width + x) * 4;
+      const originalLum = Math.max(1, gray[y * width + x]);
+      const correctedLum = clampNumber(originalLum * correction, 0, 255);
+      const blend = clampNumber((localBg - originalLum) / 80, 0, 1);
+      const ratio = ((correctedLum * blend) + (originalLum * (1 - blend))) / originalLum;
+      data[index] = clampNumber(data[index] * ratio, 0, 255);
+      data[index + 1] = clampNumber(data[index + 1] * ratio, 0, 255);
+      data[index + 2] = clampNumber(data[index + 2] * ratio, 0, 255);
     }
   }
   return imageData;
@@ -491,6 +538,14 @@ const getStudentYearIdentityKey = (student = {}) => {
   const birth = String(student.birthDate || '').replace(/\D/g, '');
   return name ? `name:${name}:${birth}` : '';
 };
+const hasGrade9CompletionResult = (student = {}) => (
+  Boolean(student) && Boolean(String(student.hocLucLop9 || '').trim() || String(student.hanhKiemLop9 || '').trim())
+);
+const isReadOnlyStudentRecord = (student = {}) => (
+  Boolean(student) && (
+    String(student.status || '').toLowerCase() === 'dropped' || hasGrade9CompletionResult(student)
+  )
+);
 const getQuickScoreKind = (scoreIndex) => {
   if (scoreIndex <= 3) return 'tx';
   if (scoreIndex === 4) return 'gk';
@@ -715,9 +770,11 @@ function App() {
   const [quizData, setQuizData] = useState(null);
   const [quizDeliveryMode, setQuizDeliveryMode] = useState('manual');
   const [showSelfQuizBuilder, setShowSelfQuizBuilder] = useState(false);
-  const [selfQuizDraft, setSelfQuizDraft] = useState({ questions: [], shuffleQuestions: true, shuffleOptions: true, showScoreAfterSubmit: true, allowRetake: true });
+  const [selfQuizDraft, setSelfQuizDraft] = useState(getDefaultSelfQuizDraft());
   const [showQuizResults, setShowQuizResults] = useState(false);
   const [allQuizResults, setAllQuizResults] = useState([]);
+  const [allQuickQuizResults, setAllQuickQuizResults] = useState([]);
+  const [allLessonProgress, setAllLessonProgress] = useState([]);
   const [allHandwrittenSubmissions, setAllHandwrittenSubmissions] = useState([]);
   const [showHandwrittenSubmissions, setShowHandwrittenSubmissions] = useState(false);
   const [handwrittenViewerIndex, setHandwrittenViewerIndex] = useState(0);
@@ -731,6 +788,8 @@ function App() {
   const [studentProfileDraft, setStudentProfileDraft] = useState({});
   const [studentProfileImages, setStudentProfileImages] = useState({});
   const [studentProfileImagePreviews, setStudentProfileImagePreviews] = useState({});
+  const [studentProfileImageAppendModes, setStudentProfileImageAppendModes] = useState({});
+  const [studentProfileDocumentOverrides, setStudentProfileDocumentOverrides] = useState({});
   const [isSubmittingProfileRequest, setIsSubmittingProfileRequest] = useState(false);
   const [addressDirectory, setAddressDirectory] = useState({ provinces: [], communes: {} });
   const [showStudentAccessModal, setShowStudentAccessModal] = useState(false);
@@ -742,9 +801,15 @@ function App() {
   const [studentQuizName, setStudentQuizName] = useState('');
   const [studentQuizAnswers, setStudentQuizAnswers] = useState({});
   const [studentQuizResult, setStudentQuizResult] = useState(null);
+  const [studentSelfQuizAttemptSeed, setStudentSelfQuizAttemptSeed] = useState(0);
   const [showStudentWorkReview, setShowStudentWorkReview] = useState(false);
   const [studentQuizWarning, setStudentQuizWarning] = useState('');
   const [isSubmittingSelfQuiz, setIsSubmittingSelfQuiz] = useState(false);
+  const [quickMaterialAnswers, setQuickMaterialAnswers] = useState({});
+  const [quickMaterialResult, setQuickMaterialResult] = useState(null);
+  const [quickMaterialWarning, setQuickMaterialWarning] = useState('');
+  const [quickMaterialAttemptSeed, setQuickMaterialAttemptSeed] = useState(0);
+  const [isSubmittingQuickMaterial, setIsSubmittingQuickMaterial] = useState(false);
   const [quizFiles, setQuizFiles] = useState([]);
   const [quizAttachments, setQuizAttachments] = useState([]);
   const [showQuizToolbar, setShowQuizToolbar] = useState(false);
@@ -770,6 +835,7 @@ function App() {
   const studentQuizContentRef = useRef(null);
   const studentWorkReviewRef = useRef(null);
   const quickQuizPreviewRef = useRef(null);
+  const quickMaterialContentRef = useRef(null);
   const aiResponseContentRef = useRef(null);
   const [isEditorExpanded, setIsEditorExpanded] = useState(false);
   const [showQuickQuizPreview, setShowQuickQuizPreview] = useState(false);
@@ -782,7 +848,7 @@ function App() {
   const [driveError, setDriveError] = useState('');
   const [showAiModal, setShowAiModal] = useState(false);
   const [aiContextContent, setAiContextContent] = useState('');
-  const [aiPrompt, setAiPrompt] = useState('Hãy tạo một đề gồm 5 câu hỏi trắc nghiệm và 1 bài tự luận dựa trên nội dung tôi cung cấp, kèm đáp án và biểu điểm rõ từng câu/từng ý.');
+  const [aiPrompt, setAiPrompt] = useState('Hãy tạo 40 câu hỏi trắc nghiệm nhanh có 4 đáp án A, B, C, D dựa trên nội dung bài học. Chỉ tạo trắc nghiệm, không tạo tự luận. Kèm đáp án A/B/C/D rõ từng câu để hệ thống tự chấm. Hệ thống sẽ rút 10 câu bất kỳ cho học sinh làm.');
   const [aiResponse, setAiResponse] = useState('');
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [isGeneratingQuizAnswer, setIsGeneratingQuizAnswer] = useState(false);
@@ -816,6 +882,10 @@ function App() {
       : null;
     return sameYearMatch || allStudents.find(student => student.id === currentStudent.id) || currentStudent;
   }, [allStudents, currentStudent, currentSchoolYear]);
+  const activeStudentIsReadOnly = useMemo(() => isReadOnlyStudentRecord(activeStudentProfile), [activeStudentProfile]);
+  const activeStudentReadOnlyReason = activeStudentProfile?.status === 'dropped'
+    ? 'Hồ sơ đã đánh dấu bỏ học nên chỉ xem, không chỉnh sửa/nộp bài.'
+    : (hasGrade9CompletionResult(activeStudentProfile) ? 'Học sinh đã có kết quả lớp 9 nên chỉ xem, không chỉnh sửa/nộp bài.' : '');
   const activeStudentPendingProfileRequests = useMemo(() => {
     if (!activeStudentProfile?.id && !currentStudent?.id) return [];
     const studentId = String(activeStudentProfile?.id || currentStudent?.id || '').trim();
@@ -851,6 +921,8 @@ function App() {
       activeStudentPendingProfileChanges[field.key] ?? activeStudentProfile[field.key] ?? ''
     ])));
     setStudentProfileImages({});
+    setStudentProfileImageAppendModes({});
+    setStudentProfileDocumentOverrides({});
     setStudentProfileImagePreviews(prev => {
       Object.values(prev || {}).forEach(revokePreviewUrls);
       return {};
@@ -884,6 +956,11 @@ function App() {
     const nameKey = removeAccents(String(activeStudentProfile?.fullName || currentStudent?.fullName || '').toLowerCase()).replace(/[^a-z0-9]/g, '');
     return nameKey || 'guest';
   }, [activeStudentProfile, currentStudent]);
+  const currentLessonProgressDocId = useMemo(() => (
+    selectedGrade && selectedSubject && selectedLesson && currentSchoolYear && activeStudentIdentityKey
+      ? cleanDocId(`${currentSchoolYear}_g${selectedGrade}_${selectedSubject}_l${selectedLesson}_${activeStudentIdentityKey}`)
+      : ''
+  ), [selectedGrade, selectedSubject, selectedLesson, currentSchoolYear, activeStudentIdentityKey]);
   const studentCanAccessCurrentGradeQuiz = useMemo(() => {
     if (role !== 'student' || !activeStudentGrade || !selectedGrade) return true;
     return String(selectedGrade) === String(activeStudentGrade);
@@ -1027,14 +1104,13 @@ function App() {
       return;
     }
     const candidates = allStudents.filter(item => {
-      if ((item.status || 'active') === 'dropped') return false;
       const accessCode = String(item.accessCode || '').toUpperCase().replace(/\s/g, '');
       const identityCode = String(item.identityCode || '').replace(/\D/g, '');
       return accessCode === code || (!!codeDigits && identityCode === codeDigits);
     });
     const student = candidates.find(item => String(item.schoolYear || '') === String(currentSchoolYear || '')) || candidates[0];
     if (!student) {
-      showNotification('Không tìm thấy mã HS/mã định danh hoặc tài khoản đã ngưng học.', 'error');
+      showNotification('Không tìm thấy mã HS/mã định danh. Em kiểm tra lại hoặc báo giáo viên nhé.', 'error');
       return;
     }
     openStudentArea(student);
@@ -1047,7 +1123,6 @@ function App() {
       return;
     }
     const matches = allStudents.filter(student => {
-      if ((student.status || 'active') === 'dropped') return false;
       const sameName = normalizeStudentLookup(student.fullName) === nameNeedle;
       return sameName && getStudentVerifyTail(student) === verifyTail;
     });
@@ -1066,6 +1141,12 @@ function App() {
   };
 
   const applyStudentProfileImageFile = (key, file) => {
+    setStudentProfileImageAppendModes(prev => ({ ...prev, [key]: false }));
+    setStudentProfileDocumentOverrides(prev => {
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
     setStudentProfileImages(prev => ({ ...prev, [key]: file || null }));
     setStudentProfileImagePreviews(prev => {
       revokePreviewUrls(prev?.[key]);
@@ -1073,64 +1154,86 @@ function App() {
     });
   };
 
+  const removeStudentProfileSelectedImage = (key, indexToRemove) => {
+    const selectedFiles = Array.isArray(studentProfileImages[key])
+      ? studentProfileImages[key]
+      : (studentProfileImages[key] ? [studentProfileImages[key]] : []);
+    const nextFiles = selectedFiles.filter((_, index) => index !== indexToRemove);
+    setStudentProfileImages(prev => ({ ...prev, [key]: nextFiles.length ? nextFiles : null }));
+    if (!nextFiles.length) setStudentProfileImageAppendModes(prev => ({ ...prev, [key]: false }));
+    setStudentProfileImagePreviews(prev => {
+      const urls = Array.isArray(prev?.[key]) ? prev[key] : (prev?.[key] ? [prev[key]] : []);
+      revokePreviewUrls(urls[indexToRemove]);
+      const nextUrls = urls.filter((_, index) => index !== indexToRemove);
+      return { ...prev, [key]: nextUrls.length ? nextUrls : '' };
+    });
+  };
+
+  const removeStudentProfileExistingDocumentPage = (key, indexToRemove) => {
+    const hasOverride = Object.prototype.hasOwnProperty.call(studentProfileDocumentOverrides, key);
+    const sourceValue = hasOverride
+      ? studentProfileDocumentOverrides[key]
+      : (activeStudentPendingProfileChanges[key] || activeStudentProfile?.[key] || '');
+    const urls = String(sourceValue || '').split(/\s*,\s*|\n+/).map(item => item.trim()).filter(Boolean);
+    const nextUrls = urls.filter((_, index) => index !== indexToRemove);
+    setStudentProfileDocumentOverrides(prev => ({ ...prev, [key]: nextUrls.join('\n') }));
+  };
+
   const applySubmissionFile = (file) => {
     setSubmissionFile(file || null);
     setSubmissionStatus('');
   };
 
-  const handleStudentProfileImageChange = (key, file) => {
-    applyStudentProfileImageFile(key, file || null);
+  const scanUploadImageFile = async (file, options = {}) => {
+    if (!file || !String(file.type || '').toLowerCase().startsWith('image/')) return file || null;
+    try {
+      const scanned = await scanDocumentImageFile(file, options);
+      URL.revokeObjectURL(scanned.url);
+      return scanned.file;
+    } catch (error) {
+      showNotification(`Chưa tự quét được ảnh, sẽ dùng ảnh gốc: ${error.message}`, 'error');
+      return file;
+    }
   };
 
-  const applyStudentProfileImageFiles = (key, files = [], append = false) => {
+  const handleStudentProfileImageChange = async (key, file) => {
+    if (!file) {
+      applyStudentProfileImageFile(key, null);
+      return;
+    }
+    const shouldScan = key !== 'portraitUrl' && String(file.type || '').toLowerCase().startsWith('image/');
+    const nextFile = shouldScan
+      ? await scanUploadImageFile(file, { mode: 'document', orientation: key === 'identityCardUrl' ? 'landscape' : 'auto' })
+      : file;
+    applyStudentProfileImageFile(key, nextFile || file);
+    if (shouldScan) showNotification('Đã quét ảnh, nắn thẳng và giảm bóng trước khi gửi.');
+  };
+
+  const applyStudentProfileImageFiles = async (key, files = [], append = false) => {
     const nextFiles = Array.from(files || []).filter(Boolean);
     if (!nextFiles.length) return;
+    const shouldScan = key !== 'portraitUrl';
+    const processedFiles = shouldScan
+      ? await Promise.all(nextFiles.map(file => scanUploadImageFile(file, { mode: 'document', orientation: 'auto' })))
+      : nextFiles;
     setStudentProfileImages(prev => ({
       ...prev,
-      [key]: append ? [...(Array.isArray(prev[key]) ? prev[key] : (prev[key] ? [prev[key]] : [])), ...nextFiles] : nextFiles
+      [key]: append ? [...(Array.isArray(prev[key]) ? prev[key] : (prev[key] ? [prev[key]] : [])), ...processedFiles] : processedFiles
     }));
+    setStudentProfileImageAppendModes(prev => ({ ...prev, [key]: Boolean(append) }));
+    if (!append) {
+      setStudentProfileDocumentOverrides(prev => {
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
+    }
     setStudentProfileImagePreviews(prev => {
       revokePreviewUrls(prev?.[key]);
       const previousFiles = append ? (Array.isArray(studentProfileImages[key]) ? studentProfileImages[key] : (studentProfileImages[key] ? [studentProfileImages[key]] : [])) : [];
-      return { ...prev, [key]: [...previousFiles, ...nextFiles].map(file => URL.createObjectURL(file)) };
+      return { ...prev, [key]: [...previousFiles, ...processedFiles].map(file => URL.createObjectURL(file)) };
     });
-  };
-
-  const mergeImageFilesForUpload = async (files = [], field = {}) => {
-    const imageFiles = Array.from(files || []).filter(Boolean);
-    if (imageFiles.length <= 1) return imageFiles[0] || null;
-    const loaded = await Promise.all(imageFiles.map(file => loadImageElementFromFile(file)));
-    try {
-      const maxWidth = 1200;
-      const gap = 24;
-      const parts = loaded.map(({ image }) => {
-        const naturalWidth = image.naturalWidth || image.width || maxWidth;
-        const naturalHeight = image.naturalHeight || image.height || maxWidth;
-        const scale = Math.min(1, maxWidth / naturalWidth);
-        return {
-          image,
-          width: Math.max(1, Math.round(naturalWidth * scale)),
-          height: Math.max(1, Math.round(naturalHeight * scale))
-        };
-      });
-      const canvas = document.createElement('canvas');
-      canvas.width = Math.max(...parts.map(part => part.width), 1);
-      canvas.height = parts.reduce((sum, part) => sum + part.height, 0) + gap * Math.max(0, parts.length - 1);
-      const ctx = canvas.getContext('2d');
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      let y = 0;
-      parts.forEach((part) => {
-        const x = Math.round((canvas.width - part.width) / 2);
-        ctx.drawImage(part.image, x, y, part.width, part.height);
-        y += part.height + gap;
-      });
-      const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.9));
-      if (!blob) throw new Error('Khong ghep duoc anh hoc ba.');
-      return new File([blob], `${field.filename || field.key || 'hoc_ba'}_ghep.jpg`, { type: 'image/jpeg', lastModified: Date.now() });
-    } finally {
-      loaded.forEach(({ url }) => URL.revokeObjectURL(url));
-    }
+    if (shouldScan) showNotification(`Đã quét ${processedFiles.length} ảnh, nắn thẳng và giảm bóng trước khi gửi.`);
   };
 
   const fileToBase64Payload = (file, field = {}) => new Promise((resolve, reject) => {
@@ -1148,6 +1251,10 @@ function App() {
 
   const submitStudentProfileRequest = async () => {
     if (!activeStudentProfile?.id || isSubmittingProfileRequest) return;
+    if (activeStudentIsReadOnly) {
+      showNotification(activeStudentReadOnlyReason || 'Hồ sơ này đang ở chế độ chỉ xem.', 'error');
+      return;
+    }
     setIsSubmittingProfileRequest(true);
     try {
       const uploadedImageChanges = {};
@@ -1156,9 +1263,28 @@ function App() {
           ? studentProfileImages[field.key]
           : (studentProfileImages[field.key] ? [studentProfileImages[field.key]] : []);
         if (!imageFiles.length) continue;
-        const imageFile = field.key === 'transcriptUrl'
-          ? await mergeImageFilesForUpload(imageFiles, field)
-          : imageFiles[0];
+        if (field.key === 'transcriptUrl') {
+          const uploadedUrls = [];
+          for (const imageFile of imageFiles) {
+            const uploadPayload = await fileToBase64Payload(imageFile, field);
+            const uploadRes = await postAppsScript(uploadPayload);
+            if (uploadRes.status !== 'success') throw new Error(uploadRes.message || `Chưa tải được ${field.label.toLowerCase()}`);
+            uploadedUrls.push(uploadRes.webViewLink || uploadRes.url || (uploadRes.fileId ? `https://drive.google.com/file/d/${uploadRes.fileId}/view` : ''));
+          }
+          const hasDocumentOverride = Object.prototype.hasOwnProperty.call(studentProfileDocumentOverrides, field.key);
+          const currentDocumentValue = hasDocumentOverride
+            ? studentProfileDocumentOverrides[field.key]
+            : (activeStudentPendingProfileChanges[field.key] || activeStudentProfile[field.key] || '');
+          const existingDocumentUrls = String(currentDocumentValue || '')
+            .split(/\s*,\s*|\n+/)
+            .map(item => item.trim())
+            .filter(Boolean);
+          uploadedImageChanges[field.key] = studentProfileImageAppendModes[field.key] && existingDocumentUrls.length
+            ? [...existingDocumentUrls, ...uploadedUrls].filter(Boolean).join('\n')
+            : uploadedUrls.filter(Boolean).join('\n');
+          continue;
+        }
+        const imageFile = imageFiles[0];
         if (!imageFile) continue;
         const uploadPayload = await fileToBase64Payload(imageFile, field);
         const uploadRes = await postAppsScript(uploadPayload);
@@ -1172,6 +1298,12 @@ function App() {
         if (nextValue !== currentValue) changes[field.key] = nextValue;
       });
       Object.assign(changes, uploadedImageChanges);
+      STUDENT_PROFILE_IMAGE_FIELDS.forEach(field => {
+        if (!Object.prototype.hasOwnProperty.call(studentProfileDocumentOverrides, field.key) || uploadedImageChanges[field.key]) return;
+        const currentValue = String(activeStudentPendingProfileChanges[field.key] || activeStudentProfile[field.key] || '').trim();
+        const nextValue = String(studentProfileDocumentOverrides[field.key] || '').trim();
+        if (nextValue !== currentValue) changes[field.key] = nextValue;
+      });
       if (Object.keys(changes).length === 0) {
         showNotification(activeStudentPendingProfileRequests.length > 0 ? 'Yêu cầu của em đang chờ admin duyệt rồi.' : 'Chưa có thông tin nào thay đổi.', 'error');
         return;
@@ -1286,6 +1418,8 @@ function App() {
     const unsubNotes = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'lesson_notes'), (snapshot) => { const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })); setAllNotes(docs); });
     const unsubQuizzes = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'lesson_quizzes'), (snapshot) => { const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })); setAllQuizzes(docs); });
     const unsubQuizResults = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'quiz_results'), (snapshot) => { const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })); setAllQuizResults(docs); });
+    const unsubQuickQuizResults = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'quick_quiz_results'), (snapshot) => { const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })); setAllQuickQuizResults(docs); });
+    const unsubLessonProgress = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'lesson_progress'), (snapshot) => { const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })); setAllLessonProgress(docs); });
     const unsubHandwrittenSubmissions = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'handwritten_submissions'), (snapshot) => {
       const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       docs.sort((a, b) => (b.submittedAt || 0) - (a.submittedAt || 0));
@@ -1316,7 +1450,7 @@ function App() {
       if (Array.isArray(data.nanTeachers)) setNanTeachers(data.nanTeachers);
       if (data.classTeacherAssignments && typeof data.classTeacherAssignments === 'object') setClassTeacherAssignments(data.classTeacherAssignments);
     });
-    return () => { unsubNews(); unsubMats(); unsubNotes(); unsubQuizzes(); unsubQuizResults(); unsubHandwrittenSubmissions(); unsubStudents(); unsubAttendance(); unsubProfileRequests(); unsubSettings(); };
+    return () => { unsubNews(); unsubMats(); unsubNotes(); unsubQuizzes(); unsubQuizResults(); unsubQuickQuizResults(); unsubLessonProgress(); unsubHandwrittenSubmissions(); unsubStudents(); unsubAttendance(); unsubProfileRequests(); unsubSettings(); };
   }, [user]);
 
   const getScorebookDocIdForGrade = useCallback((grade) => (
@@ -1925,7 +2059,7 @@ function App() {
       setQuizData(null);
       setQuizDeliveryMode('manual');
       setQuizScoreTarget(null);
-      setSelfQuizDraft({ questions: [], shuffleQuestions: true, shuffleOptions: true, showScoreAfterSubmit: true, allowRetake: true });
+      setSelfQuizDraft(getDefaultSelfQuizDraft());
       return;
     }
     setIsLoadingQuiz(true);
@@ -1939,10 +2073,11 @@ function App() {
         setQuizAttachments(extractQuizAttachments(data.content || ''));
         setQuizPublishNow(!!data.isPublished);
         setQuizPublishAt(formatVietnamDateTimeLocal(data.publishAt));
-        setQuizData(data.quizData || null);
+        const correctedQuizData = data.quizData?.questions?.length ? rebalanceSelfQuizPoints(data.quizData, data.content || '') : null;
+        setQuizData(correctedQuizData);
         setQuizDeliveryMode(data.deliveryMode || (data.quizData?.questions?.length ? 'auto' : 'manual'));
         setQuizScoreTarget(data.scoreTarget || null);
-        setSelfQuizDraft(data.quizData || { questions: [], shuffleQuestions: true, shuffleOptions: true, showScoreAfterSubmit: true, allowRetake: true });
+        setSelfQuizDraft(correctedQuizData || getDefaultSelfQuizDraft());
         setQuizDocStatus(data.quizDocUrl ? { state: 'success', message: 'Đã có Google Doc đề kiểm tra', url: data.quizDocUrl } : { state: '', message: '', url: '' });
       } else {
         setQuizHtml('');
@@ -1956,7 +2091,7 @@ function App() {
         setQuizData(null);
         setQuizDeliveryMode('manual');
         setQuizScoreTarget(null);
-        setSelfQuizDraft({ questions: [], shuffleQuestions: true, shuffleOptions: true, showScoreAfterSubmit: true, allowRetake: true });
+        setSelfQuizDraft(getDefaultSelfQuizDraft());
         setQuizDocStatus({ state: '', message: '', url: '' });
       }
       setIsLoadingQuiz(false);
@@ -1964,7 +2099,10 @@ function App() {
     return () => unsubQuiz();
   }, [user, quizId, extractQuizAttachments, syncQuizPartsFromContent]);
 
-  const activeSelfQuiz = useMemo(() => (quizDeliveryMode === 'auto' && quizData?.questions?.length ? quizData : null), [quizData, quizDeliveryMode]);
+  const activeSelfQuiz = useMemo(() => (quizDeliveryMode === 'auto' && quizData?.questions?.length ? { ...rebalanceSelfQuizPoints(quizData, quizHtml || quizQuestionHtml), shuffleQuestions: true, shuffleOptions: true } : null), [quizData, quizDeliveryMode, quizHtml, quizQuestionHtml]);
+  const activeSelfQuizPassingPercent = activeSelfQuiz?.requirePassingScore ? Math.min(100, Math.max(0, Number(activeSelfQuiz.passingPercent) || 0)) : 0;
+  const activeSelfQuizQuestionCount = activeSelfQuiz?.questions?.length || 0;
+  const studentAnsweredSelfQuizCount = useMemo(() => activeSelfQuiz?.questions?.filter(q => studentQuizAnswers[q.id]).length || 0, [activeSelfQuiz, studentQuizAnswers]);
   const studentEssayText = useMemo(() => extractEssayTextFromHtml(quizHtml), [quizHtml]);
   const studentQuizDraftKey = useMemo(() => quizId ? `khohoclieu-self-quiz-draft-${quizId}-${activeStudentIdentityKey}` : '', [quizId, activeStudentIdentityKey]);
 
@@ -2916,20 +3054,58 @@ YEU CAU:
     return 'AI không trả về nội dung văn bản.';
   };
 
+  const getGeminiModelLabel = (modelId) => GEMINI_MODELS.find(model => model.id === modelId)?.label || modelId;
+
+  const getGeminiFallbackOrder = () => {
+    const preferredModels = [DEFAULT_GEMINI_MODEL, 'gemini-2.0-flash', selectedGeminiModel, ...GEMINI_MODELS.map(model => model.id)];
+    return [...new Set(preferredModels.filter(Boolean))];
+  };
+
+  const shouldTryNextGeminiModel = (message) => (
+    /429|quota|RESOURCE_EXHAUSTED|rate limit|TooManyRequests|GenerateRequestsPer|exceeded your current quota|503|ServiceUnavailable|UNAVAILABLE|overloaded|404|not found|model/i
+      .test(String(message || ''))
+  );
+
+  const rememberWorkingGeminiModel = (modelId) => {
+    if (!modelId || modelId === selectedGeminiModel) return;
+    setSelectedGeminiModel(modelId);
+    localStorage.setItem('khohoclieu-gemini-model', modelId);
+  };
+
+  const runWithGeminiModelFallback = async (requestForModel) => {
+    const modelIds = getGeminiFallbackOrder();
+    const failures = [];
+    for (const modelId of modelIds) {
+      try {
+        const data = await requestForModel(modelId);
+        rememberWorkingGeminiModel(modelId);
+        return { data, modelId };
+      } catch (error) {
+        const cleanMessage = normalizeServiceErrorMessage(error?.message || error);
+        failures.push(`${getGeminiModelLabel(modelId)}: ${cleanMessage}`);
+        const isLastModel = modelId === modelIds[modelIds.length - 1];
+        if (!shouldTryNextGeminiModel(cleanMessage) || isLastModel) {
+          const triedModels = failures.map(item => `- ${item}`).join('\n');
+          throw new Error(failures.length > 1 ? `Da tu dong thu cac model AI nhung chua thanh cong:\n${triedModels}` : cleanMessage);
+        }
+      }
+    }
+    throw new Error('AI chua tao duoc noi dung.');
+  };
+
   const generateWithGeminiFallback = async (payload) => {
-    try {
+    const { data, modelId } = await runWithGeminiModelFallback(async (modelId) => {
       const data = await postAppsScript({
         action: 'gemini',
-        modelId: selectedGeminiModel,
+        modelId,
         contents: payload.contents,
         systemInstruction: payload.systemInstruction,
         generationConfig: payload.generationConfig
       });
       if (!extractAiText(data)) throw new Error(getAiEmptyReason(data));
-      return { data, modelId: data.model || selectedGeminiModel, source: 'apps-script' };
-    } catch (error) {
-      throw new Error(normalizeServiceErrorMessage(error?.message || error));
-    }
+      return data;
+    });
+    return { data, modelId: data.model || modelId, source: 'apps-script' };
   };
 
   const handleGenerateAI = async () => {
@@ -2941,8 +3117,13 @@ YEU CAU:
     const formulaInstruction = getFormulaFormatInstruction();
     const sys = `Ban la AI ra de giao duc Viet Nam chuyen nghiep. NGUYEN TAC BAT BUOC:\n1. Tuyet doi khong co cau chao hoi.\n2. Chi tao MOT BAN DE DUY NHAT de dan vao web, khong tao ban giao vien rieng va ban hoc sinh rieng.\n3. Khong viet cac tieu de PHAN 1, PHAN 2, BAN GIAO VIEN, BAN DAN VAO WEB.\n4. Luon tao dap an/goi y cham va BIEU DIEM ro tung cau, tung y o cuoi de; boc toan bo phan nay trong <div class="teacher-only">...</div> de hoc sinh khong thay.\n5. Tong diem la 10. Toan trac nghiem: chia deu 10 diem cho so cau. Vua trac nghiem vua tu luan: trac nghiem 5 diem chia deu, tu luan 5 diem chia deu theo cau/y. Toan tu luan: tu chia 10 diem theo cau/y.\n6. Neu la Toan/KHTN, cong thuc phai dung LaTeX de hien thi dep tren web.${formulaInstruction}`;
     let promptText = `Mon ${selectedSubject} lop ${selectedGrade}. Noi dung nguon:\n${aiContextContent || 'Chuan kien thuc'}\n\nYeu cau cua giao vien:\n${aiPrompt}`;
+    promptText += '\n\nBAT BUOC CHO HOI DAP NHANH:\n- Uu tien tao 40 cau trac nghiem de he thong rut ngau nhien 10 cau cho hoc sinh lam; neu giao vien yeu cau so khac thi van phai co toi thieu 10 cau.\n- Moi cau co 4 dap an A, B, C, D.\n- Khong tao cau tu luan, khong tao bai tap viet loi giai.\n- Dat dap an dung o cuoi trong <div class="teacher-only">...</div>, ghi ro: Cau 1: A, Cau 2: B...\n- Neu co cong thuc Toan/KHTN, dung LaTeX mot dau gach cheo: \\( ... \\) hoac \\[ ... \\], khong viet thanh \\\\( ... \\\\).';
     if (imageParts.length > 0) promptText += '\n\nVui long doc hieu cac hinh anh duoc dinh kem de trich xuat noi dung.';
-    const payload = { contents: [{ parts: [{ text: promptText }, ...imageParts] }], systemInstruction: { parts: [{ text: sys }] } };
+    const payload = {
+      contents: [{ parts: [{ text: promptText }, ...imageParts] }],
+      systemInstruction: { parts: [{ text: sys }] },
+      generationConfig: { maxOutputTokens: 8192, temperature: 0.7 }
+    };
     try {
       const { data } = await generateWithGeminiFallback(payload);
       const txt = extractAiText(data);
@@ -2956,6 +3137,71 @@ YEU CAU:
     if (!contentEditableRef.current || !aiResponse) return;
     contentEditableRef.current.innerHTML += `<div style="margin-top:20px;padding:15px;background:#f8fafc;border-left:4px solid #3b82f6;border-radius:12px;"><h4 class="ai-suggestion-title" style="color:#1e40af;margin-bottom:10px;">✨ GỢI Ý TỪ TRỢ LÝ AI</h4>${formatAiText(aiResponse)}</div><p><br/></p>`; setShowAiModal(false); setAiResponse('');
     if (noteId && user) { setIsSavingNote(true); try { await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'lesson_notes', noteId), { content: contentEditableRef.current.innerHTML, updatedAt: Date.now(), authorId: user.uid, grade: String(selectedGrade), subject: String(selectedSubject), lesson: String(selectedLesson) }); showNotification("Đã chèn nội dung AI và TỰ ĐỘNG LƯU thành công!"); } catch (e) { showNotification("Lỗi lưu tự động!", "error"); } finally { setIsSavingNote(false); } }
+  };
+
+  const appendAiToQuickQuiz = async () => {
+    if (!aiResponse || !user || !selectedGrade || !selectedSubject || !selectedLesson) return;
+    if (!canWriteCurrentSchoolYear) {
+      showNotification(`Năm học ${currentSchoolYear} đang khóa nhập liệu. Admin mở khóa mới lưu/phát bài được.`, 'error');
+      return;
+    }
+    const savedContent = formatAiText(aiResponse);
+    const parsed = parseSelfQuizFromHtml(savedContent);
+    if (parsed.questions.length < 10) {
+      showNotification(`AI mới tách được ${parsed.questions.length}/10 câu trắc nghiệm. Thầy cô bấm tạo lại hoặc yêu cầu AI đủ 10 câu A/B/C/D.`, 'error');
+      return;
+    }
+    const selectedQuestions = [...parsed.questions]
+      .sort(() => Math.random() - 0.5)
+      .slice(0, 10);
+    const quickQuiz = normalizeSelfQuizDraft({
+      ...parsed,
+      questions: selectedQuestions,
+      questionBank: parsed.questions,
+      questionCountPerAttempt: 10,
+      shuffleQuestions: true,
+      shuffleOptions: true,
+      showScoreAfterSubmit: true,
+      allowRetake: true,
+      requirePassingScore: true,
+      passingPercent: 80
+    });
+    const missingAnswers = quickQuiz.questions
+      .map((question, index) => ({ question, index }))
+      .filter(({ question }) => !question.correctOptionId || !question.options.find(option => option.id === question.correctOptionId)?.text)
+      .map(({ index }) => index + 1);
+    if (missingAnswers.length) {
+      showNotification(`Câu ${missingAnswers.join(', ')} chưa có đáp án đúng A/B/C/D. Thầy cô bấm tạo lại để AI ghi rõ đáp án.`, 'error');
+      return;
+    }
+    const title = `Hỏi đáp nhanh - ${selectedSubject} ${selectedGrade} - ${getWeekDisplayName(selectedLesson)}`;
+    setIsSavingQuiz(true);
+    try {
+      const materialPayload = {
+        quizData: quickQuiz,
+        sourceContent: savedContent,
+        type: 'quick_quiz',
+        placement: 'lesson_content',
+        title,
+        url: '',
+        updatedAt: Date.now(),
+        createdAt: Date.now(),
+        authorId: user.uid,
+        schoolYear: currentSchoolYear,
+        grade: String(selectedGrade),
+        subject: String(selectedSubject),
+        lesson: String(selectedLesson)
+      };
+      const materialRef = await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'materials'), materialPayload);
+      setShowAiModal(false);
+      setAiResponse('');
+      setViewingMaterial({ id: materialRef.id, ...materialPayload });
+      showNotification('Đã chèn hỏi đáp nhanh vào nội dung bài học. Học sinh bấm nút Kiểm tra kiến thức nhanh để làm 10 câu.');
+    } catch (error) {
+      showNotification('Chưa lưu được hỏi đáp nhanh: ' + (error?.message || String(error)), 'error');
+    } finally {
+      setIsSavingQuiz(false);
+    }
   };
 
   const appendAiToQuiz = () => {
@@ -3113,7 +3359,8 @@ Giáo viên có thể sửa prompt này trước khi bấm tạo câu hỏi.`;
       showNotification(message, 'error');
       return { ok: false, message };
     }
-    const normalized = normalizeSelfQuizDraft(selfQuizDraft);
+    const savedContent = getCurrentQuizContent();
+    const normalized = rebalanceSelfQuizPoints(normalizeSelfQuizDraft(selfQuizDraft), savedContent);
     if (!normalized.questions.length) {
       const message = 'Đề tự chấm cần ít nhất 1 câu hỏi hợp lệ.';
       showNotification(message, 'error');
@@ -3130,7 +3377,6 @@ Giáo viên có thể sửa prompt này trước khi bấm tạo câu hỏi.`;
       return { ok: false, message };
     }
     try {
-      const savedContent = getCurrentQuizContent();
     await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'lesson_quizzes', quizId), {
       content: savedContent,
       quizData: normalized,
@@ -3269,7 +3515,26 @@ ${lessonBlocks}`;
     return answers.length || Number(result?.total || 0) || 0;
   };
 
-  const getSelfQuizScorePoint = (result = null) => getSelfQuizCorrectCount(result) * 0.25;
+  const getSelfQuizTotalPoint = () => {
+    const quizTotal = (activeSelfQuiz?.questions || []).reduce((sum, q) => sum + (Number(q.points) || 0), 0);
+    if (quizTotal > 0) return quizTotal;
+    return inferMultipleChoiceTotalPoints(quizHtml || quizQuestionHtml) || 4;
+  };
+
+  const getSelfQuizPointPerQuestion = (result = null) => {
+    const questionCount = getSelfQuizQuestionCount(result) || activeSelfQuizQuestionCount;
+    return questionCount ? getSelfQuizTotalPoint() / questionCount : 0;
+  };
+
+  const getSelfQuizScorePoint = (result = null) => {
+    if (!result) return 0;
+    const answers = Array.isArray(result.answers) ? result.answers : [];
+    if (answers.length) return getSelfQuizCorrectCount(result) * getSelfQuizPointPerQuestion(result);
+    const score = Number(result.score);
+    return Number.isFinite(score) ? score : 0;
+  };
+
+  const getSelfQuizAnswerPoint = (answer = {}, result = null) => answer.isCorrect ? getSelfQuizPointPerQuestion(result) : 0;
 
   const buildHandwrittenGradingPrompt = (submission = {}, selfQuizResult = null) => [
     `ĐÂY LÀ TÁC VỤ CHẤM BÀI HỌC SINH, KHÔNG PHẢI TÁC VỤ TẠO ĐỀ. KHÔNG TẠO ĐỀ MỚI.`,
@@ -3277,7 +3542,7 @@ ${lessonBlocks}`;
     `Ngữ cảnh: Năm học ${submission.schoolYear || currentSchoolYear}, Khối ${submission.grade || selectedGrade}, môn ${submission.subject || selectedSubject}, bài/tuần ${submission.lesson || selectedLesson}.`,
     `Họ tên học sinh: ${submission.studentName || 'không rõ'}.`,
     selfQuizResult
-      ? `TRẮC NGHIỆM ĐÃ LƯU: điểm trắc nghiệm của học sinh là ${formatVietnamPointScore(getSelfQuizScorePoint(selfQuizResult))}/4 điểm. Học sinh đúng ${getSelfQuizCorrectCount(selfQuizResult)}/${getSelfQuizQuestionCount(selfQuizResult)} câu, nhưng khi thống kê điểm phải ghi theo dạng điểm ${formatVietnamPointScore(getSelfQuizScorePoint(selfQuizResult))}/4, không được ghi ${getSelfQuizCorrectCount(selfQuizResult)}/${getSelfQuizQuestionCount(selfQuizResult)} như điểm. Phần này học sinh ĐÃ LÀM trên web, không được báo là chưa làm trắc nghiệm.`
+      ? `TRẮC NGHIỆM ĐÃ LƯU: điểm trắc nghiệm của học sinh là ${formatVietnamPointScore(getSelfQuizScorePoint(selfQuizResult))}/${formatVietnamPointScore(getSelfQuizTotalPoint())} điểm. Học sinh đúng ${getSelfQuizCorrectCount(selfQuizResult)}/${getSelfQuizQuestionCount(selfQuizResult)} câu, nhưng khi thống kê điểm phải ghi theo dạng điểm ${formatVietnamPointScore(getSelfQuizScorePoint(selfQuizResult))}/${formatVietnamPointScore(getSelfQuizTotalPoint())}, không được ghi ${getSelfQuizCorrectCount(selfQuizResult)}/${getSelfQuizQuestionCount(selfQuizResult)} như điểm. Phần này học sinh ĐÃ LÀM trên web, không được báo là chưa làm trắc nghiệm.`
       : `CHƯA TÌM THẤY ĐIỂM TRẮC NGHIỆM LƯU TRÊN WEB cho học sinh này. Nếu bài có phần trắc nghiệm trên web, hãy ghi cần giáo viên kiểm tra lại, không tự kết luận học sinh chưa làm.`,
     `Nội dung đề, đáp án và thang điểm của giáo viên:`,
     stripHtmlToText(quizHtml || '').slice(0, 6000) || '(Không có nội dung đề trong hệ thống.)',
@@ -3294,7 +3559,7 @@ ${lessonBlocks}`;
     `Yêu cầu trả lời bằng tiếng Việt có dấu, ngắn gọn, để giáo viên duyệt lại.`,
     `Định dạng bắt buộc:`,
     selfQuizResult
-      ? `Điểm trắc nghiệm đã có: ${formatVietnamPointScore(getSelfQuizScorePoint(selfQuizResult))}/4`
+      ? `Điểm trắc nghiệm đã có: ${formatVietnamPointScore(getSelfQuizScorePoint(selfQuizResult))}/${formatVietnamPointScore(getSelfQuizTotalPoint())}`
       : `Điểm trắc nghiệm đã có: chưa tìm thấy`,
     `Điểm tự luận/viết tay đề xuất: x/y`,
     `Điểm tổng đề xuất: x/10`,
@@ -3503,19 +3768,21 @@ ${lessonBlocks}`;
         aiStartedAt: Date.now()
       }, { merge: true });
       const selfQuizResult = findSelfQuizResultForSubmission(submission);
-      const gradingPayload = {
-        fileId: submission.fileId,
-        model: selectedGeminiModel,
-        prompt: buildHandwrittenGradingPrompt(submission, selfQuizResult)
-      };
-      let res;
-      try {
-        res = await postAppsScript({ action: 'gradeStudentWork', ...gradingPayload });
-      } catch (actionError) {
-        const message = actionError.message || String(actionError);
+      const gradingPrompt = buildHandwrittenGradingPrompt(submission, selfQuizResult);
+      const { data: res, modelId: gradingModelId } = await runWithGeminiModelFallback(async (modelId) => {
+        const gradingPayload = {
+          fileId: submission.fileId,
+          model: modelId,
+          prompt: gradingPrompt
+        };
+        try {
+          return await postAppsScript({ action: 'gradeStudentWork', ...gradingPayload });
+        } catch (actionError) {
+          const message = actionError.message || String(actionError);
         if (!/gradeStudentWork|khong dung action|không đúng action|thiếu base64|thieu base64/i.test(message)) throw actionError;
-        res = await postAppsScript({ action: 'askAI', mode: 'gradeStudentWork', ...gradingPayload });
-      }
+          return await postAppsScript({ action: 'askAI', mode: 'gradeStudentWork', ...gradingPayload });
+        }
+      });
       const aiText = res.result || res.text || '';
       const parsed = extractAiScore(aiText);
       const submissionDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'handwritten_submissions', submission.id);
@@ -3528,7 +3795,7 @@ ${lessonBlocks}`;
         aiScore: parsed.score,
         aiMaxScore: parsed.maxScore,
         aiComment: aiText,
-        aiModel: res.model || selectedGeminiModel,
+        aiModel: res.model || gradingModelId,
         aiGradedAt: Date.now()
       }, { merge: true });
       if (!options.silent) showNotification('AI đã chấm nháp, giáo viên xem lại rồi lưu điểm.');
@@ -3614,9 +3881,21 @@ ${lessonBlocks}`;
     }, 1200);
   };
 
-  const handleSelectSubmissionFile = (file) => {
+  const handleSelectSubmissionFile = async (file) => {
     finishSubmissionFilePicker();
-    applySubmissionFile(file || null);
+    if (!file) {
+      applySubmissionFile(null);
+      return;
+    }
+    const shouldScan = String(file.type || '').toLowerCase().startsWith('image/');
+    if (!shouldScan) {
+      applySubmissionFile(file);
+      return;
+    }
+    setSubmissionStatus('Đang quét ảnh bài làm, nắn thẳng khung giấy và giảm bóng...');
+    const scannedFile = await scanUploadImageFile(file, { mode: 'document', orientation: 'auto' });
+    applySubmissionFile(scannedFile || file);
+    setSubmissionStatus('Đã quét ảnh bài làm. Em kiểm tra lại rồi bấm nộp.');
   };
 
   const clearSubmissionFile = () => {
@@ -3625,6 +3904,10 @@ ${lessonBlocks}`;
   };
 
   const handleStudentSubmit = async () => {
+    if (activeStudentIsReadOnly) {
+      setSubmissionStatus(activeStudentReadOnlyReason || 'Hồ sơ này đang ở chế độ chỉ xem, không thể nộp bài.');
+      return;
+    }
     if (!canWriteCurrentSchoolYear) {
       setSubmissionStatus(`Nam hoc ${currentSchoolYear} dang khoa nhap lieu. Em bao giao vien/admin mo khoa neu can nop bai.`);
       return;
@@ -3769,7 +4052,54 @@ ${lessonBlocks}`;
   const handleDeleteMaterial = async (id) => { if (role !== 'teacher') return; setConfirmModal({ show: true, message: 'Gỡ tài liệu này khỏi bài học?', onConfirm: async () => { await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'materials', id)); showNotification("Đã gỡ tài liệu"); } }); };
   const resetNavigationWithClean = () => { setSelectedGrade(null); setSelectedSubject(null); setSelectedLesson(null); setViewingMaterial(null); setShowCommonLibraryWorkspace(false); setTeacherTab('giang_day'); setPlanSubject(''); setIsTextbookExpanded(window.innerWidth >= 640); };
   const handleCopyLink = async (url) => { try { await navigator.clipboard.writeText(url); showNotification("Đã copy liên kết tải tài liệu"); } catch (err) { const t = document.createElement("textarea"); t.value = url; document.body.appendChild(t); t.select(); try { document.execCommand('copy'); showNotification("Đã copy liên kết tải tài liệu"); } catch (e) {} document.body.removeChild(t); } };
-  const renderIcon = (type) => { switch(type) { case 'pdf': return <FileText className="w-6 h-6 text-red-500" />; case 'ppt': return <MonitorPlay className="w-6 h-6 text-orange-500" />; case 'image': return <ImageIcon className="w-6 h-6 text-green-500" />; default: return <LinkIcon className="w-6 h-6 text-blue-500" />; } };
+  const renderIcon = (type) => { switch(type) { case 'quick_quiz': return <ListChecks className="w-6 h-6 text-emerald-600" />; case 'pdf': return <FileText className="w-6 h-6 text-red-500" />; case 'ppt': return <MonitorPlay className="w-6 h-6 text-orange-500" />; case 'image': return <ImageIcon className="w-6 h-6 text-green-500" />; default: return <LinkIcon className="w-6 h-6 text-blue-500" />; } };
+
+  const handleSubmitQuickMaterialQuiz = async () => {
+    if (!viewingQuickQuizData || !currentQuickMaterialAttemptData || !viewingMaterial?.id || !user) return;
+    const submitStudentName = (activeStudentProfile?.fullName || currentStudent?.fullName || studentQuizName || '').trim();
+    if (!submitStudentName) {
+      setQuickMaterialWarning('Em nhập họ tên rồi nộp bài nhé.');
+      return;
+    }
+    const unanswered = viewingQuickQuizQuestions.filter(q => !quickMaterialAnswers[q.id]);
+    if (unanswered.length) {
+      setQuickMaterialWarning(`Còn ${unanswered.length} câu chưa chọn đáp án.`);
+      return;
+    }
+    setIsSubmittingQuickMaterial(true);
+    try {
+      const result = gradeSelfQuizSubmission({
+        quizData: currentQuickMaterialAttemptData,
+        answersByQuestionId: quickMaterialAnswers,
+        quizId: viewingMaterial.id,
+        studentName: submitStudentName,
+        grade: selectedGrade,
+        subject: selectedSubject,
+        lesson: selectedLesson,
+        schoolYear: currentSchoolYear,
+        userId: user.uid
+      });
+      result.materialId = viewingMaterial.id;
+      result.studentId = activeStudentProfile?.id || currentStudent?.id || '';
+      result.studentAccessCode = activeStudentProfile?.accessCode || currentStudent?.accessCode || '';
+      const passingPercent = Number(viewingQuickQuizData.passingPercent || 80);
+      if (result.percent < passingPercent) {
+        setQuickMaterialResult(null);
+        setQuickMaterialAnswers({});
+        setQuickMaterialAttemptSeed(prev => prev + 1);
+        setQuickMaterialWarning(`Em đạt ${formatPointScore(result.score)}/${formatPointScore(result.total || 10)}, chưa đủ 8/10 để qua. Hệ thống đã đổi bộ câu hỏi và đáp án cho lượt làm lại.`);
+        return;
+      }
+      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'quick_quiz_results'), result);
+      setQuickMaterialResult(result);
+      setQuickMaterialWarning('');
+      showNotification('Đã hoàn thành hỏi đáp nhanh.');
+    } catch (error) {
+      setQuickMaterialWarning('Chưa lưu được bài làm: ' + (error?.message || String(error)));
+    } finally {
+      setIsSubmittingQuickMaterial(false);
+    }
+  };
 
   const getSubjectCardStyle = (index) => {
     const styles = [
@@ -3786,6 +4116,37 @@ ${lessonBlocks}`;
 
   const currentMaterialsFiltered = useMemo(() => { return allMaterials.filter(m => String(m.grade) === String(selectedGrade) && String(m.subject) === String(selectedSubject) && String(m.lesson) === String(selectedLesson)); }, [allMaterials, selectedGrade, selectedSubject, selectedLesson]);
   const sortedCurrentMaterials = useMemo(() => { return [...currentMaterialsFiltered].sort((a, b) => { const direction = materialSort === 'asc' ? 1 : -1; return (a.title || '').localeCompare(b.title || '', 'vi') * direction; }); }, [currentMaterialsFiltered, materialSort]);
+  const currentQuickQuizMaterials = useMemo(() => sortedCurrentMaterials.filter(m => m.type === 'quick_quiz'), [sortedCurrentMaterials]);
+  const sortedCurrentStudyMaterials = useMemo(() => sortedCurrentMaterials.filter(m => m.type !== 'quick_quiz'), [sortedCurrentMaterials]);
+  const viewingQuickQuizData = viewingMaterial?.type === 'quick_quiz' && viewingMaterial?.quizData?.questions?.length ? {
+    ...viewingMaterial.quizData,
+    questions: viewingMaterial.quizData.questionBank?.length ? viewingMaterial.quizData.questionBank : viewingMaterial.quizData.questions,
+    questionCountPerAttempt: viewingMaterial.quizData.questionCountPerAttempt || (viewingMaterial.quizData.questionBank?.length ? 10 : 0),
+    shuffleQuestions: true,
+    shuffleOptions: true
+  } : null;
+  const viewingQuickQuizQuestions = useMemo(() => buildSelfQuizQuestionsForStudent(viewingQuickQuizData), [viewingQuickQuizData, viewingMaterial?.id, quickMaterialAttemptSeed]);
+  const currentQuickMaterialAttemptData = useMemo(() => viewingQuickQuizData ? {
+    ...viewingQuickQuizData,
+    questions: viewingQuickQuizQuestions.map(({ displayOptions, ...question }) => question)
+  } : null, [viewingQuickQuizData, viewingQuickQuizQuestions]);
+  useEffect(() => { if (viewingMaterial?.type === 'quick_quiz') typesetMath(quickMaterialContentRef.current); }, [viewingMaterial?.id, viewingMaterial?.type, viewingQuickQuizQuestions, quickMaterialAnswers, quickMaterialResult, role]);
+  useEffect(() => {
+    if (viewingMaterial?.type !== 'quick_quiz') return;
+    setQuickMaterialAnswers({});
+    setQuickMaterialResult(null);
+    setQuickMaterialWarning('');
+    setQuickMaterialAttemptSeed(prev => prev + 1);
+    setStudentQuizName(activeStudentProfile?.fullName || currentStudent?.fullName || studentQuizName || '');
+  }, [viewingMaterial?.id, viewingMaterial?.type, activeStudentProfile?.fullName, currentStudent?.fullName]);
+  const openMaterial = (material) => {
+    if (material?.type === 'quick_quiz') {
+      setViewingMaterial(material);
+      return;
+    }
+    if (window.innerWidth >= 640) window.open(material.url, '_blank', 'noopener,noreferrer');
+    else setViewingMaterial(material);
+  };
   const isQuizVisibleForStudents = useCallback((quiz) => {
     if (!quiz?.content) return false;
     const publishAtMs = parseVietnamDateTimeLocal(quiz.publishAt);
@@ -3794,7 +4155,11 @@ ${lessonBlocks}`;
   const currentQuizVisibleForStudents = useMemo(() => isQuizVisibleForStudents({ content: quizHtml, isPublished: quizPublishNow, publishAt: quizPublishAt }), [quizHtml, quizPublishNow, quizPublishAt, isQuizVisibleForStudents]);
   const shuffledSelfQuizQuestions = useMemo(() => {
     return buildSelfQuizQuestionsForStudent(activeSelfQuiz);
-  }, [activeSelfQuiz, quizId]);
+  }, [activeSelfQuiz, quizId, studentSelfQuizAttemptSeed]);
+  const currentSelfQuizAttemptData = useMemo(() => activeSelfQuiz ? {
+    ...activeSelfQuiz,
+    questions: shuffledSelfQuizQuestions.map(({ displayOptions, ...question }) => question)
+  } : null, [activeSelfQuiz, shuffledSelfQuizQuestions]);
   const currentQuizResults = useMemo(() => {
     return filterQuizResultsForContext(allQuizResults, { quizId, schoolYear: currentSchoolYear, grade: selectedGrade, subject: selectedSubject, lesson: selectedLesson });
   }, [allQuizResults, quizId, currentSchoolYear, selectedGrade, selectedSubject, selectedLesson]);
@@ -3824,13 +4189,91 @@ ${lessonBlocks}`;
     }
     return !!recordName && activeStudentWorkKeys.names.includes(recordName);
   }, [activeStudentWorkKeys]);
+  useEffect(() => {
+    if (role !== 'student' || !user || !currentLessonProgressDocId || !selectedGrade || !selectedSubject || !selectedLesson || !currentSchoolYear) return undefined;
+    if (!activeStudentProfile && !currentStudent) return undefined;
+    const saveProgressTick = async () => {
+      if (document.hidden) return;
+      try {
+        await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'lesson_progress', currentLessonProgressDocId), {
+          elapsedMs: increment(30000),
+          updatedAt: Date.now(),
+          schoolYear: currentSchoolYear,
+          grade: String(selectedGrade),
+          subject: String(selectedSubject),
+          lesson: String(selectedLesson),
+          studentId: activeStudentProfile?.id || currentStudent?.id || '',
+          studentAccessCode: activeStudentProfile?.accessCode || currentStudent?.accessCode || '',
+          studentName: activeStudentProfile?.fullName || currentStudent?.fullName || '',
+          authorId: user.uid
+        }, { merge: true });
+      } catch (error) {
+        console.warn('Lesson progress tick failed:', error);
+      }
+    };
+    const timer = window.setInterval(saveProgressTick, 30000);
+    return () => window.clearInterval(timer);
+  }, [role, user, currentLessonProgressDocId, selectedGrade, selectedSubject, selectedLesson, currentSchoolYear, activeStudentProfile, currentStudent]);
+  const lessonJourneyMap = useMemo(() => {
+    const map = {};
+    if (role !== 'student' || !selectedGrade || !selectedSubject) return map;
+    Array.from({ length: TOTAL_LESSONS }, (_, i) => String(i + 1)).forEach(lesson => {
+      const lessonQuickMaterials = allMaterials.filter(m =>
+        m.type === 'quick_quiz' &&
+        String(m.schoolYear || currentSchoolYear || '') === String(currentSchoolYear || '') &&
+        String(m.grade) === String(selectedGrade) &&
+        String(m.subject) === String(selectedSubject) &&
+        String(m.lesson) === lesson
+      );
+      const hasQuickQuiz = lessonQuickMaterials.length > 0;
+      const theoryRecord = allLessonProgress
+        .filter(item => String(item.schoolYear || '') === String(currentSchoolYear || ''))
+        .filter(item => String(item.grade) === String(selectedGrade))
+        .filter(item => String(item.subject) === String(selectedSubject))
+        .filter(item => String(item.lesson) === lesson)
+        .filter(isCurrentStudentRecord)
+        .sort((a, b) => (b.elapsedMs || 0) - (a.elapsedMs || 0))[0];
+      const elapsedMs = Math.max(0, Number(theoryRecord?.elapsedMs || 0));
+      const theoryRatio = Math.min(1, elapsedMs / LESSON_THEORY_TARGET_MS);
+      const quickPassed = hasQuickQuiz && allQuickQuizResults.some(result => {
+        const sameLesson = String(result.schoolYear || '') === String(currentSchoolYear || '') &&
+          String(result.grade) === String(selectedGrade) &&
+          String(result.subject) === String(selectedSubject) &&
+          String(result.lesson) === lesson;
+        const sameMaterial = !result.materialId || lessonQuickMaterials.some(m => String(m.id) === String(result.materialId));
+        return sameLesson && sameMaterial && isCurrentStudentRecord(result) && Number(result.percent || 0) >= 80;
+      });
+      const percent = hasQuickQuiz
+        ? Math.round((theoryRatio * 50) + (quickPassed ? 50 : 0))
+        : Math.round(theoryRatio * 100);
+      map[lesson] = {
+        percent: Math.min(100, percent),
+        hasQuickQuiz,
+        quickPassed,
+        theoryDone: theoryRatio >= 1,
+        elapsedMinutes: Math.floor(elapsedMs / 60000)
+      };
+    });
+    return map;
+  }, [role, selectedGrade, selectedSubject, allMaterials, allLessonProgress, allQuickQuizResults, currentSchoolYear, isCurrentStudentRecord]);
+  const schoolYearJourneyPercent = useMemo(() => {
+    if (role !== 'student') return 0;
+    const lessonPercents = Array.from({ length: TOTAL_LESSONS }, (_, i) => {
+      const lesson = String(i + 1);
+      if (getWeekData(lesson).isExam) return null;
+      return Number(lessonJourneyMap[lesson]?.percent || 0);
+    }).filter(value => value !== null);
+    if (!lessonPercents.length) return 0;
+    return Math.round(lessonPercents.reduce((sum, value) => sum + value, 0) / lessonPercents.length);
+  }, [role, lessonJourneyMap]);
   const studentSavedQuizResult = useMemo(() => {
     return [...currentQuizResults].filter(isCurrentStudentRecord).sort((a, b) => (b.submittedAt || 0) - (a.submittedAt || 0))[0] || null;
   }, [currentQuizResults, isCurrentStudentRecord]);
   const studentSavedHandwrittenSubmission = useMemo(() => {
     return [...currentHandwrittenSubmissions].filter(isCurrentStudentRecord).sort((a, b) => (b.submittedAt || 0) - (a.submittedAt || 0))[0] || null;
   }, [currentHandwrittenSubmissions, isCurrentStudentRecord]);
-  const studentSelfQuizSubmitted = !!studentSavedQuizResult || !!studentQuizResult;
+  const isStudentQuizResultPassing = (result) => !activeSelfQuizPassingPercent || Number(result?.percent || 0) >= activeSelfQuizPassingPercent;
+  const studentSelfQuizSubmitted = (!!studentSavedQuizResult && isStudentQuizResultPassing(studentSavedQuizResult)) || (!!studentQuizResult && isStudentQuizResultPassing(studentQuizResult));
   const studentEssaySubmitted = !!studentSavedHandwrittenSubmission;
   const studentReviewQuizResult = studentSavedQuizResult || studentQuizResult;
   const studentReviewEssayReady = isHandwrittenSubmissionLocked(studentSavedHandwrittenSubmission);
@@ -4044,7 +4487,11 @@ ${lessonBlocks}`;
 
   const handleSubmitSelfQuiz = async (options = {}) => {
     const autoSubmit = options?.autoSubmit === true;
-    if (!activeSelfQuiz || !quizId || !user) return;
+    if (!activeSelfQuiz || !currentSelfQuizAttemptData || !quizId || !user) return;
+    if (activeStudentIsReadOnly) {
+      if (!autoSubmit) showNotification(activeStudentReadOnlyReason || 'Hồ sơ này đang ở chế độ chỉ xem, không thể nộp bài.', 'error');
+      return;
+    }
     if (!canWriteCurrentSchoolYear) {
       showNotification(`Năm học ${currentSchoolYear} đang khóa nhập liệu. Em chưa thể nộp bài.`, 'error');
       return;
@@ -4063,7 +4510,7 @@ ${lessonBlocks}`;
       setTimeout(() => studentQuizNameRef.current?.focus(), 250);
       return;
     }
-    if (studentSavedQuizResult) {
+    if (studentSavedQuizResult && isStudentQuizResultPassing(studentSavedQuizResult)) {
       const warning = 'Em đã nộp phần trắc nghiệm rồi. Mỗi học sinh chỉ làm 1 lần.';
       setStudentQuizWarning(warning);
       showNotification(warning, 'error');
@@ -4081,14 +4528,14 @@ ${lessonBlocks}`;
       }
       return currentStudentNameKey && resultNameKey && currentStudentNameKey === resultNameKey;
     });
-    if (alreadySubmitted) {
+    if (alreadySubmitted && !activeSelfQuizPassingPercent) {
       const warning = 'Em đã nộp bài này rồi. Mỗi học sinh chỉ làm 1 lần.';
       setStudentQuizWarning(warning);
       showNotification(warning, 'error');
       studentQuizNameRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
       return;
     }
-    const unanswered = activeSelfQuiz.questions.filter(q => !studentQuizAnswers[q.id]);
+    const unanswered = shuffledSelfQuizQuestions.filter(q => !studentQuizAnswers[q.id]);
     if (unanswered.length > 0 && !autoSubmit) {
       const warning = `Còn ${unanswered.length} câu chưa chọn đáp án.`;
       setStudentQuizWarning(warning);
@@ -4099,7 +4546,7 @@ ${lessonBlocks}`;
     setIsSubmittingSelfQuiz(true);
     try {
       const result = gradeSelfQuizSubmission({
-        quizData: activeSelfQuiz,
+        quizData: currentSelfQuizAttemptData,
         answersByQuestionId: studentQuizAnswers,
         quizId,
         studentName: submitStudentName,
@@ -4116,6 +4563,16 @@ ${lessonBlocks}`;
         result.autoSubmitted = true;
         result.exitReason = 'student_left_page';
         result.teacherNote = 'Học sinh đã thoát ra ngoài khi đang làm trắc nghiệm. Hệ thống tự nộp phần đã làm.';
+      }
+      if (activeSelfQuizPassingPercent && !autoSubmit && result.percent < activeSelfQuizPassingPercent) {
+        const needed = Math.ceil(((result.total || 10) * activeSelfQuizPassingPercent) / 100);
+        const warning = `Em đạt ${formatPointScore(result.score)}/${formatPointScore(result.total || 10)}, chưa đủ ${needed}/${formatPointScore(result.total || 10)} để qua bài. Hệ thống đã đổi thứ tự câu và đáp án cho lượt làm lại.`;
+        setStudentQuizResult(null);
+        setStudentQuizAnswers({});
+        setStudentSelfQuizAttemptSeed(prev => prev + 1);
+        setStudentQuizWarning(warning);
+        showNotification(warning, 'error');
+        return;
       }
       await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'quiz_results'), result);
       await writeQuizScoreToScorebook({ studentRecord: result, score: result.score, maxScore: result.total || 10, overwriteExisting: true });
@@ -4137,7 +4594,7 @@ ${lessonBlocks}`;
     if (role === 'student' && studentCurrentQuizVisible) setShowStudentQuizPanel(true);
   }, [role, quizId, studentCurrentQuizVisible]);
   useEffect(() => {
-    if (role !== 'student' || !studentCurrentQuizVisible || !quizId || !canWriteCurrentSchoolYear) return undefined;
+    if (role !== 'student' || !studentCurrentQuizVisible || !quizId || !canWriteCurrentSchoolYear || activeStudentIsReadOnly) return undefined;
     const exitKey = `${quizId}:${activeStudentProfile?.accessCode || currentStudent?.accessCode || normalizeNameKey(studentQuizName || studentName) || user?.uid || 'student'}`;
     const handleStudentExit = () => {
       if (submissionFilePickerActiveRef.current) return;
@@ -4160,7 +4617,7 @@ ${lessonBlocks}`;
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('pagehide', handlePageHide);
     };
-  }, [role, studentCurrentQuizVisible, quizId, canWriteCurrentSchoolYear, activeStudentProfile, currentStudent, studentQuizName, studentName, user, activeSelfQuiz, studentSelfQuizSubmitted, isSubmittingSelfQuiz, studentEssayText, studentEssaySubmitted, isSubmittingWork, handleSubmitSelfQuiz, lockStudentEssayForLeaving]);
+  }, [role, studentCurrentQuizVisible, quizId, canWriteCurrentSchoolYear, activeStudentIsReadOnly, activeStudentProfile, currentStudent, studentQuizName, studentName, user, activeSelfQuiz, studentSelfQuizSubmitted, isSubmittingSelfQuiz, studentEssayText, studentEssaySubmitted, isSubmittingWork, handleSubmitSelfQuiz, lockStudentEssayForLeaving]);
   const scheduledQuizCountdownText = useMemo(() => formatCountdown((quizPublishAtMs || 0) - nowMs), [quizPublishAtMs, nowMs]);
   const quizScoreCount = useMemo(() => {
     const keys = new Set();
@@ -4222,7 +4679,7 @@ ${lessonBlocks}`;
   }, [role, allQuizResults, allHandwrittenSubmissions, currentSchoolYear, selectedGrade, selectedSubject, isCurrentStudentRecord]);
   const pinnedNewsFeed = useMemo(() => newsList.filter(n => n.isPinned).sort((a, b) => (b.sortOrder ?? b.createdAt ?? 0) - (a.sortOrder ?? a.createdAt ?? 0)).map(n => ({ ...n, isAuto: false, timestamp: n.createdAt })), [newsList]);
   const combinedFeedSorted = useMemo(() => {
-    const materialItems = [...allMaterials].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).slice(0, 4).map(m => ({ id: `m_${m.id}`, isAuto: true, iconType: 'material', targetGrade: m.grade, targetSubject: m.subject, targetLesson: m.lesson, title: `TÀI LIỆU MỚI: ${m.subject} ${m.grade} - ${getWeekDisplayName(m.lesson)}`, content: `<p>Vừa cập nhật: <b>${m.title}</b></p>`, timestamp: m.createdAt }));
+    const materialItems = [...allMaterials].filter(m => m.type !== 'quick_quiz').sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).slice(0, 4).map(m => ({ id: `m_${m.id}`, isAuto: true, iconType: 'material', targetGrade: m.grade, targetSubject: m.subject, targetLesson: m.lesson, title: `TÀI LIỆU MỚI: ${m.subject} ${m.grade} - ${getWeekDisplayName(m.lesson)}`, content: `<p>Vừa cập nhật: <b>${m.title}</b></p>`, timestamp: m.createdAt }));
     const noteItems = [...allNotes].filter(n => n.grade).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)).slice(0, 4).map(n => ({ id: `n_${n.id}`, isAuto: true, iconType: 'note', targetGrade: n.grade, targetSubject: n.subject, targetLesson: n.lesson, title: `GV đã up bài học: ${n.subject} ${n.grade} - ${getWeekDisplayName(n.lesson)}`, content: '<p>Nội dung bài học vừa được cập nhật.</p>', timestamp: n.updatedAt }));
     const quizItems = [...allQuizzes].filter(q => q.grade && String(q.schoolYear || currentSchoolYear) === String(currentSchoolYear) && isQuizVisibleForStudents(q) && (role !== 'student' || !activeStudentGrade || String(q.grade) === String(activeStudentGrade))).sort((a, b) => (b.updatedAt || b.publishAt || 0) - (a.updatedAt || a.publishAt || 0)).slice(0, 4).map(q => ({ id: `q_${q.id}`, isAuto: true, iconType: 'quiz', targetGrade: q.grade, targetSubject: q.subject, targetLesson: q.lesson, title: `GV đã up bài kiểm tra: ${q.subject} ${q.grade} - ${getWeekDisplayName(q.lesson)}`, content: '<p>Bài kiểm tra đã sẵn sàng.</p>', timestamp: q.updatedAt || q.publishAt }));
     return [...materialItems, ...noteItems, ...quizItems].sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0)).slice(0, 4);
@@ -4655,8 +5112,8 @@ ${lessonBlocks}`;
           )}
 
           {isAdmin && showStudentDatabase && (
-            <div className="fixed inset-0 z-[80] bg-slate-100/95 backdrop-blur-md overflow-y-auto p-2 sm:p-3">
-              <div className="w-full max-w-none mx-auto">
+            <div className="fixed inset-0 z-[80] bg-slate-100/95 backdrop-blur-md overflow-hidden p-2 sm:p-3">
+              <div className="w-full h-full min-h-0 max-w-none mx-auto">
                 <Suspense fallback={<div className="rounded-3xl border border-indigo-100 bg-indigo-50 p-4 text-xs font-black text-indigo-700">Đang mở database học sinh...</div>}>
                   <HocSinhManager
                     students={allStudents}
@@ -5402,6 +5859,11 @@ ${lessonBlocks}`;
                   ? `Các mục đang chờ admin duyệt${activeStudentPendingProfileFieldLabels.length ? `: ${activeStudentPendingProfileFieldLabels.join(', ')}` : ''}. Em vẫn có thể sửa lại hoặc bổ sung mục khác rồi bấm cập nhật.`
                   : 'Học sinh sửa thông tin rồi gửi yêu cầu. Admin duyệt xong hồ sơ chính mới thay đổi.'}
               </div>
+              {activeStudentIsReadOnly && (
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs font-black text-slate-600">
+                  {activeStudentReadOnlyReason}
+                </div>
+              )}
 
               <datalist id="student-profile-province-options">
                 {derivedProvinceOptions.map(item => <option key={item} value={item} />)}
@@ -5439,6 +5901,8 @@ ${lessonBlocks}`;
                         value={studentProfileDraft[field.key] || ''}
                         list={listId}
                         placeholder={placeholder}
+                        readOnly={activeStudentIsReadOnly}
+                        disabled={activeStudentIsReadOnly}
                         onChange={(event) => handleStudentProfileFieldChange(field.key, event.target.value)}
                         className={`rounded-2xl border px-3 py-3 text-sm font-bold text-slate-800 focus:outline-none focus:border-blue-400 ${isFieldPending ? 'border-amber-200 bg-amber-50' : 'border-slate-200 bg-white'}`}
                       />
@@ -5454,41 +5918,107 @@ ${lessonBlocks}`;
                 <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
                   {STUDENT_PROFILE_IMAGE_FIELDS.map(field => {
                     const isFieldPending = activeStudentPendingProfileFieldKeys.has(field.key);
-                    const currentUrl = activeStudentPendingProfileChanges[field.key] || activeStudentProfile[field.key] || '';
+                    const isTranscript = field.key === 'transcriptUrl';
+                    const hasDocumentOverride = Object.prototype.hasOwnProperty.call(studentProfileDocumentOverrides, field.key);
+                    const currentDocumentUrl = hasDocumentOverride
+                      ? studentProfileDocumentOverrides[field.key]
+                      : (activeStudentPendingProfileChanges[field.key] || activeStudentProfile[field.key] || '');
+                    const currentUrl = currentDocumentUrl;
                     const previewValue = studentProfileImagePreviews[field.key];
                     const previewUrls = Array.isArray(previewValue) ? previewValue : (previewValue ? [previewValue] : []);
                     const previewUrl = previewUrls[0] || getStudentProfileImageUrl(currentUrl);
                     const embedUrl = previewUrls.length ? '' : getStudentProfileEmbedUrl(currentUrl);
-                    const originalUrl = firstProfileDocumentUrl(currentUrl);
+                    const originalUrls = String(currentUrl || '')
+                      .split(/\s*,\s*|\n+/)
+                      .map(item => item.trim())
+                      .filter(Boolean);
+                    const originalUrl = originalUrls[0] || '';
                     const selectedFiles = Array.isArray(studentProfileImages[field.key])
                       ? studentProfileImages[field.key]
                       : (studentProfileImages[field.key] ? [studentProfileImages[field.key]] : []);
                     const selectedFile = selectedFiles[0];
-                    const canAddMoreImages = field.key === 'transcriptUrl';
+                    const canAddMoreImages = isTranscript;
+                    const hasExistingImage = Boolean(currentUrl);
+                    const showAddMoreImages = canAddMoreImages && (hasExistingImage || selectedFiles.length > 0);
+                    const transcriptPages = isTranscript
+                      ? [
+                          ...originalUrls.map((url, index) => ({
+                            key: `existing-${index}`,
+                            kind: 'existing',
+                            index,
+                            imageUrl: getStudentProfileImageUrl(url),
+                            openUrl: url
+                          })),
+                          ...previewUrls.map((url, index) => ({
+                            key: `selected-${index}`,
+                            kind: 'selected',
+                            index,
+                            imageUrl: url,
+                            openUrl: ''
+                          }))
+                        ]
+                      : [];
                     return (
                       <div key={field.key} className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
                         <div className="mb-2 flex items-center gap-1 text-[10px] font-black uppercase text-slate-500">
                           {field.label}
                           {isFieldPending && <span className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[8px] text-amber-700">Chờ duyệt</span>}
                         </div>
-                        <div className="aspect-[4/3] rounded-xl overflow-hidden border border-slate-100 bg-slate-50 flex items-center justify-center">
-                          {embedUrl ? (
-                            <iframe title={field.label} src={embedUrl} className="w-full h-full border-0 bg-white" loading="lazy" />
-                          ) : previewUrl ? (
-                            <img src={previewUrl} alt={field.label} className="w-full h-full object-cover" />
-                          ) : (
-                            <div className="text-center px-3 text-[11px] font-bold text-slate-400">
-                              Chưa có ảnh
-                            </div>
-                          )}
-                        </div>
+                        {isTranscript ? (
+                          <div className="aspect-[4/3] rounded-xl overflow-x-auto overflow-y-hidden border border-slate-100 bg-slate-50 flex snap-x snap-mandatory scroll-smooth">
+                            {transcriptPages.length ? (
+                              transcriptPages.map((page, pageIndex) => (
+                                <div key={page.key} className="relative min-w-full h-full snap-center flex items-center justify-center bg-slate-100">
+                                  <img src={page.imageUrl} alt={`${field.label} trang ${pageIndex + 1}`} className="w-full h-full object-cover" />
+                                  <div className="absolute left-2 top-2 rounded-full bg-slate-900/70 px-2 py-1 text-[10px] font-black text-white">
+                                    {pageIndex + 1}/{transcriptPages.length}
+                                  </div>
+                                  {page.openUrl && (
+                                    <a href={page.openUrl} target="_blank" rel="noreferrer" className="absolute bottom-2 right-2 rounded-full bg-white/95 px-2.5 py-1.5 text-[10px] font-black uppercase text-slate-700 shadow-sm">
+                                      Mở
+                                    </a>
+                                  )}
+                                  {!activeStudentIsReadOnly && (
+                                    <button
+                                      type="button"
+                                      onClick={() => page.kind === 'existing'
+                                        ? removeStudentProfileExistingDocumentPage(field.key, page.index)
+                                        : removeStudentProfileSelectedImage(field.key, page.index)}
+                                      className="absolute right-2 top-2 flex h-7 w-7 items-center justify-center rounded-full bg-rose-600 text-white shadow-lg"
+                                      title="Xóa trang này"
+                                    >
+                                      <X className="w-4 h-4" />
+                                    </button>
+                                  )}
+                                </div>
+                              ))
+                            ) : (
+                              <div className="min-w-full h-full flex items-center justify-center text-center px-3 text-[11px] font-bold text-slate-400">
+                                Chưa có ảnh
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <div className="aspect-[4/3] rounded-xl overflow-hidden border border-slate-100 bg-slate-50 flex items-center justify-center">
+                            {embedUrl ? (
+                              <iframe title={field.label} src={embedUrl} className="w-full h-full border-0 bg-white" loading="lazy" />
+                            ) : previewUrl ? (
+                              <img src={previewUrl} alt={field.label} className="w-full h-full object-cover" />
+                            ) : (
+                              <div className="text-center px-3 text-[11px] font-bold text-slate-400">
+                                Chưa có ảnh
+                              </div>
+                            )}
+                          </div>
+                        )}
                         <div className="mt-3 flex items-center justify-between gap-2">
                           <label className={`flex-1 cursor-pointer rounded-xl px-3 py-2 text-center text-[10px] font-black uppercase text-white shadow-sm ${isFieldPending ? 'bg-amber-500 hover:bg-amber-600' : 'bg-blue-600 hover:bg-blue-700'}`}>
-                            {selectedFile ? 'Đổi ảnh' : 'Chọn ảnh'}
+                            {selectedFile || hasExistingImage ? 'Đổi ảnh' : 'Chọn ảnh'}
                             <input
                               type="file"
                               accept="image/*"
                               multiple={canAddMoreImages}
+                              disabled={activeStudentIsReadOnly}
                               onChange={(event) => {
                                 if (canAddMoreImages) {
                                   applyStudentProfileImageFiles(field.key, event.target.files, false);
@@ -5500,19 +6030,20 @@ ${lessonBlocks}`;
                               className="hidden"
                             />
                           </label>
-                          {canAddMoreImages && selectedFiles.length > 0 && (
+                          {showAddMoreImages && (
                             <label className={`cursor-pointer rounded-xl border px-3 py-2 text-[10px] font-black uppercase ${isFieldPending ? 'border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100' : 'border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100'}`}>
-                              Thêm ảnh
+                              Thêm trang
                               <input
                                 type="file"
                                 accept="image/*"
                                 multiple
+                                disabled={activeStudentIsReadOnly}
                                 onChange={(event) => { applyStudentProfileImageFiles(field.key, event.target.files, true); event.target.value = null; }}
                                 className="hidden"
                               />
                             </label>
                           )}
-                          {originalUrl && (
+                          {!isTranscript && originalUrls.length === 1 && (
                             <a href={originalUrl} target="_blank" rel="noreferrer" className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-[10px] font-black uppercase text-slate-600 hover:text-blue-600">
                               Mở
                             </a>
@@ -5520,7 +6051,10 @@ ${lessonBlocks}`;
                         </div>
                         {selectedFile && (
                           <div className="mt-2 truncate text-[10px] font-bold text-emerald-700">
-                            {selectedFiles.length > 1 ? `Đã chọn: ${selectedFiles.length} ảnh, sẽ tự ghép khi gửi` : `Đã chọn: ${selectedFile.name}`}
+                            {selectedFiles.length > 1
+                              ? `Đã chọn: ${selectedFiles.length} ảnh, sẽ lưu từng trang khi gửi`
+                              : `Đã chọn: ${selectedFile.name}`}
+                            {studentProfileImageAppendModes[field.key] && hasExistingImage ? ' (thêm vào học bạ cũ)' : ''}
                           </div>
                         )}
                       </div>
@@ -5531,8 +6065,8 @@ ${lessonBlocks}`;
             </div>
             <div className="p-4 border-t bg-white flex flex-col sm:flex-row justify-end gap-2">
               <button type="button" onClick={() => setShowStudentProfileModal(false)} className="px-4 py-3 rounded-2xl bg-slate-100 text-slate-700 font-black">Hủy</button>
-              <button type="button" onClick={submitStudentProfileRequest} disabled={isSubmittingProfileRequest} className="px-5 py-3 rounded-2xl bg-blue-600 text-white font-black shadow-lg disabled:opacity-60 disabled:cursor-not-allowed">
-                {isSubmittingProfileRequest ? 'Đang gửi...' : (activeStudentPendingProfileRequests.length > 0 ? 'Cập nhật yêu cầu chờ duyệt' : 'Gửi yêu cầu sửa')}
+              <button type="button" onClick={submitStudentProfileRequest} disabled={isSubmittingProfileRequest || activeStudentIsReadOnly} className="px-5 py-3 rounded-2xl bg-blue-600 text-white font-black shadow-lg disabled:opacity-60 disabled:cursor-not-allowed">
+                {activeStudentIsReadOnly ? 'Chỉ xem hồ sơ' : (isSubmittingProfileRequest ? 'Đang gửi...' : (activeStudentPendingProfileRequests.length > 0 ? 'Cập nhật yêu cầu chờ duyệt' : 'Gửi yêu cầu sửa'))}
               </button>
             </div>
               </div>
@@ -5886,8 +6420,10 @@ ${lessonBlocks}`;
                   ? `${quizMeta.semesterLabel ? `${quizMeta.semesterLabel} ` : ''}${quizMeta.scoreLabel}`
                   : 'KT';
                 const quizDone = studentCompletedQuizLessonSet.has(String(l));
+                const journey = lessonJourneyMap[String(l)] || null;
+                const journeyPercent = Math.max(0, Math.min(100, Number(journey?.percent || 0)));
                 return (
-                <button key={l} onClick={() => setSelectedLesson(String(l))} className={`${wData.bg} border ${wData.border} shadow-sm rounded-xl py-2 sm:py-3 min-h-[46px] sm:min-h-[58px] flex flex-col items-center justify-center group transition-all active:scale-95 relative overflow-hidden`}>
+                <button key={l} onClick={() => setSelectedLesson(String(l))} className={`${wData.bg} border ${wData.border} shadow-sm rounded-xl py-2 sm:py-3 min-h-[50px] sm:min-h-[72px] flex flex-col items-center justify-center group transition-all active:scale-95 relative overflow-hidden`}>
                     {wData.isExam && <div className="absolute top-0 right-0 bg-white/50 w-full h-full z-0 rotate-45 scale-150 mix-blend-overlay hidden sm:block"></div>}
                     {quizLessonSet.has(String(l)) && (
                       <div className={`absolute top-1 left-1 sm:top-1.5 sm:left-1.5 z-20 bg-rose-500 text-white rounded-full w-5 h-5 sm:w-auto sm:h-auto sm:px-1.5 sm:py-1 shadow-md flex items-center justify-center sm:gap-1 ${role === 'student' && !quizDone ? 'animate-pulse ring-2 ring-rose-200' : ''}`} title={`${quizDone ? 'Da lam bai kiem tra' : 'Co bai kiem tra chua lam'}: ${quizBadgeLabel}`} aria-label={`${quizDone ? 'Da lam bai kiem tra' : 'Co bai kiem tra chua lam'}: ${quizBadgeLabel}`}>
@@ -5902,9 +6438,27 @@ ${lessonBlocks}`;
                        <span className={`text-[9px] font-black ${wData.isExam ? wData.text : 'text-slate-400'} mb-0.5 uppercase tracking-widest relative z-10`}>{wData.top}</span>
                        <span className={`${wData.isExam ? 'text-[15px]' : 'text-2xl'} font-black ${wData.text} ${wData.textHover} transition-colors tracking-tighter relative z-10`}>{wData.main}</span>
                     </div>
+                    {role === 'student' && journey && !wData.isExam && (
+                      <div className="absolute bottom-0 left-0 right-0 z-20">
+                        <div className="h-2 overflow-hidden bg-slate-300/90 shadow-inner">
+                          <div className={`h-full rounded-full transition-all ${journeyPercent >= 100 ? 'bg-emerald-500' : journey?.hasQuickQuiz ? 'bg-sky-500' : 'bg-blue-500'}`} style={{ width: `${journeyPercent}%` }} />
+                        </div>
+                      </div>
+                    )}
                 </button>
               )})}
             </div>
+            {role === 'student' && (
+              <div className="rounded-2xl border border-white/70 bg-white/85 px-4 py-3 shadow-sm">
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <div className="text-[11px] sm:text-xs font-black uppercase tracking-widest text-slate-500">Hành trình năm học</div>
+                  <div className={`text-xs font-black ${schoolYearJourneyPercent >= 100 ? 'text-emerald-700' : 'text-blue-700'}`}>{schoolYearJourneyPercent}%</div>
+                </div>
+                <div className="h-3 overflow-hidden rounded-full bg-slate-200 shadow-inner">
+                  <div className={`h-full rounded-full transition-all ${schoolYearJourneyPercent >= 100 ? 'bg-emerald-500' : 'bg-blue-500'}`} style={{ width: `${schoolYearJourneyPercent}%` }} />
+                </div>
+              </div>
+            )}
             {role === 'teacher' && (
               <div className="rounded-2xl border border-white/60 bg-white/85 p-3 sm:p-4 shadow-lg">
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
@@ -6096,12 +6650,47 @@ ${lessonBlocks}`;
                 )}
               </div>
 
-              {role === 'student' && sortedCurrentMaterials.length > 0 && (
+              {currentQuickQuizMaterials.length > 0 && (
+                <div className="border-t border-emerald-100 bg-emerald-50/55 px-4 py-2.5 sm:px-8 sm:py-3">
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                    <div className="flex shrink-0 items-center gap-2 text-emerald-900 font-black text-[11px] sm:text-xs uppercase tracking-tight">
+                      <ListChecks className="h-3.5 w-3.5" />
+                      Kiểm tra kiến thức nhanh
+                    </div>
+                    <div className="flex min-w-0 flex-wrap gap-2">
+                      {currentQuickQuizMaterials.map((m) => {
+                        const questionCount = m.quizData?.questions?.length || 10;
+                        return (
+                          <button
+                            key={m.id}
+                            type="button"
+                            onClick={() => openMaterial(m)}
+                            className="group flex max-w-full items-center gap-2 rounded-full border border-emerald-200 bg-white px-3 py-2 text-left shadow-sm transition-all hover:border-emerald-400 hover:bg-emerald-50 active:scale-[0.99]"
+                          >
+                            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-100 text-emerald-700">
+                              <ListChecks className="h-4 w-4" />
+                            </span>
+                            <span className="min-w-0">
+                              <span className="block truncate text-xs sm:text-sm font-black text-emerald-950">{m.title || 'Hỏi đáp nhanh'}</span>
+                              <span className="block truncate text-[10px] sm:text-[11px] font-bold text-emerald-700">
+                                {role === 'teacher' ? `${questionCount} câu và đáp án` : `${questionCount} câu, đạt 8/10`}
+                              </span>
+                            </span>
+                            <ChevronRight className="h-4 w-4 shrink-0 text-emerald-500 transition-transform group-hover:translate-x-0.5" />
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {role === 'student' && sortedCurrentStudyMaterials.length > 0 && (
                 <div className="bg-slate-50/70 border-t border-slate-200 px-4 py-3 sm:px-8 sm:py-4">
                   <div className="flex items-center gap-2 mb-2 text-blue-800 font-black text-xs sm:text-sm uppercase tracking-tight"><LinkIcon className="w-4 h-4" /> {'T\u00e0i li\u1ec7u \u0111\u00ednh k\u00e8m'}</div>
                   <div className="flex flex-wrap gap-2">
-                    {sortedCurrentMaterials.map((m) => (
-                      <button key={m.id} onClick={() => { if(window.innerWidth >= 640) window.open(m.url, '_blank', 'noopener,noreferrer'); else setViewingMaterial(m); }} className="bg-white border border-blue-100 rounded-full px-3 py-2 flex items-center gap-2 shadow-sm text-left max-w-full">
+                    {sortedCurrentStudyMaterials.map((m) => (
+                      <button key={m.id} onClick={() => openMaterial(m)} className={`bg-white border rounded-full px-3 py-2 flex items-center gap-2 shadow-sm text-left max-w-full ${m.type === 'quick_quiz' ? 'border-emerald-200 text-emerald-800' : 'border-blue-100'}`}>
                         <span className="w-5 h-5 flex items-center justify-center">{renderIcon(m.type)}</span>
                         <span className="text-[11px] sm:text-xs font-bold text-slate-700 truncate max-w-[210px]">{m.title}</span>
                       </button>
@@ -6153,14 +6742,14 @@ ${lessonBlocks}`;
                     </div>
                   )}
                   
-                  {sortedCurrentMaterials.length === 0 ? (
+                  {sortedCurrentStudyMaterials.length === 0 ? (
                     <div className="text-center py-2 sm:py-8 border border-dashed sm:border-2 border-slate-200 rounded-xl sm:rounded-2xl bg-white/50"><p className="text-[10px] sm:text-xs text-slate-400 font-bold italic">Chưa có tài liệu đính kèm.</p></div>
                   ) : (
                     <div className="flex flex-wrap gap-1.5 sm:gap-2 mt-1 sm:mt-2">
-                      {sortedCurrentMaterials.map((m) => (
+                      {sortedCurrentStudyMaterials.map((m) => (
                         <div key={m.id} className="bg-white border border-slate-200 rounded-full px-2 sm:px-3 py-0.5 sm:py-1.5 flex items-center gap-1 sm:gap-2 shadow-sm group hover:border-blue-400 transition-all">
-                          <button onClick={() => { if (window.innerWidth >= 640) { window.open(m.url, '_blank', 'noopener,noreferrer'); } else { setViewingMaterial(m); } }} className="flex items-center gap-1.5 focus:outline-none text-left">
-                            {m.type === 'pdf' ? <FileText className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-red-500" /> : m.type === 'ppt' ? <MonitorPlay className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-orange-500" /> : m.type === 'image' ? <ImageIcon className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-green-500" /> : <LinkIcon className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-blue-500" />}
+                          <button onClick={() => openMaterial(m)} className="flex items-center gap-1.5 focus:outline-none text-left">
+                            {m.type === 'quick_quiz' ? <ListChecks className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-emerald-600" /> : m.type === 'pdf' ? <FileText className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-red-500" /> : m.type === 'ppt' ? <MonitorPlay className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-orange-500" /> : m.type === 'image' ? <ImageIcon className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-green-500" /> : <LinkIcon className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-blue-500" />}
                             <span className="text-[9px] sm:text-[11px] font-bold text-slate-700 group-hover:text-blue-600 truncate max-w-[96px] sm:max-w-[200px]">{m.title}</span>
                           </button>
                           <div className="w-px h-3 bg-slate-200 mx-0.5"></div>
@@ -6182,7 +6771,7 @@ ${lessonBlocks}`;
                       setShowQuizEditor(true);
                       requestAnimationFrame(() => document.getElementById('quiz-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
                     }}
-                    className="h-11 rounded-2xl bg-emerald-600 text-white text-[11px] font-black uppercase shadow-sm flex items-center justify-center gap-1.5 active:scale-95"
+                    className="h-11 rounded-2xl bg-rose-500 text-white text-[11px] font-black uppercase shadow-sm flex items-center justify-center gap-1.5 active:scale-95"
                   >
                     <CheckCircle2 className="w-4 h-4" /> Bài kiểm tra
                   </button>
@@ -6200,22 +6789,23 @@ ${lessonBlocks}`;
             {/* TÀI LIỆU ĐÃ GHIM (DÀNH CHO HỌC SINH) */}
 
             {(role === 'teacher' || studentCurrentQuizVisible) && (
-              <div id="quiz-section" className="quiz-panel bg-white/95 rounded-2xl sm:rounded-[2rem] shadow-xl border border-emerald-100 overflow-hidden">
-                <div className="w-full px-4 sm:px-6 py-3 sm:py-4 bg-emerald-50/80 border-b border-emerald-100 flex items-center justify-between gap-3">
-                  <button type="button" onClick={() => { if (role === 'teacher') { setShowQuizEditor(prev => { const next = !prev; if (!next) setShowQuizToolbar(false); return next; }); return; } setShowStudentQuizPanel(prev => !prev); }} className="flex-1 text-left font-black text-emerald-800 text-xs sm:text-sm uppercase tracking-tight flex items-center gap-2"><CheckCircle2 className="w-4 h-4 sm:w-5 sm:h-5" /> {role === 'teacher' ? 'B\u00e0i ki\u1ec3m tra' : 'B\u00e0i ki\u1ec3m tra'}</button>
+              <div id="quiz-section" className="quiz-panel bg-white/95 rounded-2xl sm:rounded-[2rem] shadow-xl border border-rose-100 overflow-hidden">
+                <div className="w-full px-4 sm:px-6 py-3 sm:py-4 bg-rose-50/75 border-b border-rose-100 flex items-center justify-between gap-3">
+                  <button type="button" onClick={() => { if (role === 'teacher') { setShowQuizEditor(prev => { const next = !prev; if (!next) setShowQuizToolbar(false); return next; }); return; } setShowStudentQuizPanel(prev => !prev); }} className="flex-1 text-left font-black text-rose-800 text-xs sm:text-sm uppercase tracking-tight flex items-center gap-2"><CheckCircle2 className="w-4 h-4 sm:w-5 sm:h-5" /> {activeSelfQuiz ? `Bài kiểm tra - làm ${activeSelfQuizQuestionCount} câu` : 'Bài kiểm tra'}</button>
                   {role === 'teacher' && (
                     <div className="flex items-center gap-2">
-                      <button type="button" onClick={(e) => { e.stopPropagation(); openQuickQuizPreview(); }} disabled={!quizHasQuickContent} className="h-9 px-3 rounded-xl bg-white text-emerald-700 border border-emerald-200 text-[10px] sm:text-xs font-black uppercase shadow-sm flex items-center justify-center gap-1.5 hover:bg-emerald-600 hover:text-white disabled:opacity-40 disabled:hover:bg-white disabled:hover:text-emerald-700">
-                        <FileText className="w-3.5 h-3.5" /> <span className="hidden sm:inline">Xem đề nhanh</span><span className="sm:hidden">Xem đề</span>
+                      {activeSelfQuiz && <span className="hidden sm:inline-flex h-9 items-center rounded-xl border border-rose-200 bg-white px-3 text-[10px] font-black uppercase text-rose-700 shadow-sm">Đã phát {activeSelfQuizQuestionCount} câu</span>}
+                      <button type="button" onClick={(e) => { e.stopPropagation(); openQuickQuizPreview(); }} disabled={!quizHasQuickContent} className="h-9 px-3 rounded-xl bg-white text-rose-700 border border-rose-200 text-[10px] sm:text-xs font-black uppercase shadow-sm flex items-center justify-center gap-1.5 hover:bg-rose-500 hover:text-white disabled:opacity-40 disabled:hover:bg-white disabled:hover:text-rose-700">
+                        <FileText className="w-3.5 h-3.5" /> <span className="hidden sm:inline">Xem đề kiểm tra</span><span className="sm:hidden">Xem đề</span>
                       </button>
-                      {showQuizEditor ? <ChevronUp className="w-5 h-5 text-emerald-700" /> : <ChevronDown className="w-5 h-5 text-emerald-700" />}
+                      {showQuizEditor ? <ChevronUp className="w-5 h-5 text-rose-700" /> : <ChevronDown className="w-5 h-5 text-rose-700" />}
                     </div>
                   )}
                   {role !== 'teacher' && studentCurrentQuizVisible && (
                     <div className="flex items-center gap-2">
-                      <ChevronDown className={`w-5 h-5 text-emerald-700 transition-transform ${showStudentQuizPanel ? 'rotate-180' : ''}`} />
-                      {showStudentQuizPanel && (
-                        <button type="button" onClick={(e) => { e.stopPropagation(); setShowStudentQuizPanel(false); }} className="w-8 h-8 rounded-full bg-white text-emerald-700 border border-emerald-100 shadow-sm flex items-center justify-center active:scale-95" aria-label="Đóng bài kiểm tra">
+                      <ChevronDown className={`w-5 h-5 text-rose-700 transition-transform ${showStudentQuizPanel ? 'rotate-180' : ''}`} />
+                      {showStudentQuizPanel && !activeSelfQuizPassingPercent && (
+                        <button type="button" onClick={(e) => { e.stopPropagation(); setShowStudentQuizPanel(false); }} className="w-8 h-8 rounded-full bg-white text-rose-700 border border-rose-100 shadow-sm flex items-center justify-center active:scale-95" aria-label="Đóng bài kiểm tra">
                           <X className="w-4 h-4" />
                         </button>
                       )}
@@ -6420,49 +7010,53 @@ ${lessonBlocks}`;
                   </div>)}
                 {role !== 'teacher' && studentCurrentQuizVisible && showStudentQuizPanel && (
                   activeSelfQuiz ? (
-                    <div ref={studentQuizContentRef} className="student-quiz-viewport p-4 sm:p-8 student-content space-y-4">
-                      <div className="bg-emerald-50 border border-emerald-100 rounded-2xl p-4 pr-14 relative">
-                        <button type="button" onClick={() => setShowStudentQuizPanel(false)} className="absolute right-3 top-3 w-9 h-9 rounded-full bg-white text-emerald-700 border border-emerald-100 shadow-sm flex items-center justify-center active:scale-95" aria-label="Đóng bài kiểm tra">
+                    <div ref={studentQuizContentRef} className="student-quiz-viewport p-3 sm:p-5 student-content space-y-3">
+                      <div className="bg-white border border-rose-100 rounded-2xl px-3 py-3 sm:px-4 relative shadow-sm">
+                        <button type="button" onClick={() => setShowStudentQuizPanel(false)} className="absolute right-2.5 top-2.5 w-8 h-8 rounded-full bg-rose-50 text-rose-700 border border-rose-100 flex items-center justify-center active:scale-95" aria-label="Đóng bài kiểm tra">
                           <X className="w-4 h-4" />
                         </button>
-                        <h4 className="font-black text-emerald-900 text-base sm:text-lg uppercase">Làm bài trắc nghiệm tự chấm</h4>
-                        <p className="text-xs sm:text-sm text-emerald-700 font-bold mt-1">Học sinh nhập họ tên, chọn đáp án rồi bấm nộp bài. Điểm sẽ được lưu cho giáo viên.</p>
+                        <div className="pr-10 flex flex-wrap items-center gap-2">
+                          <h4 className="font-black text-rose-900 text-sm sm:text-base uppercase">Trắc nghiệm tự chấm</h4>
+                          <span className="rounded-full border border-rose-100 bg-rose-50 px-2.5 py-1 text-[10px] font-black uppercase text-rose-700">
+                            {studentAnsweredSelfQuizCount}/{activeSelfQuizQuestionCount} câu
+                          </span>
+                          {studentReviewQuizResult && activeSelfQuiz.showScoreAfterSubmit !== false && (
+                            <span className="rounded-full border border-emerald-100 bg-emerald-50 px-2.5 py-1 text-[10px] font-black uppercase text-emerald-700">
+                              Điểm {formatPointScore(getSelfQuizScorePoint(studentReviewQuizResult))}
+                            </span>
+                          )}
+                        </div>
+                        <p className="mt-1.5 pr-10 text-[11px] sm:text-xs text-slate-500 font-bold">Nhập họ tên, chọn đáp án rồi nộp bài. Điểm được lưu cho giáo viên.</p>
                       </div>
-                      <div className="rounded-2xl border border-rose-100 bg-rose-50 px-4 py-3 text-xs sm:text-sm font-black text-rose-700">
+                      <div className="rounded-xl border border-amber-100 bg-amber-50/80 px-3 py-2 text-[11px] sm:text-xs font-bold text-amber-800">
                         Lưu ý: Khi đang làm trắc nghiệm, nếu em thoát khỏi trang, chuyển tab hoặc chuyển ứng dụng, hệ thống sẽ tự nộp phần bài đã làm. Câu chưa chọn sẽ tính là chưa làm.
                       </div>
-                      <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-3">
-                        <input ref={studentQuizNameRef} value={studentQuizName} onChange={(e) => { setStudentQuizName(e.target.value); if (studentQuizWarning) setStudentQuizWarning(''); }} disabled={studentSelfQuizSubmitted} placeholder="Nhập họ tên..." className="w-full border border-slate-200 rounded-xl px-4 py-3 font-bold text-sm focus:outline-none focus:border-emerald-400 disabled:opacity-60" />
-                        {studentReviewQuizResult && activeSelfQuiz.showScoreAfterSubmit !== false && (
-                          <div className="bg-white border border-emerald-100 rounded-xl px-4 py-3 font-black text-emerald-700 text-center">
-                            Điểm: {formatPointScore(getSelfQuizScorePoint(studentReviewQuizResult))}
-                          </div>
-                        )}
-                      </div>
+                      <input ref={studentQuizNameRef} value={studentQuizName} onChange={(e) => { setStudentQuizName(e.target.value); if (studentQuizWarning) setStudentQuizWarning(''); }} disabled={studentSelfQuizSubmitted || activeStudentIsReadOnly} placeholder="Nhập họ tên..." className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 font-bold text-sm focus:outline-none focus:border-rose-300 disabled:opacity-60" />
                       {studentQuizWarning && (
-                        <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-xs sm:text-sm font-black text-rose-700">
+                        <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-black text-rose-700">
                           {studentQuizWarning}
                         </div>
                       )}
-                      <div className="space-y-3">
+                      <div className="space-y-2.5">
                         {shuffledSelfQuizQuestions.map((q, qIndex) => (
-                          <div key={q.id} className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">
-                            <div className="flex gap-3">
-                              <div className="w-8 h-8 rounded-xl bg-rose-100 text-rose-700 font-black text-xs flex items-center justify-center flex-shrink-0">{qIndex + 1}</div>
+                          <div key={q.id} className="bg-white border border-slate-200 rounded-2xl p-3 shadow-sm">
+                            <div className="flex gap-2.5">
+                              <div className="w-7 h-7 rounded-lg bg-rose-50 text-rose-700 font-black text-xs flex items-center justify-center flex-shrink-0 border border-rose-100">{qIndex + 1}</div>
                               <div className="flex-1 min-w-0">
-                                <div className="font-black text-slate-800 text-sm sm:text-base whitespace-pre-wrap">{q.text}</div>
-                                <div className="mt-3 grid grid-cols-1 gap-2">
+                                <div className="font-black text-slate-800 text-sm whitespace-pre-wrap leading-snug">{q.text}</div>
+                                <div className="mt-2 grid grid-cols-1 gap-1.5">
                                   {q.displayOptions.map((opt, optIndex) => {
                                     const checked = studentQuizAnswers[q.id] === opt.id;
-                                    const submitted = studentSelfQuizSubmitted;
+                                    const submitted = studentSelfQuizSubmitted || activeStudentIsReadOnly;
+                                    const showCorrection = submitted || !!studentQuizResult?.needsRetake;
                                     const isCorrectOption = opt.id === q.correctOptionId;
-                                    const isWrongSelection = submitted && checked && !isCorrectOption;
+                                    const isWrongSelection = showCorrection && checked && !isCorrectOption;
                                     const label = String.fromCharCode(65 + optIndex);
                                     return (
-                                      <label key={opt.id} className={`flex items-start gap-3 rounded-xl border p-3 transition-all ${isCorrectOption && submitted ? 'bg-emerald-50 border-emerald-300 text-emerald-900' : isWrongSelection ? 'bg-rose-50 border-rose-300 text-rose-900' : checked ? 'bg-blue-50 border-blue-300 text-blue-900' : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-blue-50'} ${submitted ? 'cursor-default' : 'cursor-pointer'}`}>
-                                        <input type="radio" name={`student-${q.id}`} checked={checked} disabled={submitted} onChange={() => { setStudentQuizAnswers(prev => ({ ...prev, [q.id]: opt.id })); if (studentQuizWarning) setStudentQuizWarning(''); }} className="mt-1" />
-                                        <span className="font-black text-xs bg-white border border-slate-200 rounded-lg w-7 h-7 flex items-center justify-center flex-shrink-0">{label}</span>
-                                        <span className="text-sm font-bold whitespace-pre-wrap flex-1">{opt.text}</span>
+                                      <label key={opt.id} className={`flex items-start gap-2 rounded-xl border px-2.5 py-2 transition-all ${isCorrectOption && showCorrection ? 'bg-emerald-50 border-emerald-300 text-emerald-900' : isWrongSelection ? 'bg-rose-50 border-rose-300 text-rose-900' : checked ? 'bg-rose-50 border-rose-300 text-rose-900' : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-rose-50'} ${submitted ? 'cursor-default' : 'cursor-pointer'}`}>
+                                        <input type="radio" name={`student-${q.id}`} checked={checked} disabled={submitted} onChange={() => { setStudentQuizAnswers(prev => ({ ...prev, [q.id]: opt.id })); if (studentQuizResult?.needsRetake) setStudentQuizResult(null); if (studentQuizWarning) setStudentQuizWarning(''); }} className="mt-1 h-3.5 w-3.5" />
+                                        <span className="font-black text-[11px] bg-white border border-slate-200 rounded-md w-6 h-6 flex items-center justify-center flex-shrink-0">{label}</span>
+                                        <span className="text-sm font-bold whitespace-pre-wrap flex-1 leading-snug">{opt.text}</span>
                                         {submitted && isCorrectOption && <span className="text-[10px] font-black text-emerald-700 uppercase">Đúng</span>}
                                         {isWrongSelection && <span className="text-[10px] font-black text-rose-700 uppercase">Sai</span>}
                                       </label>
@@ -6474,10 +7068,10 @@ ${lessonBlocks}`;
                           </div>
                         ))}
                       </div>
-                      <div className="flex flex-col sm:flex-row gap-3 justify-end">
-                        <button type="button" onClick={handleSubmitSelfQuiz} disabled={isSubmittingSelfQuiz || studentSelfQuizSubmitted || !canWriteCurrentSchoolYear} className="px-5 py-3 bg-rose-600 text-white rounded-xl text-xs font-black uppercase shadow-md flex items-center justify-center gap-2 disabled:opacity-50">
+                      <div className="flex flex-col sm:flex-row gap-2 justify-end">
+                        <button type="button" onClick={handleSubmitSelfQuiz} disabled={isSubmittingSelfQuiz || studentSelfQuizSubmitted || !canWriteCurrentSchoolYear || activeStudentIsReadOnly} className="px-4 py-2.5 bg-rose-600 text-white rounded-xl text-xs font-black uppercase shadow-md flex items-center justify-center gap-2 disabled:opacity-50">
                           {isSubmittingSelfQuiz ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
-                          {!canWriteCurrentSchoolYear ? 'Năm học đã khóa' : (studentSelfQuizSubmitted ? 'Đã nộp trắc nghiệm' : 'Nộp trắc nghiệm')}
+                          {activeStudentIsReadOnly ? 'Chỉ xem' : (!canWriteCurrentSchoolYear ? 'Năm học đã khóa' : (studentSelfQuizSubmitted ? 'Đã nộp trắc nghiệm' : 'Nộp trắc nghiệm'))}
                         </button>
                       </div>
                       {studentEssayText && (
@@ -6742,7 +7336,7 @@ ${lessonBlocks}`;
                                   Đáp án: {String(answer.correctOptionId || '-').toUpperCase()}
                                 </span>
                                 <span className="px-2.5 py-1 rounded-full bg-slate-50 text-slate-600 border border-slate-200">
-                                  Điểm: {formatPointScore(answer.isCorrect ? 0.25 : 0)}
+                                  Điểm: {formatPointScore(getSelfQuizAnswerPoint(answer, studentReviewQuizResult))}
                                 </span>
                               </div>
                             </div>
@@ -6786,7 +7380,7 @@ ${lessonBlocks}`;
                     </div>
                     <div>
                        <label className="block text-[10px] sm:text-xs font-black text-slate-400 uppercase tracking-widest mb-2">Họ và Tên của em:</label>
-                       <input ref={studentSubmitNameRef} type="text" placeholder="Nhập họ tên..." value={studentName} onChange={(e) => setStudentName(e.target.value)} disabled={studentEssaySubmitted} className="w-full bg-slate-50 border border-slate-200 px-4 py-3 sm:px-5 sm:py-4 rounded-xl focus:outline-none focus:ring-4 focus:ring-sky-50 focus:border-sky-300 font-bold text-sm sm:text-lg text-slate-800 transition-all disabled:opacity-60" />
+                       <input ref={studentSubmitNameRef} type="text" placeholder="Nhập họ tên..." value={studentName} onChange={(e) => setStudentName(e.target.value)} disabled={studentEssaySubmitted || activeStudentIsReadOnly} className="w-full bg-slate-50 border border-slate-200 px-4 py-3 sm:px-5 sm:py-4 rounded-xl focus:outline-none focus:ring-4 focus:ring-sky-50 focus:border-sky-300 font-bold text-sm sm:text-lg text-slate-800 transition-all disabled:opacity-60" />
                     </div>
                     <div>
                        <label className="block text-[10px] sm:text-xs font-black text-slate-400 uppercase tracking-widest mb-2">Chọn tệp tin hoặc hình ảnh bài làm:</label>
@@ -6796,7 +7390,7 @@ ${lessonBlocks}`;
                               <span className="text-xs sm:text-sm font-black text-sky-800 text-left min-w-0 flex-1 truncate">{submissionFile ? submissionFile.name : "Nhấp vào đây để chọn tệp"}</span>
                               <span className="hidden sm:inline text-[10px] text-slate-400 font-black uppercase tracking-wider whitespace-nowrap">Hỗ trợ Ảnh, Word, PDF... (Dưới 25MB)</span>
                           </label>
-                          <input id="student-file-upload" type="file" className="hidden" disabled={studentEssaySubmitted} onClick={markSubmissionFilePickerActive} onChange={(e) => { handleSelectSubmissionFile(e.target.files?.[0]); e.target.value = null; }} />
+                          <input id="student-file-upload" type="file" className="hidden" disabled={studentEssaySubmitted || activeStudentIsReadOnly} onClick={markSubmissionFilePickerActive} onChange={(e) => { handleSelectSubmissionFile(e.target.files?.[0]); e.target.value = null; }} />
                        </div>
                        {submissionFile && (
                           <div className="mt-3 rounded-2xl border border-emerald-100 bg-emerald-50 p-3 space-y-3">
@@ -6825,8 +7419,8 @@ ${lessonBlocks}`;
                     {studentEssaySubmitted && <div className={`p-3 sm:p-4 rounded-xl font-black text-[11px] sm:text-sm text-center ${studentSavedHandwrittenSubmission?.status === 'left_page' ? 'bg-rose-100 text-rose-800' : 'bg-emerald-100 text-emerald-800'}`}>{studentSavedHandwrittenSubmission?.status === 'left_page' ? 'Em đã thoát ra ngoài nên bài tự luận đã bị khóa. Hãy báo giáo viên nếu cần mở lại.' : 'Em đã nộp bài tự luận rồi. Mỗi học sinh chỉ nộp 1 lần.'}</div>}
                     {submissionStatus && <div className={`p-3 sm:p-4 rounded-xl font-black text-[11px] sm:text-sm text-center animate-in slide-in-from-top-2 duration-300 ${submissionStatus.includes('thành công') || submissionStatus.includes('Đã gửi') ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'}`}>{submissionStatus}</div>}
                     <div className="flex justify-center">
-                       <button onClick={handleStudentSubmit} disabled={isSubmittingWork || studentEssaySubmitted || !canWriteCurrentSchoolYear} className="w-full px-5 py-3 sm:py-4 bg-sky-600 text-white rounded-xl font-black shadow-md flex items-center justify-center gap-2 hover:bg-sky-700 transition-all active:scale-95 text-xs sm:text-base uppercase tracking-widest disabled:opacity-50">
-                          {!canWriteCurrentSchoolYear ? 'NĂM HỌC ĐÃ KHÓA' : studentEssaySubmitted ? 'ĐÃ NỘP TỰ LUẬN' : isSubmittingWork ? <><Loader2 className="w-5 h-5 animate-spin" /> ĐANG GỬI...</> : 'BẮT ĐẦU NỘP BÀI'}
+                       <button onClick={handleStudentSubmit} disabled={isSubmittingWork || studentEssaySubmitted || !canWriteCurrentSchoolYear || activeStudentIsReadOnly} className="w-full px-5 py-3 sm:py-4 bg-sky-600 text-white rounded-xl font-black shadow-md flex items-center justify-center gap-2 hover:bg-sky-700 transition-all active:scale-95 text-xs sm:text-base uppercase tracking-widest disabled:opacity-50">
+                          {activeStudentIsReadOnly ? 'CHỈ XEM' : (!canWriteCurrentSchoolYear ? 'NĂM HỌC ĐÃ KHÓA' : studentEssaySubmitted ? 'ĐÃ NỘP TỰ LUẬN' : isSubmittingWork ? <><Loader2 className="w-5 h-5 animate-spin" /> ĐANG GỬI...</> : 'BẮT ĐẦU NỘP BÀI')}
                        </button>
                     </div>
                  </div>
@@ -6974,16 +7568,16 @@ ${lessonBlocks}`;
                   <label className="block text-xs font-black text-slate-400 uppercase tracking-widest mb-3">Chọn mẫu nhanh</label>
                   <select className="sm:hidden w-full bg-white border-2 border-slate-100 rounded-2xl px-4 py-3 mb-3 text-xs font-black text-slate-700 uppercase" defaultValue="" onChange={(e) => handleAiPromptTemplateSelect(e.target.value)}>
                     <option value="" disabled>Chọn mẫu nhanh</option>
-                    <option value="Hay tao 5 cau hoi trac nghiem co 4 dap an A, B, C, D va 1 bai tap tu luan ngan dua tren noi dung bai hoc. Kem dap an va bieu diem ro tung cau/tung y.">5 TN + 1 bài tập</option>
+                    <option value="Hay tao 40 cau hoi trac nghiem nhanh co 4 dap an A, B, C, D dua tren noi dung bai hoc. Chi tao trac nghiem, khong tao tu luan. Kem dap an A/B/C/D ro tung cau. He thong se rut 10 cau bat ky cho hoc sinh lam.">40 câu, rút 10</option>
                     <option value="Hay tao 10 cau hoi trac nghiem co 4 dap an A, B, C, D, phan hoa tu nhan biet den van dung. Kem dap an va bieu diem ro tung cau/tung y.">10 câu trắc nghiệm</option>
-                    <option value="Hay tao de kiem tra 15 phut gom 8 cau trac nghiem va 2 cau tu luan ngan. Kem dap an va bieu diem ro tung cau/tung y.">Đề kiểm tra 15 phút</option>
+                    <option value="Hay tao 10 cau trac nghiem van dung nhe, co 4 dap an A, B, C, D. Chi tao trac nghiem, kem dap an A/B/C/D ro tung cau.">10 câu vận dụng nhẹ</option>
                     <option value="Hay tao bo cau hoi on tap kiem tra 1 tiet, bao quat cac bai da chon, gom trac nghiem va tu luan. Sap xep theo muc do de den kho, kem dap an va bieu diem ro tung cau/tung y.">Ôn tập kiểm tra 1 tiết</option>
                   </select>
                   <div className="hidden sm:grid grid-cols-2 gap-2 mb-4">
                     {[
-                      { label: '5 TN + 1 bài tập', text: 'Hãy tạo 5 câu hỏi trắc nghiệm có 4 đáp án A, B, C, D và 1 bài tập tự luận ngắn dựa trên nội dung bài học. Chỉ soạn đề, kèm đáp án và biểu điểm rõ từng câu/từng ý.' },
+                      { label: '40 câu, rút 10', text: 'Hãy tạo 40 câu hỏi trắc nghiệm nhanh có 4 đáp án A, B, C, D dựa trên nội dung bài học. Chỉ tạo trắc nghiệm, không tạo tự luận. Kèm đáp án A/B/C/D rõ từng câu. Hệ thống sẽ rút 10 câu bất kỳ cho học sinh làm.' },
                       { label: '10 câu trắc nghiệm', text: 'Hãy tạo 10 câu hỏi trắc nghiệm có 4 đáp án A, B, C, D, phân hóa từ nhận biết đến vận dụng. Chỉ soạn đề, kèm đáp án và biểu điểm rõ từng câu/từng ý.' },
-                      { label: 'Đề kiểm tra 15 phút', text: 'Hãy tạo đề kiểm tra 15 phút gồm 8 câu trắc nghiệm và 2 câu tự luận ngắn. Chỉ soạn đề cho học sinh làm, kèm đáp án và biểu điểm rõ từng câu/từng ý.' },
+                      { label: '10 câu vận dụng nhẹ', text: 'Hãy tạo 10 câu trắc nghiệm vận dụng nhẹ có 4 đáp án A, B, C, D. Chỉ tạo trắc nghiệm, không tạo tự luận. Kèm đáp án A/B/C/D rõ từng câu.' },
                       { label: 'Ôn tập kiểm tra 1 tiết', text: 'Hãy tạo bộ câu hỏi ôn tập kiểm tra 1 tiết, bao quát các bài đã chọn, gồm trắc nghiệm và tự luận. Sắp xếp theo mức độ dễ đến khó, kèm đáp án và biểu điểm rõ từng câu/từng ý.' }
                     ].map(template => (
                       <button key={template.label} type="button" onClick={() => setAiPrompt(template.text)} className={`text-left border-2 rounded-2xl px-4 py-3 transition-all ${aiPrompt === template.text ? 'bg-indigo-100 border-indigo-400 shadow-md ring-2 ring-indigo-50' : 'bg-white hover:bg-indigo-50 border-slate-100 hover:border-indigo-200'}`}>
@@ -7011,8 +7605,8 @@ ${lessonBlocks}`;
                 <div className="bg-white border-4 border-emerald-50 rounded-3xl p-4 sm:p-8 shadow-xl">
                   <div ref={aiResponseContentRef} className="ai-response-content prose prose-lg sm:prose-xl max-w-none font-medium leading-relaxed" dangerouslySetInnerHTML={{ __html: formatAiText(aiResponse) }} />
                   <div className="mt-6 grid grid-cols-1 sm:flex sm:justify-end gap-3 border-t-4 border-slate-50 pt-6">
-                    <button onClick={appendAiToQuiz} className="bg-indigo-600 text-white px-6 py-4 rounded-2xl font-black flex items-center justify-center gap-3 shadow-lg hover:bg-indigo-700 transition-all active:scale-95"><CheckCircle2 className="w-5 h-5" />Chuyển vào bài kiểm tra</button>
-                    <button onClick={appendAiToEditor} className="bg-emerald-600 text-white px-6 py-4 rounded-2xl font-black flex items-center justify-center gap-3 shadow-lg hover:bg-emerald-700 transition-all active:scale-95"><Save className="w-5 h-5" />Chèn vào bài học</button>
+                    <button onClick={appendAiToQuickQuiz} className="bg-emerald-600 text-white px-6 py-4 rounded-2xl font-black flex items-center justify-center gap-3 shadow-lg hover:bg-emerald-700 transition-all active:scale-95"><Save className="w-5 h-5" />Phát hỏi đáp nhanh</button>
+                    <button onClick={appendAiToQuiz} className="bg-indigo-600 text-white px-6 py-4 rounded-2xl font-black flex items-center justify-center gap-3 shadow-lg hover:bg-indigo-700 transition-all active:scale-95"><CheckCircle2 className="w-5 h-5" />Đưa vào khung đề</button>
                   </div>
                 </div>
               )}
@@ -7026,25 +7620,61 @@ ${lessonBlocks}`;
         <div className="fixed inset-0 bg-slate-900/95 backdrop-blur-xl z-[70] flex flex-col animate-in fade-in duration-300">
           <div className="flex items-center justify-between px-4 sm:px-8 py-4 sm:py-5 bg-slate-900 text-white border-b border-white/10 shadow-2xl">
             <div className="flex items-center space-x-3 sm:space-x-5 flex-1 truncate">
-              <div className="hidden sm:block bg-white/10 p-3 rounded-2xl border border-white/20"><FileText className="w-7 h-7 text-blue-400" /></div>
+              <div className="hidden sm:block bg-white/10 p-3 rounded-2xl border border-white/20">{viewingMaterial.type === 'quick_quiz' ? <ListChecks className="w-7 h-7 text-emerald-300" /> : <FileText className="w-7 h-7 text-blue-400" />}</div>
               <h3 className="font-black text-lg sm:text-2xl truncate tracking-tight">{viewingMaterial.title}</h3>
             </div>
             <div className="flex items-center space-x-2 sm:space-x-4">
-              <button onClick={() => handleCopyLink(viewingMaterial.url)} className="bg-white/10 p-3 sm:px-6 sm:py-3 rounded-xl sm:rounded-2xl font-black text-xs border border-white/10 flex items-center gap-2.5 transition-all hover:bg-white/20 uppercase tracking-widest active:scale-95"><Copy className="w-4 h-4 sm:w-5 sm:h-5" /><span className="hidden sm:inline">Copy Link</span></button>
-              <a href={isYouTubeUrl(viewingMaterial.url) ? getYouTubeWatchUrl(viewingMaterial.url) : viewingMaterial.url} target="_blank" rel="noopener noreferrer" className="bg-blue-600 p-3 sm:px-8 sm:py-3 rounded-xl sm:rounded-2xl font-black text-xs shadow-2xl border-b-4 border-blue-800 flex items-center gap-2.5 hover:bg-blue-500 transition-all uppercase tracking-widest active:scale-95"><ExternalLink className="w-4 h-4 sm:w-5 sm:h-5" /><span className="hidden sm:inline">{isYouTubeUrl(viewingMaterial.url) ? 'Mở YouTube' : 'Tải về máy'}</span></a>
+              {viewingMaterial.type !== 'quick_quiz' && <button onClick={() => handleCopyLink(viewingMaterial.url)} className="bg-white/10 p-3 sm:px-6 sm:py-3 rounded-xl sm:rounded-2xl font-black text-xs border border-white/10 flex items-center gap-2.5 transition-all hover:bg-white/20 uppercase tracking-widest active:scale-95"><Copy className="w-4 h-4 sm:w-5 sm:h-5" /><span className="hidden sm:inline">Copy Link</span></button>}
+              {viewingMaterial.type !== 'quick_quiz' && <a href={isYouTubeUrl(viewingMaterial.url) ? getYouTubeWatchUrl(viewingMaterial.url) : viewingMaterial.url} target="_blank" rel="noopener noreferrer" className="bg-blue-600 p-3 sm:px-8 sm:py-3 rounded-xl sm:rounded-2xl font-black text-xs shadow-2xl border-b-4 border-blue-800 flex items-center gap-2.5 hover:bg-blue-500 transition-all uppercase tracking-widest active:scale-95"><ExternalLink className="w-4 h-4 sm:w-5 sm:h-5" /><span className="hidden sm:inline">{isYouTubeUrl(viewingMaterial.url) ? 'Mở YouTube' : 'Tải về máy'}</span></a>}
               <div className="hidden sm:block w-px h-10 bg-white/10 mx-4 opacity-50"></div>
               <button onClick={() => setViewingMaterial(null)} className="p-3 sm:p-4 bg-rose-600 sm:bg-white/10 rounded-xl sm:rounded-full hover:bg-rose-500 transition-all active:scale-75"><X className="w-4 h-4 sm:w-7 sm:h-7 text-white" /></button>
             </div>
           </div>
-          <div className="flex-1 p-0 sm:p-3 md:p-8 bg-slate-900/50 relative">
-            {isYouTubeUrl(viewingMaterial.url) && (
+          <div className="flex-1 p-0 sm:p-3 md:p-8 bg-slate-900/50 relative overflow-y-auto">
+            {viewingMaterial.type === 'quick_quiz' && (
+              <div ref={quickMaterialContentRef} className="mx-auto max-w-4xl rounded-none bg-white p-4 shadow-2xl sm:rounded-[2rem] sm:p-6">
+                <div className="mb-4 rounded-2xl border border-emerald-100 bg-emerald-50 p-4">
+                  <div className="font-black uppercase text-emerald-900">Hỏi đáp nhanh</div>
+                  <div className="mt-1 text-sm font-bold text-emerald-700">Chọn đáp án và nộp bài. Cần đạt tối thiểu 8/10 để qua.</div>
+                </div>
+                {role !== 'teacher' && <input value={studentQuizName} onChange={(e) => setStudentQuizName(e.target.value)} placeholder="Nhập họ tên..." className="mb-4 w-full rounded-xl border border-slate-200 px-4 py-3 text-sm font-bold outline-none focus:border-emerald-400" />}
+                <div className="space-y-3">
+                  {viewingQuickQuizQuestions.map((q, qIndex) => (
+                    <div key={q.id} className="rounded-2xl border border-slate-200 p-4">
+                      <div className="font-black text-slate-900">{qIndex + 1}. {q.text}</div>
+                      <div className="mt-3 grid grid-cols-1 gap-2">
+                        {q.displayOptions.map((opt, optIndex) => {
+                          const checked = quickMaterialAnswers[q.id] === opt.id;
+                          const showCorrection = role === 'teacher' || !!quickMaterialResult;
+                          const isCorrectOption = opt.id === q.correctOptionId;
+                          const isWrongSelection = showCorrection && checked && !isCorrectOption;
+                          return (
+                            <label key={opt.id} className={`flex cursor-pointer items-start gap-3 rounded-xl border p-3 text-sm font-bold ${showCorrection && isCorrectOption ? 'border-emerald-300 bg-emerald-50 text-emerald-900' : isWrongSelection ? 'border-rose-300 bg-rose-50 text-rose-900' : checked ? 'border-blue-300 bg-blue-50 text-blue-900' : 'border-slate-200 bg-slate-50 text-slate-700'}`}>
+                              <input type="radio" name={`quick-material-${q.id}`} checked={checked} disabled={role === 'teacher' || (quickMaterialResult && !quickMaterialResult.needsRetake)} onChange={() => { setQuickMaterialAnswers(prev => ({ ...prev, [q.id]: opt.id })); if (quickMaterialResult?.needsRetake) setQuickMaterialResult(null); if (quickMaterialWarning) setQuickMaterialWarning(''); }} className="mt-1" />
+                              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-xs font-black">{String.fromCharCode(65 + optIndex)}</span>
+                              <span className="flex-1 whitespace-pre-wrap">{opt.text}</span>
+                              {showCorrection && isCorrectOption && <span className="text-[10px] font-black uppercase text-emerald-700">Đúng</span>}
+                              {isWrongSelection && <span className="text-[10px] font-black uppercase text-rose-700">Sai</span>}
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                {quickMaterialWarning && <div className="mt-4 rounded-xl border border-rose-100 bg-rose-50 p-3 text-sm font-black text-rose-700">{quickMaterialWarning}</div>}
+                {quickMaterialResult && !quickMaterialResult.needsRetake && <div className="mt-4 rounded-xl border border-emerald-100 bg-emerald-50 p-3 text-sm font-black text-emerald-700">Đã qua bài: {formatPointScore(quickMaterialResult.score)}/{formatPointScore(quickMaterialResult.total || 10)}</div>}
+                {role !== 'teacher' && <button type="button" onClick={handleSubmitQuickMaterialQuiz} disabled={isSubmittingQuickMaterial || (quickMaterialResult && !quickMaterialResult.needsRetake)} className="mt-5 w-full rounded-2xl bg-emerald-600 px-5 py-4 text-sm font-black uppercase text-white shadow-lg disabled:opacity-50">{isSubmittingQuickMaterial ? 'Đang nộp...' : quickMaterialResult?.needsRetake ? 'Nộp lại' : 'Nộp hỏi đáp nhanh'}</button>}
+              </div>
+            )}
+            {viewingMaterial.type !== 'quick_quiz' && isYouTubeUrl(viewingMaterial.url) && (
               <div className="absolute left-1/2 -translate-x-1/2 top-2 sm:top-5 z-10 bg-white/95 border border-red-100 shadow-xl rounded-2xl px-3 sm:px-4 py-1.5 sm:py-2 flex items-center gap-2 sm:gap-3">
                 <MonitorPlay className="w-4 h-4 sm:w-5 sm:h-5 text-red-600" />
                 <span className="text-[9px] sm:text-[10px] font-black text-slate-500 uppercase tracking-widest hidden sm:inline">Nếu video báo lỗi 153</span>
                 <a href={getYouTubeWatchUrl(viewingMaterial.url)} target="_blank" rel="noopener noreferrer" className="text-[9px] sm:text-[10px] font-black bg-red-600 text-white px-2 py-1.5 sm:px-3 sm:py-2 rounded-lg sm:rounded-xl uppercase tracking-widest hover:bg-red-500 whitespace-nowrap">Xem trên YouTube</a>
               </div>
             )}
-            <iframe src={getEmbedUrl(viewingMaterial.url)} className="w-full h-full sm:rounded-[3rem] bg-white border-0 shadow-2xl animate-in zoom-in-95 duration-500" title={viewingMaterial.title} allowFullScreen />
+            {viewingMaterial.type !== 'quick_quiz' && <iframe src={getEmbedUrl(viewingMaterial.url)} className="w-full h-full sm:rounded-[3rem] bg-white border-0 shadow-2xl animate-in zoom-in-95 duration-500" title={viewingMaterial.title} allowFullScreen />}
           </div>
         </div>
       )}

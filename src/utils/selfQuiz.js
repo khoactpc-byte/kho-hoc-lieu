@@ -11,12 +11,21 @@ export const normalizeQuizText = (text = '') =>
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 
+const cleanGeneratedQuizText = (text = '') =>
+  normalizeQuizText(text)
+    .replace(/\s+(?:Câu|Cau|Question)\s*$/i, '')
+    .replace(/\s+(?:Câu|Cau|Question)\s+\d{1,3}\s*[:.)-]?\s*$/i, '')
+    .replace(/\s+(?:Câu|Cau|Question)\s+\d{1,3}\s*[:.)-]\s+.*$/i, '')
+    .trim();
+
 export const getDefaultSelfQuizDraft = () => ({
   questions: [],
   shuffleQuestions: true,
   shuffleOptions: true,
   showScoreAfterSubmit: true,
-  allowRetake: true
+  allowRetake: true,
+  requirePassingScore: false,
+  passingPercent: 0
 });
 
 export const makeEmptySelfQuizQuestion = () => ({
@@ -51,7 +60,8 @@ const prepareQuizTextForParsing = (text = '') =>
     .replace(/\r/g, '')
     .replace(/\u00a0/g, ' ')
     .replace(/([^\n])\s*((?:c(?:\u00e2u|au)|question)\s*\d{1,3}\s*[:.)-]?)/gi, '$1\n$2')
-    .replace(/([^\n])\s*([A-D])\s*[.)]\s+/g, '$1\n$2. ')
+    .replace(/([^\n])\s*(\d{1,3}\s*[:.)-]\s+)/g, '$1\n$2')
+    .replace(/([^\n])\s*(?:[-*•]\s*)?(\(?[A-D]\)?\s*[:.)-]\s+)/gi, '$1\n$2')
     .replace(/([^\n])\s*((?:(?:\u0111(?:\u00e1|a)p\s*(?:\u00e1|a)n|dap\s*an|answer)\s*[:.)-]|d\/a\s*[:.)-]?|da\s*:))/gi, '$1\n$2')
     .replace(/[ \t]+\n/g, '\n')
     .replace(/\n[ \t]+/g, '\n')
@@ -91,6 +101,11 @@ const getMultipleChoiceTotalPoints = (text = '') => {
   return 0;
 };
 
+export const inferMultipleChoiceTotalPoints = (source = '') => {
+  const text = /<[^>]+>/.test(String(source || '')) ? stripHtmlToText(source) : source;
+  return getMultipleChoiceTotalPoints(text);
+};
+
 const roundPoint = (value) => {
   const rounded = Math.round((Number(value) || 0) * 100) / 100;
   return Number.isInteger(rounded) ? rounded : Number(rounded.toFixed(2));
@@ -115,15 +130,18 @@ export const buildAnswerMap = (text = '') => {
 
   const patterns = [
     /(?:cau|question)\s*(\d{1,3})\s*[:.)-]?\s*([a-d])\b/g,
+    /(?:cau|question)\s*(\d{1,3})\s*(?:dap\s*an|answer)?\s*[:.)-]?\s*([a-d])\b/g,
     /\b(\d{1,3})\s*[-.)/:]?\s*([a-d])\b/g,
+    /\b(\d{1,3})\s*(?:dap\s*an|answer)\s*[:.)-]?\s*([a-d])\b/g,
     /\b([a-d])\s*[-.)/:]?\s*(?:cau\s*)?(\d{1,3})\b/g
   ];
 
   patterns.forEach((pattern, patternIndex) => {
     let match;
     while ((match = pattern.exec(answerText)) !== null) {
-      const number = patternIndex === 2 ? match[2] : match[1];
-      const answer = patternIndex === 2 ? match[1] : match[2];
+      const isReversed = patternIndex === patterns.length - 1;
+      const number = isReversed ? match[2] : match[1];
+      const answer = isReversed ? match[1] : match[2];
       const key = String(Number(number));
       if (!answerMap[key]) answerMap[key] = answer;
     }
@@ -133,21 +151,21 @@ export const buildAnswerMap = (text = '') => {
 };
 
 const readQuestionLine = (line = '') => {
-  const match = foldText(line).match(/^(?:cau|question)\s*(\d{1,3})\s*[:.)-]?\s*/);
+  const match = foldText(line).match(/^(?:(?:cau|question)\s*)?(\d{1,3})\s*[:.)-]\s*/);
   if (!match) return null;
-  const prefix = line.match(/^\S+\s*\d{1,3}\s*[:.)-]?\s*/)?.[0] || '';
+  const prefix = line.match(/^(?:(?:Câu|Cau|Question)\s*)?\d{1,3}\s*[:.)-]\s*/i)?.[0] || '';
   return {
     number: String(Number(match[1])),
-    text: normalizeQuizText(line.slice(prefix.length))
+    text: cleanGeneratedQuizText(line.slice(prefix.length))
   };
 };
 
 const readOptionLine = (line = '') => {
-  const match = line.match(/^([A-D])\s*[.)]\s*(.*)$/);
+  const match = line.match(/^\s*(?:[-*•]\s*)?\(?([A-D])\)?\s*[:.)-]\s*(.*)$/i);
   if (!match) return null;
   const id = match[1].toLowerCase();
   if (!SELF_QUIZ_OPTION_IDS.includes(id)) return null;
-  return { id, text: normalizeQuizText(match[2]) };
+  return { id, text: cleanGeneratedQuizText(match[2]) };
 };
 
 export const parseSelfQuizFromHtml = (html = '') => {
@@ -165,7 +183,7 @@ export const parseSelfQuizFromHtml = (html = '') => {
   };
 
   text.split('\n').forEach(rawLine => {
-    const line = normalizeQuizText(rawLine);
+    const line = cleanGeneratedQuizText(rawLine);
     if (!line) return;
 
     if (isAnswerMarkerLine(line)) {
@@ -207,12 +225,12 @@ export const parseSelfQuizFromHtml = (html = '') => {
 
     if (currentQuestion && currentOptionId) {
       currentQuestion.options = currentQuestion.options.map(option =>
-        option.id === currentOptionId ? { ...option, text: normalizeQuizText(`${option.text} ${line}`) } : option
+        option.id === currentOptionId ? { ...option, text: cleanGeneratedQuizText(`${option.text} ${line}`) } : option
       );
       return;
     }
 
-    if (currentQuestion) currentQuestion.text = normalizeQuizText(`${currentQuestion.text} ${line}`);
+    if (currentQuestion) currentQuestion.text = cleanGeneratedQuizText(`${currentQuestion.text} ${line}`);
   });
 
   commitQuestion();
@@ -254,15 +272,31 @@ export const normalizeSelfQuizDraft = (draft) => ({
   shuffleOptions: !!draft.shuffleOptions,
   showScoreAfterSubmit: draft.showScoreAfterSubmit !== false,
   allowRetake: draft.allowRetake !== false,
+  requirePassingScore: !!draft.requirePassingScore,
+  passingPercent: Math.min(100, Math.max(0, Number(draft.passingPercent) || 0)),
+  questionCountPerAttempt: Math.max(0, Number(draft.questionCountPerAttempt || draft.questionsPerAttempt || 0)),
+  questionBank: Array.isArray(draft.questionBank) ? draft.questionBank.map((q, idx) => {
+    const correctOptionId = String(q.correctOptionId || '').trim().toLowerCase();
+    return {
+      id: q.id || makeId(`qb${idx + 1}`),
+      text: cleanGeneratedQuizText(q.text),
+      options: SELF_QUIZ_OPTION_IDS.map(id => ({
+        id,
+        text: cleanGeneratedQuizText(q.options?.find(opt => String(opt.id || '').trim().toLowerCase() === id)?.text || '')
+      })),
+      correctOptionId: SELF_QUIZ_OPTION_IDS.includes(correctOptionId) ? correctOptionId : '',
+      points: Math.max(0.25, Number(q.points) || 1)
+    };
+  }).filter(q => q.text && q.options.filter(opt => opt.text).length >= 2) : [],
   questions: (draft.questions || [])
     .map((q, idx) => {
       const correctOptionId = String(q.correctOptionId || '').trim().toLowerCase();
       return {
         id: q.id || makeId(`q${idx + 1}`),
-        text: normalizeQuizText(q.text),
+        text: cleanGeneratedQuizText(q.text),
         options: SELF_QUIZ_OPTION_IDS.map(id => ({
           id,
-          text: normalizeQuizText(q.options?.find(opt => String(opt.id || '').trim().toLowerCase() === id)?.text || '')
+          text: cleanGeneratedQuizText(q.options?.find(opt => String(opt.id || '').trim().toLowerCase() === id)?.text || '')
         })),
         correctOptionId: SELF_QUIZ_OPTION_IDS.includes(correctOptionId) ? correctOptionId : '',
         points: Math.max(0.25, Number(q.points) || 1)
@@ -271,12 +305,36 @@ export const normalizeSelfQuizDraft = (draft) => ({
     .filter(q => q.text && q.options.filter(opt => opt.text).length >= 2)
 });
 
+export const rebalanceSelfQuizPoints = (quizData, source = '') => {
+  if (!quizData?.questions?.length) return quizData;
+  const totalPoints = inferMultipleChoiceTotalPoints(source);
+  if (totalPoints <= 0) return quizData;
+  const pointPerQuestion = roundPoint(totalPoints / quizData.questions.length);
+  return {
+    ...quizData,
+    questions: quizData.questions.map(question => ({
+      ...question,
+      points: pointPerQuestion
+    }))
+  };
+};
+
 export const buildSelfQuizQuestionsForStudent = (quizData) => {
   if (!quizData?.questions?.length) return [];
-  const questions = quizData.shuffleQuestions ? shuffleArray(quizData.questions) : [...quizData.questions];
+  const sourceQuestions = quizData.questions.map(q => ({
+    ...q,
+    text: cleanGeneratedQuizText(q.text),
+    options: (q.options || []).map(opt => ({
+      ...opt,
+      text: cleanGeneratedQuizText(opt.text)
+    }))
+  }));
+  const shuffledQuestions = quizData.shuffleQuestions !== false ? shuffleArray(sourceQuestions) : [...sourceQuestions];
+  const questionLimit = Math.max(0, Number(quizData.questionCountPerAttempt || quizData.questionsPerAttempt || 0));
+  const questions = questionLimit > 0 ? shuffledQuestions.slice(0, Math.min(questionLimit, shuffledQuestions.length)) : shuffledQuestions;
   return questions.map(q => ({
     ...q,
-    displayOptions: quizData.shuffleOptions
+    displayOptions: quizData.shuffleOptions !== false
       ? shuffleArray((q.options || []).filter(opt => opt.text))
       : (q.options || []).filter(opt => opt.text)
   }));

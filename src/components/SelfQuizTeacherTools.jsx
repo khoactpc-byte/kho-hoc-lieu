@@ -45,6 +45,7 @@ const TEXT = {
 };
 
 export default function SelfQuizTeacherTools({
+  quizData,
   currentQuizResults,
   handwrittenSubmissions = [],
   students = [],
@@ -198,8 +199,10 @@ export default function SelfQuizTeacherTools({
   const getSelfQuizScorePoint = (result = null, pair = null) => {
     if (!result || !pair?.hasScore) return 0;
     const answers = Array.isArray(result.answers) ? result.answers : [];
-    if (answers.length) return answers.filter(answer => answer.isCorrect).length * 0.25;
-    return pair.score * 0.25;
+    const questionCount = answers.length || (quizData?.questions || []).length || Number(result.total || 0) || 0;
+    const quizTotal = (quizData?.questions || []).reduce((sum, q) => sum + (Number(q.points) || 0), 0) || Number(result.total || 0) || 0;
+    if (answers.length && questionCount && quizTotal) return answers.filter(answer => answer.isCorrect).length * (quizTotal / questionCount);
+    return pair.score;
   };
   const formatPointOnly = (value, hasScore) => hasScore ? formatPointScore(value) : '-';
 

@@ -8,12 +8,12 @@ export const SCHOOL_YEARS = Array.from({length: 11}, (_, i) => `${2025 + i}-${20
 
 export const GOOGLE_API_KEY = 'AIzaSyAQwyUzt2jb8kBh_S4V2_SjuFKZi5K3Mc4';
 export const GEMINI_MODELS = [
-  { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
+  { id: 'gemini-2.0-flash-lite', label: 'Gemini 2.0 Flash Lite' },
   { id: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash' },
-  { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
-  { id: 'gemini-2.0-flash-lite', label: 'Gemini 2.0 Flash Lite' }
+  { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
+  { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' }
 ];
-export const DEFAULT_GEMINI_MODEL = 'gemini-2.5-flash';
+export const DEFAULT_GEMINI_MODEL = 'gemini-2.0-flash-lite';
 
 export const TEXTBOOK_FOLDERS = {
   '6': '1Y7JgYgb4WlFNZUQ-caMsFk-VKXn2oz_u',
@@ -28,7 +28,7 @@ export const STUDENT_SUBMISSION_FOLDER_ID = '1Sn1wmYiuW4P0IzhOWfWDyhf2BW4IGQFk';
 export const TEACHER_PLAN_FOLDER_ID = '13K9gbg-jpJ2RjsmZsc8pJwyPrkjgUznv';
 export const QUIZ_DRIVE_FOLDER_ID = '1IlstZlmh3uC_PIooSlMfHnZ--HlomM0d';
 
-export const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzioyqvN2yR45AZAcF1nmcOjg5VOUTEtJ8-_ZLkPUW7mo8Pb_rWj1Ezb-GTghGwCZlYDQ/exec";
+export const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbx1cWQpyyoT2adUZIJja40d5rXtlNwaa1PqYiUJndB79SX0Rq2Mt8CBEs53EiBC8HhhRg/exec";
 export const APPS_SCRIPT_SECRET_TOKEN = "NGUYENANNINH_KHOA_2026";
 export const BACKGROUND_URL = '/hinh-nen.jpg';
 export const IS_LOCAL_PREVIEW = window.location.protocol === 'file:';
@@ -155,6 +155,12 @@ export const cleanDriveTitle = (name) => getDriveBaseName(name).toLowerCase();
 export const normalizeServiceErrorMessage = (message) => {
   const raw = String(message || '').replace(/\s+/g, ' ').trim();
   if (!raw) return 'May chu bao loi khong xac dinh.';
+  if (/createStudentListPdf|khong dung action hoac thieu base64/i.test(raw)) {
+    return 'May chu Apps Script chua cap nhat phan tao PDF. Hay dan lai file code_hoclieu.gs vao Apps Script chinh roi Deploy ban moi.';
+  }
+  if (/Authorization is required|permission|SpreadsheetApp|UrlFetchApp|DriveApp/i.test(raw) && /PDF|Spreadsheet|UrlFetch|Drive/i.test(raw)) {
+    return 'Apps Script chua duoc cap quyen tao PDF/luu Drive. Hay mo Apps Script, chay/deploy lai va bam Cho phep quyen.';
+  }
   if (/429|quota|RESOURCE_EXHAUSTED|rate limit|GenerateRequestsPer|exceeded your current quota/i.test(raw)) {
     return 'Gemini dang het han muc su dung. Hay doi API key con quota, nang/gia han billing trong Google AI Studio, hoac thu lai sau it phut.';
   }
