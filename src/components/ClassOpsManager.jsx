@@ -201,6 +201,7 @@ function AdminAttendanceStaticTable({ currentSchoolYear = '', students = [], use
   const [selectedMonth, setSelectedMonth] = useState(() => getInitialMonth(months) || { month: today.getMonth() + 1, year: today.getFullYear(), label: `Tháng ${today.getMonth() + 1}/${today.getFullYear()}` });
   const [reportMode, setReportMode] = useState('month');
   const [attendanceDocs, setAttendanceDocs] = useState([]);
+  const [showAttendanceStats, setShowAttendanceStats] = useState(false);
   const days = reportMode === 'month' ? makeMonthDates(selectedMonth) : [];
   const reportMonths = useMemo(() => {
     if (reportMode === 'hk1') return months.filter(item => [9, 10, 11, 12, 1].includes(item.month));
@@ -390,6 +391,10 @@ function AdminAttendanceStaticTable({ currentSchoolYear = '', students = [], use
               <span className="hidden sm:inline">Database</span>
             </button>
           )}
+          <button type="button" title="Thống kê" onClick={() => setShowAttendanceStats(prev => !prev)} className={`w-10 sm:w-auto h-10 px-0 sm:px-4 rounded-2xl flex items-center justify-center sm:gap-2 shadow-sm text-xs font-black uppercase ${showAttendanceStats ? 'bg-indigo-600 text-white' : 'bg-white text-indigo-700 border border-indigo-100'}`}>
+            <Users className="w-4 h-4" />
+            <span className="hidden sm:inline">Thống kê</span>
+          </button>
           <button type="button" title="Xuất PDF" onClick={exportPdf} className="w-10 sm:w-auto h-10 px-0 sm:px-4 rounded-2xl bg-cyan-600 text-white flex items-center justify-center sm:gap-2 shadow-sm text-xs font-black uppercase">
             <Download className="w-4 h-4" />
             <span className="hidden sm:inline">Xuất PDF</span>
@@ -557,7 +562,7 @@ function AdminAttendanceStaticTable({ currentSchoolYear = '', students = [], use
         </table>
         </div>
 
-        <div className="shrink-0 bg-white border border-slate-200 rounded-2xl overflow-hidden">
+        {showAttendanceStats && <div className="shrink-0 bg-white border border-slate-200 rounded-2xl overflow-hidden">
           <div className="px-4 py-3 bg-slate-100 border-b border-slate-200 font-black text-slate-700 uppercase text-xs">
             Thống kê {reportMode === 'month' ? selectedMonth.label : reportMode === 'hk1' ? 'học kỳ 1' : reportMode === 'hk2' ? 'học kỳ 2' : 'cả năm'}
           </div>
@@ -590,7 +595,7 @@ function AdminAttendanceStaticTable({ currentSchoolYear = '', students = [], use
               </tr>
             </tbody>
           </table>
-        </div>
+        </div>}
       </div>
     </div>
   );
