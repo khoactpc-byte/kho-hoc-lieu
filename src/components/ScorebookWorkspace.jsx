@@ -615,6 +615,15 @@ export default function ScorebookWorkspace({
   const [transcriptStudentId, setTranscriptStudentId] = useState('');
   const [transcriptStudentSearch, setTranscriptStudentSearch] = useState('');
 
+  useEffect(() => {
+    const nextMode = initialMode === 'transcript' ? 'transcript' : 'scorebook';
+    setWorkspaceMode(nextMode);
+    setPreviewMode(false);
+    if (nextMode === 'scorebook') {
+      setShowTranscriptPrintPanel(false);
+    }
+  }, [initialMode]);
+
   const docId = useMemo(() => cleanDocId(`${currentSchoolYear || 'nam-hoc'}_${scorebookTemplate.sourceFile || 'so-diem'}_khoi_${grade || 'tat-ca'}`), [currentSchoolYear, grade]);
   const activeSheet = sheets.find((sheet) => sheet.name === activeSheetName) || sheets[0];
   const sheetMaps = useMemo(() => buildSheetMaps(activeSheet || {}), [activeSheet]);

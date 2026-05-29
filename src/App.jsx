@@ -49,6 +49,8 @@ const AdminSettingsWorkspace = lazy(() => import('./components/AdminSettingsWork
 
 const REGISTRATION_WEB_APP_URL = 'https://script.google.com/macros/s/AKfycby6e5ya2k105Oe7i65k9viysIZbHKOF-9CosueiNy1GvnHJbVw1lHB_0eezSxO91ls/exec';
 const ADDRESS_DIRECTORY_CACHE_KEY = 'khl-address-directory-v2';
+const ADMIN_SESSION_STORAGE_KEY = 'khl-admin-session-v1';
+const ADMIN_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 
 const STUDENT_PROFILE_EDIT_FIELDS = [
   { key: 'fullName', label: 'Họ và tên' },
@@ -73,6 +75,30 @@ const STUDENT_PROFILE_EDIT_FIELDS = [
   { key: 'transport', label: 'Đi xe' }
 ];
 
+const STUDENT_PROFILE_RESULT_GRADES = ['6', '7', '8'];
+const STUDENT_PROFILE_RESULT_OPTIONS = ['Tốt', 'Khá', 'Đạt'];
+const STUDENT_PROFILE_RESULT_FIELDS = STUDENT_PROFILE_RESULT_GRADES.flatMap(grade => ([
+  { key: `hocLucLop${grade}`, label: `Học lực lớp ${grade}`, grade, type: 'select', options: STUDENT_PROFILE_RESULT_OPTIONS },
+  { key: `hanhKiemLop${grade}`, label: `Hạnh kiểm lớp ${grade}`, grade, type: 'select', options: STUDENT_PROFILE_RESULT_OPTIONS }
+]));
+
+const getPreviousStudentResultFields = (grade = '') => {
+  const currentGrade = Number(String(grade || '').match(/[1-9]\d*/)?.[0] || 0);
+  if (!currentGrade) return [];
+  return STUDENT_PROFILE_RESULT_FIELDS.filter(field => Number(field.grade) < currentGrade);
+};
+
+const normalizeStudentResultRating = (value = '') => {
+  const raw = String(value || '').trim();
+  const key = removeAccents(raw.toLowerCase()).replace(/\s+/g, ' ');
+  if (!key) return '';
+  if (key.includes('gioi') || key.includes('tot')) return 'Tốt';
+  if (key.includes('kha')) return 'Khá';
+  return 'Đạt';
+};
+
+const isStudentResultRatingField = (key = '') => /^hocLucLop[6-8]$|^hanhKiemLop[6-8]$/.test(String(key || ''));
+
 const STUDENT_PROFILE_IMAGE_FIELDS = [
   { key: 'portraitUrl', label: 'Ảnh thẻ', filename: 'anh_the' },
   { key: 'birthCertificateUrl', label: 'Ảnh khai sinh', filename: 'khai_sinh' },
@@ -83,7 +109,7 @@ const STUDENT_PROFILE_IMAGE_FIELDS = [
 const LESSON_THEORY_TARGET_MS = 30 * 60 * 1000;
 
 const STUDENT_PROFILE_FIELD_LABELS = Object.fromEntries(
-  [...STUDENT_PROFILE_EDIT_FIELDS, ...STUDENT_PROFILE_IMAGE_FIELDS].map(field => [field.key, field.label])
+  [...STUDENT_PROFILE_EDIT_FIELDS, ...STUDENT_PROFILE_RESULT_FIELDS, ...STUDENT_PROFILE_IMAGE_FIELDS].map(field => [field.key, field.label])
 );
 
 const firstProfileDocumentUrl = (value = '') => String(value || '').split(/\s*,\s*|\n+/).map(item => item.trim()).filter(Boolean)[0] || '';
@@ -117,6 +143,45 @@ const loadImageElementFromFile = (file) => new Promise((resolve, reject) => {
 });
 
 const distanceBetweenPoints = (a, b) => Math.hypot((a?.x || 0) - (b?.x || 0), (a?.y || 0) - (b?.y || 0));
+
+const getAdminSessionPassMarker = (value = '') => {
+  let hash = 2166136261;
+  const text = String(value || '');
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return String(hash >>> 0);
+};
+
+const readStoredAdminSession = () => {
+  if (typeof window === 'undefined') return null;
+  try {
+    const session = JSON.parse(window.localStorage.getItem(ADMIN_SESSION_STORAGE_KEY) || 'null');
+    if (!session || Number(session.expiresAt || 0) <= Date.now()) {
+      window.localStorage.removeItem(ADMIN_SESSION_STORAGE_KEY);
+      return null;
+    }
+    return session;
+  } catch (error) {
+    window.localStorage.removeItem(ADMIN_SESSION_STORAGE_KEY);
+    return null;
+  }
+};
+
+const writeStoredAdminSession = (adminPass = '', adminModule = 'thcs') => {
+  if (typeof window === 'undefined') return;
+  const session = {
+    passMarker: getAdminSessionPassMarker(adminPass),
+    module: adminModule || 'thcs',
+    expiresAt: Date.now() + ADMIN_SESSION_TTL_MS
+  };
+  window.localStorage.setItem(ADMIN_SESSION_STORAGE_KEY, JSON.stringify(session));
+};
+
+const clearStoredAdminSession = () => {
+  if (typeof window !== 'undefined') window.localStorage.removeItem(ADMIN_SESSION_STORAGE_KEY);
+};
 
 const solveLinearSystem = (matrix, values) => {
   const size = values.length;
@@ -736,10 +801,11 @@ const loadRegistrationJsonp = (params = {}) => new Promise((resolve, reject) => 
 });
 
 function App() {
+  const [initialAdminSession] = useState(() => readStoredAdminSession());
   const [user, setUser] = useState(null);
-  const [role, setRole] = useState(null);
+  const [role, setRole] = useState(() => initialAdminSession ? 'admin' : null);
   const [loginRole, setLoginRole] = useState(null); 
-  const [isAdmin, setIsAdmin] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(() => Boolean(initialAdminSession));
   const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
   const [confirmModal, setConfirmModal] = useState({ show: false, message: '', onConfirm: null });
   const [modalMode, setModalMode] = useState('teacher');
@@ -748,6 +814,7 @@ function App() {
   const [errorMsg, setErrorMsg] = useState('');
   const [isAdminPassEnabled, setIsAdminPassEnabled] = useState(true);
   const [adminPass, setAdminPass] = useState('123321');
+  const [adminSettingsLoaded, setAdminSettingsLoaded] = useState(false);
   const [isTeacherPassEnabled, setIsTeacherPassEnabled] = useState(false);
   const [teacherPass, setTeacherPass] = useState('');
   const [isStudentCodeEnabled, setIsStudentCodeEnabled] = useState(true);
@@ -761,8 +828,11 @@ function App() {
   const [transcriptStartSigners, setTranscriptStartSigners] = useState({});
   const [transcriptEndSigners, setTranscriptEndSigners] = useState({});
   const [nanTeachers, setNanTeachers] = useState([]);
+  const [thdTeachers, setThdTeachers] = useState([]);
+  const [thdClasses, setThdClasses] = useState({});
   const [classTeacherAssignments, setClassTeacherAssignments] = useState({});
   const [teachingAssignments, setTeachingAssignments] = useState({});
+  const [thdTeachingAssignments, setThdTeachingAssignments] = useState({});
   const [isAdminTextbookExpanded, setIsAdminTextbookExpanded] = useState(false);
   const [showStudentDatabase, setShowStudentDatabase] = useState(false);
   const [studentDatabaseInitialTab, setStudentDatabaseInitialTab] = useState('current');
@@ -791,7 +861,7 @@ function App() {
   const [showPasswordWorkspace, setShowPasswordWorkspace] = useState(false);
   const [showAdminSettingsWorkspace, setShowAdminSettingsWorkspace] = useState(false);
   const [adminSettingsInitialPanel, setAdminSettingsInitialPanel] = useState('general');
-  const [adminModule, setAdminModule] = useState('thcs');
+  const [adminModule, setAdminModule] = useState(() => initialAdminSession?.module || 'thcs');
   const [mobileHomeTab, setMobileHomeTab] = useState('notifications'); 
   const [teacherTab, setTeacherTab] = useState('giang_day');
   const [newsList, setNewsList] = useState([]);
@@ -1002,11 +1072,20 @@ function App() {
       ...(request.changes || {})
     }), {})
   ), [activeStudentPendingProfileRequests]);
+  const studentProfileEditableFields = useMemo(() => {
+    const grade = String(activeStudentProfile?.className || currentStudent?.className || '').match(/[1-9]\d*/)?.[0] || '';
+    return [
+      ...STUDENT_PROFILE_EDIT_FIELDS,
+      ...getPreviousStudentResultFields(grade)
+    ];
+  }, [activeStudentProfile?.className, currentStudent?.className]);
   useEffect(() => {
     if (!showStudentProfileModal || !activeStudentProfile) return;
-    setStudentProfileDraft(Object.fromEntries(STUDENT_PROFILE_EDIT_FIELDS.map(field => [
+    setStudentProfileDraft(Object.fromEntries(studentProfileEditableFields.map(field => [
       field.key,
-      activeStudentPendingProfileChanges[field.key] ?? activeStudentProfile[field.key] ?? ''
+      field.type === 'select'
+        ? normalizeStudentResultRating(activeStudentPendingProfileChanges[field.key] ?? activeStudentProfile[field.key] ?? '')
+        : activeStudentPendingProfileChanges[field.key] ?? activeStudentProfile[field.key] ?? ''
     ])));
     setStudentProfileImages({});
     setStudentProfileImageAppendModes({});
@@ -1015,7 +1094,7 @@ function App() {
       Object.values(prev || {}).forEach(revokePreviewUrls);
       return {};
     });
-  }, [showStudentProfileModal, activeStudentProfile, activeStudentPendingProfileChanges]);
+  }, [showStudentProfileModal, activeStudentProfile, activeStudentPendingProfileChanges, studentProfileEditableFields]);
   const derivedProvinceOptions = useMemo(() => uniqueTextItems([
     ...addressDirectory.provinces,
     ...allStudents.flatMap(student => [student.province, student.householdProvince]),
@@ -1097,7 +1176,9 @@ function App() {
   }, [addressDirectory.communes]);
 
   const handleStudentProfileFieldChange = useCallback((key, value) => {
-    const nextValue = key === 'fullName' ? String(value || '').toLocaleUpperCase('vi-VN') : value;
+    const nextValue = isStudentResultRatingField(key)
+      ? normalizeStudentResultRating(value)
+      : (key === 'fullName' ? String(value || '').toLocaleUpperCase('vi-VN') : value);
     setStudentProfileDraft(prev => {
       const next = { ...prev, [key]: nextValue };
       if (key === 'province' && prev.province !== nextValue) next.ward = '';
@@ -1168,6 +1249,15 @@ function App() {
     return suffix ? `HS${suffix}` : '';
   };
   const openStudentArea = (student = {}) => {
+    clearStoredAdminSession();
+    setIsAdmin(false);
+    setShowAdminSettingsWorkspace(false);
+    setShowAdminCheckWorkspace(false);
+    setShowPasswordWorkspace(false);
+    setScorebookGrade(null);
+    if (typeof window !== 'undefined' && window.location.hash.toLowerCase().startsWith('#/admin')) {
+      window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
+    }
     const grade = String(student.className || '').match(/[1-9]\d*/)?.[0];
     if (grade) setSelectedGrade(grade);
     setCurrentStudent(student?.id ? student : null);
@@ -1380,9 +1470,13 @@ function App() {
         uploadedImageChanges[field.key] = uploadRes.webViewLink || uploadRes.url || (uploadRes.fileId ? `https://drive.google.com/file/d/${uploadRes.fileId}/view` : '');
       }
       const changes = {};
-      STUDENT_PROFILE_EDIT_FIELDS.forEach(field => {
-        const currentValue = String(activeStudentProfile[field.key] || '').trim();
-        const nextValue = String(studentProfileDraft[field.key] || '').trim();
+      studentProfileEditableFields.forEach(field => {
+        const currentValue = field.type === 'select'
+          ? normalizeStudentResultRating(activeStudentProfile[field.key] || '')
+          : String(activeStudentProfile[field.key] || '').trim();
+        const nextValue = field.type === 'select'
+          ? normalizeStudentResultRating(studentProfileDraft[field.key] || '')
+          : String(studentProfileDraft[field.key] || '').trim();
         if (nextValue !== currentValue) changes[field.key] = nextValue;
       });
       Object.assign(changes, uploadedImageChanges);
@@ -1487,6 +1581,22 @@ function App() {
     });
   }, [textbookFiles]);
 
+  const closeAdminSessionView = useCallback(() => {
+    setIsAdmin(false);
+    setRole(null);
+    setLoginRole(null);
+    setCurrentStudent(null);
+    setShowClassOps(false);
+    setSelectedGrade(null);
+    setSelectedSubject(null);
+    setSelectedLesson(null);
+    setViewingMaterial(null);
+    setShowCommonLibraryWorkspace(false);
+    setTeacherTab('giang_day');
+    setPlanSubject('');
+    setIsTextbookExpanded(window.innerWidth >= 640);
+  }, []);
+
   useEffect(() => {
     const initAuth = async () => {
       try {
@@ -1522,7 +1632,10 @@ function App() {
       setStudentProfileRequestCount(pendingDocs.length);
     });
     const unsubSettings = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'global'), (docSnap) => {
-      if (!docSnap.exists()) return;
+      if (!docSnap.exists()) {
+        setAdminSettingsLoaded(true);
+        return;
+      }
       const data = docSnap.data();
       if (data.schoolYear) setCurrentSchoolYear(data.schoolYear);
       setIsAdminPassEnabled(true);
@@ -1538,11 +1651,48 @@ function App() {
       if (data.transcriptStartSigners && typeof data.transcriptStartSigners === 'object') setTranscriptStartSigners(data.transcriptStartSigners);
       if (data.transcriptEndSigners && typeof data.transcriptEndSigners === 'object') setTranscriptEndSigners(data.transcriptEndSigners);
       if (Array.isArray(data.nanTeachers)) setNanTeachers(data.nanTeachers);
+      if (Array.isArray(data.thdTeachers)) setThdTeachers(data.thdTeachers);
+      if (data.thdClasses && typeof data.thdClasses === 'object') setThdClasses(data.thdClasses);
       if (data.classTeacherAssignments && typeof data.classTeacherAssignments === 'object') setClassTeacherAssignments(data.classTeacherAssignments);
       if (data.teachingAssignments && typeof data.teachingAssignments === 'object') setTeachingAssignments(data.teachingAssignments);
+      if (data.thdTeachingAssignments && typeof data.thdTeachingAssignments === 'object') setThdTeachingAssignments(data.thdTeachingAssignments);
+      setAdminSettingsLoaded(true);
     });
     return () => { unsubNews(); unsubMats(); unsubNotes(); unsubQuizzes(); unsubQuizResults(); unsubQuickQuizResults(); unsubLessonProgress(); unsubHandwrittenSubmissions(); unsubStudents(); unsubAttendance(); unsubProfileRequests(); unsubSettings(); };
   }, [user]);
+
+  useEffect(() => {
+    if (!user || !adminSettingsLoaded || !adminPass) return;
+    const session = readStoredAdminSession();
+    const isValidSession = session?.passMarker === getAdminSessionPassMarker(adminPass);
+    if (!isValidSession) {
+      if (isAdmin) {
+        clearStoredAdminSession();
+        closeAdminSessionView();
+      }
+      return;
+    }
+    if (isAdmin) return;
+    setIsAdmin(true);
+    setRole('admin');
+    setLoginRole(null);
+    if (session.module) setAdminModule(session.module);
+  }, [adminPass, adminSettingsLoaded, closeAdminSessionView, isAdmin, user]);
+
+  useEffect(() => {
+    if (!isAdmin || !adminPass || !adminSettingsLoaded) return;
+    writeStoredAdminSession(adminPass, adminModule);
+  }, [adminModule, adminPass, adminSettingsLoaded, isAdmin]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const handleAdminSessionStorage = (event) => {
+      if (event.key !== ADMIN_SESSION_STORAGE_KEY || event.newValue) return;
+      closeAdminSessionView();
+    };
+    window.addEventListener('storage', handleAdminSessionStorage);
+    return () => window.removeEventListener('storage', handleAdminSessionStorage);
+  }, [closeAdminSessionView]);
 
   const getScorebookDocIdForGrade = useCallback((grade) => (
     cleanDocId(`${activeSchoolYear || 'nam-hoc'}_${scorebookTemplate.sourceFile || 'so-diem'}_khoi_${grade || 'tat-ca'}`)
@@ -1899,6 +2049,21 @@ function App() {
     setShowStudentDatabase(true);
   }, []);
 
+  const openAdminPlaceholder = useCallback((label) => {
+    showNotification(`${label} sáº½ Ä‘Æ°á»£c thiáº¿t káº¿ á»Ÿ bÆ°á»›c sau.`);
+  }, [showNotification]);
+
+  const openAdminQuickScore = useCallback((stage = 'thcs') => {
+    const nextGrade = stage === 'primary' ? '1' : '6';
+    openQuickScoreWorkspace({ grade: nextGrade, locked: false });
+    if (stage === 'primary') {
+      setQuickVisibleSubjects(QUICK_SCORE_SUBJECTS.reduce((acc, subject) => ({
+        ...acc,
+        [subject.key]: subject.key === 'toan' || subject.key === 'ngu_van'
+      }), {}));
+    }
+  }, [openQuickScoreWorkspace]);
+
   const runAdminMenuAction = useCallback(async (action) => {
     setShowAdminSettingsWorkspace(false);
     setShowStudentDatabase(false);
@@ -1909,8 +2074,110 @@ function App() {
     setScorebookGrade(null);
     setShowAdminCheckWorkspace(false);
     setShowPasswordWorkspace(false);
+    setIsAdminTextbookExpanded(false);
     await Promise.resolve(action?.());
   }, []);
+
+  const getAdminRouteHref = useCallback((route) => {
+    const nextRoute = String(route || '').startsWith('/') ? route : `/${route || ''}`;
+    return `#/admin${nextRoute}`;
+  }, []);
+
+  const openAdminRoute = useCallback((route) => {
+    const cleanedRoute = String(route || '')
+      .replace(/^#\/admin/i, '')
+      .replace(/^\/?admin/i, '');
+    const path = cleanedRoute.startsWith('/') ? cleanedRoute : `/${cleanedRoute}`;
+    const routeAction = {
+      '/settings/general': () => openAdminSettingsPanel('general'),
+      '/settings/teachers': () => openAdminSettingsPanel('teachers'),
+      '/settings/class-teachers': () => openAdminSettingsPanel('classTeachers'),
+      '/settings/teaching-assignments': () => openAdminSettingsPanel('teachingAssignments'),
+      '/tran-hung-dao/teachers': () => openAdminSettingsPanel('thdTeachers'),
+      '/tran-hung-dao/classes': () => openAdminSettingsPanel('thdClasses'),
+      '/tran-hung-dao/assignments': () => openAdminSettingsPanel('thdTeachingAssignments'),
+      '/school/schedule': () => setShowScheduleWorkspace(true),
+      '/students/current': () => openStudentDatabaseTab('current'),
+      '/students/registrations': () => openStudentDatabaseTab('registrations'),
+      '/students/journey': () => openStudentDatabaseTab('journey'),
+      '/students/profile-requests': () => openStudentDatabaseTab('profileRequests'),
+      '/input/score': () => openAdminQuickScore(adminModule === 'primary' ? 'primary' : 'thcs'),
+      '/primary/input/score': () => {
+        setAdminModule('primary');
+        openAdminQuickScore('primary');
+      },
+      '/thcs/input/score': () => {
+        setAdminModule('thcs');
+        openAdminQuickScore('thcs');
+      },
+      '/input/attendance': () => setShowAttendanceWorkspace(true),
+      '/primary/input/attendance': () => {
+        setAdminModule('primary');
+        setShowAttendanceWorkspace(true);
+      },
+      '/thcs/input/attendance': () => {
+        setAdminModule('thcs');
+        setShowAttendanceWorkspace(true);
+      },
+      '/scorebook': () => {
+        setAdminModule('thcs');
+        setScorebookInitialMode('scorebook');
+        setScorebookGrade('6');
+      },
+      '/transcript': () => {
+        setAdminModule('thcs');
+        setScorebookInitialMode('transcript');
+        setScorebookGrade('6');
+      },
+      '/utilities/textbooks': () => setIsAdminTextbookExpanded(true),
+      '/utilities/check': () => setShowAdminCheckWorkspace(true),
+      '/utilities/passwords': () => setShowPasswordWorkspace(true),
+      '/utilities/count-stats': () => openStudentDatabaseTab('countStats')
+    }[path];
+    if (!routeAction) return false;
+    runAdminMenuAction(routeAction);
+    return true;
+  }, [adminModule, openAdminQuickScore, openAdminSettingsPanel, openStudentDatabaseTab, runAdminMenuAction]);
+
+  useEffect(() => {
+    if (!isAdmin || typeof window === 'undefined') return undefined;
+    const handleAdminRoute = () => {
+      const hash = window.location.hash || '';
+      if (!hash.toLowerCase().startsWith('#/admin')) return;
+      openAdminRoute(hash);
+    };
+    handleAdminRoute();
+    window.addEventListener('hashchange', handleAdminRoute);
+    return () => window.removeEventListener('hashchange', handleAdminRoute);
+  }, [isAdmin, openAdminRoute]);
+
+  const handleAdminMenuLinkClick = useCallback((event, item) => {
+    if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    const menuBar = event.currentTarget.closest('[data-admin-menu-bar]');
+    menuBar?.querySelectorAll('details[open]').forEach((details) => details.removeAttribute('open'));
+    if (item.pending) {
+      openAdminPlaceholder(item.label);
+      return;
+    }
+    if (item.href && typeof window !== 'undefined') {
+      if (window.location.hash === item.href) openAdminRoute(item.href);
+      else window.location.hash = item.href;
+      return;
+    }
+    runAdminMenuAction(item.action);
+  }, [openAdminPlaceholder, openAdminRoute, runAdminMenuAction]);
+
+  useEffect(() => {
+    if (!isAdmin || typeof document === 'undefined') return undefined;
+    const closeOpenAdminMenus = (event) => {
+      const menuBar = document.querySelector('[data-admin-menu-bar]');
+      if (!menuBar || menuBar.contains(event.target)) return;
+      menuBar.querySelectorAll('details[open]').forEach((details) => details.removeAttribute('open'));
+    };
+    document.addEventListener('pointerdown', closeOpenAdminMenus);
+    return () => document.removeEventListener('pointerdown', closeOpenAdminMenus);
+  }, [isAdmin]);
 
   const adminModules = useMemo(() => ([
     {
@@ -1938,21 +2205,6 @@ function App() {
       grades: []
     }
   ]), []);
-  const openAdminPlaceholder = (label) => {
-    showNotification(`${label} sẽ được thiết kế ở bước sau.`);
-  };
-
-  const openAdminQuickScore = useCallback((stage = 'thcs') => {
-    const nextGrade = stage === 'primary' ? '1' : '6';
-    openQuickScoreWorkspace({ grade: nextGrade, locked: false });
-    if (stage === 'primary') {
-      setQuickVisibleSubjects(QUICK_SCORE_SUBJECTS.reduce((acc, subject) => ({
-        ...acc,
-        [subject.key]: subject.key === 'toan' || subject.key === 'ngu_van'
-      }), {}));
-    }
-  }, [openQuickScoreWorkspace]);
-
   const adminMenuItems = useMemo(() => {
     if (adminModule === 'notice') {
       return [
@@ -1975,11 +2227,24 @@ function App() {
         desc: 'Thiết lập chung, giáo viên và thời khóa biểu.',
         icon: Home,
         children: [
-          { key: 'general', label: 'Thiết lập chung', action: () => openAdminSettingsPanel('general') },
-          { key: 'teachers', label: 'Giáo viên chung', action: () => openAdminSettingsPanel('teachers') },
-          { key: 'class-teachers', label: 'GV theo lớp', action: () => openAdminSettingsPanel('classTeachers') },
-          { key: 'teaching-assignments', label: 'Phân công', action: () => openAdminSettingsPanel('teachingAssignments') },
-          { key: 'schedule', label: 'Thời khóa biểu', action: () => setShowScheduleWorkspace(true) }
+          { key: 'general', label: 'Thiết lập chung', href: getAdminRouteHref('/settings/general'), action: () => openAdminSettingsPanel('general') },
+          { key: 'teachers', label: 'Giáo viên chung', href: getAdminRouteHref('/settings/teachers'), action: () => openAdminSettingsPanel('teachers') },
+          { key: 'class-teachers', label: 'GV theo lớp', href: getAdminRouteHref('/settings/class-teachers'), action: () => openAdminSettingsPanel('classTeachers') },
+          { key: 'teaching-assignments', label: 'Phân công', href: getAdminRouteHref('/settings/teaching-assignments'), action: () => openAdminSettingsPanel('teachingAssignments') },
+          { key: 'schedule', label: 'Thời khóa biểu', href: getAdminRouteHref('/school/schedule'), action: () => setShowScheduleWorkspace(true) }
+        ]
+      },
+      {
+        key: 'tran-hung-dao',
+        label: 'Trần Hưng Đạo',
+        desc: 'Dữ liệu trường chính, giáo viên, lớp và phân công.',
+        icon: Briefcase,
+        alignRight: true,
+        children: [
+          { key: 'thd-teachers', label: 'Danh sách giáo viên', href: getAdminRouteHref('/tran-hung-dao/teachers'), action: () => openAdminSettingsPanel('thdTeachers') },
+          { key: 'thd-classes', label: 'Danh sách lớp', href: getAdminRouteHref('/tran-hung-dao/classes'), action: () => openAdminSettingsPanel('thdClasses') },
+          { key: 'thd-schedule-template', label: 'Phân công theo TKB mẫu', pending: true },
+          { key: 'thd-assignments', label: 'Phân công', href: getAdminRouteHref('/tran-hung-dao/assignments'), action: () => openAdminSettingsPanel('thdTeachingAssignments') }
         ]
       },
       {
@@ -1989,10 +2254,10 @@ function App() {
         icon: GraduationCap,
         badge: studentProfileRequestCount ? `${studentProfileRequestCount}` : '',
         children: [
-          { key: 'student-list', label: 'Danh sách học sinh', action: () => openStudentDatabaseTab('current') },
-          { key: 'registrations', label: 'Đăng ký mới', action: () => openStudentDatabaseTab('registrations') },
-          { key: 'journey', label: 'Quá trình học', action: () => openStudentDatabaseTab('journey') },
-          { key: 'profile-requests', label: 'Yêu cầu sửa', action: () => openStudentDatabaseTab('profileRequests'), badge: studentProfileRequestCount ? `${studentProfileRequestCount}` : '' }
+          { key: 'student-list', label: 'Danh sách học sinh', href: getAdminRouteHref('/students/current'), action: () => openStudentDatabaseTab('current') },
+          { key: 'registrations', label: 'Đăng ký mới', href: getAdminRouteHref('/students/registrations'), action: () => openStudentDatabaseTab('registrations') },
+          { key: 'journey', label: 'Quá trình học', href: getAdminRouteHref('/students/journey'), action: () => openStudentDatabaseTab('journey') },
+          { key: 'profile-requests', label: 'Yêu cầu sửa', href: getAdminRouteHref('/students/profile-requests'), action: () => openStudentDatabaseTab('profileRequests'), badge: studentProfileRequestCount ? `${studentProfileRequestCount}` : '' }
         ]
       },
       {
@@ -2001,24 +2266,27 @@ function App() {
         desc: 'Nhập điểm hoặc điểm danh.',
         icon: Pencil,
         children: [
-          { key: 'score', label: 'Nhập điểm', action: () => openAdminQuickScore(isPrimary ? 'primary' : 'thcs') },
-          { key: 'attendance', label: 'Nhập điểm danh', action: () => setShowAttendanceWorkspace(true) }
+          { key: 'score', label: 'Nhập điểm', href: getAdminRouteHref(isPrimary ? '/primary/input/score' : '/thcs/input/score'), action: () => openAdminQuickScore(isPrimary ? 'primary' : 'thcs') },
+          { key: 'attendance', label: 'Nhập điểm danh', href: getAdminRouteHref(isPrimary ? '/primary/input/attendance' : '/thcs/input/attendance'), action: () => setShowAttendanceWorkspace(true) }
         ]
       },
-      { key: 'scorebook', label: 'Sổ điểm', desc: isPrimary ? 'Phần sổ điểm tiểu học sẽ tính sau.' : 'Mở sổ điểm theo lớp 6, 7, 8, 9.', icon: FileText, pending: isPrimary, action: isPrimary ? null : () => { setScorebookInitialMode('scorebook'); setScorebookGrade('6'); } },
-      { key: 'transcript', label: 'Học bạ', desc: isPrimary ? 'Phần học bạ tiểu học sẽ tính sau.' : 'Mở học bạ theo lớp 6, 7, 8, 9.', icon: BookOpen, pending: isPrimary, action: isPrimary ? null : () => { setScorebookInitialMode('transcript'); setScorebookGrade('6'); } },
+      { key: 'scorebook', label: 'Sổ điểm', desc: isPrimary ? 'Phần sổ điểm tiểu học sẽ tính sau.' : 'Mở sổ điểm theo lớp 6, 7, 8, 9.', icon: FileText, pending: isPrimary, href: isPrimary ? '' : getAdminRouteHref('/scorebook'), action: isPrimary ? null : () => { setScorebookInitialMode('scorebook'); setScorebookGrade('6'); } },
+      { key: 'transcript', label: 'Học bạ', desc: isPrimary ? 'Phần học bạ tiểu học sẽ tính sau.' : 'Mở học bạ theo lớp 6, 7, 8, 9.', icon: BookOpen, pending: isPrimary, href: isPrimary ? '' : getAdminRouteHref('/transcript'), action: isPrimary ? null : () => { setScorebookInitialMode('transcript'); setScorebookGrade('6'); } },
       {
         key: 'stats',
-        label: 'Thống kê',
-        desc: 'Số lượng và học tập.',
+        label: 'Tiện ích',
+        desc: 'Kho SGK, kiểm tra, mật khẩu và thống kê.',
         icon: ListChecks,
         children: [
-          { key: 'count-stats', label: 'TK số lượng', action: () => openStudentDatabaseTab('countStats') },
+          { key: 'textbook-drive', label: 'Kho sách giáo khoa', href: getAdminRouteHref('/utilities/textbooks'), action: () => setIsAdminTextbookExpanded(true) },
+          { key: 'admin-check', label: 'Kiểm tra dữ liệu', href: getAdminRouteHref('/utilities/check'), action: () => setShowAdminCheckWorkspace(true) },
+          { key: 'passwords', label: 'Quản lý mật khẩu', href: getAdminRouteHref('/utilities/passwords'), action: () => setShowPasswordWorkspace(true) },
+          { key: 'count-stats', label: 'TK số lượng', href: getAdminRouteHref('/utilities/count-stats'), action: () => openStudentDatabaseTab('countStats') },
           { key: 'study-stats', label: 'TK học tập', action: () => showNotification('TK học tập sẽ được thiết kế ở bước sau.') }
         ]
       }
     ];
-  }, [adminModule, openAdminQuickScore, openAdminSettingsPanel, openStudentDatabaseTab, showNotification, studentProfileRequestCount]);
+  }, [adminModule, getAdminRouteHref, openAdminQuickScore, openAdminSettingsPanel, openStudentDatabaseTab, showNotification, studentProfileRequestCount]);
 
   const saveQuickScoreValue = useCallback(async (semester, pageIndex, rowIndex, scoreIndex, rawValue) => {
     if (!user) return false;
@@ -2490,8 +2758,11 @@ function App() {
     if (key === 'transcriptStartSigners') setTranscriptStartSigners(value && typeof value === 'object' ? value : {});
     if (key === 'transcriptEndSigners') setTranscriptEndSigners(value && typeof value === 'object' ? value : {});
     if (key === 'nanTeachers') setNanTeachers(Array.isArray(value) ? value : []);
+    if (key === 'thdTeachers') setThdTeachers(Array.isArray(value) ? value : []);
+    if (key === 'thdClasses') setThdClasses(value && typeof value === 'object' ? value : {});
     if (key === 'classTeacherAssignments') setClassTeacherAssignments(value && typeof value === 'object' ? value : {});
     if (key === 'teachingAssignments') setTeachingAssignments(value && typeof value === 'object' ? value : {});
+    if (key === 'thdTeachingAssignments') setThdTeachingAssignments(value && typeof value === 'object' ? value : {});
     if (!user) return;
     try {
       await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'global'), { [key]: value }, { merge: true });
@@ -2530,6 +2801,15 @@ function App() {
   useEffect(() => { fetchDriveData(); }, [fetchDriveData]);
 
   const openTeacherLogin = () => {
+    clearStoredAdminSession();
+    setIsAdmin(false);
+    setShowAdminSettingsWorkspace(false);
+    setShowAdminCheckWorkspace(false);
+    setShowPasswordWorkspace(false);
+    setScorebookGrade(null);
+    if (typeof window !== 'undefined' && window.location.hash.toLowerCase().startsWith('#/admin')) {
+      window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
+    }
     if (isTeacherPassEnabled) {
       setModalMode('teacher');
       setPasswordInput('');
@@ -2544,8 +2824,10 @@ function App() {
   const handleLogin = () => {
     if (modalMode === 'admin') {
       if (passwordInput === adminPass) {
+        writeStoredAdminSession(adminPass, adminModule);
         setIsAdmin(true);
         setRole('admin');
+        setLoginRole(null);
         setShowPasswordModal(false);
         showNotification("Đã vào Quản trị");
       } else {
@@ -2566,7 +2848,15 @@ function App() {
     setPasswordInput('');
   };
 
-  const handleLogoutAdmin = () => { setIsAdmin(false); setRole(null); setLoginRole(null); setCurrentStudent(null); setShowClassOps(false); resetNavigationWithClean(); showNotification("Đã thoát Quản trị"); };
+  const handleExitAdmin = () => {
+    clearStoredAdminSession();
+    closeAdminSessionView();
+    resetNavigationWithClean();
+    if (typeof window !== 'undefined' && window.location.hash.toLowerCase().startsWith('#/admin')) {
+      window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
+    }
+    showNotification("Đã thoát Quản trị");
+  };
 
   useEffect(() => {
     if (!showAddNews || !newsContentRef.current) return;
@@ -5336,7 +5626,7 @@ ${lessonBlocks}`;
                       Đang xem {adminSelectedSchoolYear}, hệ thống {currentSchoolYear}
                     </span>
                   )}
-                  <button onClick={handleLogoutAdmin} className="h-8 rounded-md bg-rose-500 px-3 text-white hover:bg-rose-600">Thoát</button>
+                  <button onClick={handleExitAdmin} className="h-8 rounded-md bg-rose-500 px-3 text-white hover:bg-rose-600">Thoát</button>
                 </div>
               </div>
               <div data-admin-menu-bar className="flex flex-wrap items-center gap-1.5 px-2.5 sm:px-3 py-1.5 bg-white">
@@ -5346,7 +5636,7 @@ ${lessonBlocks}`;
                     return (
                       <details
                         key={item.key}
-                        className="relative"
+                        className={`relative ${item.alignRight ? 'order-last ml-auto' : ''}`}
                         onToggle={(event) => {
                           if (!event.currentTarget.open) return;
                           const menuBar = event.currentTarget.closest('[data-admin-menu-bar]');
@@ -5362,39 +5652,63 @@ ${lessonBlocks}`;
                           <ChevronDown className="h-3.5 w-3.5 text-slate-500" />
                         </summary>
                         <div className="absolute left-0 top-full z-40 mt-1 w-44 rounded-lg border border-slate-200 bg-white p-1.5 shadow-xl">
-                          {item.children.map(child => (
-                            <button
-                              key={child.key}
-                              type="button"
-                              onClick={async (event) => {
-                                const menuBar = event.currentTarget.closest('[data-admin-menu-bar]');
-                                menuBar?.querySelectorAll('details[open]').forEach((details) => details.removeAttribute('open'));
-                                await runAdminMenuAction(child.action);
-                              }}
-                              className="flex w-full items-center justify-between gap-2 rounded-md px-3 py-2 text-left text-xs font-semibold text-slate-700 hover:bg-blue-50 hover:text-blue-700"
-                            >
-                              <span>{child.label}</span>
-                              {child.badge && <span className="shrink-0 rounded-full bg-rose-100 px-1.5 py-0.5 text-[9px] text-rose-600">{child.badge}</span>}
-                            </button>
-                          ))}
+                          {item.children.map(child => {
+                            const childClassName = "flex w-full items-center justify-between gap-2 rounded-md px-3 py-2 text-left text-xs font-semibold text-slate-700 no-underline hover:bg-blue-50 hover:text-blue-700";
+                            const childContent = (
+                              <>
+                                <span>{child.label}</span>
+                                {child.badge && <span className="shrink-0 rounded-full bg-rose-100 px-1.5 py-0.5 text-[9px] text-rose-600">{child.badge}</span>}
+                              </>
+                            );
+                            return child.href ? (
+                              <a
+                                key={child.key}
+                                href={child.href}
+                                onClick={(event) => handleAdminMenuLinkClick(event, child)}
+                                className={childClassName}
+                              >
+                                {childContent}
+                              </a>
+                            ) : (
+                              <button
+                                key={child.key}
+                                type="button"
+                                onClick={(event) => handleAdminMenuLinkClick(event, child)}
+                                className={childClassName}
+                              >
+                                {childContent}
+                              </button>
+                            );
+                          })}
                         </div>
                       </details>
                     );
                   }
-                  return (
-                    <button
-                      key={item.key}
-                      type="button"
-                      onClick={(event) => {
-                        const menuBar = event.currentTarget.closest('[data-admin-menu-bar]');
-                        menuBar?.querySelectorAll('details[open]').forEach((details) => details.removeAttribute('open'));
-                        return item.pending ? openAdminPlaceholder(item.label) : runAdminMenuAction(item.action);
-                      }}
-                      className={`h-8 rounded-md border px-2.5 text-xs font-semibold inline-flex items-center gap-1.5 transition-all ${item.pending ? 'border-slate-200 bg-slate-50 text-slate-500 hover:bg-slate-100' : 'border-blue-100 bg-white text-slate-800 hover:border-blue-300 hover:bg-blue-50 hover:shadow-sm'}`}
-                    >
+                  const itemClassName = `h-8 rounded-md border px-2.5 text-xs font-semibold inline-flex items-center gap-1.5 no-underline transition-all ${item.pending ? 'border-slate-200 bg-slate-50 text-slate-500 hover:bg-slate-100' : 'border-blue-100 bg-white text-slate-800 hover:border-blue-300 hover:bg-blue-50 hover:shadow-sm'}`;
+                  const itemContent = (
+                    <>
                       <ItemIcon className={`h-4 w-4 ${item.pending ? 'text-slate-400' : 'text-blue-600'}`} />
                       {item.label}
                       {item.badge && <span className="rounded-full bg-rose-100 px-1.5 py-0.5 text-[9px] text-rose-600">{item.badge}</span>}
+                    </>
+                  );
+                  return item.href ? (
+                    <a
+                      key={item.key}
+                      href={item.href}
+                      onClick={(event) => handleAdminMenuLinkClick(event, item)}
+                      className={itemClassName}
+                    >
+                      {itemContent}
+                    </a>
+                  ) : (
+                    <button
+                      key={item.key}
+                      type="button"
+                      onClick={(event) => handleAdminMenuLinkClick(event, item)}
+                      className={itemClassName}
+                    >
+                      {itemContent}
                     </button>
                   );
                 })}
@@ -5404,11 +5718,49 @@ ${lessonBlocks}`;
 
           {isAdmin && <div className="h-[84px] w-full shrink-0" />}
 
+          {isAdmin && isAdminTextbookExpanded && (
+            <div className="fixed inset-x-0 top-[84px] bottom-0 z-[90] overflow-y-auto bg-slate-100/95 p-2 sm:p-4 backdrop-blur-md">
+              <div className="mx-auto max-w-5xl rounded-3xl border border-emerald-100 bg-white p-4 sm:p-6 shadow-xl">
+                <div className="mb-4 flex items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-base sm:text-xl font-black uppercase tracking-tight text-emerald-950 flex items-center gap-2">
+                      <Folder className="h-5 w-5 text-emerald-600" /> Kho sách giáo khoa
+                    </h3>
+                    <p className="mt-1 text-xs font-bold text-emerald-700/70">Mở nhanh thư mục Drive SGK theo khối để up, sửa hoặc quản lý file.</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setIsAdminTextbookExpanded(false)}
+                    title="Đóng"
+                    className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-rose-600 text-white shadow hover:bg-rose-700"
+                  >
+                    <X className="h-5 w-5" />
+                  </button>
+                </div>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                  {GRADES.map(g => (
+                    <a
+                      key={`admin-textbook-drive-${g}`}
+                      href={`https://drive.google.com/drive/folders/${TEXTBOOK_FOLDERS[g]}?usp=drive_link`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="rounded-2xl border border-emerald-200 bg-emerald-50/70 p-5 text-center shadow-sm transition-all hover:border-emerald-500 hover:bg-emerald-100 hover:shadow-md"
+                    >
+                      <Folder className="mx-auto mb-3 h-8 w-8 text-emerald-500" />
+                      <div className="text-sm font-black uppercase text-emerald-900">SGK lớp {g}</div>
+                      <div className="mt-1 text-[11px] font-bold text-emerald-700/70">Mở Drive trong tab mới</div>
+                    </a>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
           {false && isAdmin && (
               <div className="admin-settings-panel w-full max-w-none mb-6 bg-white/90 p-5 rounded-3xl shadow-xl border border-blue-200 space-y-6">
                   <div className="flex justify-between items-center border-b border-blue-100 pb-3">
                       <h3 className="text-sm font-black text-slate-800 flex items-center gap-2 uppercase tracking-widest"><Settings className="w-4 h-4 text-blue-600"/> Quản trị hệ thống</h3>
-                      <button onClick={handleLogoutAdmin} className="bg-rose-100 text-rose-600 hover:bg-rose-600 hover:text-white px-4 py-2 rounded-xl text-xs font-black transition-colors uppercase flex items-center gap-1.5"><X className="w-4 h-4"/> Thoát Quản Trị</button>
+                      <button onClick={handleExitAdmin} className="bg-rose-100 text-rose-600 hover:bg-rose-600 hover:text-white px-4 py-2 rounded-xl text-xs font-black transition-colors uppercase flex items-center gap-1.5"><X className="w-4 h-4"/> Thoát Quản Trị</button>
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
                     <button
@@ -5523,8 +5875,11 @@ ${lessonBlocks}`;
                 transcriptStartSigners={transcriptStartSigners}
                 transcriptEndSigners={transcriptEndSigners}
                 nanTeachers={nanTeachers}
+                thdTeachers={thdTeachers}
+                thdClasses={thdClasses}
                 classTeacherAssignments={classTeacherAssignments}
                 teachingAssignments={teachingAssignments}
+                thdTeachingAssignments={thdTeachingAssignments}
                 subjects={SUBJECTS}
                 grades={GRADES}
                 initialPanel={adminSettingsInitialPanel}
@@ -5891,6 +6246,7 @@ ${lessonBlocks}`;
                 transcriptStartSigners={transcriptStartSigners}
                 transcriptEndSigners={transcriptEndSigners}
                 nanTeachers={nanTeachers}
+                thdTeachers={thdTeachers}
                 classTeacherAssignments={classTeacherAssignments}
                 students={allStudents}
                 user={user}
@@ -6176,7 +6532,7 @@ ${lessonBlocks}`;
             {!isAdmin && (
               <div className="flex flex-col gap-2 sm:gap-3">
                   <div className="flex flex-row gap-2 sm:gap-4 justify-center">
-                    <button onClick={() => { if (isStudentCodeEnabled) { setShowStudentAccessModal(true); setStudentForgotMode(false); setStudentFoundCode(''); } else { setRole('student'); setLoginRole('student'); } }} className="flex-1 flex items-center justify-center gap-1.5 sm:gap-2 bg-blue-600 text-white py-3 px-2 rounded-[1rem] sm:rounded-2xl font-black shadow-lg transition-all active:scale-95">
+                    <button onClick={() => { clearStoredAdminSession(); setIsAdmin(false); setShowAdminSettingsWorkspace(false); setShowAdminCheckWorkspace(false); setShowPasswordWorkspace(false); setScorebookGrade(null); if (typeof window !== 'undefined' && window.location.hash.toLowerCase().startsWith('#/admin')) window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`); if (isStudentCodeEnabled) { setShowStudentAccessModal(true); setStudentForgotMode(false); setStudentFoundCode(''); } else { setRole('student'); setLoginRole('student'); } }} className="flex-1 flex items-center justify-center gap-1.5 sm:gap-2 bg-blue-600 text-white py-3 px-2 rounded-[1rem] sm:rounded-2xl font-black shadow-lg transition-all active:scale-95">
                        <User className="w-4 h-4 sm:w-5 sm:h-5" />
                        <span className="text-[11px] sm:text-sm uppercase tracking-wider whitespace-nowrap">Tôi là Học sinh</span>
                     </button>
@@ -6325,8 +6681,13 @@ ${lessonBlocks}`;
               <datalist id="student-profile-household-ward-options">
                 {householdWardOptions.map(item => <option key={item} value={item} />)}
               </datalist>
+              {studentProfileEditableFields.some(field => field.type === 'select') && (
+                <div className="rounded-2xl border border-blue-100 bg-blue-50 px-4 py-3 text-xs font-bold text-blue-800">
+                  Học lực, hạnh kiểm lớp cũ chỉ chọn 3 mức: Tốt, Khá, Đạt. Các cách ghi cũ như Giỏi, Trung bình, Yếu, Chưa đạt sẽ tự quy đổi về 3 mức này.
+                </div>
+              )}
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                {STUDENT_PROFILE_EDIT_FIELDS.map(field => {
+                {studentProfileEditableFields.map(field => {
                   const isFieldPending = activeStudentPendingProfileFieldKeys.has(field.key);
                   const listId = field.key === 'province' || field.key === 'householdProvince'
                     ? 'student-profile-province-options'
@@ -6348,15 +6709,27 @@ ${lessonBlocks}`;
                         {field.label}
                         {isFieldPending && <span className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[8px] text-amber-700">Chờ duyệt</span>}
                       </span>
-                      <input
-                        value={studentProfileDraft[field.key] || ''}
-                        list={listId}
-                        placeholder={placeholder}
-                        readOnly={activeStudentIsReadOnly}
-                        disabled={activeStudentIsReadOnly}
-                        onChange={(event) => handleStudentProfileFieldChange(field.key, event.target.value)}
-                        className={`rounded-2xl border px-3 py-3 text-sm font-bold text-slate-800 focus:outline-none focus:border-blue-400 ${isFieldPending ? 'border-amber-200 bg-amber-50' : 'border-slate-200 bg-white'}`}
-                      />
+                      {field.type === 'select' ? (
+                        <select
+                          value={studentProfileDraft[field.key] || ''}
+                          disabled={activeStudentIsReadOnly}
+                          onChange={(event) => handleStudentProfileFieldChange(field.key, event.target.value)}
+                          className={`rounded-2xl border px-3 py-3 text-sm font-bold text-slate-800 focus:outline-none focus:border-blue-400 ${isFieldPending ? 'border-amber-200 bg-amber-50' : 'border-slate-200 bg-white'}`}
+                        >
+                          <option value="">Chọn</option>
+                          {(field.options || []).map(option => <option key={option} value={option}>{option}</option>)}
+                        </select>
+                      ) : (
+                        <input
+                          value={studentProfileDraft[field.key] || ''}
+                          list={listId}
+                          placeholder={placeholder}
+                          readOnly={activeStudentIsReadOnly}
+                          disabled={activeStudentIsReadOnly}
+                          onChange={(event) => handleStudentProfileFieldChange(field.key, event.target.value)}
+                          className={`rounded-2xl border px-3 py-3 text-sm font-bold text-slate-800 focus:outline-none focus:border-blue-400 ${isFieldPending ? 'border-amber-200 bg-amber-50' : 'border-slate-200 bg-white'}`}
+                        />
+                      )}
                     </label>
                   );
                 })}
@@ -6674,7 +7047,7 @@ ${lessonBlocks}`;
                 )}
               </button>
             ) : null}
-            <button onClick={() => { setRole(null); setLoginRole(null); setCurrentStudent(null); setShowClassOps(false); resetNavigationWithClean(); }} className="text-[10px] sm:text-xs font-black text-slate-400 hover:text-rose-500 transition-colors uppercase tracking-widest">Thoát</button>
+            <button onClick={() => { clearStoredAdminSession(); setIsAdmin(false); setRole(null); setLoginRole(null); setCurrentStudent(null); setShowClassOps(false); setShowAdminSettingsWorkspace(false); setShowAdminCheckWorkspace(false); setShowPasswordWorkspace(false); setScorebookGrade(null); resetNavigationWithClean(); if (typeof window !== 'undefined' && window.location.hash.toLowerCase().startsWith('#/admin')) window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`); }} className="text-[10px] sm:text-xs font-black text-slate-400 hover:text-rose-500 transition-colors uppercase tracking-widest">Thoát</button>
           </div>
         </div>
       </header>}

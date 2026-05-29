@@ -1,8 +1,11 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowDown, ArrowUp, CalendarDays, ClipboardCheck, ClipboardPaste, Download, FileSpreadsheet, FileText, Save, Trash2, X } from 'lucide-react';
+import { ArrowDown, ArrowUp, CalendarDays, ClipboardCheck, ClipboardPaste, Download, FileSpreadsheet, FileText, Plus, Save, Trash2, X } from 'lucide-react';
 
-const emptyTeacher = () => ({ name: '', subject: '', grades: [], periods: '' });
+const emptyTeacher = () => ({ name: '', subject: '', grades: [], periods: '', moneyPerPeriod: '' });
+const emptyThdTeacher = () => ({ name: '', subject: '', position: 'GV', note: '' });
+const THD_CLASS_GRADES = ['6', '7', '8', '9'];
+const DEFAULT_THD_CLASS_COUNT = 5;
 const emptyTeachingAssignment = () => ({
   teacherName: '',
   position: 'GV',
@@ -11,15 +14,92 @@ const emptyTeachingAssignment = () => ({
   weeks: '35',
   className: '6PC',
   classCount: '1',
-  note: ''
+  note: '',
+  transcriptSigner: false
 });
+
+const normalizeClassName = (value = '') => String(value || '').trim().toUpperCase().replace(/\s+/g, '');
+
+const createDefaultThdClasses = () => Object.fromEntries(
+  THD_CLASS_GRADES.map(grade => [
+    grade,
+    Array.from({ length: DEFAULT_THD_CLASS_COUNT }, (_, index) => `${grade}/${index + 1}`)
+  ])
+);
+
+const getGradeFromManagedClassName = (className = '') => String(className || '').match(/[1-9]\d*/)?.[0]?.[0] || '';
+
+const isOldDefaultThdClassList = (grade = '', rows = []) => (
+  rows.length === DEFAULT_THD_CLASS_COUNT
+  && rows.every((className, index) => normalizeClassName(className) === `${grade}A${index + 1}`)
+);
+
+const normalizeThdClasses = (value = {}) => {
+  const defaults = createDefaultThdClasses();
+  const source = value && typeof value === 'object' ? value : {};
+  return Object.fromEntries(THD_CLASS_GRADES.map(grade => {
+    const rows = Array.isArray(source[grade]) ? source[grade] : defaults[grade];
+    const cleaned = rows.map(normalizeClassName).filter(Boolean);
+    if (isOldDefaultThdClassList(grade, cleaned)) return [grade, defaults[grade]];
+    return [grade, cleaned.length ? [...new Set(cleaned)] : defaults[grade]];
+  }));
+};
+
+const getClassSortParts = (className = '') => {
+  const text = normalizeClassName(className);
+  const match = text.match(/^(\d+)(.*?)(\d+)$/) || text.match(/^(\d+)(.*)$/);
+  return {
+    grade: match ? Number(match[1]) : Number(getGradeFromManagedClassName(text) || 0),
+    prefix: match ? (match[2] || '') : text,
+    number: match && match[3] ? Number(match[3]) : 0,
+    text
+  };
+};
+
+const getNextManagedClassName = (grade = '', existingClasses = []) => {
+  const gradeKey = String(grade || '').trim();
+  const existing = existingClasses.map(normalizeClassName).filter(Boolean);
+  const lastClass = existing[existing.length - 1] || `${gradeKey}/0`;
+  const lastParts = getClassSortParts(lastClass);
+  const samePatternNumbers = existing
+    .map(className => getClassSortParts(className))
+    .filter(parts => String(parts.grade) === gradeKey && parts.prefix === lastParts.prefix && parts.number)
+    .map(parts => parts.number);
+  const nextNumber = samePatternNumbers.length ? Math.max(...samePatternNumbers) + 1 : 1;
+  return `${gradeKey}${lastParts.prefix || '/'}${nextNumber}`;
+};
+
+const compareManagedClasses = (left, right) => {
+  const a = getClassSortParts(left);
+  const b = getClassSortParts(right);
+  return (a.grade - b.grade)
+    || a.prefix.localeCompare(b.prefix, 'vi')
+    || (a.number - b.number)
+    || a.text.localeCompare(b.text, 'vi', { numeric: true });
+};
 
 const normalizeTeacher = (teacher = {}) => ({
   name: String(teacher.name || '').trim(),
   subject: String(teacher.subject || '').trim(),
   grades: Array.isArray(teacher.grades) ? teacher.grades.map(String) : [],
-  periods: String(teacher.periods ?? teacher.teachingPeriods ?? teacher.lessonCount ?? '').trim()
+  periods: String(teacher.periods ?? teacher.teachingPeriods ?? teacher.lessonCount ?? '').trim(),
+  moneyPerPeriod: String(teacher.moneyPerPeriod ?? teacher.ratePerPeriod ?? teacher.money ?? '').trim()
 });
+
+const normalizeThdTeacher = (teacher = {}) => ({
+  name: String(teacher.name || teacher.teacherName || '').trim(),
+  subject: String(teacher.subject || teacher.specialty || '').trim(),
+  position: String(teacher.position || 'GV').trim() || 'GV',
+  note: String(teacher.note || '').trim()
+});
+
+const cleanThdTeacherRowsForSave = (rows = []) => rows
+  .map(normalizeThdTeacher)
+  .filter(item => item.name || item.subject || item.note);
+
+const cleanTeacherRowsForSave = (rows = []) => rows
+  .map(normalizeTeacher)
+  .filter(item => item.name || item.subject || item.periods || item.moneyPerPeriod);
 
 const normalizeTeacherNameKey = (value = '') => String(value || '')
   .normalize('NFD')
@@ -36,16 +116,54 @@ const normalizePeriods = (value = '') => {
   return match ? match[0].replace(',', '.') : '';
 };
 
+const normalizeMoney = (value = '') => {
+  let text = String(value || '').trim().replace(/[^\d.,-]/g, '').replace(/\s+/g, '');
+  if (!text) return '';
+  if (text.includes(',') && text.includes('.')) {
+    text = text.replace(/\./g, '').replace(',', '.');
+  } else if (text.includes(',')) {
+    text = text.replace(',', '.');
+  } else if ((text.match(/\./g) || []).length > 1) {
+    text = text.replace(/\./g, '');
+  }
+  return text;
+};
+
+const formatMoney = (value = '') => {
+  const amount = Number(normalizeMoney(value));
+  return amount ? amount.toLocaleString('vi-VN', { maximumFractionDigits: 4 }) : '';
+};
+
 const looksLikePeriods = (value = '') => /^\s*\d+(?:[.,]\d+)?\s*(?:tiết|tiet)?\s*$/i.test(String(value || ''));
+const looksLikeMoney = (value = '') => {
+  const text = String(value || '').trim();
+  const amount = Number(normalizeMoney(text));
+  return amount >= 1000 || /[,.]/.test(text) || /(?:đ|vnd|vnđ|dong|tiền|tien)/i.test(text);
+};
 
 const splitPasteColumns = (line = '') => String(line || '')
   .split(/\t|\||;| {2,}|,/)
   .map(item => item.trim())
   .filter(Boolean);
 
+const splitMoneyPasteColumns = (line = '') => {
+  const text = String(line || '').trim();
+  const tabParts = text.split(/\t/).map(item => item.trim()).filter(Boolean);
+  if (tabParts.length > 1) return tabParts;
+  const separatedParts = text.split(/\||;| {2,}/).map(item => item.trim()).filter(Boolean);
+  if (separatedParts.length > 1) return separatedParts;
+  const match = text.match(/^(.+?)\s+((?:\d[\d.,\s]*)(?:\s*(?:đ|vnd|vnđ|dong))?)$/i);
+  return match ? [match[1].trim(), match[2].trim()] : [text];
+};
+
 const isPeriodPasteHeader = (line = '') => {
   const key = normalizeTeacherNameKey(line);
   return key.includes('so tiet') && (key.includes('ten') || key.includes('giao vien') || key.includes('ho ten'));
+};
+
+const isMoneyPasteHeader = (line = '') => {
+  const key = normalizeTeacherNameKey(line);
+  return (key.includes('so tien') || key.includes('tien')) && (key.includes('ten') || key.includes('giao vien') || key.includes('ho ten'));
 };
 
 const parsePeriodUpdateLine = (line = '') => {
@@ -62,6 +180,22 @@ const parsePeriodUpdateLine = (line = '') => {
   const match = withoutStt.match(/^(.+?)\s+(\d+(?:[.,]\d+)?)(?:\s*(?:tiết|tiet))?$/i);
   if (!match) return null;
   return { name: match[1].trim(), periods: normalizePeriods(match[2]) };
+};
+
+const parseMoneyUpdateLine = (line = '') => {
+  const text = String(line || '').trim();
+  if (!text) return null;
+  const parts = splitMoneyPasteColumns(text);
+  const maybeStt = /^\d+$/.test(parts[0] || '');
+  const payloadParts = maybeStt ? parts.slice(1) : parts;
+  if (payloadParts.length === 2 && looksLikeMoney(payloadParts[1])) {
+    return { name: payloadParts[0], moneyPerPeriod: normalizeMoney(payloadParts[1]) };
+  }
+  if (parts.length > 1) return null;
+  const withoutStt = text.replace(/^\d+[\t\s,;.]+/, '').trim();
+  const match = withoutStt.match(/^(.+?)\s+((?:\d[\d.,\s]*)(?:\s*(?:đ|vnd|vnđ|dong))?)$/i);
+  if (!match || !looksLikeMoney(match[2])) return null;
+  return { name: match[1].trim(), moneyPerPeriod: normalizeMoney(match[2]) };
 };
 
 const parseGrades = (value = '') => String(value || '')
@@ -90,18 +224,79 @@ const ASSIGNMENT_SUBJECT_OPTIONS = [
 const POSITION_OPTIONS = ['GV'];
 const ASSIGNMENT_CLASSES = ['6PC', '7PC', '8PC', '9PC'];
 
-const getAssignmentClassList = (value = '') => {
-  const text = String(value || '').toUpperCase();
-  const found = [...text.matchAll(/[6-9]/g)]
-    .map(match => `${match[0]}PC`);
-  if (found.length) return [...new Set(found)].filter(className => ASSIGNMENT_CLASSES.includes(className));
-  const trimmed = text.replace(/\s+/g, '');
-  return ASSIGNMENT_CLASSES.includes(trimmed) ? [trimmed] : [];
+const expandClassRange = (start, end, classOptions = ASSIGNMENT_CLASSES) => {
+  const normalizedOptions = classOptions.map(normalizeClassName).sort(compareManagedClasses);
+  const startIndex = normalizedOptions.indexOf(normalizeClassName(start));
+  const endIndex = normalizedOptions.indexOf(normalizeClassName(end));
+  if (startIndex < 0 || endIndex < 0) return [];
+  const from = Math.min(startIndex, endIndex);
+  const to = Math.max(startIndex, endIndex);
+  return normalizedOptions.slice(from, to + 1);
 };
 
-const compactAssignmentClassLabel = (classes = []) => {
-  const normalized = [...new Set(classes)].filter(className => ASSIGNMENT_CLASSES.includes(className));
+const getAssignmentClassList = (value = '', classOptions = ASSIGNMENT_CLASSES) => {
+  const text = String(value || '').toUpperCase();
+  const optionSet = new Set(classOptions.map(normalizeClassName));
+  const isLegacyPcOptions = classOptions.length === ASSIGNMENT_CLASSES.length
+    && classOptions.every(className => ASSIGNMENT_CLASSES.includes(className));
+  if (isLegacyPcOptions) {
+    const found = [...text.matchAll(/[6-9]/g)]
+      .map(match => `${match[0]}PC`);
+    if (found.length) return [...new Set(found)].filter(className => optionSet.has(className));
+  }
+  const found = [];
+  const rangePattern = /(\d+(?:[A-Z]+|\/)?\d*)\s*(?:->|–|-|đến|den)\s*(\d+(?:[A-Z]+|\/)?\d*)/gi;
+  let rangeMatch = rangePattern.exec(text);
+  while (rangeMatch) {
+    found.push(...expandClassRange(rangeMatch[1], rangeMatch[2], classOptions));
+    rangeMatch = rangePattern.exec(text);
+  }
+  const withoutRanges = text.replace(rangePattern, ' ');
+  withoutRanges
+    .split(/[,;()\s]+/)
+    .map(normalizeClassName)
+    .filter(Boolean)
+    .forEach(token => {
+      if (optionSet.has(token)) found.push(token);
+    });
+  if (found.length) return [...new Set(found)].filter(className => optionSet.has(className));
+  const trimmed = text.replace(/\s+/g, '');
+  return optionSet.has(trimmed) ? [trimmed] : [];
+};
+
+const compactClassRangeLabel = (classes = []) => {
+  const normalized = [...new Set(classes.map(normalizeClassName).filter(Boolean))].sort(compareManagedClasses);
   if (!normalized.length) return '';
+  const ranges = [];
+  let start = normalized[0];
+  let prev = normalized[0];
+  for (let index = 1; index <= normalized.length; index += 1) {
+    const current = normalized[index];
+    const prevParts = getClassSortParts(prev);
+    const currentParts = getClassSortParts(current);
+    const isConsecutive = current
+      && prevParts.grade === currentParts.grade
+      && prevParts.prefix === currentParts.prefix
+      && prevParts.number
+      && currentParts.number === prevParts.number + 1;
+    if (isConsecutive) {
+      prev = current;
+      continue;
+    }
+    ranges.push(start === prev ? start : `${start}->${prev}`);
+    start = current;
+    prev = current;
+  }
+  return ranges.join(', ');
+};
+
+const compactAssignmentClassLabel = (classes = [], classOptions = ASSIGNMENT_CLASSES) => {
+  const optionSet = new Set(classOptions.map(normalizeClassName));
+  const normalized = [...new Set(classes.map(normalizeClassName))].filter(className => optionSet.has(className)).sort(compareManagedClasses);
+  if (!normalized.length) return '';
+  const isLegacyPcOptions = classOptions.length === ASSIGNMENT_CLASSES.length
+    && classOptions.every(className => ASSIGNMENT_CLASSES.includes(className));
+  if (!isLegacyPcOptions) return compactClassRangeLabel(normalized);
   if (normalized.length === 1) return normalized[0];
   return `${normalized.map(className => className.replace(/[^\d]/g, '')).join(',')}(PC)`;
 };
@@ -141,16 +336,20 @@ const abbreviateTeachingSpecialty = (value = '') => {
   return specialtyMap.find(item => item.keys.some(key => rawKey === key || rawKey.includes(key)))?.value || assignmentSubject || raw;
 };
 
-const normalizeTeachingAssignment = (row = {}) => ({
+const normalizeTeachingAssignment = (row = {}, classOptions = ASSIGNMENT_CLASSES) => {
+  const selectedClasses = getAssignmentClassList(row.className || row.classAssigned || classOptions[0] || '6PC', classOptions);
+  return ({
   teacherName: String(row.teacherName || row.name || '').replace(/\s{2,}/g, ' '),
   position: String(row.position || 'GV').trim() || 'GV',
   specialty: String(row.specialty || row.subject || '').trim(),
   assignment: normalizeAssignmentSubject(row.assignment || row.assignedSubject || ''),
   weeks: String(row.weeks ?? '').trim(),
-  className: compactAssignmentClassLabel(getAssignmentClassList(row.className || row.classAssigned || '6PC')) || '6PC',
-  classCount: String(row.classCount ?? '1').trim() || '1',
-  note: String(row.note || '').trim()
-});
+  className: compactAssignmentClassLabel(selectedClasses, classOptions) || classOptions[0] || '6PC',
+  classCount: String(selectedClasses.length || row.classCount || '1').trim() || '1',
+  note: String(row.note || '').trim(),
+  transcriptSigner: Boolean(row.transcriptSigner || row.signTranscript || row.isTranscriptSigner)
+  });
+};
 
 const classSubjects = (subjects = []) => [...subjects, 'Chủ nhiệm'];
 
@@ -388,8 +587,11 @@ export default function AdminSettingsWorkspace({
   transcriptStartSigners,
   transcriptEndSigners,
   nanTeachers,
+  thdTeachers = [],
+  thdClasses,
   classTeacherAssignments,
   teachingAssignments,
+  thdTeachingAssignments,
   subjects,
   grades,
   initialPanel = 'general',
@@ -405,17 +607,27 @@ export default function AdminSettingsWorkspace({
   const [transcriptStartSignersDraft, setTranscriptStartSignersDraft] = useState({});
   const [transcriptEndSignersDraft, setTranscriptEndSignersDraft] = useState({});
   const [teachersDraft, setTeachersDraft] = useState([]);
+  const [thdTeachersDraft, setThdTeachersDraft] = useState([]);
+  const [thdClassesDraft, setThdClassesDraft] = useState(() => createDefaultThdClasses());
   const [assignmentsDraft, setAssignmentsDraft] = useState({});
   const [teachingAssignmentsDraft, setTeachingAssignmentsDraft] = useState({});
+  const [thdTeachingAssignmentsDraft, setThdTeachingAssignmentsDraft] = useState({});
   const [pasteText, setPasteText] = useState('');
   const [showTeacherPaste, setShowTeacherPaste] = useState(false);
+  const [thdPasteText, setThdPasteText] = useState('');
+  const [showThdTeacherPaste, setShowThdTeacherPaste] = useState(false);
   const [activeTeacherPickerIndex, setActiveTeacherPickerIndex] = useState(null);
   const [teacherPickerPosition, setTeacherPickerPosition] = useState({ top: 0, left: 0, width: 420 });
   const [activeClassPickerIndex, setActiveClassPickerIndex] = useState(null);
   const [classPickerPosition, setClassPickerPosition] = useState({ top: 0, left: 0, width: 180 });
   const [showTeachingExportMenu, setShowTeachingExportMenu] = useState(false);
   const [showTeachingCheckModal, setShowTeachingCheckModal] = useState(false);
+  const [showTeachingMoneyColumns, setShowTeachingMoneyColumns] = useState(true);
   const activePanel = initialPanel || 'general';
+  const isThdTeachingPanel = activePanel === 'thdTeachingAssignments';
+  const isTeachingPanel = activePanel === 'teachingAssignments' || isThdTeachingPanel;
+  const showTeachingFinancialColumns = !isThdTeachingPanel && showTeachingMoneyColumns;
+  const showTeachingSchoolColumns = !isThdTeachingPanel;
 
   useEffect(() => {
     setYearDraft(currentSchoolYear || '');
@@ -455,12 +667,25 @@ export default function AdminSettingsWorkspace({
   }, [nanTeachers]);
 
   useEffect(() => {
+    const rows = (Array.isArray(thdTeachers) ? thdTeachers : []).map(normalizeThdTeacher);
+    setThdTeachersDraft(rows.length ? rows : [emptyThdTeacher()]);
+  }, [thdTeachers]);
+
+  useEffect(() => {
+    setThdClassesDraft(normalizeThdClasses(thdClasses));
+  }, [thdClasses]);
+
+  useEffect(() => {
     setAssignmentsDraft(classTeacherAssignments || {});
   }, [classTeacherAssignments]);
 
   useEffect(() => {
     setTeachingAssignmentsDraft(teachingAssignments && typeof teachingAssignments === 'object' ? teachingAssignments : {});
   }, [teachingAssignments]);
+
+  useEffect(() => {
+    setThdTeachingAssignmentsDraft(thdTeachingAssignments && typeof thdTeachingAssignments === 'object' ? thdTeachingAssignments : {});
+  }, [thdTeachingAssignments]);
 
   const teacherNames = useMemo(() => {
     return [...new Set(teachersDraft.map(item => item.name).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'vi'));
@@ -491,30 +716,65 @@ export default function AdminSettingsWorkspace({
     return assignmentsBySelectedYear?.[grade]?.[subject] ?? '';
   };
 
+  const thdClassOptions = useMemo(() => (
+    THD_CLASS_GRADES.flatMap(grade => (thdClassesDraft?.[grade] || [])).map(normalizeClassName).filter(Boolean).sort(compareManagedClasses)
+  ), [thdClassesDraft]);
+
+  const activeAssignmentClasses = isThdTeachingPanel ? thdClassOptions : ASSIGNMENT_CLASSES;
+  const activeTeachingAssignmentsDraft = isThdTeachingPanel ? thdTeachingAssignmentsDraft : teachingAssignmentsDraft;
+  const setActiveTeachingAssignmentsDraft = isThdTeachingPanel ? setThdTeachingAssignmentsDraft : setTeachingAssignmentsDraft;
+  const activeTeachingTeachersDraft = isThdTeachingPanel
+    ? thdTeachersDraft.map(teacher => normalizeTeacher({
+        name: teacher.name,
+        subject: teacher.subject,
+        periods: '',
+        moneyPerPeriod: ''
+      }))
+    : teachersDraft;
+
   const teachingRowsForSelectedYear = useMemo(() => {
-    const legacyRows = effectiveSchoolYearKey === LEGACY_ASSIGNMENT_YEAR_KEY && Array.isArray(teachingAssignmentsDraft?.rows)
-      ? teachingAssignmentsDraft.rows
+    const legacyRows = effectiveSchoolYearKey === LEGACY_ASSIGNMENT_YEAR_KEY && Array.isArray(activeTeachingAssignmentsDraft?.rows)
+      ? activeTeachingAssignmentsDraft.rows
       : [];
-    const rows = teachingAssignmentsDraft?.byYear?.[effectiveSchoolYearKey] || legacyRows;
-    const normalizedRows = (Array.isArray(rows) ? rows : []).map(normalizeTeachingAssignment);
-    return normalizedRows.length ? normalizedRows : [emptyTeachingAssignment()];
-  }, [effectiveSchoolYearKey, teachingAssignmentsDraft]);
+    const rows = activeTeachingAssignmentsDraft?.byYear?.[effectiveSchoolYearKey] || legacyRows;
+    const normalizedRows = (Array.isArray(rows) ? rows : []).map(row => normalizeTeachingAssignment(row, activeAssignmentClasses));
+    if (!normalizedRows.length && isThdTeachingPanel) {
+      const teacherRows = activeTeachingTeachersDraft
+        .map(normalizeTeacher)
+        .filter(teacher => teacher.name)
+        .map(teacher => normalizeTeachingAssignment({
+          teacherName: teacher.name,
+          position: 'GV',
+          specialty: teacher.subject,
+          weeks: '35',
+          className: activeAssignmentClasses[0] || '6/1',
+          classCount: '1'
+        }, activeAssignmentClasses));
+      if (teacherRows.length) return teacherRows;
+    }
+    return normalizedRows.length
+      ? normalizedRows
+      : [normalizeTeachingAssignment({
+          ...emptyTeachingAssignment(),
+          className: isThdTeachingPanel ? (activeAssignmentClasses[0] || '6/1') : '6PC'
+        }, activeAssignmentClasses)];
+  }, [activeAssignmentClasses, activeTeachingAssignmentsDraft, activeTeachingTeachersDraft, effectiveSchoolYearKey, isThdTeachingPanel]);
 
   const teacherByName = useMemo(() => {
     const map = new Map();
-    teachersDraft.map(normalizeTeacher).forEach(teacher => {
+    activeTeachingTeachersDraft.map(normalizeTeacher).forEach(teacher => {
       const key = normalizeTeacherNameKey(teacher.name);
       if (key) map.set(key, teacher);
     });
     return map;
-  }, [teachersDraft]);
+  }, [activeTeachingTeachersDraft]);
 
   const teacherSearchOptions = useMemo(() => (
-    teachersDraft
+    activeTeachingTeachersDraft
       .map(normalizeTeacher)
       .filter(teacher => teacher.name)
       .sort((a, b) => a.name.localeCompare(b.name, 'vi'))
-  ), [teachersDraft]);
+  ), [activeTeachingTeachersDraft]);
 
   const getTeacherSuggestions = (value = '') => {
     const searchKey = normalizeTeacherNameKey(value);
@@ -570,11 +830,11 @@ export default function AdminSettingsWorkspace({
 
   const toggleTeachingClass = (index, className) => {
     const row = teachingRowsForSelectedYear[index] || {};
-    const selected = getAssignmentClassList(row.className || '6PC');
+    const selected = getAssignmentClassList(row.className || activeAssignmentClasses[0] || '6PC', activeAssignmentClasses);
     const nextClasses = selected.includes(className)
       ? selected.filter(item => item !== className)
-      : [...selected, className].sort((a, b) => Number(a[0]) - Number(b[0]));
-    const nextLabel = compactAssignmentClassLabel(nextClasses);
+      : [...selected, className].sort(compareManagedClasses);
+    const nextLabel = compactAssignmentClassLabel(nextClasses, activeAssignmentClasses);
     updateTeachingAssignmentRow(index, {
       className: nextLabel,
       classCount: String(nextClasses.length || 1)
@@ -582,11 +842,11 @@ export default function AdminSettingsWorkspace({
   };
 
   const teachingSemesterDatesForYear = useMemo(() => (
-    normalizeTeachingSemesterDates(teachingAssignmentsDraft?.semestersByYear?.[effectiveSchoolYearKey], selectedSchoolYear)
-  ), [effectiveSchoolYearKey, selectedSchoolYear, teachingAssignmentsDraft]);
+    normalizeTeachingSemesterDates(activeTeachingAssignmentsDraft?.semestersByYear?.[effectiveSchoolYearKey], selectedSchoolYear)
+  ), [activeTeachingAssignmentsDraft, effectiveSchoolYearKey, selectedSchoolYear]);
 
   const updateTeachingSemesterDate = (field, value) => {
-    setTeachingAssignmentsDraft(prev => {
+    setActiveTeachingAssignmentsDraft(prev => {
       const prevObj = (prev && typeof prev === 'object') ? prev : {};
       const nextDates = {
         ...teachingSemesterDatesForYear,
@@ -595,7 +855,7 @@ export default function AdminSettingsWorkspace({
       const byYear = { ...(prevObj.byYear || {}) };
       const rows = Array.isArray(byYear[effectiveSchoolYearKey]) ? byYear[effectiveSchoolYearKey] : teachingRowsForSelectedYear;
       byYear[effectiveSchoolYearKey] = rows.map(row => {
-        const normalizedRow = normalizeTeachingAssignment(row);
+        const normalizedRow = normalizeTeachingAssignment(row, activeAssignmentClasses);
         if (!normalizedRow.note || !isGeneratedTeachingNote(normalizedRow.note)) return normalizedRow;
         return { ...normalizedRow, note: getAssignmentNote(normalizedRow, nextDates) };
       });
@@ -636,13 +896,13 @@ export default function AdminSettingsWorkspace({
   };
 
   const updateTeachingRowsForYear = (updater) => {
-    setTeachingAssignmentsDraft(prev => {
+    setActiveTeachingAssignmentsDraft(prev => {
       const prevObj = (prev && typeof prev === 'object') ? prev : {};
       const byYear = { ...(prevObj.byYear || {}) };
       const savedRows = Array.isArray(byYear[effectiveSchoolYearKey]) ? byYear[effectiveSchoolYearKey] : null;
-      const currentRows = ((savedRows && savedRows.length) ? savedRows : teachingRowsForSelectedYear).map(normalizeTeachingAssignment);
+      const currentRows = ((savedRows && savedRows.length) ? savedRows : teachingRowsForSelectedYear).map(row => normalizeTeachingAssignment(row, activeAssignmentClasses));
       const nextRows = typeof updater === 'function' ? updater(currentRows) : updater;
-      byYear[effectiveSchoolYearKey] = (Array.isArray(nextRows) ? nextRows : []).map(normalizeTeachingAssignment);
+      byYear[effectiveSchoolYearKey] = (Array.isArray(nextRows) ? nextRows : []).map(row => normalizeTeachingAssignment(row, activeAssignmentClasses));
       return {
         ...prevObj,
         byYear
@@ -671,7 +931,7 @@ export default function AdminSettingsWorkspace({
           nextPatch.note = getAssignmentNote({ ...row, ...nextPatch });
         }
       }
-      return normalizeTeachingAssignment({ ...row, ...nextPatch });
+      return normalizeTeachingAssignment({ ...row, ...nextPatch }, activeAssignmentClasses);
     }));
   };
 
@@ -679,7 +939,11 @@ export default function AdminSettingsWorkspace({
     updateTeachingRowsForYear(rows => {
       const next = [...rows];
       const insertAt = Number.isInteger(afterIndex) ? afterIndex + 1 : next.length;
-      next.splice(insertAt, 0, normalizeTeachingAssignment(seed || emptyTeachingAssignment()));
+      const emptyRow = {
+        ...emptyTeachingAssignment(),
+        className: isThdTeachingPanel ? (activeAssignmentClasses[0] || '6/1') : '6PC'
+      };
+      next.splice(insertAt, 0, normalizeTeachingAssignment(seed || emptyRow, activeAssignmentClasses));
       return next;
     });
   };
@@ -692,7 +956,7 @@ export default function AdminSettingsWorkspace({
       position: current.position || 'GV',
       specialty: current.specialty || '',
       weeks: current.weeks || '35',
-      className: current.className || '6PC',
+      className: current.className || (isThdTeachingPanel ? (activeAssignmentClasses[0] || '6/1') : '6PC'),
       classCount: current.classCount || '1'
     });
   };
@@ -700,7 +964,10 @@ export default function AdminSettingsWorkspace({
   const deleteTeachingAssignmentRow = (index) => {
     updateTeachingRowsForYear(rows => {
       const next = rows.filter((_, rowIndex) => rowIndex !== index);
-      return next.length ? next : [emptyTeachingAssignment()];
+      return next.length ? next : [normalizeTeachingAssignment({
+        ...emptyTeachingAssignment(),
+        className: isThdTeachingPanel ? (activeAssignmentClasses[0] || '6/1') : '6PC'
+      }, activeAssignmentClasses)];
     });
   };
 
@@ -741,7 +1008,7 @@ export default function AdminSettingsWorkspace({
   };
 
   const addRowsFromTeacherList = () => {
-    const normalizedTeachers = teachersDraft.map(normalizeTeacher).filter(teacher => teacher.name);
+    const normalizedTeachers = activeTeachingTeachersDraft.map(normalizeTeacher).filter(teacher => teacher.name);
     if (!normalizedTeachers.length) {
       showNotification?.('Chưa có danh sách giáo viên chung để nhập nhanh.', 'error');
       return;
@@ -755,23 +1022,81 @@ export default function AdminSettingsWorkspace({
           position: 'GV',
           specialty: teacher.subject,
           weeks: '35',
-          className: '6PC',
+          className: activeAssignmentClasses[0] || '6PC',
           classCount: '1'
-        }));
+        }, activeAssignmentClasses));
       const baseRows = rows.length === 1 && !rows[0].teacherName && !rows[0].assignment ? [] : rows;
       return rowsToAdd.length ? [...baseRows, ...rowsToAdd] : rows;
     });
     showNotification?.('Đã đưa danh sách giáo viên chung vào bảng phân công.');
   };
 
+  const findClassSubjectForAssignment = (assignment = '') => {
+    const assignmentKey = normalizeTeacherNameKey(normalizeAssignmentSubject(assignment));
+    return classSubjects(subjects).find(subject => (
+      normalizeTeacherNameKey(normalizeAssignmentSubject(subject)) === assignmentKey
+    )) || '';
+  };
+
+  const loadClassTeachersFromTeachingAssignments = () => {
+    const yearSubjects = classSubjects(subjects);
+    const nextYearMap = {};
+    grades.forEach(grade => {
+      nextYearMap[String(grade)] = Object.fromEntries(yearSubjects.map(subject => [subject, '']));
+    });
+    const signedRows = teachingRowsForSelectedYear
+      .map(row => normalizeTeachingAssignment(row, activeAssignmentClasses))
+      .filter(row => row.transcriptSigner && row.teacherName && row.assignment);
+    if (!signedRows.length) {
+      showNotification?.('Chưa có dòng nào được tích Ký HB trong bảng phân công.', 'error');
+      return;
+    }
+    let loadedCount = 0;
+    signedRows.forEach(row => {
+      const subject = findClassSubjectForAssignment(row.assignment);
+      if (!subject) return;
+      getAssignmentClassList(row.className, activeAssignmentClasses).forEach(className => {
+        const grade = className.replace(/[^\d]/g, '');
+        if (!grades.map(String).includes(grade)) return;
+        const currentNames = String(nextYearMap?.[grade]?.[subject] || '')
+          .split(/\s*,\s*/)
+          .map(item => item.trim())
+          .filter(Boolean);
+        if (!currentNames.some(name => normalizeTeacherNameKey(name) === normalizeTeacherNameKey(row.teacherName))) {
+          currentNames.push(row.teacherName);
+          loadedCount += 1;
+        }
+        nextYearMap[grade] = {
+          ...(nextYearMap[grade] || {}),
+          [subject]: currentNames.join(', ')
+        };
+      });
+    });
+    if (!loadedCount) {
+      showNotification?.('Chưa ghép được dòng Ký HB nào vào môn/lớp tương ứng.', 'error');
+      return;
+    }
+    setAssignmentsDraft(prev => {
+      const prevObj = (prev && typeof prev === 'object') ? prev : {};
+      return {
+        ...prevObj,
+        byYear: {
+          ...(prevObj.byYear || {}),
+          [effectiveSchoolYearKey]: nextYearMap
+        }
+      };
+    });
+    showNotification?.(`Đã load ${loadedCount} phân công ký học bạ.`);
+  };
+
   const cleanTeachingAssignmentRows = useMemo(
     () => teachingRowsForSelectedYear
       .map(row => {
-        const normalizedRow = normalizeTeachingAssignment(row);
+        const normalizedRow = normalizeTeachingAssignment(row, activeAssignmentClasses);
         return { ...normalizedRow, teacherName: normalizedRow.teacherName.trim() };
       })
       .filter(row => row.teacherName || row.assignment || row.specialty),
-    [teachingRowsForSelectedYear]
+    [activeAssignmentClasses, teachingRowsForSelectedYear]
   );
 
   const buildTeachingAssignmentsForSave = () => {
@@ -824,8 +1149,8 @@ export default function AdminSettingsWorkspace({
   };
 
   useEffect(() => {
-    if (activePanel !== 'teachingAssignments') return;
-    const currentRows = teachingRowsForSelectedYear.map(normalizeTeachingAssignment);
+    if (!isTeachingPanel) return;
+    const currentRows = teachingRowsForSelectedYear.map(row => normalizeTeachingAssignment(row, activeAssignmentClasses));
     const nextRows = currentRows.map(row => {
       if (!row.note || !isGeneratedTeachingNote(row.note)) return row;
       const nextNote = getAssignmentNote(row);
@@ -834,7 +1159,7 @@ export default function AdminSettingsWorkspace({
     if (!sameJson(currentRows, nextRows)) {
       updateTeachingRowsForYear(nextRows);
     }
-  }, [activePanel, teachingRowsForSelectedYear, teachingSemesterDatesForYear]);
+  }, [activeAssignmentClasses, activePanel, isTeachingPanel, teachingRowsForSelectedYear, teachingSemesterDatesForYear]);
 
   const isLastTeachingRowForTeacher = (rows = [], row = {}, index = 0) => {
     const teacherKey = normalizeTeacherNameKey(row.teacherName);
@@ -855,8 +1180,27 @@ export default function AdminSettingsWorkspace({
     return Number(String(teacher?.periods || '').replace(',', '.')) || 0;
   };
 
+  const getTeacherMoneyRate = (teacherName = '') => {
+    const teacher = teacherByName.get(normalizeTeacherNameKey(teacherName));
+    return Number(normalizeMoney(teacher?.moneyPerPeriod || '')) || 0;
+  };
+
+  const getTeachingAssignmentMoney = (row = {}) => {
+    const totalPeriods = Number(getTotalPeriods(row)) || 0;
+    const rate = getTeacherMoneyRate(row.teacherName);
+    return totalPeriods && rate ? totalPeriods * rate : 0;
+  };
+
+  const getTeacherTeachingMoneyTotal = (teacherName = '') => {
+    const teacherKey = normalizeTeacherNameKey(teacherName);
+    if (!teacherKey) return 0;
+    return teachingRowsForSelectedYear
+      .filter(row => normalizeTeacherNameKey(row.teacherName) === teacherKey)
+      .reduce((sum, row) => sum + getTeachingAssignmentMoney(row), 0);
+  };
+
   const getAssignmentClassesFromRow = (row = {}) => {
-    return getAssignmentClassList(row.className);
+    return getAssignmentClassList(row.className, activeAssignmentClasses);
   };
 
   const expectedPeriodsForAssignment = (subject = '', className = '') => {
@@ -868,7 +1212,7 @@ export default function AdminSettingsWorkspace({
   };
 
   const teachingCheckRows = useMemo(() => {
-    const rows = teachingRowsForSelectedYear.map(normalizeTeachingAssignment).filter(row => row.assignment);
+    const rows = teachingRowsForSelectedYear.map(row => normalizeTeachingAssignment(row, activeAssignmentClasses)).filter(row => row.assignment);
     const actualMap = new Map();
     rows.forEach(row => {
       const subject = normalizeAssignmentSubject(row.assignment);
@@ -884,7 +1228,7 @@ export default function AdminSettingsWorkspace({
         actualMap.set(key, current);
       });
     });
-    return ASSIGNMENT_CLASSES.flatMap(className => ASSIGNMENT_SUBJECT_OPTIONS.map(subjectOption => {
+    return activeAssignmentClasses.flatMap(className => ASSIGNMENT_SUBJECT_OPTIONS.map(subjectOption => {
       const expected = expectedPeriodsForAssignment(subjectOption.value, className);
       const found = actualMap.get(`${className}|${subjectOption.value}`);
       const actual = Math.round((found?.actual || 0) * 10) / 10;
@@ -898,7 +1242,7 @@ export default function AdminSettingsWorkspace({
         teachers: found ? [...found.teachers].join(', ') : ''
       };
     }));
-  }, [teachingRowsForSelectedYear]);
+  }, [activeAssignmentClasses, teachingRowsForSelectedYear]);
 
   const teachingCheckSummary = useMemo(() => ({
     ok: teachingCheckRows.filter(row => row.diff === 0).length,
@@ -908,7 +1252,7 @@ export default function AdminSettingsWorkspace({
 
   const buildTeachingExportGroups = () => {
     const rows = teachingRowsForSelectedYear
-      .map(normalizeTeachingAssignment)
+      .map(row => normalizeTeachingAssignment(row, activeAssignmentClasses))
       .filter(row => row.teacherName || row.assignment || row.specialty);
     const groups = [];
     rows.forEach(row => {
@@ -934,6 +1278,7 @@ export default function AdminSettingsWorkspace({
     const endDateObj = parseDateValue(teachingSemesterDatesForYear.hk2End);
     const exportMonth = endDateObj ? endDateObj.getMonth() + 1 : 5;
     const exportYear = endDateObj ? endDateObj.getFullYear() : getSchoolYearStartYear(selectedSchoolYear) + 1;
+    const teachingSchoolName = isThdTeachingPanel ? 'TRƯỜNG THCS TRẦN HƯNG ĐẠO' : 'TRƯỜNG THCS NGUYỄN AN NINH';
     const fileTitle = `BẢNG PHÂN CÔNG CÁN BỘ QUẢN LÝ, GIÁO VIÊN DẠY PHỔ CẬP - NĂM HỌC ${selectedSchoolYear}`;
     const subtitle = `(Từ ngày ${startDate} đến ${endDate} - 35 tuần thực học)`;
     const headers = [
@@ -948,8 +1293,12 @@ export default function AdminSettingsWorkspace({
       'Số<br/>tiết/lớp/<br/>tuần',
       'Tổng số<br/>tiết/tuần',
       'Tổng số tiết',
-      'Ghi chú'
+      'Ghi chú',
+      ...(showTeachingFinancialColumns ? ['Số tiền<br/>1 tiết', 'Số tiền'] : [])
     ];
+    const totalColumns = headers.length;
+    const leftMetaColumns = Math.floor(totalColumns / 2);
+    const rightMetaColumns = totalColumns - leftMetaColumns;
     const headerRow = headers.map(title => `<th>${String(title).split('<br/>').map(escapeHtml).join('<br/>')}</th>`).join('');
     const indexRow = headers.map((_, index) => `<td class="index-row">${index + 1}</td>`).join('');
     const bodyRows = groups.flatMap((group, groupIndex) => {
@@ -958,6 +1307,8 @@ export default function AdminSettingsWorkspace({
         const periodsPerClassWeek = getPeriodsPerClassWeek(row);
         const totalPerWeek = getTotalPeriodsPerWeek(row);
         const totalPeriods = getTotalPeriods(row);
+        const teacherMoneyRate = getTeacherMoneyRate(row.teacherName);
+        const assignmentMoney = getTeachingAssignmentMoney(row);
         const lastAssignmentClass = rowIndex === group.rows.length - 1 ? ' last-assignment-row' : '';
         const continuationAssignmentClass = rowIndex > 0 ? ' continuation-assignment-row' : '';
         return `
@@ -974,6 +1325,7 @@ export default function AdminSettingsWorkspace({
             <td class="center">${escapeHtml(totalPerWeek)}</td>
             <td class="center">${escapeHtml(totalPeriods)}</td>
             <td>${escapeHtml(row.note)}</td>
+            ${showTeachingFinancialColumns ? `<td class="center">${escapeHtml(formatMoney(teacherMoneyRate))}</td><td class="center">${escapeHtml(formatMoney(assignmentMoney))}</td>` : ''}
           </tr>
         `;
       }).join('');
@@ -984,6 +1336,7 @@ export default function AdminSettingsWorkspace({
           <td colspan="9">Số tiết dạy phổ cập/năm học</td>
           <td class="center">${escapeHtml(teacherTotal || '')}</td>
           <td></td>
+          ${showTeachingFinancialColumns ? `<td></td><td class="center">${escapeHtml(formatMoney(getTeacherTeachingMoneyTotal(group.teacherName)))}</td>` : ''}
         </tr>`
       ];
     }).join('');
@@ -1022,40 +1375,42 @@ export default function AdminSettingsWorkspace({
     .col-week { width: 17mm; }
     .col-total { width: 17mm; }
     .col-note { width: 64mm; }
+    .col-rate { width: 18mm; }
+    .col-money { width: 20mm; }
   </style>
 </head>
 <body>
   <table class="meta">
     <tr>
-      <td colspan="6">ỦY BAN NHÂN DÂN PHƯỜNG</td>
-      <td colspan="6" class="right-title">CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM</td>
+      <td colspan="${leftMetaColumns}">ỦY BAN NHÂN DÂN PHƯỜNG</td>
+      <td colspan="${rightMetaColumns}" class="right-title">CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM</td>
     </tr>
     <tr>
-      <td colspan="6">PHƯỜNG TRUNG MỸ TÂY</td>
-      <td colspan="6" class="sub">Độc lập - Tự do - Hạnh phúc</td>
+      <td colspan="${leftMetaColumns}">PHƯỜNG TRUNG MỸ TÂY</td>
+      <td colspan="${rightMetaColumns}" class="sub">Độc lập - Tự do - Hạnh phúc</td>
     </tr>
     <tr>
-      <td colspan="6">TRƯỜNG THCS NGUYỄN AN NINH</td>
-      <td colspan="6"></td>
+      <td colspan="${leftMetaColumns}">${escapeHtml(teachingSchoolName)}</td>
+      <td colspan="${rightMetaColumns}"></td>
     </tr>
     <tr class="date-row">
-      <td colspan="6"></td>
-      <td colspan="6">Trung Mỹ Tây, ngày ...... tháng ${exportMonth} năm ${exportYear}</td>
+      <td colspan="${leftMetaColumns}"></td>
+      <td colspan="${rightMetaColumns}">Trung Mỹ Tây, ngày ...... tháng ${exportMonth} năm ${exportYear}</td>
     </tr>
-    <tr class="title-row"><td colspan="12">${escapeHtml(fileTitle)}</td></tr>
-    <tr class="subtitle-row"><td colspan="12">${escapeHtml(subtitle)}</td></tr>
+    <tr class="title-row"><td colspan="${totalColumns}">${escapeHtml(fileTitle)}</td></tr>
+    <tr class="subtitle-row"><td colspan="${totalColumns}">${escapeHtml(subtitle)}</td></tr>
   </table>
   <table class="assignment">
     <colgroup>
       <col class="col-stt" /><col class="col-name" /><col class="col-position" /><col class="col-specialty" />
       <col class="col-assignment" /><col class="col-weeks" /><col class="col-class" /><col class="col-count" />
-      <col class="col-period" /><col class="col-week" /><col class="col-total" /><col class="col-note" />
+      <col class="col-period" /><col class="col-week" /><col class="col-total" /><col class="col-note" />${showTeachingFinancialColumns ? '<col class="col-rate" /><col class="col-money" />' : ''}
     </colgroup>
     <thead>
       <tr>${headerRow}</tr>
       <tr>${indexRow}</tr>
     </thead>
-    <tbody>${bodyRows || '<tr><td colspan="12" class="center">Chưa có dữ liệu phân công</td></tr>'}</tbody>
+    <tbody>${bodyRows || `<tr><td colspan="${totalColumns}" class="center">Chưa có dữ liệu phân công</td></tr>`}</tbody>
   </table>
 </body>
 </html>`;
@@ -1068,13 +1423,16 @@ export default function AdminSettingsWorkspace({
     const endDateObj = parseDateValue(teachingSemesterDatesForYear.hk2End);
     const exportMonth = endDateObj ? endDateObj.getMonth() + 1 : 5;
     const exportYear = endDateObj ? endDateObj.getFullYear() : getSchoolYearStartYear(selectedSchoolYear) + 1;
+    const teachingSchoolName = isThdTeachingPanel ? 'TRƯỜNG THCS TRẦN HƯNG ĐẠO' : 'TRƯỜNG THCS NGUYỄN AN NINH';
     const fileTitle = `BẢNG PHÂN CÔNG CÁN BỘ QUẢN LÝ, GIÁO VIÊN DẠY PHỔ CẬP - NĂM HỌC ${selectedSchoolYear}`;
     const subtitle = `(Từ ngày ${startDate} đến ${endDate} - 35 tuần thực học)`;
     const headers = [
       'STT', 'Họ và tên', 'Chức vụ', 'Chuyên môn\ngiảng dạy', 'Phân công', 'Số\ntuần',
-      'Lớp được phân công', 'Số lớp', 'Số\ntiết/lớp/\ntuần', 'Tổng số\ntiết/tuần', 'Tổng số tiết', 'Ghi chú'
+      'Lớp được phân công', 'Số lớp', 'Số\ntiết/lớp/\ntuần', 'Tổng số\ntiết/tuần', 'Tổng số tiết', 'Ghi chú',
+      ...(showTeachingFinancialColumns ? ['Số tiền\n1 tiết', 'Số tiền'] : [])
     ];
-    const merges = ['A1:F1', 'G1:L1', 'A2:F2', 'G2:L2', 'A3:F3', 'G3:L3', 'B4:D4', 'G4:L4', 'A6:L6', 'A7:L7'];
+    const endColumn = columnName(headers.length);
+    const merges = [`A1:F1`, `G1:${endColumn}1`, `A2:F2`, `G2:${endColumn}2`, `A3:F3`, `G3:${endColumn}3`, 'B4:D4', `G4:${endColumn}4`, `A6:${endColumn}6`, `A7:${endColumn}7`];
     const rows = [];
     const rowXml = (rowIndex, cells, height = null) => {
       const heightAttr = height ? ` ht="${height}" customHeight="1"` : '';
@@ -1082,7 +1440,7 @@ export default function AdminSettingsWorkspace({
     };
     rowXml(1, [xlsxCell(1, 1, 'ỦY BAN NHÂN DÂN PHƯỜNG', 10), xlsxCell(1, 7, 'CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM', 1)], 18);
     rowXml(2, [xlsxCell(2, 1, 'PHƯỜNG TRUNG MỸ TÂY', 10), xlsxCell(2, 7, 'Độc lập - Tự do - Hạnh phúc', 2)], 18);
-    rowXml(3, [xlsxCell(3, 1, 'TRƯỜNG THCS NGUYỄN AN NINH', 1), xlsxCell(3, 7, '', 0)], 18);
+    rowXml(3, [xlsxCell(3, 1, teachingSchoolName, 1), xlsxCell(3, 7, '', 0)], 18);
     rowXml(4, [xlsxCell(4, 2, '', 11), xlsxCell(4, 7, `Trung Mỹ Tây, ngày ...... tháng ${exportMonth} năm ${exportYear}`, 3)], 18);
     rowXml(5, [], 18);
     rowXml(6, [xlsxCell(6, 1, fileTitle, 1)], 18);
@@ -1096,6 +1454,8 @@ export default function AdminSettingsWorkspace({
         const periodsPerClassWeek = getPeriodsPerClassWeek(row);
         const totalPerWeek = getTotalPeriodsPerWeek(row);
         const totalPeriods = getTotalPeriods(row);
+        const teacherMoneyRate = getTeacherMoneyRate(row.teacherName);
+        const assignmentMoney = getTeachingAssignmentMoney(row);
         const isContinuationAssignment = rowIndex > 0;
         const leftDataStyle = isContinuationAssignment ? 21 : 15;
         const centerDataStyle = isContinuationAssignment ? 22 : 16;
@@ -1113,7 +1473,13 @@ export default function AdminSettingsWorkspace({
           xlsxCell(sheetRow, 9, typeof periodsPerClassWeek === 'number' ? periodsPerClassWeek : periodsPerClassWeek, centerDataStyle),
           xlsxCell(sheetRow, 10, Number(totalPerWeek) || totalPerWeek, centerDataStyle),
           xlsxCell(sheetRow, 11, Number(totalPeriods) || totalPeriods, centerDataStyle),
-          xlsxCell(sheetRow, 12, row.note, nameDataStyle)
+          xlsxCell(sheetRow, 12, row.note, nameDataStyle),
+          ...(showTeachingFinancialColumns
+            ? [
+                xlsxCell(sheetRow, 13, teacherMoneyRate || '', centerDataStyle),
+                xlsxCell(sheetRow, 14, assignmentMoney || '', centerDataStyle)
+              ]
+            : [])
         ], 21);
         sheetRow += 1;
       });
@@ -1123,7 +1489,13 @@ export default function AdminSettingsWorkspace({
         xlsxCell(sheetRow, 2, 'Số tiết dạy phổ cập/năm học', 8),
         ...Array.from({ length: 8 }, (_, offset) => xlsxCell(sheetRow, offset + 3, '', 8)),
         xlsxCell(sheetRow, 11, teacherTotal || '', 9),
-        xlsxCell(sheetRow, 12, '', 8)
+        xlsxCell(sheetRow, 12, '', 8),
+        ...(showTeachingFinancialColumns
+          ? [
+              xlsxCell(sheetRow, 13, '', 8),
+              xlsxCell(sheetRow, 14, getTeacherTeachingMoneyTotal(group.teacherName) || '', 9)
+            ]
+          : [])
       ], 18);
       sheetRow += 1;
     });
@@ -1137,7 +1509,7 @@ export default function AdminSettingsWorkspace({
     <col min="3" max="3" width="7" customWidth="1"/><col min="4" max="4" width="11" customWidth="1"/>
     <col min="5" max="5" width="10" customWidth="1"/><col min="6" max="6" width="7" customWidth="1"/>
     <col min="7" max="7" width="19" customWidth="1"/><col min="8" max="8" width="7" customWidth="1"/>
-    <col min="9" max="11" width="9" customWidth="1"/><col min="12" max="12" width="41" customWidth="1"/>
+    <col min="9" max="11" width="9" customWidth="1"/><col min="12" max="12" width="41" customWidth="1"/>${showTeachingFinancialColumns ? '<col min="13" max="14" width="12" customWidth="1"/>' : ''}
   </cols>
   <sheetData>${rows.join('')}</sheetData>
   <mergeCells count="${merges.length}">${merges.map(ref => `<mergeCell ref="${ref}"/>`).join('')}</mergeCells>
@@ -1220,8 +1592,18 @@ export default function AdminSettingsWorkspace({
   };
 
   const cleanTeachersDraft = useMemo(
-    () => teachersDraft.map(normalizeTeacher).filter(item => item.name || item.subject || item.periods),
+    () => cleanTeacherRowsForSave(teachersDraft),
     [teachersDraft]
+  );
+
+  const cleanThdTeachersDraft = useMemo(
+    () => cleanThdTeacherRowsForSave(thdTeachersDraft),
+    [thdTeachersDraft]
+  );
+
+  const cleanThdClassesDraft = useMemo(
+    () => normalizeThdClasses(thdClassesDraft),
+    [thdClassesDraft]
   );
 
   const buildAssignmentsForSave = () => {
@@ -1247,12 +1629,18 @@ export default function AdminSettingsWorkspace({
     transcriptGrade9EndDates: !sameJson(transcriptGrade9EndDatesDraft, transcriptGrade9EndDates && typeof transcriptGrade9EndDates === 'object' ? transcriptGrade9EndDates : {}),
     transcriptStartSigners: !sameJson(transcriptStartSignersDraft, transcriptStartSigners && typeof transcriptStartSigners === 'object' ? transcriptStartSigners : {}),
     transcriptEndSigners: !sameJson(transcriptEndSignersDraft, transcriptEndSigners && typeof transcriptEndSigners === 'object' ? transcriptEndSigners : {}),
-    nanTeachers: !sameJson(cleanTeachersDraft, (Array.isArray(nanTeachers) ? nanTeachers : []).map(normalizeTeacher).filter(item => item.name || item.subject || item.periods)),
+    nanTeachers: !sameJson(cleanTeachersDraft, cleanTeacherRowsForSave(Array.isArray(nanTeachers) ? nanTeachers : [])),
+    thdTeachers: !sameJson(cleanThdTeachersDraft, cleanThdTeacherRowsForSave(Array.isArray(thdTeachers) ? thdTeachers : [])),
     classTeacherAssignments: !sameJson(assignmentsDraft || {}, classTeacherAssignments || {}),
-    teachingAssignments: !sameJson(buildTeachingAssignmentsForSave(), teachingAssignments && typeof teachingAssignments === 'object' ? teachingAssignments : {})
+    thdClasses: !sameJson(cleanThdClassesDraft, normalizeThdClasses(thdClasses)),
+    teachingAssignments: activePanel === 'teachingAssignments' && !sameJson(buildTeachingAssignmentsForSave(), teachingAssignments && typeof teachingAssignments === 'object' ? teachingAssignments : {}),
+    thdTeachingAssignments: activePanel === 'thdTeachingAssignments' && !sameJson(buildTeachingAssignmentsForSave(), thdTeachingAssignments && typeof thdTeachingAssignments === 'object' ? thdTeachingAssignments : {})
   }), [
+    activePanel,
     assignmentsDraft,
     classTeacherAssignments,
+    cleanThdClassesDraft,
+    cleanThdTeachersDraft,
     cleanTeachersDraft,
     cleanTeachingAssignmentRows,
     currentSchoolYear,
@@ -1276,10 +1664,32 @@ export default function AdminSettingsWorkspace({
     teachingAssignments,
     teachingAssignmentsDraft,
     teachingSemesterDatesForYear,
+    thdClasses,
+    thdTeachers,
+    thdTeachingAssignments,
+    thdTeachingAssignmentsDraft,
     yearDraft
   ]);
 
   const hasChanges = Object.values(changedSettings).some(Boolean);
+
+  useEffect(() => {
+    if (!changedSettings.nanTeachers || typeof onSaveSetting !== 'function') return undefined;
+    const payload = cleanTeachersDraft;
+    const timer = window.setTimeout(() => {
+      Promise.resolve(onSaveSetting('nanTeachers', payload)).catch(() => {
+        showNotification?.('Chưa tự lưu được danh sách giáo viên.', 'error');
+      });
+    }, 700);
+    return () => window.clearTimeout(timer);
+  }, [changedSettings.nanTeachers, cleanTeachersDraft, onSaveSetting, showNotification]);
+
+  const saveTeachersDraftNow = (rows) => {
+    if (typeof onSaveSetting !== 'function') return;
+    Promise.resolve(onSaveSetting('nanTeachers', cleanTeacherRowsForSave(rows))).catch(() => {
+      showNotification?.('Chưa tự lưu được danh sách giáo viên.', 'error');
+    });
+  };
 
   const updateTranscriptDateDraft = (type, schoolYear, value) => {
     const key = compactSchoolYearLabel(schoolYear);
@@ -1310,6 +1720,54 @@ export default function AdminSettingsWorkspace({
     setTeachersDraft(prev => prev.map((item, rowIndex) => rowIndex === index ? normalizeTeacher({ ...item, ...patch }) : item));
   };
 
+  const updateThdTeacher = (index, patch) => {
+    setThdTeachersDraft(prev => prev.map((item, rowIndex) => rowIndex === index ? normalizeThdTeacher({ ...item, ...patch }) : item));
+  };
+
+  const deleteThdTeacherRow = (index) => {
+    setThdTeachersDraft(prev => {
+      const next = prev.filter((_, rowIndex) => rowIndex !== index);
+      return next.length ? next : [emptyThdTeacher()];
+    });
+  };
+
+  const clearAllThdTeachers = () => {
+    setThdTeachersDraft([emptyThdTeacher()]);
+    setThdPasteText('');
+    showNotification?.('Đã xóa tất cả dòng giáo viên Trần Hưng Đạo trong bảng nháp.');
+  };
+
+  const updateThdClass = (grade, index, value) => {
+    const gradeKey = String(grade || '').trim();
+    setThdClassesDraft(prev => {
+      const next = normalizeThdClasses(prev);
+      next[gradeKey] = (next[gradeKey] || []).map((className, rowIndex) => (
+        rowIndex === index ? normalizeClassName(value) : className
+      ));
+      return next;
+    });
+  };
+
+  const addThdClass = (grade) => {
+    const gradeKey = String(grade || '').trim();
+    setThdClassesDraft(prev => {
+      const next = normalizeThdClasses(prev);
+      const existing = next[gradeKey] || [];
+      next[gradeKey] = [...existing, getNextManagedClassName(gradeKey, existing)];
+      return next;
+    });
+  };
+
+  const deleteThdClass = (grade, index) => {
+    const gradeKey = String(grade || '').trim();
+    setThdClassesDraft(prev => {
+      const next = normalizeThdClasses(prev);
+      const rows = (next[gradeKey] || []).filter((_, rowIndex) => rowIndex !== index);
+      next[gradeKey] = rows.length ? rows : [`${gradeKey}/1`];
+      return next;
+    });
+  };
+
   const toggleTeacherGrade = (index, grade) => {
     setTeachersDraft(prev => prev.map((item, rowIndex) => {
       if (rowIndex !== index) return item;
@@ -1328,7 +1786,9 @@ export default function AdminSettingsWorkspace({
   };
 
   const clearAllTeachers = () => {
-    setTeachersDraft([emptyTeacher()]);
+    const nextTeachers = [emptyTeacher()];
+    setTeachersDraft(nextTeachers);
+    saveTeachersDraftNow(nextTeachers);
     setPasteText('');
     showNotification?.('Đã xóa tất cả dòng giáo viên trong bảng nháp.');
   };
@@ -1337,6 +1797,33 @@ export default function AdminSettingsWorkspace({
     const rows = String(pasteText || '').split(/\r?\n/).map(line => line.trim()).filter(Boolean);
     if (!rows.length) {
       showNotification?.('Chưa có danh sách để dán.', 'error');
+      return;
+    }
+    const moneyScan = rows.map(line => ({ line, item: parseMoneyUpdateLine(line) }));
+    const moneyUpdates = moneyScan.map(row => row.item).filter(Boolean);
+    const unparsedMoneyRows = moneyScan.filter(row => !row.item && !isMoneyPasteHeader(row.line));
+    if (moneyUpdates.length > 0) {
+      let updatedCount = 0;
+      let addedCount = 0;
+      const nextTeachers = (teachersDraft.length ? teachersDraft : [emptyTeacher()]).map(normalizeTeacher);
+      const indexByName = new Map(nextTeachers.map((teacher, index) => [normalizeTeacherNameKey(teacher.name), index]).filter(([key]) => key));
+      moneyUpdates.forEach(item => {
+        const nameKey = normalizeTeacherNameKey(item.name);
+        if (!nameKey) return;
+        const existingIndex = indexByName.get(nameKey);
+        if (existingIndex !== undefined) {
+          nextTeachers[existingIndex] = normalizeTeacher({ ...nextTeachers[existingIndex], moneyPerPeriod: item.moneyPerPeriod });
+          updatedCount += 1;
+        } else {
+          indexByName.set(nameKey, nextTeachers.length);
+          nextTeachers.push(normalizeTeacher({ name: item.name, moneyPerPeriod: item.moneyPerPeriod }));
+          addedCount += 1;
+        }
+      });
+      setTeachersDraft(nextTeachers);
+      saveTeachersDraftNow(nextTeachers);
+      setPasteText('');
+      showNotification?.(`Đã cập nhật số tiền cho ${updatedCount} giáo viên${addedCount ? `, thêm ${addedCount} giáo viên mới` : ''}${unparsedMoneyRows.length ? `, bỏ qua ${unparsedMoneyRows.length} dòng không đọc được` : ''}.`);
       return;
     }
     const periodScan = rows.map(line => ({ line, item: parsePeriodUpdateLine(line) }));
@@ -1361,6 +1848,7 @@ export default function AdminSettingsWorkspace({
         }
       });
       setTeachersDraft(nextTeachers);
+      saveTeachersDraftNow(nextTeachers);
       setPasteText('');
       showNotification?.(`Đã cập nhật số tiết cho ${updatedCount} giáo viên${addedCount ? `, thêm ${addedCount} giáo viên mới` : ''}${unparsedPeriodRows.length ? `, bỏ qua ${unparsedPeriodRows.length} dòng không đọc được` : ''}.`);
       return;
@@ -1368,20 +1856,59 @@ export default function AdminSettingsWorkspace({
     const parsed = rows.map((line) => {
       const parts = splitPasteColumns(line);
       const maybeStt = /^\d+$/.test(parts[0] || '');
-      const periodIndex = ((maybeStt && parts.length >= 5) || (!maybeStt && parts.length >= 4) || ((!maybeStt && parts.length === 2) || (maybeStt && parts.length === 3)))
-        && looksLikePeriods(parts[parts.length - 1])
-        ? parts.length - 1
+      const moneyIndex = parts.findIndex((part, index) => index > (maybeStt ? 1 : 0) && looksLikeMoney(part));
+      const periodCandidate = parts
+        .map((part, index) => ({ part, index }))
+        .filter(item => item.index !== moneyIndex)
+        .at(-1);
+      const periodIndex = periodCandidate
+        && ((maybeStt && parts.length >= 5) || (!maybeStt && parts.length >= 4) || ((!maybeStt && parts.length === 2) || (maybeStt && parts.length === 3)))
+        && looksLikePeriods(periodCandidate.part)
+        ? periodCandidate.index
         : -1;
-      const workingParts = periodIndex >= 0 ? parts.filter((_, index) => index !== periodIndex) : parts;
+      const workingParts = parts.filter((_, index) => index !== periodIndex && index !== moneyIndex);
       const name = maybeStt ? (parts[1] || '') : (parts[0] || '');
       const isNamePeriodsOnly = periodIndex >= 0 && ((!maybeStt && parts.length === 2) || (maybeStt && parts.length === 3));
       const subject = isNamePeriodsOnly ? '' : (maybeStt ? (workingParts[2] || '') : (workingParts[1] || ''));
       const gradeText = isNamePeriodsOnly ? '' : (maybeStt ? (workingParts.slice(3).join(' ') || '') : (workingParts.slice(2).join(' ') || ''));
-      return normalizeTeacher({ name, subject, grades: parseGrades(gradeText), periods: periodIndex >= 0 ? normalizePeriods(parts[periodIndex]) : '' });
-    }).filter(item => item.name || item.subject || item.periods);
-    setTeachersDraft(parsed.length ? parsed : [emptyTeacher()]);
+      return normalizeTeacher({
+        name,
+        subject,
+        grades: parseGrades(gradeText),
+        periods: periodIndex >= 0 ? normalizePeriods(parts[periodIndex]) : '',
+        moneyPerPeriod: moneyIndex >= 0 ? normalizeMoney(parts[moneyIndex]) : ''
+      });
+    }).filter(item => item.name || item.subject || item.periods || item.moneyPerPeriod);
+    const nextTeachers = parsed.length ? parsed : [emptyTeacher()];
+    setTeachersDraft(nextTeachers);
+    saveTeachersDraftNow(nextTeachers);
     setPasteText('');
     showNotification?.(`Đã dán ${parsed.length} dòng giáo viên.`);
+  };
+
+  const parseThdTeacherPaste = () => {
+    const rows = String(thdPasteText || '').split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+    if (!rows.length) {
+      showNotification?.('Chưa có danh sách để dán.', 'error');
+      return;
+    }
+    const parsed = rows.map(line => {
+      const parts = splitMoneyPasteColumns(line);
+      const fallbackParts = parts.length > 1 ? parts : splitPasteColumns(line);
+      const cells = fallbackParts.length > 1 ? fallbackParts : [line];
+      const maybeStt = /^\d+$/.test(cells[0] || '');
+      const payload = maybeStt ? cells.slice(1) : cells;
+      return normalizeThdTeacher({
+        name: payload[0] || '',
+        subject: payload[1] || '',
+        position: payload[2] || 'GV',
+        note: payload.slice(3).join(' ')
+      });
+    }).filter(item => item.name || item.subject || item.note);
+    const nextTeachers = parsed.length ? parsed : [emptyThdTeacher()];
+    setThdTeachersDraft(nextTeachers);
+    setThdPasteText('');
+    showNotification?.(`Đã dán ${parsed.length} dòng giáo viên Trần Hưng Đạo.`);
   };
 
   const updateAssignment = (grade, subject, value) => {
@@ -1447,8 +1974,11 @@ export default function AdminSettingsWorkspace({
     if (changedSettings.transcriptStartSigners) saveTasks.push(onSaveSetting('transcriptStartSigners', transcriptStartSignersDraft));
     if (changedSettings.transcriptEndSigners) saveTasks.push(onSaveSetting('transcriptEndSigners', transcriptEndSignersDraft));
     if (changedSettings.nanTeachers) saveTasks.push(onSaveSetting('nanTeachers', cleanTeachersDraft));
+    if (changedSettings.thdTeachers) saveTasks.push(onSaveSetting('thdTeachers', cleanThdTeachersDraft));
+    if (changedSettings.thdClasses) saveTasks.push(onSaveSetting('thdClasses', cleanThdClassesDraft));
     if (changedSettings.classTeacherAssignments) saveTasks.push(onSaveSetting('classTeacherAssignments', buildAssignmentsForSave()));
     if (changedSettings.teachingAssignments) saveTasks.push(onSaveSetting('teachingAssignments', buildTeachingAssignmentsForSave()));
+    if (changedSettings.thdTeachingAssignments) saveTasks.push(onSaveSetting('thdTeachingAssignments', buildTeachingAssignmentsForSave()));
     if (!saveTasks.length) {
       showNotification?.('Không có thay đổi để lưu.');
       return;
@@ -1470,7 +2000,7 @@ export default function AdminSettingsWorkspace({
           {transcriptSignerNames.map(name => <option key={name} value={name} />)}
         </datalist>
         <datalist id="assignment-specialties">
-          {[...new Set(teachersDraft.map(teacher => normalizeTeacher(teacher).subject).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'vi')).map(subject => <option key={subject} value={subject} />)}
+          {[...new Set(activeTeachingTeachersDraft.map(teacher => normalizeTeacher(teacher).subject).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'vi')).map(subject => <option key={subject} value={subject} />)}
         </datalist>
 
         <div className="space-y-3">
@@ -1611,7 +2141,7 @@ export default function AdminSettingsWorkspace({
                     <div className="flex items-center gap-2 font-black text-emerald-900 uppercase mb-3">
                       <ClipboardPaste className="w-5 h-5" /> Dán danh sách giáo viên NAN
                     </div>
-                    <textarea value={pasteText} onChange={(event) => setPasteText(event.target.value)} placeholder="Dán từ Excel: STT | Tên giáo viên | Môn | Dạy lớp | Số tiết. Nếu chỉ dán Tên giáo viên | Số tiết, hệ thống sẽ tự cập nhật số tiết theo tên đang có." className="w-full min-h-[120px] rounded-2xl border border-emerald-100 bg-emerald-50/40 p-3 text-sm font-bold outline-none focus:border-emerald-400" />
+                    <textarea value={pasteText} onChange={(event) => setPasteText(event.target.value)} placeholder="Dán từ Excel: STT | Tên giáo viên | Môn | Số tiết | Số tiền. Nếu chỉ dán Tên giáo viên | Số tiết hoặc Tên giáo viên | Số tiền, hệ thống chỉ cập nhật đúng cột đó theo tên đang có." className="w-full min-h-[120px] rounded-2xl border border-emerald-100 bg-emerald-50/40 p-3 text-sm font-bold outline-none focus:border-emerald-400" />
                     <div className="mt-3 flex flex-wrap gap-2">
                       <button type="button" onClick={parseTeacherPaste} className="rounded-xl bg-emerald-600 px-4 py-3 text-sm font-black text-white shadow hover:bg-emerald-700">Đưa vào bảng</button>
                       <button type="button" onClick={() => { setPasteText(''); setShowTeacherPaste(false); }} className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-black text-slate-600 hover:bg-slate-50">Đóng</button>
@@ -1619,47 +2149,207 @@ export default function AdminSettingsWorkspace({
                   </div>
                 )}
 
-                <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm overflow-x-auto">
-                  <table className="w-full min-w-[980px] border-separate border-spacing-y-2">
-                    <thead>
-                      <tr className="text-left text-xs font-black uppercase text-slate-500">
-                        <th className="w-14 px-2">STT</th>
-                        <th className="px-2">Tên giáo viên</th>
-                        <th className="px-2">Môn (có thể nhiều môn)</th>
-                        <th className="w-28 px-2 text-center">Số tiết</th>
-                        <th className="px-2">Dạy lớp</th>
-                        <th className="w-24 px-2 text-center">Xóa</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {teachersDraft.map((teacher, index) => (
-                        <tr key={`teacher-${index}`} className="bg-slate-50">
-                          <td className="rounded-l-xl px-2 py-2 font-black text-slate-500">{index + 1}</td>
-                          <td className="px-2 py-2"><input value={teacher.name} onChange={(event) => updateTeacher(index, { name: event.target.value })} className="w-full rounded-xl border border-slate-200 bg-white p-2 font-bold outline-none focus:border-blue-400" /></td>
-                          <td className="px-2 py-2"><input value={teacher.subject} onChange={(event) => updateTeacher(index, { subject: event.target.value })} list="nan-subjects" placeholder="VD: Toán, Tin học" className="w-full rounded-xl border border-slate-200 bg-white p-2 font-bold outline-none focus:border-blue-400" /></td>
-                          <td className="px-2 py-2"><input value={teacher.periods || ''} onChange={(event) => updateTeacher(index, { periods: event.target.value })} inputMode="decimal" placeholder="VD: 19" className="w-full rounded-xl border border-slate-200 bg-white p-2 text-center font-black outline-none focus:border-blue-400" /></td>
-                          <td className="rounded-r-xl px-2 py-2">
-                            <div className="flex gap-2">
-                              {grades.map(grade => (
-                                <button key={grade} type="button" onClick={() => toggleTeacherGrade(index, grade)} className={`w-10 h-9 rounded-xl text-xs font-black ${teacher.grades?.includes(String(grade)) ? 'bg-blue-600 text-white' : 'bg-white border border-slate-200 text-slate-500'}`}>{grade}</button>
-                              ))}
-                            </div>
-                          </td>
-                          <td className="px-2 py-2 text-center">
-                            <button type="button" onClick={() => deleteTeacherRow(index)} className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-rose-200 bg-white text-rose-600 hover:bg-rose-50" title="Xóa dòng">
-                              <Trash2 className="h-4 w-4" />
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                  <button type="button" onClick={() => setTeachersDraft(prev => [...prev, emptyTeacher()])} className="mt-3 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-black text-slate-600 hover:bg-slate-50">Thêm dòng</button>
+                <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
+                  {[
+                    { offset: 0, rows: teachersDraft.slice(0, Math.ceil(teachersDraft.length / 2)) },
+                    { offset: Math.ceil(teachersDraft.length / 2), rows: teachersDraft.slice(Math.ceil(teachersDraft.length / 2)) }
+                  ].map((group, groupIndex) => (
+                    <div key={`nan-teacher-col-${groupIndex}`} className={`${groupIndex === 1 && !group.rows.length ? 'hidden xl:block' : ''} rounded-2xl border border-slate-200 bg-white p-3 shadow-sm overflow-x-auto`}>
+                      <table className="w-full min-w-[760px] border-separate border-spacing-y-1 text-sm">
+                        <thead>
+                          <tr className="text-left text-[11px] font-semibold uppercase text-slate-500">
+                            <th className="w-10 px-2">STT</th>
+                            <th className="px-2">Tên giáo viên</th>
+                            <th className="w-44 px-2">Môn</th>
+                            <th className="w-20 px-2 text-center">Số tiết</th>
+                            <th className="w-28 px-2 text-center">Số tiền</th>
+                            <th className="w-12 px-2 text-center">Xóa</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {group.rows.map((teacher, rowIndex) => {
+                            const index = rowIndex + group.offset;
+                            return (
+                              <tr key={`teacher-${index}`} className="bg-slate-50">
+                                <td className="rounded-l-lg px-2 py-1.5 text-center text-slate-500">{index + 1}</td>
+                                <td className="px-2 py-1.5"><input value={teacher.name} onChange={(event) => updateTeacher(index, { name: event.target.value })} className="h-8 w-full rounded-md border border-slate-200 bg-white px-2 font-normal outline-none focus:border-blue-400" /></td>
+                                <td className="px-2 py-1.5"><input value={teacher.subject} onChange={(event) => updateTeacher(index, { subject: event.target.value })} list="nan-subjects" placeholder="VD: Toán" className="h-8 w-full rounded-md border border-slate-200 bg-white px-2 font-normal outline-none focus:border-blue-400" /></td>
+                                <td className="px-2 py-1.5"><input value={teacher.periods || ''} onChange={(event) => updateTeacher(index, { periods: event.target.value })} inputMode="decimal" placeholder="19" className="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-center font-normal outline-none focus:border-blue-400" /></td>
+                                <td className="px-2 py-1.5"><input value={teacher.moneyPerPeriod || ''} onChange={(event) => updateTeacher(index, { moneyPerPeriod: normalizeMoney(event.target.value) })} inputMode="numeric" placeholder="50000" className="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-center font-normal outline-none focus:border-blue-400" /></td>
+                                <td className="rounded-r-lg px-2 py-1.5 text-center">
+                                  <button type="button" onClick={() => deleteTeacherRow(index)} className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-rose-200 bg-white text-rose-600 hover:bg-rose-50" title="Xóa dòng">
+                                    <Trash2 className="h-4 w-4" />
+                                  </button>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  ))}
+                </div>
+                <button type="button" onClick={() => setTeachersDraft(prev => [...prev, emptyTeacher()])} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50">+ Thêm giáo viên</button>
+              </div>
+            )}
+
+            {activePanel === 'thdTeachers' && (
+              <div className="space-y-3">
+                <div className="rounded-2xl border border-sky-100 bg-white px-4 py-3 shadow-sm">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <div className="text-[11px] font-semibold uppercase text-sky-900">Trần Hưng Đạo</div>
+                      <div className="text-lg font-semibold text-sky-950">Danh sách giáo viên riêng</div>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button type="button" onClick={() => setShowThdTeacherPaste(prev => !prev)} className="inline-flex h-8 items-center gap-1.5 rounded-md bg-sky-600 px-3 text-xs font-semibold text-white shadow hover:bg-sky-700">
+                        <ClipboardPaste className="h-4 w-4" /> {showThdTeacherPaste ? 'Ẩn khung dán' : 'Dán danh sách'}
+                      </button>
+                      <button type="button" onClick={clearAllThdTeachers} className="inline-flex h-8 items-center gap-1.5 rounded-md border border-rose-200 bg-rose-50 px-3 text-xs font-semibold text-rose-700 hover:bg-rose-100">
+                        <Trash2 className="h-4 w-4" /> Xóa tất cả
+                      </button>
+                      <button
+                        type="button"
+                        onClick={saveAll}
+                        disabled={!hasChanges}
+                        className={`flex h-8 items-center gap-1.5 rounded-md px-3 text-xs font-semibold transition-colors ${hasChanges ? 'bg-emerald-600 text-white shadow hover:bg-emerald-700' : 'bg-slate-100 text-slate-400 cursor-not-allowed'}`}
+                      >
+                        <Save className="h-4 w-4" /> Lưu thay đổi
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                {showThdTeacherPaste && (
+                  <div className="rounded-2xl border border-sky-100 bg-white p-4 shadow-sm">
+                    <div className="mb-2 flex items-center gap-2 text-sm font-semibold uppercase text-sky-900">
+                      <ClipboardPaste className="h-4 w-4" /> Dán danh sách giáo viên Trần Hưng Đạo
+                    </div>
+                    <textarea
+                      value={thdPasteText}
+                      onChange={(event) => setThdPasteText(event.target.value)}
+                      placeholder="Dán từ Excel: STT | Họ và tên | Chuyên môn | Chức vụ | Ghi chú. Nếu chỉ có Họ và tên | Chuyên môn cũng được."
+                      className="min-h-[110px] w-full rounded-xl border border-sky-100 bg-sky-50/40 p-3 text-sm font-normal outline-none focus:border-sky-400"
+                    />
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <button type="button" onClick={parseThdTeacherPaste} className="rounded-lg bg-sky-600 px-3 py-2 text-xs font-semibold text-white shadow hover:bg-sky-700">Đưa vào bảng</button>
+                      <button type="button" onClick={() => { setThdPasteText(''); setShowThdTeacherPaste(false); }} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50">Đóng</button>
+                    </div>
+                  </div>
+                )}
+                <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
+                  {[
+                    { offset: 0, rows: thdTeachersDraft.slice(0, Math.ceil(thdTeachersDraft.length / 2)) },
+                    { offset: Math.ceil(thdTeachersDraft.length / 2), rows: thdTeachersDraft.slice(Math.ceil(thdTeachersDraft.length / 2)) }
+                  ].map((group, groupIndex) => (
+                    <div key={`thd-teacher-col-${groupIndex}`} className={`${groupIndex === 1 && !group.rows.length ? 'hidden xl:block' : ''} rounded-2xl border border-slate-200 bg-white p-3 shadow-sm overflow-x-auto`}>
+                      <table className="w-full min-w-[680px] border-separate border-spacing-y-1 text-sm">
+                        <thead>
+                          <tr className="text-left text-[11px] font-semibold uppercase text-slate-500">
+                            <th className="w-10 px-2">STT</th>
+                            <th className="px-2">Họ và tên</th>
+                            <th className="w-40 px-2">Chuyên môn</th>
+                            <th className="w-20 px-2">CV</th>
+                            <th className="w-48 px-2">Ghi chú</th>
+                            <th className="w-12 px-2 text-center">Xóa</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {group.rows.map((teacher, rowIndex) => {
+                            const index = rowIndex + group.offset;
+                            return (
+                              <tr key={`thd-teacher-${index}`} className="bg-slate-50">
+                                <td className="rounded-l-lg px-2 py-1.5 text-center text-slate-500">{index + 1}</td>
+                                <td className="px-2 py-1.5">
+                                  <input value={teacher.name} onChange={(event) => updateThdTeacher(index, { name: event.target.value })} placeholder="Nhập tên giáo viên..." className="h-8 w-full rounded-md border border-slate-200 bg-white px-2 font-normal outline-none focus:border-sky-400" />
+                                </td>
+                                <td className="px-2 py-1.5">
+                                  <input value={teacher.subject} onChange={(event) => updateThdTeacher(index, { subject: event.target.value })} placeholder="VD: Toán" className="h-8 w-full rounded-md border border-slate-200 bg-white px-2 font-normal outline-none focus:border-sky-400" />
+                                </td>
+                                <td className="px-2 py-1.5">
+                                  <input value={teacher.position} onChange={(event) => updateThdTeacher(index, { position: event.target.value })} placeholder="GV" className="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-center font-normal outline-none focus:border-sky-400" />
+                                </td>
+                                <td className="px-2 py-1.5">
+                                  <input value={teacher.note} onChange={(event) => updateThdTeacher(index, { note: event.target.value })} placeholder="Ghi chú..." className="h-8 w-full rounded-md border border-slate-200 bg-white px-2 font-normal outline-none focus:border-sky-400" />
+                                </td>
+                                <td className="rounded-r-lg px-2 py-1.5 text-center">
+                                  <button type="button" onClick={() => deleteThdTeacherRow(index)} className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-rose-200 bg-white text-rose-600 hover:bg-rose-50" title="Xóa dòng">
+                                    <Trash2 className="h-4 w-4" />
+                                  </button>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  ))}
+                </div>
+                <button type="button" onClick={() => setThdTeachersDraft(prev => [...prev, emptyThdTeacher()])} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50">
+                  + Thêm giáo viên
+                </button>
+              </div>
+            )}
+
+            {activePanel === 'thdClasses' && (
+              <div className="space-y-3">
+                <div className="rounded-2xl border border-sky-100 bg-white px-4 py-3 shadow-sm">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <div className="text-[11px] font-semibold uppercase text-sky-900">Trần Hưng Đạo</div>
+                      <div className="text-lg font-semibold text-sky-950">Danh sách lớp</div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={saveAll}
+                      disabled={!hasChanges}
+                      className={`flex h-8 items-center gap-1.5 rounded-md px-3 text-xs font-semibold transition-colors ${hasChanges ? 'bg-emerald-600 text-white shadow hover:bg-emerald-700' : 'bg-slate-100 text-slate-400 cursor-not-allowed'}`}
+                    >
+                      <Save className="h-4 w-4" /> Lưu thay đổi
+                    </button>
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+                  {THD_CLASS_GRADES.map(grade => (
+                    <div key={`thd-class-grade-${grade}`} className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
+                      <div className="mb-2 text-sm font-semibold uppercase text-sky-900">Khối {grade}</div>
+                      <table className="w-full border-separate border-spacing-y-1 text-sm">
+                        <thead>
+                          <tr className="text-left text-[11px] font-semibold uppercase text-slate-500">
+                            <th className="w-10 px-2">STT</th>
+                            <th className="px-2">Tên lớp</th>
+                            <th className="w-10 px-2 text-center">Xóa</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(thdClassesDraft?.[grade] || []).map((className, index) => (
+                            <tr key={`thd-class-${grade}-${index}`} className="bg-slate-50">
+                              <td className="rounded-l-lg px-2 py-1.5 text-center text-slate-500">{index + 1}</td>
+                              <td className="px-2 py-1.5">
+                                <input
+                                  value={className}
+                                  onChange={(event) => updateThdClass(grade, index, event.target.value)}
+                                  className="h-8 w-full rounded-md border border-slate-200 bg-white px-2 font-semibold outline-none focus:border-sky-400"
+                                />
+                              </td>
+                              <td className="rounded-r-lg px-2 py-1.5 text-center">
+                                <button type="button" onClick={() => deleteThdClass(grade, index)} className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-rose-200 bg-white text-rose-600 hover:bg-rose-50" title="Xóa lớp">
+                                  <Trash2 className="h-4 w-4" />
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                      <button type="button" onClick={() => addThdClass(grade)} className="mt-2 inline-flex h-8 items-center gap-1.5 rounded-md border border-sky-200 bg-sky-50 px-3 text-xs font-semibold text-sky-800 hover:bg-sky-100">
+                        <Plus className="h-4 w-4" /> Thêm lớp
+                      </button>
+                    </div>
+                  ))}
                 </div>
               </div>
             )}
 
-            {activePanel === 'teachingAssignments' && (
+            {isTeachingPanel && (
               <div className="space-y-2">
                 <div className="sticky -top-3 z-40 rounded-xl border border-cyan-100 bg-white/95 px-2 py-1 shadow-sm backdrop-blur">
                   <div className="flex flex-wrap items-center gap-1.5">
@@ -1715,6 +2405,15 @@ export default function AdminSettingsWorkspace({
                       >
                         <ClipboardCheck className="h-4 w-4" /> Kiểm tra
                       </button>
+                      {!isThdTeachingPanel && (
+                        <button
+                          type="button"
+                          onClick={() => setShowTeachingMoneyColumns(prev => !prev)}
+                          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                        >
+                          {showTeachingMoneyColumns ? 'Ẩn tiền' : 'Hiện tiền'}
+                        </button>
+                      )}
                       <div className="relative">
                         <button
                           type="button"
@@ -1742,6 +2441,11 @@ export default function AdminSettingsWorkspace({
                           </div>
                         )}
                       </div>
+                      {isThdTeachingPanel && (
+                        <button type="button" onClick={addRowsFromTeacherList} className="h-8 rounded-md border border-sky-200 bg-sky-50 px-2.5 text-xs font-semibold text-sky-800 hover:bg-sky-100">
+                          Load GV Trần Hưng Đạo
+                        </button>
+                      )}
                       <button type="button" onClick={() => addTeachingAssignmentRow()} className="h-8 rounded-md border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-50">
                         + Thêm giáo viên
                       </button>
@@ -1758,7 +2462,7 @@ export default function AdminSettingsWorkspace({
                 </div>
 
                 <div className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm overflow-x-auto">
-                  <table className="w-full min-w-[1300px] border-collapse text-xs">
+                  <table className={`w-full ${showTeachingFinancialColumns ? 'min-w-[1540px]' : (showTeachingSchoolColumns ? 'min-w-[1360px]' : 'min-w-[1180px]')} border-collapse text-xs`}>
                     <thead>
                       <tr className="bg-slate-100 text-left text-[11px] font-black uppercase text-slate-600">
                         <th className="w-10 border border-slate-200 px-1 py-1 text-center">STT</th>
@@ -1767,14 +2471,25 @@ export default function AdminSettingsWorkspace({
                         <th className="w-40 border border-slate-200 px-1 py-1">Chuyên môn</th>
                         <th className="w-28 border border-slate-200 px-1 py-1">Phân công</th>
                         <th className="w-16 border border-slate-200 px-1 py-1 text-center">Số tuần</th>
-                        <th className="w-20 border border-slate-200 px-1 py-1 text-center">Lớp PC</th>
+                        <th className="w-20 border border-slate-200 px-1 py-1 text-center">{isThdTeachingPanel ? 'Lớp' : 'Lớp PC'}</th>
                         <th className="w-14 border border-slate-200 px-1 py-1 text-center">Số lớp</th>
                         <th className="w-16 border border-slate-200 px-1 py-1 text-center">Tiết/lớp/tuần</th>
                         <th className="w-16 border border-slate-200 px-1 py-1 text-center">Tiết/tuần</th>
                         <th className="w-16 border border-slate-200 px-1 py-1 text-center">Tổng tiết</th>
                         <th className="w-96 border border-slate-200 px-1 py-1">Ghi chú</th>
-                        <th className="w-16 border border-slate-200 px-1 py-1 text-center">Tiết ở trường</th>
-                        <th className="w-16 border border-slate-200 px-1 py-1 text-center">Tổng cộng</th>
+                        <th className="w-16 border border-slate-200 px-1 py-1 text-center">Ký HB</th>
+                        {showTeachingFinancialColumns && (
+                          <>
+                            <th className="w-24 border border-slate-200 px-1 py-1 text-center">Số tiền 1 tiết</th>
+                            <th className="w-24 border border-slate-200 px-1 py-1 text-center">Số tiền</th>
+                          </>
+                        )}
+                        {showTeachingSchoolColumns && (
+                          <>
+                            <th className="w-16 border border-slate-200 px-1 py-1 text-center">Tiết ở trường</th>
+                            <th className="w-16 border border-slate-200 px-1 py-1 text-center">Tổng cộng</th>
+                          </>
+                        )}
                         <th className="w-28 border border-slate-200 px-1 py-1 text-center">Dòng</th>
                       </tr>
                     </thead>
@@ -1798,6 +2513,9 @@ export default function AdminSettingsWorkspace({
                         const teacherYearTotal = getTeacherTeachingYearTotal(row.teacherName);
                         const teacherSchoolPeriods = getTeacherSchoolPeriods(row.teacherName);
                         const teacherGrandTotal = (Number(teacherYearTotal) || 0) + teacherSchoolPeriods;
+                        const teacherMoneyRate = getTeacherMoneyRate(row.teacherName);
+                        const assignmentMoney = getTeachingAssignmentMoney(row);
+                        const teacherMoneyTotal = getTeacherTeachingMoneyTotal(row.teacherName);
                         return (
                           <Fragment key={`teaching-assignment-${index}`}>
                           <tr className="bg-white hover:bg-cyan-50/40">
@@ -1905,8 +2623,8 @@ export default function AdminSettingsWorkspace({
                                     maxWidth: 'calc(100vw - 48px)'
                                   }}
                                 >
-                                  {ASSIGNMENT_CLASSES.map(className => {
-                                    const checked = getAssignmentClassList(row.className).includes(className);
+                                  {activeAssignmentClasses.map(className => {
+                                    const checked = getAssignmentClassList(row.className, activeAssignmentClasses).includes(className);
                                     return (
                                       <label key={`class-pick-${index}-${className}`} className="flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-slate-700 hover:bg-cyan-50">
                                         <input
@@ -1947,8 +2665,27 @@ export default function AdminSettingsWorkspace({
                                 className="h-7 w-full rounded-md border border-slate-200 bg-white px-2 text-[13px] font-normal outline-none focus:border-cyan-400"
                               />
                             </td>
-                            <td className="border border-slate-200 px-1 py-0.5 text-center font-semibold text-slate-700">{teacherSchoolPeriods || ''}</td>
-                            <td className="border border-slate-200 px-1 py-0.5 text-center font-semibold text-slate-700">{teacherGrandTotal || ''}</td>
+                            <td className="border border-slate-200 px-1 py-0.5 text-center">
+                              <input
+                                type="checkbox"
+                                checked={Boolean(row.transcriptSigner)}
+                                onChange={(event) => updateTeachingAssignmentRow(index, { transcriptSigner: event.target.checked })}
+                                className="h-4 w-4 accent-violet-600"
+                                title="Giáo viên ký học bạ cho môn/lớp này"
+                              />
+                            </td>
+                            {showTeachingFinancialColumns && (
+                              <>
+                                <td className="border border-slate-200 px-1 py-0.5 text-center font-semibold text-slate-700">{formatMoney(teacherMoneyRate)}</td>
+                                <td className="border border-slate-200 px-1 py-0.5 text-center font-semibold text-slate-700">{formatMoney(assignmentMoney)}</td>
+                              </>
+                            )}
+                            {showTeachingSchoolColumns && (
+                              <>
+                                <td className="border border-slate-200 px-1 py-0.5 text-center font-semibold text-slate-700">{teacherSchoolPeriods || ''}</td>
+                                <td className="border border-slate-200 px-1 py-0.5 text-center font-semibold text-slate-700">{teacherGrandTotal || ''}</td>
+                              </>
+                            )}
                             <td className="border border-slate-200 px-0.5 py-0.5 text-center">
                               <div className="flex items-center justify-center gap-1">
                                 <button type="button" onClick={() => moveTeachingAssignmentGroup(index, -1)} disabled={!canMoveTeacherUp} className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-30" title="Dời giáo viên lên">
@@ -1973,12 +2710,25 @@ export default function AdminSettingsWorkspace({
                                 {teacherYearTotal || ''}
                               </td>
                               <td className="border border-amber-300 px-1 py-0.5" />
-                              <td className="border border-amber-300 px-1 py-0.5 text-center text-[13px] font-black italic text-amber-950">
-                                {teacherSchoolPeriods || ''}
-                              </td>
-                              <td className="border border-amber-300 px-1 py-0.5 text-center text-[13px] font-black italic text-amber-950">
-                                {teacherGrandTotal || ''}
-                              </td>
+                              <td className="border border-amber-300 px-1 py-0.5" />
+                              {showTeachingFinancialColumns && (
+                                <>
+                                  <td className="border border-amber-300 px-1 py-0.5" />
+                                  <td className="border border-amber-300 px-1 py-0.5 text-center text-[13px] font-black italic text-amber-950">
+                                    {formatMoney(teacherMoneyTotal)}
+                                  </td>
+                                </>
+                              )}
+                              {showTeachingSchoolColumns && (
+                                <>
+                                  <td className="border border-amber-300 px-1 py-0.5 text-center text-[13px] font-black italic text-amber-950">
+                                    {teacherSchoolPeriods || ''}
+                                  </td>
+                                  <td className="border border-amber-300 px-1 py-0.5 text-center text-[13px] font-black italic text-amber-950">
+                                    {teacherGrandTotal || ''}
+                                  </td>
+                                </>
+                              )}
                               <td className="border border-amber-300 px-1 py-0.5">
                               </td>
                             </tr>
@@ -1994,52 +2744,60 @@ export default function AdminSettingsWorkspace({
             )}
 
             {activePanel === 'classTeachers' && (
-              <div className="space-y-3">
-                <div className="rounded-3xl border border-violet-100 bg-white p-5 shadow-sm">
-                  <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="space-y-2">
+                <div className="rounded-2xl border border-violet-100 bg-white px-3 py-2 shadow-sm">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
                     <div>
-                      <div className="text-xs font-black uppercase text-violet-900">Năm học phân công</div>
-                      <div className="mt-1 text-xl font-black text-violet-950">{selectedSchoolYear}</div>
+                      <div className="text-[10px] font-semibold uppercase text-violet-900">Năm học phân công</div>
+                      <div className="text-lg font-semibold leading-tight text-violet-950">{selectedSchoolYear}</div>
                     </div>
-                    <div className="text-sm font-bold text-violet-700">Phân công giáo viên theo năm admin đang chọn trên thanh trên. Bấm lưu để chốt thay đổi.</div>
-                    <button type="button" onClick={clearClassTeacherAssignmentsByYear} className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-2 text-sm font-black text-rose-700 hover:bg-rose-100">
-                      Xóa hết GV từng khối năm này
-                    </button>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={loadClassTeachersFromTeachingAssignments}
+                        className="h-8 rounded-md border border-violet-200 bg-violet-50 px-2.5 text-xs font-semibold text-violet-800 hover:bg-violet-100"
+                      >
+                        Load từ phân công
+                      </button>
+                      <button type="button" onClick={clearClassTeacherAssignmentsByYear} className="h-8 rounded-md border border-rose-200 bg-rose-50 px-2.5 text-xs font-semibold text-rose-700 hover:bg-rose-100">
+                        Xóa hết năm này
+                      </button>
+                    </div>
                   </div>
                 </div>
-                <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-4">
                   {grades.map(grade => (
-                    <div key={`class-${grade}`} className="rounded-3xl border border-violet-100 bg-white p-4 shadow-sm overflow-x-auto">
-                    <div className="mb-3 flex items-center justify-between gap-3">
-                      <div className="font-black text-violet-900 uppercase">Khối {grade}</div>
+                    <div key={`class-${grade}`} className="rounded-2xl border border-violet-100 bg-white p-2 shadow-sm">
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <div className="text-sm font-semibold uppercase text-violet-900">Khối {grade}</div>
                       <button
                         type="button"
                         onClick={() => clearClassTeacherAssignmentsByGrade(grade)}
-                        className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-1.5 text-[11px] font-black uppercase text-rose-700 hover:bg-rose-100"
+                        className="rounded-md border border-rose-200 bg-rose-50 px-2 py-1 text-[10px] font-semibold uppercase text-rose-700 hover:bg-rose-100"
                       >
-                        Xóa khối {grade}
+                        Xóa
                       </button>
                     </div>
-                    <table className="w-full min-w-[520px] border-separate border-spacing-y-2">
+                    <table className="w-full border-separate border-spacing-y-1">
                       <thead>
-                        <tr className="text-left text-xs font-black uppercase text-slate-500">
-                          <th className="w-12 px-2">STT</th>
-                          <th className="px-2">Môn</th>
-                          <th className="px-2">Tên giáo viên</th>
+                        <tr className="text-left text-[10px] font-semibold uppercase text-slate-500">
+                          <th className="w-7 px-1">STT</th>
+                          <th className="w-24 px-1">Môn</th>
+                          <th className="px-1">Tên giáo viên</th>
                         </tr>
                       </thead>
                       <tbody>
                         {classSubjects(subjects).map((subject, index) => (
                           <tr key={`${grade}-${subject}`} className="bg-slate-50">
-                            <td className="rounded-l-xl px-2 py-2 font-black text-slate-500">{index + 1}</td>
-                            <td className="px-2 py-2 font-black text-slate-800">{subject}</td>
-                            <td className="rounded-r-xl px-2 py-2">
+                            <td className="rounded-l-lg px-1 py-1 text-center text-xs font-semibold text-slate-500">{index + 1}</td>
+                            <td className="px-1 py-1 text-[11px] font-semibold text-slate-800">{normalizeAssignmentSubject(subject)}</td>
+                            <td className="rounded-r-lg px-1 py-1">
                               <input
                                 value={assignmentValue(grade, subject)}
                                 onChange={(event) => updateAssignment(grade, subject, event.target.value)}
                                 list="nan-teacher-names"
-                                placeholder="Gõ hoặc chọn giáo viên..."
-                                className="w-full rounded-xl border border-slate-200 bg-white p-2 font-bold outline-none focus:border-violet-400"
+                                placeholder="Tên GV..."
+                                className="h-7 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] font-semibold outline-none focus:border-violet-400"
                               />
                             </td>
                           </tr>
@@ -2070,7 +2828,7 @@ export default function AdminSettingsWorkspace({
                   </div>
                   <div className="overflow-auto p-4">
                     <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-                      {ASSIGNMENT_CLASSES.map(className => {
+                      {activeAssignmentClasses.map(className => {
                         const classRows = teachingCheckRows.filter(row => row.className === className);
                         return (
                           <div key={`teaching-check-${className}`} className="overflow-hidden rounded-2xl border border-slate-200">
