@@ -27,6 +27,28 @@
   min-height: 0 !important;
 }
 
+.admin-home-panels-wrap {
+  height: calc(100svh - 92px) !important;
+  margin-bottom: 0 !important;
+  padding: 0 0.25rem 0.25rem !important;
+}
+
+.admin-home-panels-wrap .home-desktop-panels {
+  flex: 1 1 auto !important;
+  height: 100% !important;
+  max-height: none !important;
+  min-height: 0 !important;
+}
+
+.admin-home-panels-wrap .home-panel-card {
+  max-height: none !important;
+}
+
+.admin-home-panels-wrap .home-mobile-panel {
+  height: calc(100svh - 148px) !important;
+  max-height: none !important;
+}
+
 .home-role-actions {
   margin-top: 0.75rem !important;
 }

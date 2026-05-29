@@ -171,9 +171,16 @@ const CLASS_TEACHER_SUBJECTS = [
 
 const getClassLabel = (grade) => {
   const text = String(grade || '').trim();
-  const cleaned = text.replace(/^khối\s*/i, '').replace(/^lớp\s*/i, '').trim();
-  return `L\u1edaP ${cleaned || '9'}PC`;
+  const cleaned = text
+    .replace(/^khối\s*/i, '')
+    .replace(/^lớp\s*/i, '')
+    .replace(/\s*PC$/i, '')
+    .trim();
+  const gradeText = cleaned.match(/(?:^|\D)(1[0-2]|[1-9])(?:\D|$)/)?.[1] || cleaned || '9';
+  return `LỚP ${gradeText}PC`;
 };
+
+const getPcClassName = (value, fallback = '9') => getClassLabel(value || fallback).replace('LỚP ', '');
 
 const getGradeFromClass = (className = '') => {
   const match = String(className || '').trim().match(/(?:^|\D)(1[0-2]|[1-9])(?:\D|$)/);
@@ -318,6 +325,15 @@ const fitSingleLineFontSize = (value = '', baseSize = 18.5, minSize = 11.5, comf
   const length = String(value || '').length;
   if (length <= comfortableLength) return baseSize;
   return Math.max(minSize, Math.round((baseSize - ((length - comfortableLength) * 0.2)) * 10) / 10);
+};
+
+const fitTeacherSignatureFontSize = (value = '') => {
+  const words = String(value || '').trim().split(/\s+/).filter(Boolean).length;
+  const length = String(value || '').trim().length;
+  if (words >= 6 || length > 30) return 12.4;
+  if (words >= 5 || length > 24) return 13.4;
+  if (words >= 4 || length > 19) return 14.4;
+  return 16;
 };
 
 const sentenceCaseText = (value = '') => {
@@ -564,6 +580,8 @@ export default function ScorebookWorkspace({
   transcriptStartDates = {},
   transcriptEndDates = {},
   transcriptGrade9EndDates = {},
+  transcriptStartSigners = {},
+  transcriptEndSigners = {},
   nanTeachers = [],
   classTeacherAssignments = {},
   students = [],
@@ -1472,11 +1490,15 @@ export default function ScorebookWorkspace({
 
   const renderProfilePageOne = () => {
     const rows = Array.from({ length: 40 }, (_, index) => classStudents[index] || {});
-    const cellBase = { borderLeft: '1.2px solid #111', borderRight: '1.2px solid #111', padding: '4px 5px', verticalAlign: 'middle', fontSize: 14.5, lineHeight: 1.12 };
-    const twoLine = { display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', lineHeight: 1.12 };
+    const rowHeight = 30;
+    const cellBase = { borderLeft: '1.2px solid #111', borderRight: '1.2px solid #111', padding: '2px 5px', verticalAlign: 'middle', fontSize: 13.6, lineHeight: 1.04, height: rowHeight };
+    const twoLine = { display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', lineHeight: 1.04 };
+    const titleStyle = { fontSize: 30, fontWeight: 700, lineHeight: 1, marginBottom: 6 };
+    const headerRowStyle = { height: 60 };
+    const headerCellStyle = { border: '1.4px solid #111', padding: 5, whiteSpace: 'pre-line', fontSize: 14.5, lineHeight: 1.2, textAlign: 'center', fontWeight: 700, height: 60 };
     return (
-      <div className="scorebook-profile-page bg-white text-black" style={{ width: pageWidth - pageMargin * 2, height: pageHeight - pageMargin * 2, fontFamily: '"Times New Roman", Times, serif', position: 'relative', boxSizing: 'border-box', padding: '70px 20px 25px 20px' }}>
-        <div style={{ position: 'absolute', top: 18, right: 28, fontSize: 18, fontWeight: 700 }}>SƠ YẾU LÝ LỊCH</div>
+      <div className="scorebook-profile-page bg-white text-black" style={{ width: pageWidth - pageMargin * 2, height: pageHeight - pageMargin * 2, fontFamily: '"Times New Roman", Times, serif', position: 'relative', boxSizing: 'border-box', padding: '26px 20px 25px 20px' }}>
+        <div style={{ ...titleStyle, textAlign: 'right' }}>SƠ YẾU LÝ LỊCH</div>
         <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed', fontFamily: '"Times New Roman", Times, serif' }}>
           <colgroup>
             <col style={{ width: 42 }} />
@@ -1489,9 +1511,9 @@ export default function ScorebookWorkspace({
             <col />
           </colgroup>
           <thead>
-            <tr>
+            <tr style={headerRowStyle}>
               {['Số\nTT', 'Họ và tên học sinh', 'Ngày, tháng,\nnăm sinh', 'Nơi sinh', 'Nam\nnữ', 'Dân tộc', 'Đối tượng\nưu tiên', 'Địa chỉ gia đình'].map((header) => (
-                <th key={header} style={{ border: '1.4px solid #111', padding: 5, whiteSpace: 'pre-line', fontSize: 14.5, lineHeight: 1.25, textAlign: 'center', fontWeight: 700 }}>{header}</th>
+                <th key={header} style={headerCellStyle}>{header}</th>
               ))}
             </tr>
           </thead>
@@ -1499,7 +1521,7 @@ export default function ScorebookWorkspace({
             {rows.map((student, index) => {
               const borderBottom = profileRowBorder(index);
               return (
-                <tr key={`profile-1-${index}`} style={{ height: 31 }}>
+                <tr key={`profile-1-${index}`} style={{ height: rowHeight }}>
                   <td style={{ ...cellBase, textAlign: 'center', borderBottom }}>{index + 1}</td>
                   <td style={{ ...cellBase, borderBottom }}><div style={twoLine}>{titleCaseText(student.fullName) || ''}</div></td>
                   <td style={{ ...cellBase, textAlign: 'center', borderBottom }}>{student.birthDate || ''}</td>
@@ -1519,11 +1541,15 @@ export default function ScorebookWorkspace({
 
   const renderProfilePageTwo = () => {
     const rows = Array.from({ length: 40 }, (_, index) => classStudents[index] || {});
-    const cellBase = { borderLeft: '1.2px solid #111', borderRight: '1.2px solid #111', padding: '4px 5px', verticalAlign: 'middle', fontSize: 14.5, lineHeight: 1.12 };
-    const twoLine = { display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', lineHeight: 1.12 };
+    const rowHeight = 30;
+    const cellBase = { borderLeft: '1.2px solid #111', borderRight: '1.2px solid #111', padding: '2px 5px', verticalAlign: 'middle', fontSize: 13.6, lineHeight: 1.04, height: rowHeight };
+    const twoLine = { display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', lineHeight: 1.04 };
+    const titleStyle = { fontSize: 30, fontWeight: 700, lineHeight: 1, marginBottom: 6 };
+    const headerRowStyle = { height: 60 };
+    const headerCellStyle = { border: '1.4px solid #111', padding: 5, whiteSpace: 'pre-line', fontSize: 13.1, lineHeight: 1.08, textAlign: 'center', fontWeight: 700, height: 60 };
     return (
       <div className="scorebook-profile-page bg-white text-black" style={{ width: pageWidth - pageMargin * 2, height: pageHeight - pageMargin * 2, fontFamily: '"Times New Roman", Times, serif', position: 'relative', boxSizing: 'border-box', padding: '26px 20px 25px 20px' }}>
-        <div style={{ fontSize: 30, fontWeight: 700, marginBottom: 4 }}>HỌC SINH</div>
+        <div style={titleStyle}>HỌC SINH</div>
         <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed', fontFamily: '"Times New Roman", Times, serif' }}>
           <colgroup>
             <col style={{ width: 44 }} />
@@ -1532,9 +1558,9 @@ export default function ScorebookWorkspace({
             <col />
           </colgroup>
           <thead>
-            <tr>
+            <tr style={headerRowStyle}>
               {['Số\nTT', 'Họ và tên cha, nghề nghiệp,\nđiện thoại, email\n(hoặc người giám hộ)', 'Họ và tên mẹ, nghề nghiệp,\nđiện thoại, email\n(hoặc người giám hộ)', 'Những thay đổi cần chú ý trong năm học\n(gia đình sức khỏe, nơi ở...)'].map((header) => (
-                <th key={header} style={{ border: '1.4px solid #111', padding: 5, whiteSpace: 'pre-line', fontSize: 13.5, lineHeight: 1.15, textAlign: 'center', fontWeight: 700 }}>{header}</th>
+                <th key={header} style={headerCellStyle}>{header}</th>
               ))}
             </tr>
           </thead>
@@ -1542,7 +1568,7 @@ export default function ScorebookWorkspace({
             {rows.map((student, index) => {
               const borderBottom = profileRowBorder(index);
               return (
-                <tr key={`profile-2-${index}`} style={{ height: 31 }}>
+                <tr key={`profile-2-${index}`} style={{ height: rowHeight }}>
                   <td style={{ ...cellBase, textAlign: 'center', borderBottom }}>{index + 1}</td>
                   <td style={{ ...cellBase, borderBottom }}><div style={twoLine}>{parentText(student, 'father')}</div></td>
                   <td style={{ ...cellBase, borderBottom }}><div style={twoLine}>{parentText(student, 'mother')}</div></td>
@@ -1699,9 +1725,9 @@ export default function ScorebookWorkspace({
             </tr>
           </tbody>
         </table>
-        <div style={{ position: 'absolute', right: 70, bottom: 102, width: 220, textAlign: 'center', fontSize: 15, fontWeight: 700 }}>
+        <div style={{ position: 'absolute', right: 70, bottom: 126, width: 220, textAlign: 'center', fontSize: 15, fontWeight: 700 }}>
           <div>Ký xác nhận của<br />giáo viên chủ nhiệm</div>
-          <div style={{ height: 64 }}></div>
+          <div style={{ height: 82 }}></div>
           <div>{homeroomTeacherName}</div>
         </div>
       </div>
@@ -1898,7 +1924,7 @@ export default function ScorebookWorkspace({
           value={customText(subjectKey, subject.title)}
           onCommit={(next) => commitCustomText(subjectKey, subject.title, next)}
           className="text-center"
-          style={{ fontSize: 21, fontWeight: 700, lineHeight: 1.08, height: 44, whiteSpace: 'pre-line' }}
+          style={{ fontSize: 21, fontWeight: 700, lineHeight: 1.08, height: 62, whiteSpace: 'pre-line' }}
         />
         <table style={{ width: tableWidth, borderCollapse: 'collapse', tableLayout: 'fixed', fontFamily: '"Times New Roman", Times, serif', margin: '0 auto' }}>
           <colgroup>
@@ -2079,6 +2105,7 @@ export default function ScorebookWorkspace({
     const tableWidth = pageInnerWidth - (scoreSheetInsetX * 2);
     const fixedWidth = 34 + 220 + (58 * 4) + (62 * 7);
     const colWidths = [34, 220, 58, 58, 58, 58, 62, 62, 62, 62, 62, 62, 62, tableWidth - fixedWidth];
+    const rowHeight = 27;
     const cellBase = {
       borderLeft: '1.05px solid #111',
       borderRight: '1.05px solid #111',
@@ -2086,7 +2113,7 @@ export default function ScorebookWorkspace({
       verticalAlign: 'middle',
       fontSize: 14.5,
       lineHeight: 1.05,
-      height: 25
+      height: rowHeight
     };
     const headerCell = {
       ...cellBase,
@@ -2142,7 +2169,7 @@ export default function ScorebookWorkspace({
               const hasStudent = Boolean(student?.fullName);
               const borderBottom = profileRowBorder(rowIndex);
               return (
-                <tr key={`full-year-summary-${rowIndex}`} style={{ height: 25 }}>
+                <tr key={`full-year-summary-${rowIndex}`} style={{ height: rowHeight }}>
                   <td style={{ ...cellBase, textAlign: 'center', borderBottom }}>{hasStudent ? rowIndex + 1 : ''}</td>
                   <td style={{ ...cellBase, borderBottom }}>
                     <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{hasStudent ? titleCaseText(student.fullName) : ''}</div>
@@ -2177,10 +2204,10 @@ export default function ScorebookWorkspace({
   const renderClassificationPage = () => {
     const rows = Array.from({ length: CLASSIFICATION_ROW_COUNT }, (_, index) => classificationStudents[index] || {});
     const pageInnerWidth = pageWidth - pageMargin * 2;
-    const classificationInsetX = 27;
+    const classificationInsetX = scoreSheetInsetX;
     const tableWidth = pageInnerWidth - (classificationInsetX * 2);
-    const fixedClassificationWidth = 34 + 172 + (64 * 4) + 48 + 108 + 82 + 80;
-    const colWidths = [34, 172, 64, 64, 64, 64, 48, 108, 82, 80, tableWidth - fixedClassificationWidth];
+    const fixedClassificationWidth = 34 + 172 + (64 * 4) + 48 + 98 + 68 + 126;
+    const colWidths = [34, 172, 64, 64, 64, 64, 48, 98, 68, 126, tableWidth - fixedClassificationWidth];
     const gradeNumber = Number(getGradeFromClass(grade) || grade);
     const rowHeight = 27;
     const cellBase = {
@@ -2188,7 +2215,7 @@ export default function ScorebookWorkspace({
       borderRight: '1.05px solid #111',
       padding: '2px 4px',
       verticalAlign: 'middle',
-      fontSize: 13.8,
+      fontSize: 13.4,
       lineHeight: 1.05,
       height: rowHeight
     };
@@ -2198,9 +2225,26 @@ export default function ScorebookWorkspace({
       borderBottom: '1.35px solid #111',
       textAlign: 'center',
       fontWeight: 700,
-      fontSize: 15,
+      fontSize: 14.5,
       lineHeight: 1.12,
       whiteSpace: 'pre-line'
+    };
+    const groupHeader = {
+      ...headerCell,
+      height: 44,
+      fontSize: 14.5
+    };
+    const subjectHeader = {
+      ...headerCell,
+      height: 78,
+      fontSize: 14,
+      borderTop: 0
+    };
+    const compactGroupHeader = {
+      ...groupHeader,
+      padding: '1px 4px',
+      fontSize: 12.2,
+      lineHeight: 1.05
     };
     const buildRowResult = (student, rowIndex) => {
       const hasStudent = Boolean(student?.fullName);
@@ -2208,7 +2252,8 @@ export default function ScorebookWorkspace({
       const absenceCount = hasStudent ? getFullYearAbsenceCount(student) : '';
       const conductResult = hasStudent ? (absenceCount < 20 ? 'Tốt' : 'Khá') : '';
       const promoted = hasStudent && (gradeNumber === 9 || isPassingAcademicResult(academicResult));
-      return { hasStudent, academicResult, absenceCount, conductResult, promoted };
+      const rewardText = academicResult === 'Khá' ? 'Học sinh tiên tiến' : '';
+      return { hasStudent, academicResult, absenceCount, conductResult, promoted, rewardText };
     };
     const rowResults = rows.map(buildRowResult);
     const promotedCount = rowResults.filter(item => item.hasStudent && item.promoted).length;
@@ -2224,7 +2269,7 @@ export default function ScorebookWorkspace({
 
     return (
       <div className="scorebook-classification-page bg-white text-black" style={{ width: pageInnerWidth, height: pageHeight - pageMargin * 2, fontFamily: '"Times New Roman", Times, serif', position: 'relative', boxSizing: 'border-box' }}>
-        <div style={{ height: 34, textAlign: 'center', fontSize: 24, fontWeight: 700, lineHeight: '30px' }}>XẾP LOẠI CẢ NĂM HỌC</div>
+        <div style={{ height: 30, textAlign: 'center', fontSize: 23, fontWeight: 700, lineHeight: '28px' }}>XẾP LOẠI CẢ NĂM HỌC</div>
         <table style={{ width: tableWidth, borderCollapse: 'collapse', tableLayout: 'fixed', fontFamily: '"Times New Roman", Times, serif', margin: '0 auto' }}>
           <colgroup>
             {colWidths.map((width, index) => <col key={`classification-col-${index}`} style={{ width }} />)}
@@ -2233,8 +2278,8 @@ export default function ScorebookWorkspace({
             <tr>
               <th rowSpan={2} style={headerCell}>Số<br />TT</th>
               <th rowSpan={2} style={headerCell}>Họ và tên</th>
-              <th colSpan={2} style={{ ...headerCell, height: 70 }}>Mức đánh giá</th>
-              <th colSpan={2} style={{ ...headerCell, height: 70 }}>Mức đánh giá sau<br />khi rèn luyện<br />trong kì nghỉ hè;<br />kiểm tra, đánh giá lại</th>
+              <th colSpan={2} style={groupHeader}>Mức đánh giá</th>
+              <th colSpan={2} style={compactGroupHeader}>Mức đánh giá sau<br />khi rèn luyện trong kì nghỉ hè;<br />kiểm tra, đánh giá lại</th>
               <th rowSpan={2} style={headerCell}>Tổng<br />số<br />buổi<br />nghỉ<br />học</th>
               <th rowSpan={2} style={headerCell}>Được lên lớp</th>
               <th rowSpan={2} style={headerCell}>Không được<br />lên lớp</th>
@@ -2242,10 +2287,10 @@ export default function ScorebookWorkspace({
               <th rowSpan={2} style={headerCell}>Tổng hợp chung</th>
             </tr>
             <tr>
-              <th style={{ ...headerCell, height: 70 }}>Kết quả<br />rèn<br />luyện</th>
-              <th style={{ ...headerCell, height: 70 }}>Kết quả<br />học tập</th>
-              <th style={{ ...headerCell, height: 70 }}>Kết quả<br />rèn<br />luyện</th>
-              <th style={{ ...headerCell, height: 70 }}>Kết quả<br />học tập</th>
+              <th style={subjectHeader}>Kết quả<br />rèn<br />luyện</th>
+              <th style={subjectHeader}>Kết quả<br />học tập</th>
+              <th style={subjectHeader}>Kết quả<br />rèn<br />luyện</th>
+              <th style={subjectHeader}>Kết quả<br />học tập</th>
             </tr>
           </thead>
           <tbody>
@@ -2263,12 +2308,12 @@ export default function ScorebookWorkspace({
                   <td style={{ ...cellBase, textAlign: 'center', borderBottom }} />
                   <td style={{ ...cellBase, textAlign: 'center', borderBottom }} />
                   <td style={{ ...cellBase, textAlign: 'center', borderBottom }}>{result.hasStudent ? result.absenceCount : ''}</td>
-                  <td style={{ ...cellBase, textAlign: 'center', borderBottom }}>{result.hasStudent && result.promoted ? (gradeNumber === 9 ? 'Đủ điều kiện xét TN' : 'Được lên lớp') : ''}</td>
+                  <td style={{ ...cellBase, textAlign: 'center', borderBottom }}>{result.hasStudent && result.promoted ? (gradeNumber === 9 ? 'Đủ ĐK xét Tn' : 'Được lên lớp') : ''}</td>
                   <td style={{ ...cellBase, textAlign: 'center', borderBottom }}>{result.hasStudent && !result.promoted ? 'Ở lại lớp' : ''}</td>
                   <td style={{ ...cellBase, textAlign: 'center', borderBottom }}>
                     <EditableText
-                      value={customText(`classification:r${rowIndex}:reward`, '')}
-                      onCommit={(next) => commitCustomText(`classification:r${rowIndex}:reward`, '', next)}
+                      value={customText(`classification:r${rowIndex}:reward`, result.rewardText)}
+                      onCommit={(next) => commitCustomText(`classification:r${rowIndex}:reward`, result.rewardText, next)}
                       style={{ minHeight: 18 }}
                     />
                   </td>
@@ -2285,7 +2330,6 @@ export default function ScorebookWorkspace({
                         />
                       </div>
                       <div style={{ marginTop: 90, textAlign: 'center', fontWeight: 700, fontSize: 15.5 }}>
-                        <div style={{ fontStyle: 'italic', fontWeight: 400 }}>{getTranscriptEndDateText(currentSchoolYear, gradeNumber)}</div>
                         <div>HIỆU TRƯỞNG</div>
                         <div style={{ fontStyle: 'italic', fontWeight: 400 }}>(Ký và ghi rõ họ tên)</div>
                         <EditableText
@@ -2377,7 +2421,7 @@ export default function ScorebookWorkspace({
   };
 
   const transcriptStudentName = (student = selectedTranscriptStudent) => titleCaseText(student?.fullName || '');
-  const transcriptStudentClass = (student = selectedTranscriptStudent) => student?.className || getClassLabel(grade).replace('L\u1edaP ', '');
+  const transcriptStudentClass = (student = selectedTranscriptStudent) => getPcClassName(student?.className || student?.grade, grade);
   const transcriptRegisterCode = (student = selectedTranscriptStudent) => student?.pcgdCode || student?.registerCode || student?.studentCode || student?.accessCode || '';
   const transcriptStudentPhotoUrl = (student = selectedTranscriptStudent) => {
     const directPhoto = student?.portraitUrl || student?.portraitURL || student?.photoUrl || student?.photoURL || student?.avatarUrl || student?.avatarURL || student?.imageUrl || student?.profileImageUrl || student?.studentPhotoUrl || student?.pictureUrl || student?.portrait || student?.photo || student?.avatar || student?.picture || '';
@@ -2415,6 +2459,18 @@ export default function ScorebookWorkspace({
       : getTranscriptDateFallback(transcriptEndDates, schoolYearLabel, defaultTranscriptEndDateText(schoolYearLabel));
     const legacyFallback = isGrade9 ? customText(`transcript:date:end:${key}`, fallback) : fallback;
     return customText(`transcript:date:${isGrade9 ? 'grade9-end' : 'end'}:${key}`, legacyFallback);
+  };
+  const getTranscriptSignerFallback = (signerMap = {}, schoolYearLabel = currentSchoolYear) => {
+    const key = compactSchoolYearLabel(schoolYearLabel);
+    return String(signerMap?.[key] || signerMap?.[schoolYearLabel] || principalName || '').trim();
+  };
+  const getTranscriptStartSignerText = (schoolYearLabel = currentSchoolYear) => {
+    const key = compactSchoolYearLabel(schoolYearLabel);
+    return customText(`transcript:signer:start:${key}`, getTranscriptSignerFallback(transcriptStartSigners, schoolYearLabel));
+  };
+  const getTranscriptEndSignerText = (schoolYearLabel = currentSchoolYear) => {
+    const key = compactSchoolYearLabel(schoolYearLabel);
+    return customText(`transcript:signer:end:${key}`, getTranscriptSignerFallback(transcriptEndSigners, schoolYearLabel));
   };
   const transcriptEditKey = (page, key, student = selectedTranscriptStudent) => `transcript:${student?.id || 'student'}:${page}:${key}`;
   const getTranscriptFirstStartYear = (student = selectedTranscriptStudent) => {
@@ -2618,47 +2674,111 @@ export default function ScorebookWorkspace({
     const absenceCount = getTranscriptAbsenceCount(yearEntry, semester, student);
     return absenceCount < (semester === 'full' ? 20 : 10) ? 'Tốt' : 'Khá';
   };
-  const renderTranscriptPageShell = (children, options = {}) => (
-    <div
-      className="transcript-page bg-white text-black"
-      style={{
-        width: transcriptPageWidth,
-        height: transcriptPageHeight,
-        fontFamily: '"Times New Roman", Times, serif',
-        position: 'relative',
-        boxSizing: 'border-box',
-        padding: options.padding || '34px 38px',
-        border: options.border === false ? 0 : '1.4px solid #111',
-        overflow: 'hidden'
-      }}
-    >
-      {children}
-    </div>
-  );
+  const getTranscriptInnerInsets = (pageNumber = 0) => {
+    const baseInset = 19;
+    const gutterExtra = 19;
+    if (pageNumber > 1 && pageNumber % 2 === 0) return { left: baseInset, right: baseInset + gutterExtra };
+    if (pageNumber > 1) return { left: baseInset + gutterExtra, right: baseInset };
+    return { left: baseInset, right: baseInset };
+  };
 
-  const renderTranscriptCoverPage = (student = selectedTranscriptStudent) => renderTranscriptPageShell((
-    <>
-      <div style={{ position: 'absolute', inset: 38, border: '1.4px solid #111', pointerEvents: 'none' }} />
-      <div style={{ position: 'absolute', top: 62, left: 46, fontSize: 20, fontWeight: 700, lineHeight: 2.05 }}>
-        <EditableText value={customText('transcriptCover:school', TRANSCRIPT_TEXT.school)} onCommit={(next) => commitCustomText('transcriptCover:school', TRANSCRIPT_TEXT.school, next)} />
-        <EditableText value={customText('transcriptCover:ward', TRANSCRIPT_TEXT.ward)} onCommit={(next) => commitCustomText('transcriptCover:ward', TRANSCRIPT_TEXT.ward, next)} />
-        <EditableText value={customText('transcriptCover:city', TRANSCRIPT_TEXT.city)} onCommit={(next) => commitCustomText('transcriptCover:city', TRANSCRIPT_TEXT.city, next)} />
-      </div>
-      <div style={{ position: 'absolute', top: 385, left: 0, right: 0, textAlign: 'center' }}>
-        <div style={{ fontSize: 78, fontWeight: 700, lineHeight: 1 }}>{TRANSCRIPT_TEXT.title}</div>
-        <div style={{ marginTop: 20, fontSize: 29, fontWeight: 700 }}>{TRANSCRIPT_TEXT.subtitle}</div>
-      </div>
-      <div style={{ position: 'absolute', top: 660, left: 0, right: 0, textAlign: 'center', fontSize: 24, fontWeight: 700, lineHeight: 1.7 }}>
-        <div>Họ và tên học sinh</div>
-        <div style={{ textTransform: 'uppercase' }}>{transcriptStudentName(student)}</div>
-      </div>
-      <div style={{ position: 'absolute', bottom: 56, left: 145, fontSize: 26, fontWeight: 700 }}>
-        Số sổ đăng bộ PCGD: {transcriptRegisterCode(student) || '....................'}/THCS
-      </div>
-    </>
-  ), { border: false });
+  const getTranscriptPagePadding = (pageNumber = 0, top = 34, right = 38, bottom = 34, left = 38) => {
+    const insets = getTranscriptInnerInsets(pageNumber);
+    return `${top}px ${right + insets.right}px ${bottom}px ${left + insets.left}px`;
+  };
 
-  const renderTranscriptGuidePage = () => renderTranscriptPageShell((
+  const renderTranscriptPageShell = (children, options = {}) => {
+    const hasBorder = options.border !== false;
+    const pageNumber = Number(options.pageNumber || 0);
+    const shouldNumberPage = pageNumber > 1 && !options.blank;
+    const insets = hasBorder || shouldNumberPage ? getTranscriptInnerInsets(pageNumber) : { left: 0, right: 0 };
+    const defaultPadding = hasBorder || shouldNumberPage ? getTranscriptPagePadding(pageNumber) : '34px 38px';
+    return (
+      <div
+        className="transcript-page bg-white text-black"
+        style={{
+          width: transcriptPageWidth,
+          height: transcriptPageHeight,
+          fontFamily: '"Times New Roman", Times, serif',
+          position: 'relative',
+          boxSizing: 'border-box',
+          padding: options.padding || defaultPadding,
+          border: 0,
+          overflow: 'hidden'
+        }}
+      >
+        {hasBorder && (
+          <div
+            style={{
+              position: 'absolute',
+              left: insets.left,
+              right: insets.right,
+              top: 0,
+              bottom: 0,
+              border: '1.4px solid #111',
+              pointerEvents: 'none'
+            }}
+          />
+        )}
+        {children}
+        {shouldNumberPage && (
+          <div
+            style={{
+              position: 'absolute',
+              bottom: 9,
+              ...(pageNumber % 2 === 0 ? { left: insets.left + 18 } : { right: insets.right + 18 }),
+              fontSize: 15,
+              fontFamily: '"Times New Roman", Times, serif'
+            }}
+          >
+            {pageNumber}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const renderTranscriptCoverPage = (student = selectedTranscriptStudent) => {
+    const coverLeft = 54;
+    const coverRight = 28;
+    const infoLabel = { fontWeight: 700, fontSize: 16.5, lineHeight: 1.6 };
+    const infoValue = { fontWeight: 700, fontStyle: 'italic', fontSize: 16.5, lineHeight: 1.6, textTransform: 'uppercase' };
+    return renderTranscriptPageShell((
+      <>
+        <div style={{ position: 'absolute', left: coverLeft, right: coverRight, top: 41, bottom: 41, border: '1.8px solid #111', pointerEvents: 'none' }} />
+        <div style={{ position: 'absolute', left: coverLeft + 5, right: coverRight + 5, top: 46, bottom: 46, border: '1px solid #111', pointerEvents: 'none' }} />
+        <div style={{ position: 'absolute', top: 64, left: coverLeft, right: coverRight, textAlign: 'center', fontSize: 20, fontWeight: 700 }}>
+          BỘ GIÁO DỤC VÀ ĐÀO TẠO
+        </div>
+        <div style={{ position: 'absolute', top: 101, right: coverRight + 30, width: 82, height: 30, border: '1.1px solid #111', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14.5, fontWeight: 400 }}>
+          Phổ cập
+        </div>
+        <div style={{ position: 'absolute', top: 405, left: coverLeft, right: coverRight, textAlign: 'center' }}>
+          <div style={{ fontSize: 76, fontWeight: 700, lineHeight: 1 }}>{TRANSCRIPT_TEXT.title}</div>
+          <div style={{ marginTop: 18, fontSize: 21, fontWeight: 700 }}>{TRANSCRIPT_TEXT.subtitle}</div>
+        </div>
+        <div style={{ position: 'absolute', top: 760, left: coverLeft + 70, right: coverRight + 70, display: 'grid', gridTemplateColumns: '235px 1fr', columnGap: 18 }}>
+          <div style={infoLabel}>
+            <div>Họ tên học viên:</div>
+            <div>Trung tâm:</div>
+            <div>Huyện/Quận/Thị xã/Thành phố:</div>
+            <div>Tỉnh/Thành phố:</div>
+          </div>
+          <div style={infoValue}>
+            <EditableText value={customText('transcriptCover:studentName', transcriptStudentName(student))} onCommit={(next) => commitCustomText('transcriptCover:studentName', transcriptStudentName(student), next)} />
+            <EditableText value={customText('transcriptCover:center', 'TRƯỜNG THCS NGUYỄN AN NINH')} onCommit={(next) => commitCustomText('transcriptCover:center', 'TRƯỜNG THCS NGUYỄN AN NINH', next)} />
+            <EditableText value={customText('transcriptCover:district', 'Phường Trung Mỹ Tây').replace(/^\((.*)\)$/, '$1')} onCommit={(next) => commitCustomText('transcriptCover:district', 'Phường Trung Mỹ Tây', next)} />
+            <EditableText value={customText('transcriptCover:province', 'HỒ CHÍ MINH')} onCommit={(next) => commitCustomText('transcriptCover:province', 'HỒ CHÍ MINH', next)} />
+          </div>
+        </div>
+        <div style={{ position: 'absolute', bottom: 67, left: coverLeft, right: coverRight, textAlign: 'center', fontSize: 17, fontWeight: 700 }}>
+          Số sổ đăng bộ PCGD: {transcriptRegisterCode(student) || '....................'}/THCS
+        </div>
+      </>
+    ), { border: false });
+  };
+
+  const renderTranscriptGuidePage = (pageNumber = 0) => renderTranscriptPageShell((
     <>
       <div style={{ textAlign: 'center', fontSize: 25, fontWeight: 700, marginBottom: 22 }}>
         HƯỚNG DẪN SỬ DỤNG HỌC BẠ
@@ -2669,17 +2789,18 @@ export default function ScorebookWorkspace({
           <div key={`transcript-guide-${section.title}`} style={{ marginBottom: sectionIndex === 2 ? 14 : 18 }}>
             <div style={{ fontWeight: 700, marginBottom: 3 }}>{section.title}</div>
             {section.lines.map((line, lineIndex) => (
-              <div key={`transcript-guide-line-${section.title}-${lineIndex}`} style={{ textIndent: lineIndex === 0 ? 0 : 22, marginBottom: 5 }}>
-                - {line}
+              <div key={`transcript-guide-line-${section.title}-${lineIndex}`} style={{ display: 'grid', gridTemplateColumns: '18px 1fr', columnGap: 0, marginBottom: 5 }}>
+                <span>-</span>
+                <span>{line}</span>
               </div>
             ))}
           </div>
         ))}
       </div>
     </>
-  ), { border: false });
+  ), { border: false, pageNumber });
 
-  const renderTranscriptInfoPage = (transcriptStudent = selectedTranscriptStudent, yearEntries = transcriptYearEntries) => {
+  const renderTranscriptInfoPage = (transcriptStudent = selectedTranscriptStudent, yearEntries = transcriptYearEntries, pageNumber = 0) => {
     const student = transcriptStudent || {};
     const photoUrl = transcriptStudentPhotoUrl(student);
     const processRows = Array.from({ length: 5 }, (_, index) => yearEntries[index] || null);
@@ -2687,6 +2808,10 @@ export default function ScorebookWorkspace({
     const entrySchoolYearKey = compactSchoolYearLabel(entrySchoolYear);
     const entryDateFallback = getTranscriptDateFallback(transcriptStartDates, entrySchoolYear, defaultTranscriptStartDateText(entrySchoolYear));
     const entryDateText = getTranscriptStartDateText(entrySchoolYear);
+    const entrySignerText = getTranscriptStartSignerText(entrySchoolYear);
+    const pageInsets = getTranscriptInnerInsets(pageNumber);
+    const absoluteLeft = 38 + pageInsets.left;
+    const absoluteRight = 38 + pageInsets.right;
     const infoLine = (label, value, extra = null, options = {}) => (
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 11, fontSize: 18.5, lineHeight: 1.16 }}>
         <span style={options.singleLine ? { flex: '0 0 auto', whiteSpace: 'nowrap' } : undefined}>{label}</span>
@@ -2716,7 +2841,7 @@ export default function ScorebookWorkspace({
           <div style={{ fontSize: 19, marginTop: 5 }}>Độc lập - Tự do - Hạnh phúc</div>
           <div style={{ width: 150, borderTop: '1.5px solid #111', margin: '7px auto 0 auto' }} />
         </div>
-        <div style={{ position: 'absolute', top: 58, left: 78, width: 132, height: 176, border: '1.2px solid #111', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, boxSizing: 'border-box', padding: 0, overflow: 'hidden', background: '#fff' }}>
+        <div style={{ position: 'absolute', top: 58, left: 78 + pageInsets.left, width: 132, height: 176, border: '1.2px solid #111', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, boxSizing: 'border-box', padding: 0, overflow: 'hidden', background: '#fff' }}>
           <TranscriptStudentPhoto url={photoUrl} />
         </div>
         <div style={{ textAlign: 'center', marginTop: 34, marginBottom: 38, fontWeight: 700 }}>
@@ -2724,7 +2849,7 @@ export default function ScorebookWorkspace({
           <div style={{ fontSize: 25, marginTop: 12 }}>{TRANSCRIPT_TEXT.subtitle}</div>
         </div>
         <div style={{ fontSize: 18.5, lineHeight: 1.16 }}>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 145px', columnGap: 18 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 215px', columnGap: 18 }}>
             {infoLine('H\u1ecd v\u00e0 t\u00ean h\u1ecdc sinh.', transcriptStudentName(student))}
             {infoLine('Gi\u1edbi t\u00ednh.', formatGender(student.gender))}
           </div>
@@ -2742,16 +2867,16 @@ export default function ScorebookWorkspace({
             {infoLine('Ngh\u1ec1 nghi\u1ec7p:', sentenceCaseText(student.guardianJob))}
           </div>
         </div>
-        <div style={{ position: 'absolute', right: 58, top: 558, width: 330, textAlign: 'center', fontSize: 17.5, lineHeight: 1.28 }}>
+        <div style={{ position: 'absolute', right: 58 + pageInsets.right, top: 558, width: 330, textAlign: 'center', fontSize: 17.5, lineHeight: 1.28 }}>
           <EditableText value={entryDateText} onCommit={(next) => commitCustomText(`transcript:date:start:${entrySchoolYearKey}`, entryDateFallback, next)} style={{ fontStyle: 'italic' }} />
           <div style={{ fontWeight: 700, fontSize: 22 }}>HIỆU TRƯỞNG</div>
           <div style={{ fontStyle: 'italic' }}>(Ký, ghi rõ họ tên và đóng dấu)</div>
-          <div style={{ marginTop: 104, fontWeight: 700, fontSize: 20 }}>{principalName}</div>
+          <div style={{ marginTop: 104, fontWeight: 700, fontSize: 20 }}>{entrySignerText}</div>
         </div>
-        <div style={{ position: 'absolute', left: 38, right: 38, bottom: 305, textAlign: 'center', fontSize: 25, fontWeight: 700 }}>
+        <div style={{ position: 'absolute', left: absoluteLeft, right: absoluteRight, bottom: 305, textAlign: 'center', fontSize: 25, fontWeight: 700 }}>
           QUÁ TRÌNH HỌC TẬP
         </div>
-        <table style={{ position: 'absolute', left: 38, right: 38, bottom: 28, width: 'calc(100% - 76px)', borderCollapse: 'collapse', tableLayout: 'fixed', fontSize: 18.5 }}>
+        <table style={{ position: 'absolute', left: absoluteLeft, right: absoluteRight, bottom: 28, width: `calc(100% - ${absoluteLeft + absoluteRight}px)`, borderCollapse: 'collapse', tableLayout: 'fixed', fontSize: 18.5 }}>
           <colgroup>
             <col style={{ width: 160 }} />
             <col style={{ width: 120 }} />
@@ -2768,24 +2893,25 @@ export default function ScorebookWorkspace({
             {processRows.map((row, index) => (
               <tr key={`transcript-process-${index}`} style={{ height: 43 }}>
                 <td style={{ border: '1.2px solid #111', textAlign: 'center' }}>{row ? row.compactSchoolYear : '20.. - 20..'}</td>
-                <td style={{ border: '1.2px solid #111', textAlign: 'center' }}>{row ? row.gradeNumber : ''}</td>
+                <td style={{ border: '1.2px solid #111', textAlign: 'center' }}>{row ? getPcClassName(row.gradeNumber, grade) : ''}</td>
                 <td style={{ border: '1.2px solid #111', paddingLeft: 8 }}>{row ? 'THCS Nguyễn An Ninh, Thành phố Hồ Chí Minh' : ''}</td>
               </tr>
             ))}
           </tbody>
         </table>
       </>
-    ), { border: false, padding: '18px 38px 0 38px' });
+    ), { border: false, pageNumber, padding: getTranscriptPagePadding(pageNumber, 18, 38, 0, 38) });
   };
 
-  const renderTranscriptLearningPage = (yearEntry = transcriptYearEntries[transcriptYearEntries.length - 1], student = selectedTranscriptStudent) => {
+  const renderTranscriptLearningPage = (yearEntry = transcriptYearEntries[transcriptYearEntries.length - 1], student = selectedTranscriptStudent, pageNumber = 0) => {
     const cell = { border: '1.15px solid #111', padding: '4px 4px', verticalAlign: 'middle', fontSize: 16.8, lineHeight: 1.12 };
     const header = { ...cell, textAlign: 'center', fontWeight: 700 };
+    const finalSignerText = getTranscriptEndSignerText(yearEntry?.schoolYear || currentSchoolYear);
     return renderTranscriptPageShell((
       <>
         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 18, fontWeight: 700, fontStyle: 'italic', marginBottom: 4 }}>
           <div>Họ và tên: <span>{transcriptStudentName(student)}</span></div>
-          <div>Lớp: <span>{yearEntry?.gradeNumber || transcriptStudentClass(student)}</span></div>
+          <div>Lớp: <span>{getPcClassName(yearEntry?.gradeNumber || transcriptStudentClass(student), grade)}</span></div>
           <div>Năm học: <span>{yearEntry?.compactSchoolYear || compactSchoolYearLabel(currentSchoolYear)}</span></div>
         </div>
         <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed', fontFamily: '"Times New Roman", Times, serif' }}>
@@ -2814,6 +2940,7 @@ export default function ScorebookWorkspace({
             {TRANSCRIPT_SUBJECTS.map((subject, index) => {
               const teacherFallback = transcriptSubjectTeacher(subject, yearEntry);
               const remarkKey = transcriptEditKey('learning', `${yearEntry?.startYear || 'year'}:subject-${index}-remark`, student);
+              const teacherDisplay = customTextOrFallback(remarkKey, teacherFallback);
               return (
                 <tr key={`transcript-subject-${subject.label}`} style={{ height: 43 }}>
                   <td style={{ ...cell, textAlign: 'center', whiteSpace: 'pre-line' }}>{subject.label}</td>
@@ -2826,15 +2953,11 @@ export default function ScorebookWorkspace({
                       <div style={{ borderRight: '1px solid transparent' }} />
                       <div style={{ padding: '3px 5px 2px 6px' }}>
                         <EditableText
-                          value={customTextOrFallback(remarkKey, teacherFallback)}
+                          value={teacherDisplay}
                           onCommit={(next) => commitCustomText(remarkKey, teacherFallback, next)}
                           style={{
                             minHeight: 22,
-                            maxHeight: 36,
-                            overflow: 'hidden',
-                            display: '-webkit-box',
-                            WebkitLineClamp: 2,
-                            WebkitBoxOrient: 'vertical',
+                            fontSize: fitTeacherSignatureFontSize(teacherDisplay),
                             textAlign: 'left',
                             lineHeight: 1.08,
                             whiteSpace: 'pre-line'
@@ -2863,14 +2986,14 @@ export default function ScorebookWorkspace({
           <div style={{ textAlign: 'center', paddingTop: 18, fontSize: 17, fontWeight: 700, position: 'relative' }}>
             <div>Xác nhận của Hiệu trưởng</div>
             <div style={{ fontStyle: 'italic', fontWeight: 400 }}>(Ký, ghi rõ họ tên và đóng dấu)</div>
-            <div style={{ position: 'absolute', left: 0, right: 0, bottom: 8 }}>{principalName}</div>
+            <div style={{ position: 'absolute', left: 0, right: 0, bottom: 8 }}>{finalSignerText}</div>
           </div>
         </div>
       </>
-    ), { border: false, padding: '27px 28px 8px 28px' });
+    ), { border: false, pageNumber, padding: getTranscriptPagePadding(pageNumber, 27, 28, 8, 28) });
   };
 
-  const renderTranscriptAssessmentPage = (yearEntry = transcriptYearEntries[transcriptYearEntries.length - 1], student = selectedTranscriptStudent) => {
+  const renderTranscriptAssessmentPage = (yearEntry = transcriptYearEntries[transcriptYearEntries.length - 1], student = selectedTranscriptStudent, pageNumber = 0) => {
     const cell = { border: '1.15px solid #111', padding: '3px 5px', verticalAlign: 'middle', fontSize: 17, lineHeight: 1.08 };
     const header = { ...cell, textAlign: 'center', fontWeight: 700 };
     const transcriptAcademicResult = getTranscriptAcademicResult(yearEntry, 'fullYear', student);
@@ -2880,31 +3003,38 @@ export default function ScorebookWorkspace({
     const transcriptHkiiConductResult = getTranscriptConductResult(yearEntry, 'hkii', student);
     const transcriptAbsenceTotal = getTranscriptAbsenceCount(yearEntry, 'full', student);
     const transcriptYearConductResult = getTranscriptConductResult(yearEntry, 'full', student);
-    const promotionText = 'Được lên lớp';
     const assessmentSchoolYear = yearEntry?.schoolYear || currentSchoolYear;
     const assessmentSchoolYearKey = compactSchoolYearLabel(assessmentSchoolYear);
-    const isGrade9Assessment = String(yearEntry?.gradeNumber || '').replace(/[^\d]/g, '') === '9';
+    const assessmentGradeNumber = Number(String(yearEntry?.gradeNumber || transcriptStudentClass(student) || grade || '').replace(/[^\d]/g, ''));
+    const isGrade9Assessment = assessmentGradeNumber === 9;
+    const isPassingFullYear = isPassingAcademicResult(transcriptAcademicResult);
+    const nextGradeText = assessmentGradeNumber >= 6 && assessmentGradeNumber <= 8 ? `Được lên lớp ${assessmentGradeNumber + 1}` : 'Được lên lớp';
+    const promotionText = isPassingFullYear
+      ? (isGrade9Assessment ? 'Đủ ĐK xét hoàn thành chương trình THCS' : nextGradeText)
+      : '';
+    const finalGradeCompletionText = isGrade9Assessment && isPassingFullYear ? 'Hoàn thành chương trình trung học cơ sở' : '';
     const assessmentDateFallback = isGrade9Assessment
       ? getTranscriptDateFallback(transcriptGrade9EndDates, assessmentSchoolYear, defaultTranscriptGrade9EndDateText(assessmentSchoolYear))
       : getTranscriptDateFallback(transcriptEndDates, assessmentSchoolYear, defaultTranscriptEndDateText(assessmentSchoolYear));
     const assessmentDateKey = `transcript:date:${isGrade9Assessment ? 'grade9-end' : 'end'}:${assessmentSchoolYearKey}`;
     const assessmentDateText = getTranscriptEndDateText(assessmentSchoolYear, yearEntry?.gradeNumber);
+    const assessmentSignerText = getTranscriptEndSignerText(assessmentSchoolYear);
     return renderTranscriptPageShell((
       <>
         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 18, fontWeight: 700, fontStyle: 'italic', marginBottom: 4 }}>
           <div>Họ và tên: <span>{transcriptStudentName(student)}</span></div>
-          <div>Lớp: <span>{yearEntry?.gradeNumber || transcriptStudentClass(student)}</span></div>
+          <div>Lớp: <span>{getPcClassName(yearEntry?.gradeNumber || transcriptStudentClass(student), grade)}</span></div>
           <div>Năm học: <span>{yearEntry?.compactSchoolYear || compactSchoolYearLabel(currentSchoolYear)}</span></div>
         </div>
         <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed', fontFamily: '"Times New Roman", Times, serif' }}>
           <colgroup>
-            <col style={{ width: 135 }} />
-            <col style={{ width: 90 }} />
-            <col style={{ width: 90 }} />
-            <col style={{ width: 78 }} />
-            <col style={{ width: 106 }} />
-            <col style={{ width: 106 }} />
-            <col style={{ width: 133 }} />
+            <col style={{ width: '17%' }} />
+            <col style={{ width: '11%' }} />
+            <col style={{ width: '11%' }} />
+            <col style={{ width: '10%' }} />
+            <col style={{ width: '10%' }} />
+            <col style={{ width: '10%' }} />
+            <col style={{ width: '31%' }} />
           </colgroup>
           <tbody>
             <tr style={{ height: 62 }}>
@@ -2912,9 +3042,9 @@ export default function ScorebookWorkspace({
               <td colSpan={2} style={header}>Mức đánh giá</td>
               <td rowSpan={2} style={header}>Tổng số<br />buổi<br />nghỉ học<br />cả năm<br />học</td>
               <td colSpan={2} style={header}>Mức đánh giá sau đánh giá lại môn học hoặc rèn luyện trong kì nghỉ hè (nếu có)</td>
-              <td rowSpan={5} style={{ ...cell, verticalAlign: 'top', fontSize: 18, lineHeight: 1.42, fontWeight: 400, padding: '5px 7px' }}>
+              <td rowSpan={5} style={{ ...cell, verticalAlign: 'top', fontSize: 16.3, lineHeight: 1.26, fontWeight: 400, padding: '5px 7px' }}>
                 - Được lên lớp:<br />
-                {promotionText}<br />
+                <span style={{ fontWeight: isGrade9Assessment ? 700 : 400 }}>{promotionText}</span><br />
                 ........................<br />
                 - Không được lên lớp:<br />
                 ........................<br />
@@ -2945,7 +3075,7 @@ export default function ScorebookWorkspace({
         </table>
         <div style={{ borderLeft: '1.15px solid #111', borderRight: '1.15px solid #111', borderBottom: '1.15px solid #111', padding: '8px 5px', fontSize: 16.8, lineHeight: 1.42 }}>
           <div style={{ fontStyle: 'italic' }}>Nếu là lớp cuối cấp ghi Hoàn thành hay không hoàn thành chương trình Trung học cơ sở:</div>
-          ....................................................................................................................<br />
+          {finalGradeCompletionText ? <><strong>{finalGradeCompletionText}</strong><br /></> : <>....................................................................................................................<br /></>}
           - Chứng chỉ (nếu có): ................................................................ Loại: ........................<br />
           - Kết quả tham gia các cuộc thi (nếu có): ........................................................................<br />
           ....................................................................................................................<br />
@@ -2955,17 +3085,17 @@ export default function ScorebookWorkspace({
           KẾT QUẢ RÈN LUYỆN TRONG KÌ NGHỈ HÈ
           <div style={{ marginTop: 14, fontSize: 18, fontStyle: 'italic', fontWeight: 400 }}>(Nếu có)</div>
         </div>
-        <div style={{ borderLeft: '1.15px solid #111', borderRight: '1.15px solid #111', borderBottom: '1.15px solid #111', height: 282, textAlign: 'center', paddingTop: 14, fontSize: 19, fontWeight: 700, position: 'relative' }}>
+        <div style={{ borderLeft: '1.15px solid #111', borderRight: '1.15px solid #111', borderBottom: '1.15px solid #111', height: 218, textAlign: 'center', paddingTop: 10, fontSize: 19, fontWeight: 700, position: 'relative' }}>
           NHẬN XÉT CỦA GIÁO VIÊN CHỦ NHIỆM
           <div style={{ fontSize: 18, fontStyle: 'italic', fontWeight: 400 }}>(Ký, ghi rõ họ tên)</div>
           <EditableText
             value={customText(transcriptEditKey('assessment', `${yearEntry?.startYear || 'year'}:homeroom-comment`, student), '')}
             onCommit={(next) => commitCustomText(transcriptEditKey('assessment', `${yearEntry?.startYear || 'year'}:homeroom-comment`, student), '', next)}
-            style={{ position: 'absolute', left: 36, right: 36, top: 82, bottom: 58, textAlign: 'left', fontWeight: 400, whiteSpace: 'pre-line' }}
+            style={{ position: 'absolute', left: 36, right: 36, top: 66, bottom: 42, textAlign: 'left', fontWeight: 400, whiteSpace: 'pre-line' }}
           />
-          <div style={{ position: 'absolute', left: 0, right: 0, bottom: 24 }}>{homeroomTeacherName}</div>
+          <div style={{ position: 'absolute', left: 0, right: 0, bottom: 14 }}>{homeroomTeacherName}</div>
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: '0.75fr 1.25fr', height: 250, fontSize: 16 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '0.75fr 1.25fr', height: 246, fontSize: 16 }}>
           <div style={{ borderLeft: '1.15px solid #111', borderBottom: '1.15px solid #111', paddingTop: 22, paddingLeft: 4, whiteSpace: 'nowrap' }}>
             Đồng ý với nhận xét của giáo viên chủ nhiệm lớp.
           </div>
@@ -2978,33 +3108,37 @@ export default function ScorebookWorkspace({
               />
               <div style={{ fontWeight: 700, fontSize: 20 }}>HIỆU TRƯỞNG</div>
               <div style={{ fontStyle: 'italic', fontSize: 17 }}>(Ký, ghi rõ họ tên và đóng dấu)</div>
-              <div style={{ marginTop: 112, fontWeight: 700, fontSize: 21 }}>{principalName}</div>
+              <div style={{ marginTop: 108, fontWeight: 700, fontSize: 21 }}>{assessmentSignerText}</div>
             </div>
           </div>
         </div>
       </>
-    ), { border: false, padding: '27px 28px 8px 28px' });
+    ), { border: false, pageNumber, padding: getTranscriptPagePadding(pageNumber, 27, 28, 8, 28) });
   };
 
   const renderTranscriptBlankPage = () => renderTranscriptPageShell(null, { border: false, padding: 0 });
+  const attachTranscriptPageNumbers = (pages = []) => pages.map((page, index) => ({
+    ...page,
+    pageNumber: page.blank ? null : index + 1
+  }));
   const getTranscriptPagesForStudent = (student = selectedTranscriptStudent, selection = null) => {
     const yearEntries = getTranscriptYearEntriesForStudent(student);
     const coverPages = [
       { key: `cover-${student?.id || 'student'}`, label: 'Bìa', student, render: () => renderTranscriptCoverPage(student) },
-      { key: `guide-${student?.id || 'student'}`, label: 'Hướng dẫn', student, render: renderTranscriptGuidePage },
-      { key: `info-${student?.id || 'student'}`, label: 'Thông tin', student, render: () => renderTranscriptInfoPage(student, yearEntries) }
+      { key: `guide-${student?.id || 'student'}`, label: 'Hướng dẫn', student, render: (pageNumber) => renderTranscriptGuidePage(pageNumber) },
+      { key: `info-${student?.id || 'student'}`, label: 'Thông tin', student, render: (pageNumber) => renderTranscriptInfoPage(student, yearEntries, pageNumber) }
     ];
     const resultPages = yearEntries.flatMap((yearEntry) => ([
-      { key: `learning-${student?.id || 'student'}-${yearEntry.startYear}`, label: `ĐKQHT ${yearEntry.schoolYear}`, student, yearEntry, render: () => renderTranscriptLearningPage(yearEntry, student) },
-      { key: `assessment-${student?.id || 'student'}-${yearEntry.startYear}`, label: `ĐGKQGD ${yearEntry.schoolYear}`, student, yearEntry, render: () => renderTranscriptAssessmentPage(yearEntry, student) }
+      { key: `learning-${student?.id || 'student'}-${yearEntry.startYear}`, label: `ĐKQHT ${yearEntry.schoolYear}`, student, yearEntry, render: (pageNumber) => renderTranscriptLearningPage(yearEntry, student, pageNumber) },
+      { key: `assessment-${student?.id || 'student'}-${yearEntry.startYear}`, label: `ĐGKQGD ${yearEntry.schoolYear}`, student, yearEntry, render: (pageNumber) => renderTranscriptAssessmentPage(yearEntry, student, pageNumber) }
     ]));
-    if (!selection) return [...coverPages, ...resultPages];
-    return [
+    if (!selection) return attachTranscriptPageNumbers([...coverPages, ...resultPages]);
+    return attachTranscriptPageNumbers([
       ...(selection.includeCover ? coverPages : []),
       ...(selection.mode === 'year'
         ? resultPages.filter(page => String(page.yearEntry?.schoolYear) === String(selection.year))
         : resultPages)
-    ];
+    ]);
   };
   const getTranscriptVisiblePages = (selection = transcriptPrintSelection) => {
     if (!selection) return getTranscriptPagesForStudent(selectedTranscriptStudent);
@@ -3062,7 +3196,7 @@ export default function ScorebookWorkspace({
   })();
 
   return (
-    <div className="scorebook-workspace-shell fixed inset-0 z-[140] bg-slate-100/95 backdrop-blur-md p-2 sm:p-3 print:static print:bg-white print:p-0">
+    <div className="scorebook-workspace-shell fixed inset-x-0 top-[84px] bottom-0 z-[140] bg-slate-100/95 backdrop-blur-md p-2 sm:p-3 print:static print:bg-white print:p-0">
       <style>{`
         @page { size: ${isTranscriptMode ? '210mm 297mm' : '297mm 420mm'}; margin: ${isTranscriptMode ? '0' : '5mm 7mm'}; }
         .scorebook-print-root, .scorebook-print-root table, .scorebook-print-root td, .scorebook-print-root th { font-family: "Times New Roman", Times, serif; }
@@ -3159,21 +3293,21 @@ export default function ScorebookWorkspace({
             <button type="button" onClick={() => { setWorkspaceMode('transcript'); setPreviewMode(false); }} className={`h-11 rounded-xl px-4 text-sm font-black shadow flex items-center gap-2 ${isTranscriptMode ? 'bg-violet-600 text-white hover:bg-violet-700' : 'bg-white border border-violet-200 text-violet-700 hover:bg-violet-50'}`}>
               <BookOpenText className="w-4 h-4" /> Học bạ
             </button>
+            <select
+              value={String(grade || '')}
+              onChange={(event) => {
+                setTranscriptStudentId('');
+                setTranscriptStudentSearch('');
+                onGradeChange?.(event.target.value);
+              }}
+              className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm font-black text-violet-700 shadow outline-none focus:border-violet-500"
+            >
+              {['6', '7', '8', '9'].map(item => (
+                <option key={`scorebook-grade-${item}`} value={item}>Khối {item}</option>
+              ))}
+            </select>
             {isTranscriptMode && (
               <div className="flex items-center gap-1 rounded-xl border border-slate-200 bg-slate-50 p-1 shadow-sm">
-                <select
-                  value={String(grade || '')}
-                  onChange={(event) => {
-                    setTranscriptStudentId('');
-                    setTranscriptStudentSearch('');
-                    onGradeChange?.(event.target.value);
-                  }}
-                  className="h-9 rounded-lg border border-slate-200 bg-white px-2 text-sm font-black text-violet-700 outline-none focus:border-violet-500"
-                >
-                  {['6', '7', '8', '9'].map(item => (
-                    <option key={`transcript-grade-${item}`} value={item}>Khối {item}</option>
-                  ))}
-                </select>
                 <button
                   type="button"
                   onClick={() => selectTranscriptStudentByIndex(selectedTranscriptStudentIndex - 1)}
@@ -3520,7 +3654,7 @@ export default function ScorebookWorkspace({
                             </td>
                             <td className="px-2 py-2 text-center font-black">{index + 1}</td>
                             <td className="px-2 py-2 font-bold">{titleCaseText(student.fullName)}</td>
-                            <td className="px-2 py-2 text-center font-bold">{student.className || ''}</td>
+                            <td className="px-2 py-2 text-center font-bold">{getPcClassName(student.className || student.grade, grade)}</td>
                           </tr>
                         );
                       })}
@@ -3536,7 +3670,7 @@ export default function ScorebookWorkspace({
               <div className="transcript-print-root flex-1 space-y-5">
                 {selectedTranscriptStudent ? transcriptVisiblePages.map((page, index) => (
                   <div key={`transcript-page-${page.key || index}`} className="transcript-page-frame mx-auto bg-white shadow-2xl border border-slate-300" style={{ width: transcriptPageWidth, height: transcriptPageHeight }}>
-                    {page.render()}
+                    {page.render(page.pageNumber)}
                   </div>
                 )) : (
                   <div className="mx-auto rounded-2xl bg-white p-8 text-center font-bold text-slate-500 shadow">Chọn một học sinh để tạo học bạ.</div>

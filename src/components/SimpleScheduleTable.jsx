@@ -1,6 +1,6 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { addDoc, collection, deleteDoc, doc, getDocs, onSnapshot, setDoc } from 'firebase/firestore';
-import { BarChart3, EyeOff, Save, Send, Trash2, Users, X } from 'lucide-react';
+import { BarChart3, ChevronDown, EyeOff, HelpCircle, Save, Send, Trash2, Users, X } from 'lucide-react';
 import { appId, db } from '../config/firebase';
 
 const BASE_CLASSES = ['6', '7', '8', '9'];
@@ -13,7 +13,7 @@ const DAYS = [
   { key: '6', label: 'T6' },
   { key: '7', label: 'T7' }
 ];
-const EXTRA_SUBJECTS = ['HDTT', 'Chủ nhiệm'];
+const EXTRA_SUBJECTS = ['Giáo dục địa phương', 'HDTT', 'Chủ nhiệm'];
 const REQUIRED_LOADS = [
   { key: 'toan', label: 'Toán', required: 4 },
   { key: 'van', label: 'Văn', required: 4 },
@@ -49,7 +49,12 @@ const normalizeSchedule = (schedule = {}, rows = defaultRows()) => {
 };
 
 const sortRows = (rows = []) => [...rows].sort((a, b) => Number(a.grades?.[0] || 0) - Number(b.grades?.[0] || 0));
-const removeAccentsLocal = (value = '') => String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+const removeAccentsLocal = (value = '') => String(value || '')
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .replace(/đ/g, 'd')
+  .replace(/Đ/g, 'D')
+  .toLowerCase();
 const subjectKey = (value = '') => {
   const normalized = removeAccentsLocal(value).replace(/[^a-z0-9&]/g, '');
   if (!normalized) return '';
@@ -60,13 +65,21 @@ const subjectKey = (value = '') => {
   if (normalized.includes('congdan') || normalized.includes('gdcd')) return 'gdcd';
   if (normalized.includes('congnghe')) return 'congnghe';
   if (normalized.includes('diaphuong') || normalized.includes('gddp')) return 'gddp';
-  if (normalized.includes('hdtt') || normalized.includes('hoatdongtapt')) return 'hdtt';
+  if (normalized.includes('hdtt') || normalized.includes('hoatdongtapthe') || normalized.includes('hoatdongtapt')) return 'hdtt';
   if (normalized === 'cn' || normalized.includes('chunhiem')) return 'cn';
   return normalized;
 };
-const displaySubject = (value = '') => {
+const displayPublicSubject = (value = '') => {
   const key = subjectKey(value);
   if (key === 'gddp') return 'GDĐP';
+  if (key === 'hdtt') return 'HĐTT';
+  if (key === 'cn') return 'Chủ nhiệm';
+  return value || '-';
+};
+const displayEditorSubject = (value = '') => {
+  const key = subjectKey(value);
+  if (key === 'gddp') return 'Giáo dục địa phương';
+  if (key === 'hdtt') return 'Hoạt động tập thể';
   if (key === 'cn') return 'Chủ nhiệm';
   return value || '-';
 };
@@ -94,7 +107,7 @@ const makeScheduleNewsHtml = ({ name, rows, visibleDays, schedule, periodCount =
   const body = rows.map(row => {
     return PERIODS.slice(0, periodCount).map((period, index) => {
       const classCell = index === 0 ? `<th class="schedule-class-cell" rowspan="${periodCount}" style="border:1px solid #dbeafe;padding:6px;background:#f8fafc;line-height:1.2;width:54px;min-width:54px;">${compactClassHtml(row)}</th>` : '';
-      const cells = shownDays.map(day => `<td class="schedule-subject-cell" style="border:1px solid #e2e8f0;padding:6px;text-align:center;line-height:1.25;">${displaySubject(schedule?.[row.id]?.[day.key]?.[period])}</td>`).join('');
+      const cells = shownDays.map(day => `<td class="schedule-subject-cell" style="border:1px solid #e2e8f0;padding:6px;text-align:center;line-height:1.25;">${displayPublicSubject(schedule?.[row.id]?.[day.key]?.[period])}</td>`).join('');
       return `<tr>${classCell}<th class="schedule-period-cell" style="border:1px solid #e2e8f0;padding:6px;background:#f8fafc;width:36px;min-width:36px;">${period}</th>${cells}</tr>`;
     }).join('');
   }).join('');
@@ -175,7 +188,19 @@ export default function SimpleScheduleTable({ subjects = [], currentSchoolYear =
 
   const schedulesCollection = useMemo(() => collection(db, 'artifacts', appId, 'public', 'data', 'class_schedules'), []);
   const newsCollection = useMemo(() => collection(db, 'artifacts', appId, 'public', 'data', 'news'), []);
-  const scheduleSubjects = useMemo(() => [...new Set([...subjects, ...EXTRA_SUBJECTS].filter(Boolean))], [subjects]);
+  const scheduleSubjects = useMemo(() => {
+    const seen = new Set();
+    return [...subjects, ...EXTRA_SUBJECTS].filter(Boolean).filter(subject => {
+      const key = subjectKey(subject) || String(subject);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }, [subjects]);
+  const getScheduleSubjectOptions = (currentValue = '') => {
+    if (!currentValue || scheduleSubjects.includes(currentValue)) return scheduleSubjects;
+    return [currentValue, ...scheduleSubjects];
+  };
 
   useEffect(() => {
     return onSnapshot(schedulesCollection, snapshot => {
@@ -360,32 +385,11 @@ export default function SimpleScheduleTable({ subjects = [], currentSchoolYear =
 
   return (
     <div className="min-h-screen w-full bg-white border-0 sm:border-2 sm:border-emerald-100 sm:shadow-xl overflow-hidden">
-      <div className="px-3 sm:px-4 py-3 sm:py-4 bg-emerald-50 border-b border-emerald-100 flex flex-col xl:flex-row xl:items-center xl:justify-between gap-3">
-        <div>
-          <h3 className="text-lg sm:text-2xl font-black text-emerald-950 uppercase"><span className="sm:hidden">TKB</span><span className="hidden sm:inline">Thời khóa biểu</span></h3>
-          <p className="hidden sm:block text-xs font-bold text-emerald-700">1 lớp mỗi ngày 5 tiết. Có thể lưu nhiều bản và xuất bản bản đang dùng.</p>
-        </div>
-        <div className="grid grid-cols-[repeat(5,minmax(0,1fr))] sm:flex sm:flex-wrap items-center gap-2">
-          <button type="button" onClick={deleteActiveSchedule} disabled={!activeId || isSaving} className="px-2 sm:px-3 py-2 rounded-xl bg-rose-50 border border-rose-100 text-rose-600 text-[10px] sm:text-xs font-black uppercase flex items-center justify-center gap-1 sm:gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed">
-            <Trash2 className="w-4 h-4" /> <span>Xóa</span>
-          </button>
-          <button type="button" onClick={() => saveSchedule('draft')} disabled={isSaving} className="px-2 sm:px-3 py-2 rounded-xl bg-emerald-600 text-white text-[10px] sm:text-xs font-black uppercase flex items-center justify-center gap-1 sm:gap-1.5 disabled:opacity-60">
-            <Save className="w-4 h-4" /> Lưu
-          </button>
-          <button type="button" onClick={() => saveSchedule('published')} disabled={isSaving} className="px-2 sm:px-3 py-2 rounded-xl bg-blue-600 text-white text-[10px] sm:text-xs font-black uppercase flex items-center justify-center gap-1 sm:gap-1.5 disabled:opacity-60">
-            <Send className="w-4 h-4" /> <span className="sm:hidden">Ghim</span><span className="hidden sm:inline">Xuất bản</span>
-          </button>
-          <button type="button" onClick={() => setShowStats(prev => !prev)} className="px-2 sm:px-3 py-2 rounded-xl bg-amber-50 border border-amber-100 text-amber-700 text-[10px] sm:text-xs font-black uppercase flex items-center justify-center gap-1 sm:gap-1.5">
-            <BarChart3 className="w-4 h-4" /> <span className="sm:hidden">Test</span><span className="hidden sm:inline">Kiểm tra tiết</span>
-          </button>
-          <button type="button" onClick={onClose} className="p-2 rounded-xl bg-white border border-emerald-100 text-slate-500 hover:text-rose-600 flex items-center justify-center">
-            <X className="w-5 h-5" />
-          </button>
-        </div>
-      </div>
-
-      <div className="p-3 sm:p-4 border-b border-slate-100 grid grid-cols-1 xl:grid-cols-[1fr_auto] gap-3 bg-white">
-        <div className="grid grid-cols-1 md:grid-cols-[220px_1fr] gap-3">
+      <div className="border-b border-slate-100 bg-white">
+        <div className="flex flex-wrap items-center gap-2 bg-emerald-50 px-3 py-2">
+          <h3 className="mr-1 text-base sm:text-lg font-black text-emerald-950 uppercase whitespace-nowrap">
+            <span className="sm:hidden">TKB</span><span className="hidden sm:inline">Thời khóa biểu</span>
+          </h3>
           <select value={activeId} onChange={(event) => {
             if (!event.target.value) {
               newSchedule();
@@ -393,7 +397,7 @@ export default function SimpleScheduleTable({ subjects = [], currentSchoolYear =
             }
             const item = savedSchedules.find(scheduleItem => scheduleItem.id === event.target.value);
             if (item) loadSchedule(item);
-          }} className="rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm font-black text-slate-700">
+          }} className="h-9 w-[250px] rounded-lg border border-emerald-100 bg-white px-3 text-xs font-black text-slate-700 outline-none">
             <option value="">Soạn TKB mới</option>
             {savedSchedules.map(item => (
               <option key={item.id} value={item.id}>
@@ -401,40 +405,74 @@ export default function SimpleScheduleTable({ subjects = [], currentSchoolYear =
               </option>
             ))}
           </select>
-          <input value={scheduleName} onChange={(event) => setScheduleName(event.target.value)} className="rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-bold focus:outline-none focus:border-emerald-400" placeholder="Tên thời khóa biểu..." />
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="text-[10px] font-black uppercase text-slate-400">Ẩn/hiện cột</span>
-          {DAYS.map(day => (
-            <button key={day.key} type="button" onClick={() => toggleDay(day.key)} className={`px-3 py-2 rounded-xl border text-xs font-black ${visibleDays.includes(day.key) ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-400 border-slate-200'}`}>
-              {day.label}
+          <input value={scheduleName} onChange={(event) => setScheduleName(event.target.value)} className="h-9 w-[240px] rounded-lg border border-emerald-100 bg-white px-3 text-xs font-bold outline-none focus:border-emerald-400" placeholder="Tên thời khóa biểu..." />
+          <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
+            <button type="button" onClick={deleteActiveSchedule} disabled={!activeId || isSaving} className="h-9 rounded-lg bg-rose-50 border border-rose-100 px-2.5 text-rose-600 text-[10px] sm:text-xs font-black uppercase inline-flex items-center justify-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed">
+              <Trash2 className="w-4 h-4" /> <span>Xóa</span>
             </button>
-          ))}
+            <button type="button" onClick={() => saveSchedule('draft')} disabled={isSaving} className="h-9 rounded-lg bg-emerald-600 px-3 text-white text-[10px] sm:text-xs font-black uppercase inline-flex items-center justify-center gap-1.5 disabled:opacity-60">
+              <Save className="w-4 h-4" /> Lưu
+            </button>
+            <button type="button" onClick={() => saveSchedule('published')} disabled={isSaving} className="h-9 rounded-lg bg-blue-600 px-3 text-white text-[10px] sm:text-xs font-black uppercase inline-flex items-center justify-center gap-1.5 disabled:opacity-60">
+              <Send className="w-4 h-4" /> <span className="sm:hidden">Ghim</span><span className="hidden sm:inline">Xuất bản</span>
+            </button>
+            <button type="button" onClick={onClose} className="h-9 w-9 rounded-lg bg-white border border-emerald-100 text-slate-500 hover:text-rose-600 inline-flex items-center justify-center">
+              <X className="w-5 h-5" />
+            </button>
+          </div>
         </div>
-      </div>
 
-      <div className="p-3 sm:p-4 bg-white border-b border-slate-100 flex flex-wrap items-center gap-2">
-        <span className="text-xs font-black uppercase text-slate-600">Khai báo tiết/ngày</span>
-        <select value={periodCount} onChange={(event) => setPeriodCount(Number(event.target.value))} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-black">
-          {PERIODS.map(period => <option key={period} value={period}>{period} tiết</option>)}
-        </select>
-        <span className="hidden sm:inline text-[11px] font-bold text-slate-400">Bấm “Đổ tiết” để lấp các ô trống tới số tiết đã khai báo.</span>
-      </div>
+        <div className="flex flex-wrap items-center gap-2 bg-white px-3 py-2">
+          <label className="inline-flex h-9 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3">
+            <span className="text-[10px] font-black uppercase text-slate-500">Tiết/ngày</span>
+            <select value={periodCount} onChange={(event) => setPeriodCount(Number(event.target.value))} className="bg-transparent text-xs font-black outline-none">
+              {PERIODS.map(period => <option key={period} value={period}>{period}</option>)}
+            </select>
+          </label>
 
-      <div className="p-3 sm:p-4 bg-slate-50 border-b border-slate-100 flex flex-wrap items-center gap-2">
-        <Users className="w-4 h-4 text-indigo-600" />
-        <span className="text-xs font-black uppercase text-slate-600">Ghép lớp</span>
-        <select value={mergeA} onChange={(event) => setMergeA(event.target.value)} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-black">
-          {BASE_CLASSES.map(item => <option key={item} value={item}>Lớp {item}</option>)}
-        </select>
-        <select value={mergeB} onChange={(event) => setMergeB(event.target.value)} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-black">
-          {BASE_CLASSES.map(item => <option key={item} value={item}>Lớp {item}</option>)}
-        </select>
-        <button type="button" onClick={mergeClasses} className="px-3 py-2 rounded-xl bg-indigo-600 text-white text-xs font-black uppercase">Ghép</button>
-        <button type="button" onClick={resetClasses} className="px-3 py-2 rounded-xl bg-white border border-slate-200 text-slate-500 text-xs font-black uppercase">Tách lại</button>
-        <div className="text-[11px] font-bold text-slate-400 flex items-center gap-1">
-          <EyeOff className="w-3.5 h-3.5" /> Ví dụ ghép 6 và 7 thì tên hàng sẽ là Lớp 6&7.
+          <details className="relative">
+            <summary className="h-9 cursor-pointer list-none rounded-lg border border-slate-200 bg-white px-3 text-xs font-black text-slate-700 inline-flex items-center gap-2">
+              <EyeOff className="w-4 h-4 text-indigo-600" />
+              Ẩn cột
+              <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] text-indigo-700">{visibleDays.length}/{DAYS.length}</span>
+              <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
+            </summary>
+            <div className="absolute left-0 top-full z-50 mt-1 w-44 rounded-xl border border-slate-200 bg-white p-2 shadow-xl">
+              {DAYS.map(day => (
+                <label key={day.key} className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 text-xs font-bold text-slate-700 hover:bg-indigo-50">
+                  <input type="checkbox" checked={visibleDays.includes(day.key)} onChange={() => toggleDay(day.key)} className="h-4 w-4 accent-indigo-600" />
+                  <span>{day.label}</span>
+                  <span className="ml-auto text-[10px] text-slate-400">{visibleDays.includes(day.key) ? 'Hiện' : 'Ẩn'}</span>
+                </label>
+              ))}
+            </div>
+          </details>
+
+          <div className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2">
+            <Users className="w-4 h-4 text-indigo-600" />
+            <span className="text-[10px] font-black uppercase text-slate-500">Ghép</span>
+            <select value={mergeA} onChange={(event) => setMergeA(event.target.value)} className="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs font-black outline-none">
+              {BASE_CLASSES.map(item => <option key={item} value={item}>Lớp {item}</option>)}
+            </select>
+            <select value={mergeB} onChange={(event) => setMergeB(event.target.value)} className="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs font-black outline-none">
+              {BASE_CLASSES.map(item => <option key={item} value={item}>Lớp {item}</option>)}
+            </select>
+            <button type="button" onClick={mergeClasses} className="rounded-md bg-indigo-600 px-2 py-1 text-[10px] font-black uppercase text-white">Ghép</button>
+            <button type="button" onClick={resetClasses} className="rounded-md bg-white border border-slate-200 px-2 py-1 text-[10px] font-black uppercase text-slate-500">Tách</button>
+          </div>
+
+          <details className="relative">
+            <summary className="h-9 cursor-pointer list-none rounded-lg border border-slate-200 bg-white px-3 text-xs font-black text-slate-700 inline-flex items-center gap-2">
+              <HelpCircle className="w-4 h-4 text-blue-600" /> Trợ giúp <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
+            </summary>
+            <div className="absolute left-0 top-full z-50 mt-1 w-72 rounded-xl border border-slate-200 bg-white p-3 text-xs font-bold text-slate-600 shadow-xl">
+              Bấm “Đổ tiết” để lấp các ô trống tới số tiết đã khai báo. Khi ghép lớp, ví dụ ghép 6 và 7 thì tên hàng sẽ là Lớp 6&7.
+            </div>
+          </details>
+
+          <button type="button" onClick={() => setShowStats(prev => !prev)} className="h-9 rounded-lg bg-amber-50 border border-amber-100 px-3 text-amber-700 text-[10px] sm:text-xs font-black uppercase inline-flex items-center justify-center gap-1.5">
+            <BarChart3 className="w-4 h-4" /> <span className="sm:hidden">Test</span><span className="hidden sm:inline">Kiểm tra tiết</span>
+          </button>
         </div>
       </div>
 
@@ -553,7 +591,9 @@ export default function SimpleScheduleTable({ subjects = [], currentSchoolYear =
                         className="w-full rounded-xl border border-slate-200 bg-white px-2 py-2 text-xs font-bold text-slate-800 focus:outline-none focus:border-emerald-400"
                       >
                         <option value="">-</option>
-                        {scheduleSubjects.map(subject => <option key={subject} value={subject}>{displaySubject(subject)}</option>)}
+                        {getScheduleSubjectOptions(schedule[row.id]?.[day.key]?.[period] || '').map(subject => (
+                          <option key={subject} value={subject}>{displayEditorSubject(subject)}</option>
+                        ))}
                       </select>
                     </td>
                   ))}
