@@ -313,6 +313,7 @@ const findDocumentCorners = (imageData, width, height) => {
 
 const enhanceScannedImageData = (imageData, mode = 'document') => {
   const data = imageData.data;
+  const preserveDocumentColor = mode === 'documentColor';
   if (mode !== 'photo') normalizeDocumentLighting(imageData);
   const histogram = new Array(256).fill(0);
   for (let index = 0; index < data.length; index += 4) {
@@ -332,10 +333,12 @@ const enhanceScannedImageData = (imageData, mode = 'document') => {
   const low = percentile(mode === 'photo' ? 0.01 : 0.03);
   const high = Math.max(low + 24, percentile(mode === 'photo' ? 0.985 : 0.965));
   for (let index = 0; index < data.length; index += 4) {
-    if (mode === 'photo') {
+    if (mode === 'photo' || preserveDocumentColor) {
+      const contrast = mode === 'photo' ? 1.06 : 1.08;
+      const lift = mode === 'photo' ? 134 : 138;
       for (let channel = 0; channel < 3; channel += 1) {
         const normalized = ((data[index + channel] - low) / (high - low)) * 255;
-        data[index + channel] = clampNumber(((normalized - 128) * 1.06) + 134, 0, 255);
+        data[index + channel] = clampNumber(((normalized - 128) * contrast) + lift, 0, 255);
       }
     } else {
       const lum = (data[index] * 0.299) + (data[index + 1] * 0.587) + (data[index + 2] * 0.114);
@@ -1381,7 +1384,7 @@ function App() {
     }
     const shouldScan = key !== 'portraitUrl' && String(file.type || '').toLowerCase().startsWith('image/');
     const nextFile = shouldScan
-      ? await scanUploadImageFile(file, { mode: 'document', orientation: key === 'identityCardUrl' ? 'landscape' : 'auto' })
+      ? await scanUploadImageFile(file, { mode: 'documentColor', orientation: key === 'identityCardUrl' ? 'landscape' : 'auto' })
       : file;
     applyStudentProfileImageFile(key, nextFile || file);
     if (shouldScan) showNotification('Đã quét ảnh, nắn thẳng và giảm bóng trước khi gửi.');
@@ -1392,7 +1395,7 @@ function App() {
     if (!nextFiles.length) return;
     const shouldScan = key !== 'portraitUrl';
     const processedFiles = shouldScan
-      ? await Promise.all(nextFiles.map(file => scanUploadImageFile(file, { mode: 'document', orientation: 'auto' })))
+      ? await Promise.all(nextFiles.map(file => scanUploadImageFile(file, { mode: 'documentColor', orientation: 'auto' })))
       : nextFiles;
     setStudentProfileImages(prev => ({
       ...prev,
