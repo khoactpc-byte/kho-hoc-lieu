@@ -169,11 +169,12 @@ const readStoredAdminSession = () => {
   }
 };
 
-const writeStoredAdminSession = (adminPass = '', adminModule = 'thcs') => {
+const writeStoredAdminSession = (adminPass = '', adminModule = 'thcs', scope = 'full') => {
   if (typeof window === 'undefined') return;
   const session = {
     passMarker: getAdminSessionPassMarker(adminPass),
     module: adminModule || 'thcs',
+    scope: scope === 'thd' ? 'thd' : 'full',
     expiresAt: Date.now() + ADMIN_SESSION_TTL_MS
   };
   window.localStorage.setItem(ADMIN_SESSION_STORAGE_KEY, JSON.stringify(session));
@@ -817,6 +818,7 @@ function App() {
   const [errorMsg, setErrorMsg] = useState('');
   const [isAdminPassEnabled, setIsAdminPassEnabled] = useState(true);
   const [adminPass, setAdminPass] = useState('123321');
+  const [thdAdminPass, setThdAdminPass] = useState('');
   const [adminSettingsLoaded, setAdminSettingsLoaded] = useState(false);
   const [isTeacherPassEnabled, setIsTeacherPassEnabled] = useState(false);
   const [teacherPass, setTeacherPass] = useState('');
@@ -832,6 +834,7 @@ function App() {
   const [transcriptEndSigners, setTranscriptEndSigners] = useState({});
   const [nanTeachers, setNanTeachers] = useState([]);
   const [thdTeachers, setThdTeachers] = useState([]);
+  const [thdSubjects, setThdSubjects] = useState([]);
   const [thdClasses, setThdClasses] = useState({});
   const [classTeacherAssignments, setClassTeacherAssignments] = useState({});
   const [teachingAssignments, setTeachingAssignments] = useState({});
@@ -865,6 +868,7 @@ function App() {
   const [showAdminSettingsWorkspace, setShowAdminSettingsWorkspace] = useState(false);
   const [adminSettingsInitialPanel, setAdminSettingsInitialPanel] = useState('general');
   const [adminModule, setAdminModule] = useState(() => initialAdminSession?.module || 'thcs');
+  const [adminAccessScope, setAdminAccessScope] = useState(() => initialAdminSession?.scope === 'thd' ? 'thd' : 'full');
   const [mobileHomeTab, setMobileHomeTab] = useState('notifications'); 
   const [teacherTab, setTeacherTab] = useState('giang_day');
   const [newsList, setNewsList] = useState([]);
@@ -1597,6 +1601,7 @@ function App() {
     setShowCommonLibraryWorkspace(false);
     setTeacherTab('giang_day');
     setPlanSubject('');
+    setAdminAccessScope('full');
     setIsTextbookExpanded(window.innerWidth >= 640);
   }, []);
 
@@ -1643,6 +1648,7 @@ function App() {
       if (data.schoolYear) setCurrentSchoolYear(data.schoolYear);
       setIsAdminPassEnabled(true);
       if (typeof data.adminPass === 'string') setAdminPass(data.adminPass);
+      if (typeof data.thdAdminPass === 'string') setThdAdminPass(data.thdAdminPass);
       if (typeof data.isTeacherPassEnabled === 'boolean') setIsTeacherPassEnabled(data.isTeacherPassEnabled);
       if (typeof data.teacherPass === 'string') setTeacherPass(data.teacherPass);
       if (typeof data.isStudentCodeEnabled === 'boolean') setIsStudentCodeEnabled(data.isStudentCodeEnabled);
@@ -1655,6 +1661,7 @@ function App() {
       if (data.transcriptEndSigners && typeof data.transcriptEndSigners === 'object') setTranscriptEndSigners(data.transcriptEndSigners);
       if (Array.isArray(data.nanTeachers)) setNanTeachers(data.nanTeachers);
       if (Array.isArray(data.thdTeachers)) setThdTeachers(data.thdTeachers);
+      if (Array.isArray(data.thdSubjects)) setThdSubjects(data.thdSubjects);
       if (data.thdClasses && typeof data.thdClasses === 'object') setThdClasses(data.thdClasses);
       if (data.classTeacherAssignments && typeof data.classTeacherAssignments === 'object') setClassTeacherAssignments(data.classTeacherAssignments);
       if (data.teachingAssignments && typeof data.teachingAssignments === 'object') setTeachingAssignments(data.teachingAssignments);
@@ -1665,9 +1672,11 @@ function App() {
   }, [user]);
 
   useEffect(() => {
-    if (!user || !adminSettingsLoaded || !adminPass) return;
+    if (!user || !adminSettingsLoaded) return;
     const session = readStoredAdminSession();
-    const isValidSession = session?.passMarker === getAdminSessionPassMarker(adminPass);
+    const sessionScope = session?.scope === 'thd' ? 'thd' : 'full';
+    const sessionPass = sessionScope === 'thd' ? thdAdminPass : adminPass;
+    const isValidSession = Boolean(sessionPass) && session?.passMarker === getAdminSessionPassMarker(sessionPass);
     if (!isValidSession) {
       if (isAdmin) {
         clearStoredAdminSession();
@@ -1679,13 +1688,16 @@ function App() {
     setIsAdmin(true);
     setRole('admin');
     setLoginRole(null);
+    setAdminAccessScope(sessionScope);
     if (session.module) setAdminModule(session.module);
-  }, [adminPass, adminSettingsLoaded, closeAdminSessionView, isAdmin, user]);
+  }, [adminPass, adminSettingsLoaded, closeAdminSessionView, isAdmin, thdAdminPass, user]);
 
   useEffect(() => {
-    if (!isAdmin || !adminPass || !adminSettingsLoaded) return;
-    writeStoredAdminSession(adminPass, adminModule);
-  }, [adminModule, adminPass, adminSettingsLoaded, isAdmin]);
+    if (!isAdmin || !adminSettingsLoaded) return;
+    const sessionPass = adminAccessScope === 'thd' ? thdAdminPass : adminPass;
+    if (!sessionPass) return;
+    writeStoredAdminSession(sessionPass, adminModule, adminAccessScope);
+  }, [adminAccessScope, adminModule, adminPass, adminSettingsLoaded, isAdmin, thdAdminPass]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return undefined;
@@ -2091,12 +2103,18 @@ function App() {
       .replace(/^#\/admin/i, '')
       .replace(/^\/?admin/i, '');
     const path = cleanedRoute.startsWith('/') ? cleanedRoute : `/${cleanedRoute}`;
+    if (adminAccessScope === 'thd' && !path.startsWith('/tran-hung-dao')) {
+      runAdminMenuAction(() => openAdminSettingsPanel('thdTeachingAssignments'));
+      if (typeof window !== 'undefined') window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}#/admin/tran-hung-dao/assignments`);
+      return false;
+    }
     const routeAction = {
       '/settings/general': () => openAdminSettingsPanel('general'),
       '/settings/teachers': () => openAdminSettingsPanel('teachers'),
       '/settings/class-teachers': () => openAdminSettingsPanel('classTeachers'),
       '/settings/teaching-assignments': () => openAdminSettingsPanel('teachingAssignments'),
       '/tran-hung-dao/teachers': () => openAdminSettingsPanel('thdTeachers'),
+      '/tran-hung-dao/subjects': () => openAdminSettingsPanel('thdSubjects'),
       '/tran-hung-dao/classes': () => openAdminSettingsPanel('thdClasses'),
       '/tran-hung-dao/assignments': () => openAdminSettingsPanel('thdTeachingAssignments'),
       '/school/schedule': () => setShowScheduleWorkspace(true),
@@ -2140,7 +2158,7 @@ function App() {
     if (!routeAction) return false;
     runAdminMenuAction(routeAction);
     return true;
-  }, [adminModule, openAdminQuickScore, openAdminSettingsPanel, openStudentDatabaseTab, runAdminMenuAction]);
+  }, [adminAccessScope, adminModule, openAdminQuickScore, openAdminSettingsPanel, openStudentDatabaseTab, runAdminMenuAction]);
 
   useEffect(() => {
     if (!isAdmin || typeof window === 'undefined') return undefined;
@@ -2206,9 +2224,36 @@ function App() {
       label: 'Thông báo',
       shortLabel: 'Thông báo',
       grades: []
+    },
+    {
+      key: 'thd',
+      label: 'Trần Hưng Đạo',
+      shortLabel: 'Trần Hưng Đạo',
+      grades: ['6', '7', '8', '9']
     }
   ]), []);
+  const visibleAdminModules = useMemo(() => (
+    adminAccessScope === 'thd'
+      ? adminModules.filter(item => item.key === 'thd')
+      : adminModules
+  ), [adminAccessScope, adminModules]);
   const adminMenuItems = useMemo(() => {
+    if (adminAccessScope === 'thd' || adminModule === 'thd') {
+      return [
+        {
+          key: 'tran-hung-dao',
+          label: 'Trần Hưng Đạo',
+          desc: 'Dữ liệu trường chính, giáo viên, lớp và phân công.',
+          icon: Briefcase,
+          children: [
+            { key: 'thd-teachers', label: 'Danh sách giáo viên', href: getAdminRouteHref('/tran-hung-dao/teachers'), action: () => openAdminSettingsPanel('thdTeachers') },
+            { key: 'thd-subjects', label: 'Các môn học', href: getAdminRouteHref('/tran-hung-dao/subjects'), action: () => openAdminSettingsPanel('thdSubjects') },
+            { key: 'thd-classes', label: 'Danh sách lớp', href: getAdminRouteHref('/tran-hung-dao/classes'), action: () => openAdminSettingsPanel('thdClasses') },
+            { key: 'thd-assignments', label: 'Phân công', href: getAdminRouteHref('/tran-hung-dao/assignments'), action: () => openAdminSettingsPanel('thdTeachingAssignments') }
+          ]
+        }
+      ];
+    }
     if (adminModule === 'notice') {
       return [
         { key: 'news', label: 'Thông báo tin tức', desc: 'Đăng, sửa và xem các thông báo đang hiển thị ở trang chủ.', icon: Bell, action: () => { setMobileHomeTab('notifications'); setShowAddNews(false); } },
@@ -2234,6 +2279,7 @@ function App() {
           { key: 'teachers', label: 'Giáo viên chung', href: getAdminRouteHref('/settings/teachers'), action: () => openAdminSettingsPanel('teachers') },
           { key: 'class-teachers', label: 'GV theo lớp', href: getAdminRouteHref('/settings/class-teachers'), action: () => openAdminSettingsPanel('classTeachers') },
           { key: 'teaching-assignments', label: 'Phân công', href: getAdminRouteHref('/settings/teaching-assignments'), action: () => openAdminSettingsPanel('teachingAssignments') },
+          { key: 'passwords', label: 'Quản lý mật khẩu', href: getAdminRouteHref('/utilities/passwords'), action: () => setShowPasswordWorkspace(true) },
           { key: 'schedule', label: 'Thời khóa biểu', href: getAdminRouteHref('/school/schedule'), action: () => setShowScheduleWorkspace(true) }
         ]
       },
@@ -2245,6 +2291,7 @@ function App() {
         alignRight: true,
         children: [
           { key: 'thd-teachers', label: 'Danh sách giáo viên', href: getAdminRouteHref('/tran-hung-dao/teachers'), action: () => openAdminSettingsPanel('thdTeachers') },
+          { key: 'thd-subjects', label: 'Các môn học', href: getAdminRouteHref('/tran-hung-dao/subjects'), action: () => openAdminSettingsPanel('thdSubjects') },
           { key: 'thd-classes', label: 'Danh sách lớp', href: getAdminRouteHref('/tran-hung-dao/classes'), action: () => openAdminSettingsPanel('thdClasses') },
           { key: 'thd-schedule-template', label: 'Phân công theo TKB mẫu', pending: true },
           { key: 'thd-assignments', label: 'Phân công', href: getAdminRouteHref('/tran-hung-dao/assignments'), action: () => openAdminSettingsPanel('thdTeachingAssignments') }
@@ -2283,13 +2330,12 @@ function App() {
         children: [
           { key: 'textbook-drive', label: 'Kho sách giáo khoa', href: getAdminRouteHref('/utilities/textbooks'), action: () => setIsAdminTextbookExpanded(true) },
           { key: 'admin-check', label: 'Kiểm tra dữ liệu', href: getAdminRouteHref('/utilities/check'), action: () => setShowAdminCheckWorkspace(true) },
-          { key: 'passwords', label: 'Quản lý mật khẩu', href: getAdminRouteHref('/utilities/passwords'), action: () => setShowPasswordWorkspace(true) },
           { key: 'count-stats', label: 'TK số lượng', href: getAdminRouteHref('/utilities/count-stats'), action: () => openStudentDatabaseTab('countStats') },
           { key: 'study-stats', label: 'TK học tập', action: () => showNotification('TK học tập sẽ được thiết kế ở bước sau.') }
         ]
       }
     ];
-  }, [adminModule, getAdminRouteHref, openAdminQuickScore, openAdminSettingsPanel, openStudentDatabaseTab, showNotification, studentProfileRequestCount]);
+  }, [adminAccessScope, adminModule, getAdminRouteHref, openAdminQuickScore, openAdminSettingsPanel, openStudentDatabaseTab, showNotification, studentProfileRequestCount]);
 
   const saveQuickScoreValue = useCallback(async (semester, pageIndex, rowIndex, scoreIndex, rawValue) => {
     if (!user) return false;
@@ -2749,6 +2795,7 @@ function App() {
       return;
     }
     if (key === 'adminPass') setAdminPass(value);
+    if (key === 'thdAdminPass') setThdAdminPass(value);
     if (key === 'isTeacherPassEnabled') setIsTeacherPassEnabled(value);
     if (key === 'teacherPass') setTeacherPass(value);
     if (key === 'isStudentCodeEnabled') setIsStudentCodeEnabled(value);
@@ -2762,6 +2809,7 @@ function App() {
     if (key === 'transcriptEndSigners') setTranscriptEndSigners(value && typeof value === 'object' ? value : {});
     if (key === 'nanTeachers') setNanTeachers(Array.isArray(value) ? value : []);
     if (key === 'thdTeachers') setThdTeachers(Array.isArray(value) ? value : []);
+    if (key === 'thdSubjects') setThdSubjects(Array.isArray(value) ? value : []);
     if (key === 'thdClasses') setThdClasses(value && typeof value === 'object' ? value : {});
     if (key === 'classTeacherAssignments') setClassTeacherAssignments(value && typeof value === 'object' ? value : {});
     if (key === 'teachingAssignments') setTeachingAssignments(value && typeof value === 'object' ? value : {});
@@ -2827,7 +2875,8 @@ function App() {
   const handleLogin = () => {
     if (modalMode === 'admin') {
       if (passwordInput === adminPass) {
-        writeStoredAdminSession(adminPass, adminModule);
+        writeStoredAdminSession(adminPass, adminModule, 'full');
+        setAdminAccessScope('full');
         setIsAdmin(true);
         setRole('admin');
         setLoginRole(null);
@@ -2835,6 +2884,24 @@ function App() {
         showNotification("Đã vào Quản trị");
       } else {
         setErrorMsg('Mật khẩu không chính xác!');
+      }
+    } else if (modalMode === 'thdAdmin') {
+      if (!thdAdminPass.trim()) {
+        setErrorMsg('Admin chưa cấp mật khẩu Trần Hưng Đạo.');
+      } else if (passwordInput === thdAdminPass) {
+        writeStoredAdminSession(thdAdminPass, 'thd', 'thd');
+        setAdminAccessScope('thd');
+        setAdminModule('thd');
+        setIsAdmin(true);
+        setRole('admin');
+        setLoginRole(null);
+        setShowPasswordModal(false);
+        setAdminSettingsInitialPanel('thdTeachingAssignments');
+        setShowAdminSettingsWorkspace(true);
+        if (typeof window !== 'undefined') window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}#/admin/tran-hung-dao/assignments`);
+        showNotification("Đã vào Trần Hưng Đạo");
+      } else {
+        setErrorMsg('Mật khẩu Trần Hưng Đạo không chính xác!');
       }
     } else if (modalMode === 'teacher') {
       if (!teacherPass.trim()) {
@@ -4688,13 +4755,16 @@ ${lessonBlocks}`;
   const sortedCurrentMaterials = useMemo(() => { return [...currentMaterialsFiltered].sort((a, b) => { const direction = materialSort === 'asc' ? 1 : -1; return (a.title || '').localeCompare(b.title || '', 'vi') * direction; }); }, [currentMaterialsFiltered, materialSort]);
   const currentQuickQuizMaterials = useMemo(() => sortedCurrentMaterials.filter(m => m.type === 'quick_quiz'), [sortedCurrentMaterials]);
   const sortedCurrentStudyMaterials = useMemo(() => sortedCurrentMaterials.filter(m => m.type !== 'quick_quiz'), [sortedCurrentMaterials]);
-  const viewingQuickQuizData = viewingMaterial?.type === 'quick_quiz' && viewingMaterial?.quizData?.questions?.length ? {
-    ...viewingMaterial.quizData,
-    questions: viewingMaterial.quizData.questionBank?.length ? viewingMaterial.quizData.questionBank : viewingMaterial.quizData.questions,
-    questionCountPerAttempt: viewingMaterial.quizData.questionCountPerAttempt || (viewingMaterial.quizData.questionBank?.length ? 10 : 0),
-    shuffleQuestions: true,
-    shuffleOptions: true
-  } : null;
+  const viewingQuickQuizData = useMemo(() => {
+    if (viewingMaterial?.type !== 'quick_quiz' || !viewingMaterial?.quizData?.questions?.length) return null;
+    return {
+      ...viewingMaterial.quizData,
+      questions: viewingMaterial.quizData.questionBank?.length ? viewingMaterial.quizData.questionBank : viewingMaterial.quizData.questions,
+      questionCountPerAttempt: viewingMaterial.quizData.questionCountPerAttempt || (viewingMaterial.quizData.questionBank?.length ? 10 : 0),
+      shuffleQuestions: true,
+      shuffleOptions: true
+    };
+  }, [viewingMaterial?.id, viewingMaterial?.type, viewingMaterial?.quizData]);
   const viewingQuickQuizQuestions = useMemo(() => buildSelfQuizQuestionsForStudent(viewingQuickQuizData), [viewingQuickQuizData, viewingMaterial?.id, quickMaterialAttemptSeed]);
   const currentQuickMaterialAttemptData = useMemo(() => viewingQuickQuizData ? {
     ...viewingQuickQuizData,
@@ -5596,15 +5666,16 @@ ${lessonBlocks}`;
                       const nextModule = event.target.value;
                       runAdminMenuAction(() => {
                         setAdminModule(nextModule);
+                        if (nextModule === 'thd') openAdminSettingsPanel('thdTeachingAssignments');
                         if (nextModule === 'notice') setMobileHomeTab('notifications');
                       });
                     }}
                     className="h-8 w-full rounded-md border border-slate-300 bg-white pl-9 pr-7 text-sm font-semibold text-slate-800 shadow-sm outline-none"
                   >
-                    {adminModules.map(item => <option key={item.key} value={item.key}>{item.label}</option>)}
+                    {visibleAdminModules.map(item => <option key={item.key} value={item.key}>{item.label}</option>)}
                   </select>
                 </div>
-                <div className="hidden md:block text-sm font-semibold uppercase text-white">THCS Nguyễn An Ninh</div>
+                <div className="hidden md:block text-sm font-semibold uppercase text-white">{adminModule === 'thd' ? 'THCS Trần Hưng Đạo' : 'THCS Nguyễn An Ninh'}</div>
                 <div className="ml-auto flex items-center gap-1.5 text-xs font-semibold">
                   <span className="hidden sm:inline text-white/80">Năm admin</span>
                   <button type="button" onClick={() => moveAdminSchoolYear(-1)} disabled={SCHOOL_YEARS.findIndex(year => String(year) === String(adminSelectedSchoolYear)) <= 0} className="h-8 w-8 rounded-md border border-white/20 bg-white/10 text-white hover:bg-white/20 disabled:opacity-35" title="Lui nam admin dang xem">
@@ -5879,6 +5950,7 @@ ${lessonBlocks}`;
                 transcriptEndSigners={transcriptEndSigners}
                 nanTeachers={nanTeachers}
                 thdTeachers={thdTeachers}
+                thdSubjects={thdSubjects}
                 thdClasses={thdClasses}
                 classTeacherAssignments={classTeacherAssignments}
                 teachingAssignments={teachingAssignments}
@@ -6307,7 +6379,7 @@ ${lessonBlocks}`;
                     <X className="w-5 h-5" />
                   </button>
                 </div>
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+                <div className="grid grid-cols-1 lg:grid-cols-4 gap-3">
                   <div className="rounded-3xl border border-emerald-100 bg-white p-5 shadow-sm">
                     <div className="flex justify-between items-start gap-3 mb-4">
                       <div>
@@ -6327,6 +6399,16 @@ ${lessonBlocks}`;
                       <div className="px-3 py-1 rounded-full bg-rose-50 text-rose-700 text-[10px] font-black uppercase border border-rose-100">Đã khóa</div>
                     </div>
                     <input type="password" placeholder="Nhập mật khẩu admin..." className="w-full bg-white border border-rose-200 p-3 rounded-xl focus:outline-none focus:border-rose-500 font-black text-sm shadow-sm" value={adminPass} onChange={(e) => updateGlobalSetting('adminPass', e.target.value)} />
+                  </div>
+                  <div className="rounded-3xl border border-sky-100 bg-white p-5 shadow-sm">
+                    <div className="flex justify-between items-start gap-3 mb-4">
+                      <div>
+                        <div className="font-black text-sky-900 uppercase">Mật khẩu Trần Hưng Đạo</div>
+                        <div className="text-xs text-sky-700/70 font-bold mt-1">Chỉ vào khu Trần Hưng Đạo</div>
+                      </div>
+                      <div className="px-3 py-1 rounded-full bg-sky-50 text-sky-700 text-[10px] font-black uppercase border border-sky-100">Riêng</div>
+                    </div>
+                    <input type="password" placeholder="Nhập mật khẩu Trần Hưng Đạo..." className="w-full bg-white border border-sky-200 p-3 rounded-xl focus:outline-none focus:border-sky-500 font-black text-sm shadow-sm" value={thdAdminPass} onChange={(e) => updateGlobalSetting('thdAdminPass', e.target.value)} />
                   </div>
                   <div className="rounded-3xl border border-indigo-100 bg-white p-5 shadow-sm">
                     <div className="flex justify-between items-start gap-3 mb-4">
@@ -6545,14 +6627,17 @@ ${lessonBlocks}`;
                     </button>
                   </div>
                   <div className="flex justify-center">
-                      <button onClick={() => { setModalMode('admin'); setShowPasswordModal(true); }} className="flex items-center gap-1.5 text-[9px] sm:text-[10px] font-black uppercase text-slate-400 bg-white/40 px-4 py-2 rounded-full border border-slate-200/60 hover:bg-white hover:text-slate-600 transition-all backdrop-blur-sm"><Settings className="w-3.5 h-3.5" /> Quản trị</button>
+                      <div className="flex flex-wrap justify-center gap-2">
+                        <button onClick={() => { setModalMode('thdAdmin'); setPasswordInput(''); setErrorMsg(''); setShowPasswordModal(true); }} className="flex items-center gap-1.5 text-[9px] sm:text-[10px] font-black uppercase text-sky-600 bg-white/55 px-4 py-2 rounded-full border border-sky-200/70 hover:bg-white hover:text-sky-700 transition-all backdrop-blur-sm"><Briefcase className="w-3.5 h-3.5" /> Trần Hưng Đạo</button>
+                        <button onClick={() => { setModalMode('admin'); setPasswordInput(''); setErrorMsg(''); setShowPasswordModal(true); }} className="flex items-center gap-1.5 text-[9px] sm:text-[10px] font-black uppercase text-slate-400 bg-white/40 px-4 py-2 rounded-full border border-slate-200/60 hover:bg-white hover:text-slate-600 transition-all backdrop-blur-sm"><Settings className="w-3.5 h-3.5" /> Quản trị</button>
+                      </div>
                   </div>
               </div>
             )}
           </div>
         </div>
         
-        {showPasswordModal && <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-in fade-in duration-300"><div className="bg-white rounded-[2.5rem] shadow-2xl max-w-sm w-full p-10 border border-white/20"><div className="flex items-center space-x-3 mb-8"><div className="bg-slate-100 p-3.5 rounded-full"><Lock className="w-6 h-6 text-slate-800" /></div><h3 className="text-2xl font-black text-slate-800">{modalMode === 'admin' ? 'Hệ thống Quản trị' : 'Xác thực Giáo viên'}</h3></div><input type="password" placeholder="Nhập mật khẩu truy cập..." className="w-full border-2 border-slate-200 rounded-2xl p-5 focus:outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-50 mb-4 text-lg font-black tracking-widest text-center" value={passwordInput} onChange={(e) => setPasswordInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleLogin()} />{errorMsg && <p className="text-rose-500 text-sm mb-6 font-black text-center">{errorMsg}</p>}<div className="flex space-x-3"><button onClick={() => { setShowPasswordModal(false); setErrorMsg(''); }} className="flex-1 py-4 bg-slate-100 text-slate-700 rounded-2xl font-bold hover:bg-slate-200 transition-colors">Hủy bỏ</button><button onClick={handleLogin} className="flex-1 py-4 bg-blue-600 text-white rounded-2xl font-black shadow-lg hover:bg-blue-700 transition-all">Đăng nhập</button></div></div></div>}
+        {showPasswordModal && <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-in fade-in duration-300"><div className="bg-white rounded-[2.5rem] shadow-2xl max-w-sm w-full p-10 border border-white/20"><div className="flex items-center space-x-3 mb-8"><div className="bg-slate-100 p-3.5 rounded-full"><Lock className="w-6 h-6 text-slate-800" /></div><h3 className="text-2xl font-black text-slate-800">{modalMode === 'admin' ? 'Hệ thống Quản trị' : (modalMode === 'thdAdmin' ? 'Trần Hưng Đạo' : 'Xác thực Giáo viên')}</h3></div><input type="password" placeholder="Nhập mật khẩu truy cập..." className="w-full border-2 border-slate-200 rounded-2xl p-5 focus:outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-50 mb-4 text-lg font-black tracking-widest text-center" value={passwordInput} onChange={(e) => setPasswordInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleLogin()} />{errorMsg && <p className="text-rose-500 text-sm mb-6 font-black text-center">{errorMsg}</p>}<div className="flex space-x-3"><button onClick={() => { setShowPasswordModal(false); setErrorMsg(''); }} className="flex-1 py-4 bg-slate-100 text-slate-700 rounded-2xl font-bold hover:bg-slate-200 transition-colors">Hủy bỏ</button><button onClick={handleLogin} className="flex-1 py-4 bg-blue-600 text-white rounded-2xl font-black shadow-lg hover:bg-blue-700 transition-all">Đăng nhập</button></div></div></div>}
         {showStudentAccessModal && (
           <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-in fade-in duration-300">
             <div className="bg-white rounded-[2rem] shadow-2xl max-w-md w-full p-5 sm:p-7 border border-white/20">
