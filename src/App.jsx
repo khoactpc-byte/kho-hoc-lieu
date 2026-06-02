@@ -24,6 +24,7 @@ import {
   getDefaultLinkTitle, extractDriveFileId, getDriveDisplayName, 
   getDriveBaseName, cleanDriveTitle, normalizeServiceErrorMessage, postAppsScript 
 } from './utils/helpers';
+
 import {
   buildSelfQuizQuestionsForStudent,
   extractEssayTextFromHtml,
@@ -46,6 +47,16 @@ const SelfQuizTeacherTools = lazy(() => import('./components/SelfQuizTeacherTool
 const HocSinhManager = lazy(() => import('./components/HocSinhManager'));
 const ScorebookWorkspace = lazy(() => import('./components/ScorebookWorkspace'));
 const AdminSettingsWorkspace = lazy(() => import('./components/AdminSettingsWorkspace'));
+
+const THD_TEACHING_ASSIGNMENT_CHUNK_SIZE = 250000;
+
+const splitTextIntoChunks = (text = '', size = THD_TEACHING_ASSIGNMENT_CHUNK_SIZE) => {
+  const chunks = [];
+  for (let index = 0; index < text.length; index += size) {
+    chunks.push(text.slice(index, index + size));
+  }
+  return chunks.length ? chunks : [''];
+};
 
 const REGISTRATION_WEB_APP_URL = 'https://script.google.com/macros/s/AKfycby6e5ya2k105Oe7i65k9viysIZbHKOF-9CosueiNy1GvnHJbVw1lHB_0eezSxO91ls/exec';
 const ADDRESS_DIRECTORY_CACHE_KEY = 'khl-address-directory-v2';
@@ -1668,7 +1679,47 @@ function App() {
       if (data.thdTeachingAssignments && typeof data.thdTeachingAssignments === 'object') setThdTeachingAssignments(data.thdTeachingAssignments);
       setAdminSettingsLoaded(true);
     });
-    return () => { unsubNews(); unsubMats(); unsubNotes(); unsubQuizzes(); unsubQuizResults(); unsubQuickQuizResults(); unsubLessonProgress(); unsubHandwrittenSubmissions(); unsubStudents(); unsubAttendance(); unsubProfileRequests(); unsubSettings(); };
+    let thdTeachingChunkMeta = { chunked: false, chunkCount: 0 };
+    const thdTeachingChunks = new Map();
+    const loadThdTeachingAssignmentsFromChunks = () => {
+      if (!thdTeachingChunkMeta.chunked || !thdTeachingChunkMeta.chunkCount) return;
+      const parts = [];
+      for (let index = 0; index < thdTeachingChunkMeta.chunkCount; index += 1) {
+        const text = thdTeachingChunks.get(String(index));
+        if (typeof text !== 'string') return;
+        parts.push(text);
+      }
+      try {
+        const parsed = JSON.parse(parts.join(''));
+        if (parsed && typeof parsed === 'object') setThdTeachingAssignments(parsed);
+      } catch (error) {
+        console.error('Không đọc được dữ liệu phân công Trần Hưng Đạo đã chia mảnh:', error);
+      }
+    };
+    const unsubThdTeachingAssignments = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'thdTeachingAssignments'), (docSnap) => {
+      if (!docSnap.exists()) return;
+      const data = docSnap.data();
+      if (data.chunked) {
+        thdTeachingChunkMeta = {
+          chunked: true,
+          chunkCount: Number(data.chunkCount) || 0
+        };
+        loadThdTeachingAssignmentsFromChunks();
+        return;
+      }
+      thdTeachingChunkMeta = { chunked: false, chunkCount: 0 };
+      thdTeachingChunks.clear();
+      if (data.value && typeof data.value === 'object') setThdTeachingAssignments(data.value);
+    });
+    const unsubThdTeachingAssignmentChunks = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'settings', 'thdTeachingAssignments', 'chunks'), (snapshot) => {
+      snapshot.docs.forEach((chunkDoc) => {
+        const data = chunkDoc.data();
+        const index = Number.isFinite(Number(data.index)) ? String(Number(data.index)) : chunkDoc.id;
+        if (typeof data.text === 'string') thdTeachingChunks.set(index, data.text);
+      });
+      loadThdTeachingAssignmentsFromChunks();
+    });
+    return () => { unsubNews(); unsubMats(); unsubNotes(); unsubQuizzes(); unsubQuizResults(); unsubQuickQuizResults(); unsubLessonProgress(); unsubHandwrittenSubmissions(); unsubStudents(); unsubAttendance(); unsubProfileRequests(); unsubSettings(); unsubThdTeachingAssignments(); unsubThdTeachingAssignmentChunks(); };
   }, [user]);
 
   useEffect(() => {
@@ -2093,6 +2144,30 @@ function App() {
     await Promise.resolve(action?.());
   }, []);
 
+  const openNoticeHome = useCallback((mode = 'list') => {
+    setAdminModule('notice');
+    setShowAdminSettingsWorkspace(false);
+    setShowStudentDatabase(false);
+    setShowScheduleWorkspace(false);
+    setShowAttendanceWorkspace(false);
+    setShowLearningResultsWorkspace(false);
+    setQuickScoreLockedContext(null);
+    setScorebookGrade(null);
+    setShowAdminCheckWorkspace(false);
+    setShowPasswordWorkspace(false);
+    setIsAdminTextbookExpanded(false);
+    setViewingNews(null);
+    if (mode === 'add') {
+      setMobileHomeTab('news');
+      setEditingNews(null);
+      setNewsTitle('');
+      setShowAddNews(true);
+      return;
+    }
+    setMobileHomeTab('notifications');
+    setShowAddNews(false);
+  }, []);
+
   const getAdminRouteHref = useCallback((route) => {
     const nextRoute = String(route || '').startsWith('/') ? route : `/${route || ''}`;
     return `#/admin${nextRoute}`;
@@ -2256,8 +2331,8 @@ function App() {
     }
     if (adminModule === 'notice') {
       return [
-        { key: 'news', label: 'Thông báo tin tức', desc: 'Đăng, sửa và xem các thông báo đang hiển thị ở trang chủ.', icon: Bell, action: () => { setMobileHomeTab('notifications'); setShowAddNews(false); } },
-        { key: 'news-add', label: 'Thêm thông báo', desc: 'Mở khung soạn thông báo mới.', icon: Plus, action: () => { setMobileHomeTab('notifications'); setEditingNews(null); setNewsTitle(''); setShowAddNews(true); } }
+        { key: 'news', label: 'Thông báo', desc: 'Đăng, sửa và xem các thông báo đang hiển thị ở trang chủ.', icon: Bell, action: () => openNoticeHome('list') },
+        { key: 'news-add', label: 'Thêm tin', desc: 'Mở khung soạn thông báo mới.', icon: Plus, action: () => openNoticeHome('add') }
       ];
     }
     if (adminModule === 'admission') {
@@ -2335,7 +2410,7 @@ function App() {
         ]
       }
     ];
-  }, [adminAccessScope, adminModule, getAdminRouteHref, openAdminQuickScore, openAdminSettingsPanel, openStudentDatabaseTab, showNotification, studentProfileRequestCount]);
+  }, [adminAccessScope, adminModule, getAdminRouteHref, openAdminQuickScore, openAdminSettingsPanel, openNoticeHome, openStudentDatabaseTab, showNotification, studentProfileRequestCount]);
 
   const saveQuickScoreValue = useCallback(async (semester, pageIndex, rowIndex, scoreIndex, rawValue) => {
     if (!user) return false;
@@ -2816,10 +2891,32 @@ function App() {
     if (key === 'thdTeachingAssignments') setThdTeachingAssignments(value && typeof value === 'object' ? value : {});
     if (!user) return;
     try {
+      if (key === 'thdTeachingAssignments') {
+        const serialized = JSON.stringify(value && typeof value === 'object' ? value : {});
+        const chunks = splitTextIntoChunks(serialized);
+        const parentRef = doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'thdTeachingAssignments');
+        await Promise.all(chunks.map((text, index) => (
+          setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'thdTeachingAssignments', 'chunks', String(index)), {
+            index,
+            text,
+            updatedAt: Date.now()
+          })
+        )));
+        await setDoc(parentRef, {
+          chunked: true,
+          chunkCount: chunks.length,
+          updatedAt: Date.now(),
+          value: deleteField()
+        }, { merge: true });
+        await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'global'), { thdTeachingAssignments: deleteField() }, { merge: true });
+        showNotification(`Đã lưu thiết lập (${chunks.length} mảnh dữ liệu).`);
+        return;
+      }
       await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'global'), { [key]: value }, { merge: true });
       showNotification('Đã lưu thiết lập.');
     } catch (e) {
-      showNotification('Chưa lưu được thiết lập.', 'error');
+      console.error('Không lưu được thiết lập:', e);
+      showNotification(`Chưa lưu được thiết lập: ${e?.message || 'lỗi không xác định'}`, 'error');
     }
   };
 
@@ -2974,7 +3071,7 @@ function App() {
 
   const handleDeleteNews = async (id) => { setConfirmModal({ show: true, message: 'Bạn có chắc chắn muốn xóa bản tin này?', onConfirm: async () => { await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'news', id)); showNotification("Đã xóa bản tin"); } }); };
 
-  const handleTogglePinNews = async (e, n) => { e.stopPropagation(); try { await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'news', n.id), { isPinned: !n.isPinned }); showNotification(n.isPinned ? "Đã bỏ ghim bản tin" : "Đã ghim bản tin lên thông báo khẩn!"); } catch(err) { showNotification("Lỗi khi ghim tin", "error"); } };
+  const handleTogglePinNews = async (e, n) => { e.stopPropagation(); try { await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'news', n.id), { isPinned: !n.isPinned, pinSource: !n.isPinned ? 'manual' : '' }); showNotification(n.isPinned ? "Đã bỏ ghim bản tin" : "Đã ghim bản tin lên thông báo khẩn!"); } catch(err) { showNotification("Lỗi khi ghim tin", "error"); } };
 
   const handleToggleHotNews = async (e, n) => { e.stopPropagation(); try { await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'news', n.id), { isHot: !n.isHot }); showNotification(n.isHot ? "Đã bỏ tin nóng" : "Đã đánh dấu tin nóng!"); } catch(err) { showNotification("Lỗi khi cập nhật tin nóng", "error"); } };
 
@@ -5664,11 +5761,11 @@ ${lessonBlocks}`;
                     value={adminModule}
                     onChange={(event) => {
                       const nextModule = event.target.value;
-                      runAdminMenuAction(() => {
-                        setAdminModule(nextModule);
-                        if (nextModule === 'thd') openAdminSettingsPanel('thdTeachingAssignments');
-                        if (nextModule === 'notice') setMobileHomeTab('notifications');
-                      });
+                        runAdminMenuAction(() => {
+                          setAdminModule(nextModule);
+                          if (nextModule === 'thd') openAdminSettingsPanel('thdTeachingAssignments');
+                          if (nextModule === 'notice') openNoticeHome('list');
+                        });
                     }}
                     className="h-8 w-full rounded-md border border-slate-300 bg-white pl-9 pr-7 text-sm font-semibold text-slate-800 shadow-sm outline-none"
                   >
@@ -6424,18 +6521,20 @@ ${lessonBlocks}`;
               </div>
             </div>
           )}
-          {isAdmin && showScheduleWorkspace && (
+          {isAdmin && adminModule !== 'notice' && showScheduleWorkspace && (
             <div className="fixed inset-x-0 top-[84px] bottom-0 z-[120] bg-slate-100/95 backdrop-blur-md overflow-y-auto p-0">
               <SimpleScheduleTable
                 currentSchoolYear={activeSchoolYear}
                 subjects={SUBJECTS}
+                classTeacherAssignments={classTeacherAssignments}
+                teachers={nanTeachers}
                 user={user}
                 onClose={() => setShowScheduleWorkspace(false)}
                 showNotification={showNotification}
               />
             </div>
           )}
-          {isAdmin && showAttendanceWorkspace && (
+          {isAdmin && adminModule !== 'notice' && showAttendanceWorkspace && (
             <div className="fixed inset-x-0 top-[84px] bottom-0 z-[120] bg-slate-100/95 backdrop-blur-md overflow-y-auto p-0">
               <ClassOpsManager
                 mode="admin"
@@ -6464,7 +6563,7 @@ ${lessonBlocks}`;
                   <div className="home-mobile-panel w-full bg-white/40 backdrop-blur-xl rounded-[2rem] border border-white/50 p-1.5 transition-all duration-300 relative overflow-hidden shadow-lg flex flex-col">
                       {mobileHomeTab === 'notifications' ? (
                           <div className="bg-gradient-to-r from-white/90 to-white/60 rounded-[1.75rem] p-4 shadow-inner h-full flex flex-col relative overflow-hidden animate-in fade-in zoom-in-95 duration-200">
-                              <h3 className="font-extrabold text-blue-900 mb-3 flex items-center gap-2 text-sm uppercase"><Bell className="w-5 h-5 animate-pulse text-rose-500" /> Thông Báo Khẩn</h3>
+                              <h3 className="font-extrabold text-blue-900 mb-3 flex items-center gap-2 text-sm uppercase whitespace-nowrap"><Bell className="w-5 h-5 animate-pulse text-rose-500 shrink-0" /> Thông báo</h3>
                               <div className="flex-1 overflow-hidden bg-white/60 rounded-2xl p-3 border border-white/50 relative">
                                   <div className="absolute top-0 left-0 right-0 h-6 bg-gradient-to-b from-white/95 to-transparent z-10 pointer-events-none"></div>
                                   <div className="absolute bottom-0 left-0 right-0 h-6 bg-gradient-to-t from-white/95 to-transparent z-10 pointer-events-none"></div>
@@ -6498,7 +6597,7 @@ ${lessonBlocks}`;
                       ) : (
                           <div className="bg-gradient-to-l from-white/90 to-white/60 rounded-[1.75rem] p-4 shadow-inner h-full flex flex-col relative overflow-hidden animate-in fade-in zoom-in-95 duration-200">
                               <div className="flex justify-between items-center mb-3">
-                                  <h3 className="font-extrabold text-blue-900 flex items-center gap-2 uppercase text-sm"><Newspaper className="w-5 h-5 text-blue-600" /> Bản Tin</h3>
+                                  <h3 className="font-extrabold text-blue-900 flex items-center gap-2 uppercase text-sm whitespace-nowrap"><Newspaper className="w-5 h-5 text-blue-600 shrink-0" /> Bản tin</h3>
                                   {isAdmin && <button onClick={() => showAddNews ? closeNewsForm() : openNewsForm()} className="bg-blue-100 text-blue-700 p-1.5 rounded-lg shadow-sm">{showAddNews ? <X className="w-4 h-4" /> : <Plus className="w-4 h-4" />}</button>}
                               </div>
                               {isAdmin && showAddNews ? (
@@ -6547,7 +6646,7 @@ ${lessonBlocks}`;
               <div className="home-desktop-panels hidden lg:grid grid-cols-12 gap-6">
                 <div className="home-panel-card col-span-6 bg-white/40 backdrop-blur-xl rounded-[2rem] border border-white/50 p-1.5 h-full">
                   <div className="bg-gradient-to-r from-white/80 to-white/50 rounded-[1.75rem] p-5 border border-white/40 shadow-inner flex flex-col h-full relative overflow-hidden">
-                    <h3 className="font-extrabold text-blue-900 mb-4 flex items-center gap-2 text-sm uppercase font-black"><Bell className="w-5 h-5 animate-pulse text-rose-500" /> Thông Báo Khẩn</h3>
+                    <h3 className="font-extrabold text-blue-900 mb-4 flex items-center gap-2 text-sm uppercase font-black whitespace-nowrap"><Bell className="w-5 h-5 animate-pulse text-rose-500 shrink-0" /> Thông báo</h3>
                     <div className="flex-1 overflow-hidden bg-white/50 rounded-2xl p-4 border border-white/40 relative">
                       <div className="absolute top-0 left-0 right-0 h-10 bg-gradient-to-b from-white/95 to-transparent z-10 pointer-events-none"></div><div className="absolute bottom-0 left-0 right-0 h-10 bg-gradient-to-t from-white/95 to-transparent z-10 pointer-events-none"></div>
                       {pinnedNewsFeed.length > 0 && (
@@ -6570,7 +6669,7 @@ ${lessonBlocks}`;
                 </div>
                 <div className="home-panel-card col-span-6 bg-white/40 backdrop-blur-xl rounded-[2rem] border border-white/50 p-1.5 h-full">
                   <div className="bg-gradient-to-l from-white/80 to-white/50 rounded-[1.75rem] p-5 border border-white/40 shadow-inner flex flex-col h-full overflow-hidden">
-                    <div className="flex justify-between items-center mb-4 pl-2"><h3 className="font-extrabold text-blue-900 flex items-center gap-2 uppercase text-sm font-black"><Newspaper className="w-5 h-5 text-blue-600" /> Bản Tin & Sự Kiện</h3>{isAdmin && <button onClick={() => showAddNews ? closeNewsForm() : openNewsForm()} className="bg-blue-100 text-blue-700 p-1.5 rounded-lg shadow-sm">{showAddNews ? <X className="w-5 h-5" /> : <Plus className="w-5 h-5" />}</button>}</div>
+                    <div className="flex justify-between items-center mb-4 pl-2 gap-3"><h3 className="font-extrabold text-blue-900 flex items-center gap-2 uppercase text-sm font-black whitespace-nowrap"><Newspaper className="w-5 h-5 text-blue-600 shrink-0" /> Bản tin</h3>{isAdmin && <button onClick={() => showAddNews ? closeNewsForm() : openNewsForm()} className="bg-blue-100 text-blue-700 p-1.5 rounded-lg shadow-sm shrink-0">{showAddNews ? <X className="w-5 h-5" /> : <Plus className="w-5 h-5" />}</button>}</div>
                     {isAdmin && showAddNews ? (
                       <div className="flex flex-col gap-3 flex-1 overflow-hidden animate-in fade-in duration-300">
                           <input type="text" placeholder={editingNews ? "Sửa tiêu đề tin tức..." : "Tiêu đề tin tức..."} className="w-full bg-slate-50 border p-3 rounded-xl text-base font-bold focus:outline-none focus:border-blue-400" value={newsTitle} onChange={(e) => setNewsTitle(e.target.value)} />

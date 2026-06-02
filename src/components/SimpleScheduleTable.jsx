@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { addDoc, collection, deleteDoc, doc, getDocs, onSnapshot, setDoc } from 'firebase/firestore';
-import { BarChart3, ChevronDown, EyeOff, HelpCircle, Save, Send, Trash2, Users, X } from 'lucide-react';
+import { BarChart3, ChevronDown, EyeOff, HelpCircle, Save, Send, Sparkles, Trash2, Users, X } from 'lucide-react';
 import { appId, db } from '../config/firebase';
 
 const BASE_CLASSES = ['6', '7', '8', '9'];
@@ -14,17 +14,23 @@ const DAYS = [
   { key: '7', label: 'T7' }
 ];
 const EXTRA_SUBJECTS = ['Giáo dục địa phương', 'HDTT', 'Chủ nhiệm'];
+const SCHEDULE_SEMESTERS = [
+  { key: 'hk1', label: 'HK1', namePrefix: 'HK1' },
+  { key: 'hk2', label: 'HK2', namePrefix: 'HK2' }
+];
 const REQUIRED_LOADS = [
-  { key: 'toan', label: 'Toán', required: 4 },
-  { key: 'van', label: 'Văn', required: 4 },
-  { key: 'khtn', label: 'KHTN', required: 4 },
-  { key: 'lsdl', label: 'LS&ĐL', required: 4 },
+  { key: 'toan', label: 'Toán', required: 4, paired: true },
+  { key: 'van', label: 'Văn', required: 4, paired: true },
+  { key: 'khtn', label: 'KHTN', required: 4, paired: true },
+  { key: 'lsdl', label: 'LS&ĐL', required: 3, paired: true },
   { key: 'gdcd', label: 'GDCD', required: 1 },
   { key: 'congnghe', label: 'Công nghệ', required: 1 },
   { key: 'gddp', label: 'GDĐP', required: 1 },
   { key: 'hdtt', label: 'HDTT', required: 1 },
-  { key: 'cn', label: 'Chủ nhiệm', required: 1 }
+  { key: 'cn', label: 'Chủ nhiệm', required: 4, scheduleSlots: 1, weight: 4 }
 ];
+const SINGLE_VISIT_SUBJECT_KEYS = new Set(['gdcd', 'congnghe', 'gddp', 'hdtt']);
+const HOMEROOM_PAIR_SUBJECT_KEYS = new Set(['gddp', 'cn']);
 
 const defaultRows = () => BASE_CLASSES.map(className => ({
   id: className,
@@ -55,21 +61,38 @@ const removeAccentsLocal = (value = '') => String(value || '')
   .replace(/đ/g, 'd')
   .replace(/Đ/g, 'D')
   .toLowerCase();
+const suggestTeacherShortName = (name = '') => {
+  const parts = String(name || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .split(' ')
+    .filter(Boolean);
+  if (!parts.length) return '';
+  if (parts.length === 1) return parts[0];
+  const lastName = parts.at(-1);
+  const initials = parts.slice(0, -1)
+    .map(part => part.replace(/[^\p{L}\p{N}]/gu, '').charAt(0).toUpperCase())
+    .join('');
+  return `${initials} ${lastName}`.trim();
+};
 const subjectKey = (value = '') => {
-  const normalized = removeAccentsLocal(value).replace(/[^a-z0-9&]/g, '');
+  const subjectText = String(value || '').split(/\s[-–—]\s/)[0] || value;
+  const normalized = removeAccentsLocal(subjectText).replace(/[^a-z0-9&]/g, '');
   if (!normalized) return '';
   if (normalized.includes('toan')) return 'toan';
-  if (normalized.includes('nguvan') || normalized === 'van') return 'van';
+  if (normalized.includes('nguvan') || normalized === 'van' || normalized.startsWith('van')) return 'van';
   if (normalized.includes('khoahoctunhien') || normalized.includes('khtn')) return 'khtn';
   if (normalized.includes('lichsu') || normalized.includes('dialy') || normalized.includes('ls&dl') || normalized.includes('lsdl')) return 'lsdl';
   if (normalized.includes('congdan') || normalized.includes('gdcd')) return 'gdcd';
-  if (normalized.includes('congnghe')) return 'congnghe';
+  if (normalized.includes('congnghe') || normalized.includes('cnghe')) return 'congnghe';
   if (normalized.includes('diaphuong') || normalized.includes('gddp')) return 'gddp';
   if (normalized.includes('hdtt') || normalized.includes('hoatdongtapthe') || normalized.includes('hoatdongtapt')) return 'hdtt';
   if (normalized === 'cn' || normalized.includes('chunhiem')) return 'cn';
   return normalized;
 };
+const hasTeacherSuffix = (value = '') => /\s[-–—]\s/.test(String(value || ''));
 const displayPublicSubject = (value = '') => {
+  if (hasTeacherSuffix(value)) return value;
   const key = subjectKey(value);
   if (key === 'gddp') return 'GDĐP';
   if (key === 'hdtt') return 'HĐTT';
@@ -77,11 +100,90 @@ const displayPublicSubject = (value = '') => {
   return value || '-';
 };
 const displayEditorSubject = (value = '') => {
+  if (hasTeacherSuffix(value)) return value;
   const key = subjectKey(value);
-  if (key === 'gddp') return 'Giáo dục địa phương';
-  if (key === 'hdtt') return 'Hoạt động tập thể';
+  if (key === 'gddp') return 'GDĐP';
+  if (key === 'hdtt') return 'HĐTT';
   if (key === 'cn') return 'Chủ nhiệm';
   return value || '-';
+};
+const getScheduleSemesterMeta = (semester = 'hk1') => SCHEDULE_SEMESTERS.find(item => item.key === semester) || SCHEDULE_SEMESTERS[0];
+const inferScheduleSemester = (semester = '', name = '') => {
+  const direct = String(semester || '').toLowerCase();
+  if (direct.includes('2') || direct.includes('ii')) return 'hk2';
+  if (direct.includes('1') || direct.includes('i')) return 'hk1';
+  const nameKey = removeAccentsLocal(name);
+  if (nameKey.includes('hk2') || nameKey.includes('hoc ky 2') || nameKey.includes('hoc ki 2')) return 'hk2';
+  return 'hk1';
+};
+const stripSemesterPrefix = (name = '') => String(name || '').replace(/^\s*(?:\[?\s*)?HK[12](?:\s*\]?)?\s*[-:]\s*/i, '').trim();
+const withSemesterPrefix = (name = '', semester = 'hk1') => {
+  const prefix = getScheduleSemesterMeta(semester).namePrefix;
+  const baseName = stripSemesterPrefix(name) || 'TKB';
+  return `${prefix} - ${baseName}`;
+};
+const defaultScheduleName = (schoolYear = '', semester = 'hk1') => withSemesterPrefix(`TKB ${schoolYear || ''}`.trim(), semester);
+const getPrimaryGrade = (row = {}) => {
+  const source = row.grades?.[0] || row.id || row.label || '';
+  return String(source || '').match(/[6-9]/)?.[0] || '';
+};
+const getTeacherKeys = (teacherName = '') => String(teacherName || '')
+  .split(/[,;/]+/)
+  .map(item => removeAccentsLocal(item).replace(/[^a-z0-9]/g, ''))
+  .filter(Boolean);
+const isLikelyTeacherShortName = (name = '') => {
+  const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+  if (parts.length !== 2) return false;
+  const prefix = parts[0].replace(/[^\p{L}\p{N}]/gu, '');
+  return prefix.length >= 2 && prefix === prefix.toUpperCase();
+};
+const getScheduleTeacherLabel = (teacherName = '', teacherShortNameByKey = new Map()) => String(teacherName || '')
+  .split(/[,;/]+/)
+  .map(name => {
+    const cleanName = name.trim();
+    if (!cleanName) return '';
+    if (isLikelyTeacherShortName(cleanName)) return cleanName;
+    const key = removeAccentsLocal(cleanName).replace(/[^a-z0-9]/g, '');
+    return teacherShortNameByKey.get(key) || suggestTeacherShortName(cleanName) || cleanName;
+  })
+  .filter(Boolean)
+  .join(', ');
+const formatScheduleCellValue = (subjectLabel = '', teacherName = '', teacherShortNameByKey = new Map()) => {
+  const cleanTeacher = getScheduleTeacherLabel(teacherName, teacherShortNameByKey);
+  return cleanTeacher ? `${subjectLabel} - ${cleanTeacher}` : subjectLabel;
+};
+const compactScheduleCellValue = (value = '', teacherShortNameByKey = new Map(), displaySubject = displayEditorSubject) => {
+  const text = String(value || '').trim();
+  if (!text || !hasTeacherSuffix(text)) return displaySubject(text);
+  const [subjectText, ...teacherParts] = text.split(/\s[-–—]\s/);
+  const teacherLabel = getScheduleTeacherLabel(teacherParts.join(' - '), teacherShortNameByKey);
+  const subjectLabel = displaySubject(subjectText);
+  return teacherLabel ? `${subjectLabel} - ${teacherLabel}` : subjectLabel;
+};
+const compactScheduleForSave = (schedule = {}, rows = defaultRows(), teacherShortNameByKey = new Map()) => {
+  const normalized = normalizeSchedule(schedule, rows);
+  return Object.fromEntries(rows.map(row => [
+    row.id,
+    Object.fromEntries(DAYS.map(day => [
+      day.key,
+      Object.fromEntries(PERIODS.map(period => [
+        period,
+        compactScheduleCellValue(normalized?.[row.id]?.[day.key]?.[period] || '', teacherShortNameByKey, displayEditorSubject)
+      ]))
+    ]))
+  ]));
+};
+const getSemesterTeacherName = (value = '', semester = 'hk1') => {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const hk1 = String(value.hk1 ?? value.hki ?? value.semester1 ?? value.term1 ?? value.fullYear ?? '').trim();
+    const hk2 = String(value.hk2 ?? value.hkii ?? value.semester2 ?? value.term2 ?? value.fullYear ?? '').trim();
+    const fallback = String(value.value ?? value.teacherName ?? value.name ?? '').trim();
+    const hasSemesterKeys = ['hk1', 'hk2', 'hki', 'hkii', 'semester1', 'semester2', 'term1', 'term2']
+      .some(key => Object.prototype.hasOwnProperty.call(value, key));
+    if (hasSemesterKeys) return semester === 'hk2' ? (hk2 || fallback) : (hk1 || fallback);
+    return fallback;
+  }
+  return String(value || '').trim();
 };
 const compactClassLabel = (row = {}) => {
   const grades = row.grades?.length ? row.grades : String(row.id || '').split('&').filter(Boolean);
@@ -126,10 +228,11 @@ const makeScheduleNewsHtml = ({ name, rows, visibleDays, schedule, periodCount =
   </style><div class="schedule-news"><h2>${name}</h2><p>Thời khóa biểu đã được xuất bản.</p><table><thead><tr><th class="schedule-class-head" style="border:1px solid #dbeafe;padding:6px;background:#eff6ff;">Lớp</th><th class="schedule-period-head" style="border:1px solid #dbeafe;padding:6px;background:#eff6ff;">Tiết</th>${header}</tr></thead><tbody>${body}</tbody></table></div>`;
 };
 
-export default function SimpleScheduleTable({ subjects = [], currentSchoolYear = '', user, onClose, showNotification }) {
+export default function SimpleScheduleTable({ subjects = [], currentSchoolYear = '', classTeacherAssignments = {}, teachers = [], user, onClose, showNotification }) {
   const [savedSchedules, setSavedSchedules] = useState([]);
   const [activeId, setActiveId] = useState('');
-  const [scheduleName, setScheduleName] = useState(`TKB ${currentSchoolYear || ''}`.trim());
+  const [scheduleSemester, setScheduleSemester] = useState('hk1');
+  const [scheduleName, setScheduleName] = useState(() => defaultScheduleName(currentSchoolYear, 'hk1'));
   const [classRows, setClassRows] = useState(defaultRows);
   const [visibleDays, setVisibleDays] = useState(DAYS.map(day => day.key));
   const [schedule, setSchedule] = useState(() => makeEmptySchedule(defaultRows()));
@@ -170,17 +273,140 @@ export default function SimpleScheduleTable({ subjects = [], currentSchoolYear =
     return next;
   };
 
-  const buildScheduleValidationErrors = (candidateSchedule = scheduleRef.current) => {
-    const normalized = normalizeSchedule(candidateSchedule, classRows);
-    return classRows.flatMap(row => {
-      const counts = Object.fromEntries(REQUIRED_LOADS.map(item => [item.key, 0]));
-      DAYS.filter(day => visibleDays.includes(day.key)).forEach(day => {
-        PERIODS.slice(0, periodCount).forEach(period => {
-          const key = subjectKey(normalized?.[row.id]?.[day.key]?.[period]);
-          if (key && Object.prototype.hasOwnProperty.call(counts, key)) counts[key] += 1;
-        });
+  const classTeacherAssignmentsForYear = useMemo(() => {
+    const source = classTeacherAssignments && typeof classTeacherAssignments === 'object' ? classTeacherAssignments : {};
+    return source.byYear?.[currentSchoolYear] || (!source.byYear ? source : {}) || {};
+  }, [classTeacherAssignments, currentSchoolYear]);
+
+  const teacherShortNameByKey = useMemo(() => {
+    const map = new Map();
+    (Array.isArray(teachers) ? teachers : []).forEach(teacher => {
+      const name = String(teacher?.name || '').trim();
+      const shortName = String(teacher?.shortName || '').trim();
+      if (!name) return;
+      const key = removeAccentsLocal(name).replace(/[^a-z0-9]/g, '');
+      if (!key) return;
+      map.set(key, shortName || suggestTeacherShortName(name));
+    });
+    return map;
+  }, [teachers]);
+
+  const teacherAssignmentsByGrade = useMemo(() => (
+    Object.fromEntries(BASE_CLASSES.map(grade => {
+      const gradeAssignments = classTeacherAssignmentsForYear?.[grade] || {};
+      const bySubject = {};
+      Object.entries(gradeAssignments).forEach(([subject, assignmentValue]) => {
+        const key = subjectKey(subject);
+        const teacherName = getSemesterTeacherName(assignmentValue, scheduleSemester);
+        if (key && teacherName) bySubject[key] = teacherName;
       });
-      return REQUIRED_LOADS
+      return [grade, bySubject];
+    }))
+  ), [classTeacherAssignmentsForYear, scheduleSemester]);
+
+  const hasTeacherAssignments = useMemo(() => (
+    Object.values(teacherAssignmentsByGrade).some(gradeMap => Object.values(gradeMap || {}).some(Boolean))
+  ), [teacherAssignmentsByGrade]);
+
+  const pushUniqueTeacherName = (teacherNames, seenTeacherNames, teacherName) => {
+    const cleanName = String(teacherName || '').trim();
+    if (!cleanName) return;
+    const key = removeAccentsLocal(cleanName).replace(/[^a-z0-9]/g, '');
+    if (!key || seenTeacherNames.has(key)) return;
+    seenTeacherNames.add(key);
+    teacherNames.push(cleanName);
+  };
+
+  const pushTeacherNamesFromText = (teacherNames, seenTeacherNames, value = '') => {
+    String(value || '')
+      .split(/[,;/]+/)
+      .map(item => item.trim())
+      .filter(Boolean)
+      .forEach(name => pushUniqueTeacherName(teacherNames, seenTeacherNames, name));
+  };
+
+  const getTeacherChoicesForGradeSubject = (grade = '', subjectValue = '') => {
+    const key = subjectKey(subjectValue);
+    if (!grade || !key) return [];
+    const gradeAssignments = classTeacherAssignmentsForYear?.[grade] || {};
+    const matchedAssignment = Object.entries(gradeAssignments)
+      .find(([subject]) => subjectKey(subject) === key);
+    if (!matchedAssignment) return [];
+
+    const [, assignmentValue] = matchedAssignment;
+    const teacherNames = [];
+    const seenTeacherNames = new Set();
+    const pushValue = value => pushTeacherNamesFromText(teacherNames, seenTeacherNames, value);
+
+    if (assignmentValue && typeof assignmentValue === 'object' && !Array.isArray(assignmentValue)) {
+      const hk1 = String(assignmentValue.hk1 ?? assignmentValue.hki ?? assignmentValue.semester1 ?? assignmentValue.term1 ?? assignmentValue.fullYear ?? '').trim();
+      const hk2 = String(assignmentValue.hk2 ?? assignmentValue.hkii ?? assignmentValue.semester2 ?? assignmentValue.term2 ?? assignmentValue.fullYear ?? '').trim();
+      const fallback = String(assignmentValue.value ?? assignmentValue.teacherName ?? assignmentValue.name ?? '').trim();
+      const orderedValues = scheduleSemester === 'hk2' ? [hk2, hk1, fallback] : [hk1, hk2, fallback];
+      orderedValues.forEach(pushValue);
+    } else {
+      pushValue(assignmentValue);
+    }
+
+    return teacherNames;
+  };
+
+  const getTeacherChoicesForRowSubject = (row = {}, subjectValue = '') => {
+    const grades = row.grades?.length ? row.grades : [getPrimaryGrade(row)].filter(Boolean);
+    const teacherNames = [];
+    const seenTeacherNames = new Set();
+    grades.forEach(grade => {
+      getTeacherChoicesForGradeSubject(grade, subjectValue)
+        .forEach(name => pushUniqueTeacherName(teacherNames, seenTeacherNames, name));
+    });
+    return teacherNames;
+  };
+
+  const getRequiredLoadsForRow = (row = {}) => {
+    const grade = getPrimaryGrade(row);
+    return REQUIRED_LOADS.map(item => {
+      if (item.key === 'congnghe' && ['8', '9'].includes(grade)) {
+        const required = scheduleSemester === 'hk2' ? 2 : 1;
+        return { ...item, required, scheduleSlots: required };
+      }
+      return { ...item, scheduleSlots: item.scheduleSlots ?? item.required, weight: item.weight ?? 1 };
+    });
+  };
+
+  const countRowSubjects = (
+    row,
+    candidateSchedule = schedule,
+    rowsOverride = classRows,
+    dayKeysOverride = visibleDays,
+    periodCountOverride = periodCount
+  ) => {
+    const targetRow = typeof row === 'string'
+      ? (rowsOverride.find(item => item.id === row) || { id: row, grades: [row] })
+      : row;
+    const loads = getRequiredLoadsForRow(targetRow);
+    const loadByKey = Object.fromEntries(loads.map(item => [item.key, item]));
+    const counts = Object.fromEntries(loads.map(item => [item.key, 0]));
+    const normalized = normalizeSchedule(candidateSchedule, rowsOverride);
+    DAYS.filter(day => dayKeysOverride.includes(day.key)).forEach(day => {
+      PERIODS.slice(0, periodCountOverride).forEach(period => {
+        const key = subjectKey(normalized?.[targetRow.id]?.[day.key]?.[period]);
+        if (key && Object.prototype.hasOwnProperty.call(counts, key)) counts[key] += loadByKey[key]?.weight || 1;
+      });
+    });
+    return counts;
+  };
+
+  const buildScheduleValidationErrors = (
+    candidateSchedule = schedule,
+    rowsOverride = classRows,
+    dayKeysOverride = visibleDays,
+    periodCountOverride = periodCount
+  ) => {
+    const normalized = normalizeSchedule(candidateSchedule, rowsOverride);
+    return rowsOverride.flatMap(row => {
+      const rowLoads = getRequiredLoadsForRow(row);
+      const counts = countRowSubjects(row, normalized, rowsOverride, dayKeysOverride, periodCountOverride);
+      return rowLoads
         .map(item => ({ rowLabel: row.label || row.id, subject: item.label, required: item.required, actual: counts[item.key] || 0 }))
         .filter(item => item.actual !== item.required);
     });
@@ -197,9 +423,31 @@ export default function SimpleScheduleTable({ subjects = [], currentSchoolYear =
       return true;
     });
   }, [subjects]);
-  const getScheduleSubjectOptions = (currentValue = '') => {
-    if (!currentValue || scheduleSubjects.includes(currentValue)) return scheduleSubjects;
-    return [currentValue, ...scheduleSubjects];
+
+  const getScheduleSubjectOptions = (currentValue = '', row = {}) => {
+    const options = [];
+    const seen = new Set();
+    const addOption = (value) => {
+      const cleanValue = String(value || '').trim();
+      if (!cleanValue || seen.has(cleanValue)) return;
+      seen.add(cleanValue);
+      options.push(cleanValue);
+    };
+
+    addOption(currentValue);
+    scheduleSubjects.forEach(subject => {
+      const subjectLabel = displayEditorSubject(subject);
+      const teacherChoices = getTeacherChoicesForRowSubject(row, subject);
+      if (teacherChoices.length) {
+        teacherChoices.forEach(teacherName => {
+          addOption(formatScheduleCellValue(subjectLabel, teacherName, teacherShortNameByKey));
+        });
+        return;
+      }
+      addOption(subjectLabel);
+    });
+
+    return options;
   };
 
   useEffect(() => {
@@ -214,32 +462,57 @@ export default function SimpleScheduleTable({ subjects = [], currentSchoolYear =
 
   const loadSchedule = (item) => {
     const rows = item.classRows?.length ? item.classRows : defaultRows();
+    const nextSemester = inferScheduleSemester(item.semester, item.name);
     setActiveId(item.id || '');
-    setScheduleName(item.name || `TKB ${currentSchoolYear || ''}`.trim());
+    setScheduleSemester(nextSemester);
+    setScheduleName(item.name || defaultScheduleName(currentSchoolYear, nextSemester));
     setClassRows(rows);
     setVisibleDays(item.visibleDays?.length ? item.visibleDays : DAYS.map(day => day.key));
     setPeriodCount(Math.min(5, Math.max(1, Number(item.periodCount || 5))));
     applySchedule(normalizeSchedule(item.schedule || {}, rows));
   };
 
-  const newSchedule = () => {
+  const newSchedule = (semester = scheduleSemester) => {
     const rows = defaultRows();
     setActiveId('');
-    setScheduleName(`TKB ${currentSchoolYear || ''} - bản mới`.trim());
+    setScheduleSemester(semester);
+    setScheduleName(withSemesterPrefix(`TKB ${currentSchoolYear || ''} - bản mới`.trim(), semester));
     setClassRows(rows);
     setVisibleDays(DAYS.map(day => day.key));
     setPeriodCount(5);
     applySchedule(makeEmptySchedule(rows));
   };
 
+  const changeScheduleSemester = (nextSemester) => {
+    const semester = inferScheduleSemester(nextSemester);
+    setScheduleSemester(semester);
+    setScheduleName(prev => withSemesterPrefix(prev || defaultScheduleName(currentSchoolYear, semester), semester));
+  };
+
+  const resolveScheduleCellValue = (row, value = '') => {
+    const text = String(value || '').trim();
+    if (!text) return '';
+    if (hasTeacherSuffix(text)) {
+      return compactScheduleCellValue(text, teacherShortNameByKey, displayEditorSubject);
+    }
+    const subjectLabel = displayEditorSubject(text);
+    const teacherChoices = getTeacherChoicesForRowSubject(row, text);
+    if (teacherChoices.length) {
+      return formatScheduleCellValue(subjectLabel, teacherChoices[0], teacherShortNameByKey);
+    }
+    return subjectLabel;
+  };
+
   const updateCell = (rowId, dayKey, period, value) => {
+    const row = classRows.find(item => item.id === rowId) || { id: rowId, grades: [rowId] };
+    const nextValue = resolveScheduleCellValue(row, value);
     applySchedule(prev => ({
       ...prev,
       [rowId]: {
         ...(prev[rowId] || emptyRow()),
         [dayKey]: {
           ...((prev[rowId] || emptyRow())[dayKey] || emptyDay()),
-          [period]: value
+          [period]: nextValue
         }
       }
     }));
@@ -249,17 +522,18 @@ export default function SimpleScheduleTable({ subjects = [], currentSchoolYear =
     setIsSaving(true);
     try {
       const latestSchedule = collectScheduleFromVisibleInputs();
-      const desiredName = scheduleName.trim() || `TKB ${currentSchoolYear}`;
+      const semesterMeta = getScheduleSemesterMeta(scheduleSemester);
+      const desiredName = withSemesterPrefix(scheduleName.trim() || `TKB ${currentSchoolYear}`, scheduleSemester);
       const activeSchedule = savedSchedules.find(item => item.id === activeId);
       const shouldForkSchedule = Boolean(activeSchedule && desiredName !== (activeSchedule.name || activeSchedule.id || ''));
       const id = activeId && !shouldForkSchedule ? activeId : `tkb_${Date.now()}`;
       const effectiveStatus = status === 'draft' && activeSchedule?.status === 'published' && !shouldForkSchedule ? 'published' : status;
-      const normalized = normalizeSchedule(latestSchedule, classRows);
+      const normalized = compactScheduleForSave(latestSchedule, classRows, teacherShortNameByKey);
       if (effectiveStatus === 'published') {
         const errors = buildScheduleValidationErrors(normalized);
         if (errors.length > 0) {
           setValidationErrors(errors);
-          showNotification?.('Thời khóa biểu chưa đúng số tiết, chưa thể xuất bản.', 'error');
+          showNotification?.('Thời khóa biểu chưa đúng số tiết, chưa thể ghim.', 'error');
           return;
         }
       }
@@ -269,6 +543,9 @@ export default function SimpleScheduleTable({ subjects = [], currentSchoolYear =
         : selectedVisibleDays;
       const payload = {
         name: desiredName,
+        semester: scheduleSemester,
+        semesterLabel: semesterMeta.label,
+        namePrefix: semesterMeta.namePrefix,
         schoolYear: currentSchoolYear,
         classRows,
         visibleDays: savedVisibleDays,
@@ -280,28 +557,49 @@ export default function SimpleScheduleTable({ subjects = [], currentSchoolYear =
       };
       if (effectiveStatus === 'published') {
         await Promise.all(savedSchedules
-          .filter(item => item.id !== id && item.status === 'published')
+          .filter(item => item.id !== id && item.status === 'published' && inferScheduleSemester(item.semester, item.name) === scheduleSemester)
           .map(item => setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'class_schedules', item.id), { status: 'draft', publishedAt: null, updatedAt: Date.now() }, { merge: true })));
       }
       await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'class_schedules', id), payload, { merge: true });
       if (effectiveStatus === 'published') {
+        const now = Date.now();
+        const title = `THỜI KHÓA BIỂU ${semesterMeta.label}: ${stripSemesterPrefix(payload.name)}`;
+        const content = makeScheduleNewsHtml({ name: payload.name, rows: classRows, visibleDays: payload.visibleDays, schedule: normalized, periodCount });
         const newsSnapshot = await getDocs(newsCollection);
-        await Promise.all(newsSnapshot.docs
-          .filter(item => item.data()?.type === 'class_schedule')
-          .map(item => deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'news', item.id))));
-        await addDoc(newsCollection, {
-          title: `THỜI KHÓA BIỂU: ${payload.name}`,
-          content: makeScheduleNewsHtml({ name: payload.name, rows: classRows, visibleDays: payload.visibleDays, schedule: normalized, periodCount }),
-          createdAt: Date.now(),
+        const existingScheduleNews = newsSnapshot.docs.find(item => item.data()?.type === 'class_schedule' && item.data()?.scheduleId === id);
+        const baseNewsPayload = {
+          title,
+          content,
+          updatedAt: now,
           authorId: user?.uid || '',
-          isPinned: true,
           type: 'class_schedule',
           scheduleId: id,
+          semester: scheduleSemester,
+          semesterLabel: semesterMeta.label,
           schoolYear: currentSchoolYear
-        });
+        };
+        if (existingScheduleNews) {
+          const existingNewsData = existingScheduleNews.data() || {};
+          await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'news', existingScheduleNews.id), {
+            ...baseNewsPayload,
+            isPinned: existingNewsData.pinSource === 'manual' ? Boolean(existingNewsData.isPinned) : false,
+            pinSource: existingNewsData.pinSource === 'manual' ? 'manual' : 'auto'
+          }, { merge: true });
+        } else {
+          await addDoc(newsCollection, {
+            ...baseNewsPayload,
+            createdAt: now,
+            sortOrder: now,
+            isPinned: false,
+            pinSource: 'auto',
+            isHot: false
+          });
+        }
       }
       setActiveId(id);
-      showNotification?.(shouldForkSchedule ? 'Đã lưu thành bản thời khóa biểu mới.' : (effectiveStatus === 'published' ? 'Đã cập nhật thời khóa biểu cho học sinh xem.' : 'Đã lưu thời khóa biểu.'));
+      setScheduleName(desiredName);
+      applySchedule(normalized);
+      showNotification?.(shouldForkSchedule ? 'Đã lưu thành bản thời khóa biểu mới.' : (effectiveStatus === 'published' ? 'Đã ghim TKB và đưa vào bản tin thường.' : 'Đã lưu thời khóa biểu.'));
     } catch (error) {
       showNotification?.(`Lỗi lưu thời khóa biểu: ${error.message}`, 'error');
     } finally {
@@ -313,14 +611,10 @@ export default function SimpleScheduleTable({ subjects = [], currentSchoolYear =
     if (!activeId) return;
     const activeSchedule = savedSchedules.find(item => item.id === activeId);
     const scheduleLabel = activeSchedule?.name || scheduleName || 'bản thời khóa biểu này';
-    if (!window.confirm(`Xóa "${scheduleLabel}"? Nếu bản này đang ghim cho học sinh xem thì tin ghim cũng sẽ được gỡ.`)) return;
+    if (!window.confirm(`Xóa "${scheduleLabel}"? Bản tin/thông báo liên quan nếu có sẽ được giữ nguyên.`)) return;
     setIsSaving(true);
     try {
       await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'class_schedules', activeId));
-      const newsSnapshot = await getDocs(newsCollection);
-      await Promise.all(newsSnapshot.docs
-        .filter(item => item.data()?.type === 'class_schedule' && (!item.data()?.scheduleId || item.data()?.scheduleId === activeId))
-        .map(item => deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'news', item.id))));
       newSchedule();
       showNotification?.('Đã xóa thời khóa biểu đã lưu.');
     } catch (error) {
@@ -370,17 +664,319 @@ export default function SimpleScheduleTable({ subjects = [], currentSchoolYear =
     }));
   };
 
-  const countRowSubjects = (rowId) => {
-    const counts = Object.fromEntries(REQUIRED_LOADS.map(item => [item.key, 0]));
-    DAYS.filter(day => visibleDays.includes(day.key)).forEach(day => {
-      PERIODS.slice(0, periodCount).forEach(period => {
-        const key = subjectKey(schedule?.[rowId]?.[day.key]?.[period]);
-        if (key && Object.prototype.hasOwnProperty.call(counts, key)) counts[key] += 1;
+  const autoArrangeSchedule = () => {
+    const baseDayKeys = DAYS.map(day => day.key).filter(dayKey => visibleDays.includes(dayKey));
+    if (!baseDayKeys.length) {
+      showNotification?.('Hãy chọn ít nhất 1 thứ để xếp thời khóa biểu.', 'error');
+      return;
+    }
+    if (!hasTeacherAssignments) {
+      showNotification?.('Chưa có dữ liệu GV theo lớp. Hãy vào “GV theo lớp”, load từ phân công rồi lưu trước.', 'error');
+      return;
+    }
+    const latestSchedule = collectScheduleFromVisibleInputs();
+    const hasExistingContent = Object.values(latestSchedule || {}).some(row => (
+      DAYS.some(day => PERIODS.some(period => !isBlankScheduleValue(row?.[day.key]?.[period])))
+    ));
+    if (hasExistingContent && !window.confirm('Xếp tự động sẽ ghi đè thời khóa biểu đang có. Tiếp tục?')) return;
+
+    const rows = defaultRows();
+    const allDayKeys = DAYS.map(day => day.key);
+    const maxRequiredSlots = Math.max(...rows.map(row => (
+      getRequiredLoadsForRow(row).reduce((sum, item) => sum + Number(item.scheduleSlots ?? item.required ?? 0), 0)
+    )), 0);
+
+    const loadPriorityByKey = Object.fromEntries(REQUIRED_LOADS.map((item, index) => [item.key, index]));
+    const rawTasks = rows.flatMap((row, rowIndex) => {
+      const grade = getPrimaryGrade(row);
+      const teacherMap = teacherAssignmentsByGrade[grade] || {};
+      return getRequiredLoadsForRow(row).flatMap((load, loadIndex) => {
+        const teacherName = teacherMap[load.key] || '';
+        const teacherKeys = getTeacherKeys(teacherName);
+        const value = formatScheduleCellValue(load.label, teacherName, teacherShortNameByKey);
+        const tasks = [];
+        let remaining = Number(load.scheduleSlots ?? load.required ?? 0);
+        let blockIndex = 0;
+        const compactVisit = SINGLE_VISIT_SUBJECT_KEYS.has(load.key) && !load.paired && teacherKeys.length > 0;
+        const homeroomPair = HOMEROOM_PAIR_SUBJECT_KEYS.has(load.key);
+        while (load.paired && remaining >= 2) {
+          tasks.push({ row, rowId: row.id, rowLabel: row.label || row.id, rowIndex, key: load.key, loadIndex, blockIndex, blockLength: 2, teacherName, teacherKeys, value, compactVisit: false, homeroomPair: false });
+          blockIndex += 1;
+          remaining -= 2;
+        }
+        while (remaining > 0) {
+          tasks.push({ row, rowId: row.id, rowLabel: row.label || row.id, rowIndex, key: load.key, loadIndex, blockIndex, blockLength: 1, teacherName, teacherKeys, value, compactVisit, homeroomPair });
+          blockIndex += 1;
+          remaining -= 1;
+        }
+        return tasks;
       });
     });
-    return counts;
-  };
+    const teacherSpread = new Map();
+    const teacherDemand = new Map();
+    rawTasks.forEach(task => {
+      task.teacherKeys.forEach(key => {
+        const rowsForTeacher = teacherSpread.get(key) || new Set();
+        rowsForTeacher.add(task.rowId);
+        teacherSpread.set(key, rowsForTeacher);
+        teacherDemand.set(key, (teacherDemand.get(key) || 0) + task.blockLength);
+      });
+    });
+    const tasks = rawTasks.map(task => {
+      const spreadScore = task.teacherKeys.reduce((max, key) => Math.max(max, teacherSpread.get(key)?.size || 0), 0);
+      const demandScore = task.teacherKeys.reduce((sum, key) => sum + (teacherDemand.get(key) || 0), 0);
+      const score = spreadScore * 10000 + demandScore * 100 + Number(task.teacherKeys.length > 0) * 1000 + task.blockLength * 50;
+      return { ...task, score };
+    });
 
+    const hiddenDayKeys = allDayKeys.filter(dayKey => !baseDayKeys.includes(dayKey));
+    const dayKeyPlans = [baseDayKeys];
+    hiddenDayKeys.forEach((_, index) => {
+      dayKeyPlans.push([...baseDayKeys, ...hiddenDayKeys.slice(0, index + 1)]);
+    });
+    const attemptConfigs = [];
+    const seenConfigs = new Set();
+    const addAttemptConfig = (dayKeys, attemptPeriodCount) => {
+      const orderedDayKeys = allDayKeys.filter(dayKey => dayKeys.includes(dayKey));
+      if (!orderedDayKeys.length || orderedDayKeys.length * attemptPeriodCount < maxRequiredSlots) return;
+      const configKey = `${orderedDayKeys.join(',')}-${attemptPeriodCount}`;
+      if (seenConfigs.has(configKey)) return;
+      seenConfigs.add(configKey);
+      attemptConfigs.push({ dayKeys: orderedDayKeys, periodCount: attemptPeriodCount });
+    };
+    dayKeyPlans.forEach(dayKeys => {
+      for (let attemptPeriodCount = periodCount; attemptPeriodCount <= PERIODS.length; attemptPeriodCount += 1) {
+        addAttemptConfig(dayKeys, attemptPeriodCount);
+      }
+    });
+    if (!attemptConfigs.length) {
+      showNotification?.('Số tiết/ngày và số thứ đang chọn không đủ ô để xếp đủ định mức.', 'error');
+      return;
+    }
+
+    const pairPeriodOrders = [
+      [1, 3, 2, 4, 5],
+      [3, 1, 4, 2, 5],
+      [2, 4, 1, 3, 5],
+      [4, 2, 3, 1, 5]
+    ];
+    const singlePeriodOrders = [
+      [1, 2, 3, 4, 5],
+      [4, 3, 2, 1, 5],
+      [2, 3, 1, 4, 5],
+      [3, 2, 4, 1, 5]
+    ];
+
+    const arrangeAttempt = ({ dayKeys, periodCount: attemptPeriodCount }, variant = 0) => {
+      const next = makeEmptySchedule(rows);
+      const teacherBusy = new Map();
+      const compactVisitCounts = new Map();
+      let placedSlotCount = 0;
+
+      const isTeacherAvailable = (teacherKeys, dayKey, periods) => (
+        !teacherKeys.length || periods.every(period => {
+          const busySet = teacherBusy.get(`${dayKey}-${period}`);
+          return !busySet || teacherKeys.every(key => !busySet.has(key));
+        })
+      );
+      const markTeacherBusy = (teacherKeys, dayKey, periods) => {
+        if (!teacherKeys.length) return;
+        periods.forEach(period => {
+          const busyKey = `${dayKey}-${period}`;
+          const busySet = teacherBusy.get(busyKey) || new Set();
+          teacherKeys.forEach(key => busySet.add(key));
+          teacherBusy.set(busyKey, busySet);
+        });
+      };
+      const isSlotEmpty = (rowId, dayKey, periods) => periods.every(period => isBlankScheduleValue(next?.[rowId]?.[dayKey]?.[period]));
+      const countUsedPeriods = (rowId, dayKey) => PERIODS.slice(0, attemptPeriodCount)
+        .filter(period => !isBlankScheduleValue(next?.[rowId]?.[dayKey]?.[period]))
+        .length;
+      const countSubjectOnDay = (rowId, dayKey, key) => PERIODS.slice(0, attemptPeriodCount)
+        .filter(period => subjectKey(next?.[rowId]?.[dayKey]?.[period]) === key)
+        .length;
+      const getHomeroomPairKey = key => {
+        if (key === 'gddp') return 'cn';
+        if (key === 'cn') return 'gddp';
+        return '';
+      };
+      const getHomeroomPairSlots = (rowId, key) => {
+        const pairKey = getHomeroomPairKey(key);
+        if (!pairKey) return [];
+        return dayKeys.flatMap(dayKey => PERIODS.slice(0, attemptPeriodCount)
+          .filter(period => subjectKey(next?.[rowId]?.[dayKey]?.[period]) === pairKey)
+          .map(period => ({ dayKey, period })));
+      };
+      const homeroomPairPenalty = (task, dayKey, periods) => {
+        if (!task.homeroomPair) return 0;
+        const pairSlots = getHomeroomPairSlots(task.rowId, task.key);
+        if (!pairSlots.length) return -15;
+        const isAdjacent = pairSlots.some(slot => slot.dayKey === dayKey && periods.some(period => Math.abs(period - slot.period) === 1));
+        if (isAdjacent) return -520;
+        const isSameDay = pairSlots.some(slot => slot.dayKey === dayKey);
+        return isSameDay ? -340 : 360;
+      };
+      const getTeacherDayCount = (teacherKey, dayKey) => PERIODS.slice(0, attemptPeriodCount)
+        .filter(period => teacherBusy.get(`${dayKey}-${period}`)?.has(teacherKey))
+        .length;
+      const getMaxTeacherDayCount = (teacherKeys, dayKey) => (
+        teacherKeys.reduce((max, key) => Math.max(max, getTeacherDayCount(key, dayKey)), 0)
+      );
+      const hasOpenTeacherDay = (teacherKeys) => (
+        teacherKeys.some(key => dayKeys.some(dayKey => getTeacherDayCount(key, dayKey) === 1))
+      );
+      const compactVisitPenalty = (task, dayKey) => {
+        if (!task.compactVisit) return 0;
+        const dayCount = getMaxTeacherDayCount(task.teacherKeys, dayKey);
+        if (dayCount === 1) return -260;
+        if (dayCount === 0 && hasOpenTeacherDay(task.teacherKeys)) return 220;
+        if (dayCount >= 2) return 120 + dayCount * 45;
+        return 35;
+      };
+      const rotatedDayKeys = (task) => {
+        if (!dayKeys.length) return [];
+        const shift = (variant + task.rowIndex + task.loadIndex) % dayKeys.length;
+        return [...dayKeys.slice(shift), ...dayKeys.slice(0, shift)];
+      };
+      const getCandidateSlots = (task) => {
+        const dayOrder = rotatedDayKeys(task);
+        const periodOrderSource = task.blockLength === 2
+          ? pairPeriodOrders[variant % pairPeriodOrders.length]
+          : singlePeriodOrders[variant % singlePeriodOrders.length];
+        const startPeriods = periodOrderSource.filter(period => period + task.blockLength - 1 <= attemptPeriodCount);
+        const candidates = [];
+        dayOrder.forEach((dayKey, dayIndex) => {
+          startPeriods.forEach(start => {
+            const periods = Array.from({ length: task.blockLength }, (_, index) => start + index);
+            if (!isSlotEmpty(task.rowId, dayKey, periods)) return;
+            if (!isTeacherAvailable(task.teacherKeys, dayKey, periods)) return;
+            const sameSubjectCount = countSubjectOnDay(task.rowId, dayKey, task.key);
+            const rowDayUsed = countUsedPeriods(task.rowId, dayKey);
+            const pairShapePenalty = task.blockLength === 2 && start % 2 !== 1 ? 5 : 0;
+            const score = sameSubjectCount * 300 + rowDayUsed * 8 + pairShapePenalty + homeroomPairPenalty(task, dayKey, periods) + compactVisitPenalty(task, dayKey) + dayIndex;
+            candidates.push({ dayKey, periods, score });
+          });
+        });
+        return candidates.sort((a, b) => a.score - b.score);
+      };
+      const markCompactVisit = (task, dayKey, periods) => {
+        if (!task.compactVisit) return;
+        task.teacherKeys.forEach(key => {
+          const visitKey = `${key}-${dayKey}`;
+          compactVisitCounts.set(visitKey, (compactVisitCounts.get(visitKey) || 0) + periods.length);
+        });
+      };
+
+      const orderedTasks = [...tasks].sort((a, b) => (
+        b.score - a.score
+        || (loadPriorityByKey[a.key] ?? 99) - (loadPriorityByKey[b.key] ?? 99)
+        || (variant % 2 === 0 ? a.rowIndex - b.rowIndex : b.rowIndex - a.rowIndex)
+        || a.blockIndex - b.blockIndex
+      ));
+      const unplaced = [];
+      orderedTasks.forEach(task => {
+        const slot = getCandidateSlots(task)[0];
+        if (!slot) {
+          unplaced.push(task);
+          return;
+        }
+        slot.periods.forEach(period => {
+          next[task.rowId][slot.dayKey][period] = task.value;
+        });
+        markTeacherBusy(task.teacherKeys, slot.dayKey, slot.periods);
+        markCompactVisit(task, slot.dayKey, slot.periods);
+        placedSlotCount += slot.periods.length;
+      });
+
+      const visitPenalty = [...compactVisitCounts.values()].reduce((sum, count) => {
+        if (count === 1) return sum + 60;
+        if (count === 2) return sum;
+        return sum + Math.abs(count - 2) * 25;
+      }, 0);
+      const homeroomPairResultPenalty = rows.reduce((sum, row) => {
+        const slotsByKey = { gddp: [], cn: [] };
+        dayKeys.forEach(dayKey => {
+          PERIODS.slice(0, attemptPeriodCount).forEach(period => {
+            const key = subjectKey(next?.[row.id]?.[dayKey]?.[period]);
+            if (key === 'gddp' || key === 'cn') slotsByKey[key].push({ dayKey, period });
+          });
+        });
+        if (!slotsByKey.gddp.length || !slotsByKey.cn.length) return sum + 30;
+        const adjacent = slotsByKey.gddp.some(gddpSlot => slotsByKey.cn.some(cnSlot => (
+          gddpSlot.dayKey === cnSlot.dayKey && Math.abs(gddpSlot.period - cnSlot.period) === 1
+        )));
+        if (adjacent) return sum;
+        const sameDay = slotsByKey.gddp.some(gddpSlot => slotsByKey.cn.some(cnSlot => gddpSlot.dayKey === cnSlot.dayKey));
+        return sum + (sameDay ? 8 : 45);
+      }, 0);
+      const validationErrors = buildScheduleValidationErrors(next, rows, dayKeys, attemptPeriodCount);
+      return {
+        dayKeys,
+        periodCount: attemptPeriodCount,
+        next,
+        placedSlotCount,
+        visitPenalty,
+        homeroomPairPenalty: homeroomPairResultPenalty,
+        unplaced,
+        validationErrors,
+        success: unplaced.length === 0 && validationErrors.length === 0
+      };
+    };
+
+    let chosenResult = null;
+    let bestResult = null;
+    const compareArrangeResults = (left, right) => {
+      if (!right) return -1;
+      const leftPenalty = left.validationErrors.length * 20 + left.unplaced.length * 50;
+      const rightPenalty = right.validationErrors.length * 20 + right.unplaced.length * 50;
+      if (leftPenalty !== rightPenalty) return leftPenalty - rightPenalty;
+      const leftExtraDays = left.dayKeys.filter(dayKey => !baseDayKeys.includes(dayKey)).length;
+      const rightExtraDays = right.dayKeys.filter(dayKey => !baseDayKeys.includes(dayKey)).length;
+      if (leftExtraDays !== rightExtraDays) return leftExtraDays - rightExtraDays;
+      if (left.periodCount !== right.periodCount) return left.periodCount - right.periodCount;
+      if ((left.homeroomPairPenalty || 0) !== (right.homeroomPairPenalty || 0)) return (left.homeroomPairPenalty || 0) - (right.homeroomPairPenalty || 0);
+      if ((left.visitPenalty || 0) !== (right.visitPenalty || 0)) return (left.visitPenalty || 0) - (right.visitPenalty || 0);
+      return right.placedSlotCount - left.placedSlotCount;
+    };
+    attemptConfigs.forEach(config => {
+      for (let variant = 0; variant < 16; variant += 1) {
+        const result = arrangeAttempt(config, variant);
+        if (compareArrangeResults(result, bestResult) < 0) {
+          bestResult = result;
+        }
+        if (result.success) {
+          if (compareArrangeResults(result, chosenResult) < 0) chosenResult = result;
+        }
+      }
+    });
+
+    const result = chosenResult || bestResult;
+    if (!result) {
+      showNotification?.('Chưa tạo được phương án xếp tự động.', 'error');
+      return;
+    }
+
+    setClassRows(rows);
+    setMergeA('6');
+    setMergeB('7');
+    setVisibleDays(result.dayKeys);
+    setPeriodCount(result.periodCount);
+    applySchedule(result.next);
+    setShowStats(true);
+    setValidationErrors(result.validationErrors);
+
+    if (result.success) {
+      const openedDays = result.dayKeys.filter(dayKey => !baseDayKeys.includes(dayKey)).map(dayKey => DAYS.find(day => day.key === dayKey)?.label || dayKey);
+      const detail = [
+        result.periodCount !== periodCount ? `${result.periodCount} tiết/ngày` : '',
+        openedDays.length ? `mở thêm ${openedDays.join(', ')}` : ''
+      ].filter(Boolean).join(', ');
+      showNotification?.(`Đã xếp đủ số tiết${detail ? ` (${detail})` : ''}.`);
+      return;
+    }
+
+    showNotification?.(`Đã thử ép đủ nhưng còn ${result.validationErrors.length} mục chưa đạt do trùng giáo viên hoặc thiếu chỗ. Tôi đã giữ phương án gần nhất để xem lại.`, 'error');
+  };
   const shownDays = DAYS.filter(day => visibleDays.includes(day.key));
 
   return (
@@ -401,12 +997,21 @@ export default function SimpleScheduleTable({ subjects = [], currentSchoolYear =
             <option value="">Soạn TKB mới</option>
             {savedSchedules.map(item => (
               <option key={item.id} value={item.id}>
-                {item.status === 'published' ? '[Đã xuất bản] ' : ''}{item.name || item.id}
+                {item.status === 'published' ? '[Đã ghim] ' : ''}[{getScheduleSemesterMeta(inferScheduleSemester(item.semester, item.name)).label}] {stripSemesterPrefix(item.name || item.id)}
               </option>
             ))}
           </select>
           <input value={scheduleName} onChange={(event) => setScheduleName(event.target.value)} className="h-9 w-[240px] rounded-lg border border-emerald-100 bg-white px-3 text-xs font-bold outline-none focus:border-emerald-400" placeholder="Tên thời khóa biểu..." />
+          <label className="inline-flex h-9 items-center gap-2 rounded-lg border border-emerald-100 bg-white px-2.5">
+            <span className="text-[10px] font-black uppercase text-emerald-700">Học kỳ</span>
+            <select value={scheduleSemester} onChange={(event) => changeScheduleSemester(event.target.value)} className="bg-transparent text-xs font-black text-slate-800 outline-none">
+              {SCHEDULE_SEMESTERS.map(item => <option key={item.key} value={item.key}>{item.label}</option>)}
+            </select>
+          </label>
           <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
+            <button type="button" onClick={autoArrangeSchedule} disabled={isSaving} className="h-9 rounded-lg bg-violet-600 px-3 text-white text-[10px] sm:text-xs font-black uppercase inline-flex items-center justify-center gap-1.5 disabled:opacity-60">
+              <Sparkles className="w-4 h-4" /> Xếp tự động
+            </button>
             <button type="button" onClick={deleteActiveSchedule} disabled={!activeId || isSaving} className="h-9 rounded-lg bg-rose-50 border border-rose-100 px-2.5 text-rose-600 text-[10px] sm:text-xs font-black uppercase inline-flex items-center justify-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed">
               <Trash2 className="w-4 h-4" /> <span>Xóa</span>
             </button>
@@ -414,7 +1019,7 @@ export default function SimpleScheduleTable({ subjects = [], currentSchoolYear =
               <Save className="w-4 h-4" /> Lưu
             </button>
             <button type="button" onClick={() => saveSchedule('published')} disabled={isSaving} className="h-9 rounded-lg bg-blue-600 px-3 text-white text-[10px] sm:text-xs font-black uppercase inline-flex items-center justify-center gap-1.5 disabled:opacity-60">
-              <Send className="w-4 h-4" /> <span className="sm:hidden">Ghim</span><span className="hidden sm:inline">Xuất bản</span>
+              <Send className="w-4 h-4" /> <span>Ghim TKB</span>
             </button>
             <button type="button" onClick={onClose} className="h-9 w-9 rounded-lg bg-white border border-emerald-100 text-slate-500 hover:text-rose-600 inline-flex items-center justify-center">
               <X className="w-5 h-5" />
@@ -478,21 +1083,23 @@ export default function SimpleScheduleTable({ subjects = [], currentSchoolYear =
 
       {showStats && (
         <div className="p-3 sm:p-4 bg-amber-50 border-b border-amber-100 overflow-x-auto">
-          <div className="text-sm font-black text-amber-900 uppercase mb-3">Kiểm tra số tiết theo từng hàng lớp</div>
+          <div className="text-sm font-black text-amber-900 uppercase mb-3">Kiểm tra số tiết theo từng hàng lớp - {getScheduleSemesterMeta(scheduleSemester).label}</div>
           <table className="w-full min-w-[900px] text-xs bg-white border border-amber-100 rounded-2xl overflow-hidden">
             <thead>
               <tr className="bg-amber-100/70 text-amber-900 uppercase">
                 <th className="px-3 py-2 text-left">Lớp</th>
-                {REQUIRED_LOADS.map(item => <th key={item.key} className="px-3 py-2 text-center">{item.label}<br />({item.required})</th>)}
+                {REQUIRED_LOADS.map(item => <th key={item.key} className="px-3 py-2 text-center">{item.label}</th>)}
               </tr>
             </thead>
             <tbody>
               {classRows.map(row => {
-                const counts = countRowSubjects(row.id);
+                const rowLoads = getRequiredLoadsForRow(row);
+                const counts = countRowSubjects(row, schedule);
                 return (
                   <tr key={row.id} className="border-t border-amber-50">
                     <td className="px-3 py-2 font-black text-slate-700">{row.label}</td>
-                    {REQUIRED_LOADS.map(item => {
+                    {REQUIRED_LOADS.map(baseItem => {
+                      const item = rowLoads.find(load => load.key === baseItem.key) || baseItem;
                       const actual = counts[item.key] || 0;
                       const ok = actual === item.required;
                       const over = actual > item.required;
@@ -517,7 +1124,7 @@ export default function SimpleScheduleTable({ subjects = [], currentSchoolYear =
             <div className="px-5 py-4 bg-rose-50 border-b border-rose-100 flex items-center justify-between gap-3">
               <div>
                 <div className="font-black text-rose-800 uppercase">Chưa thể xuất bản TKB</div>
-                <div className="text-xs font-bold text-rose-600/80 mt-1">Các lớp dưới đây chưa đúng định mức tiết. Sửa xong hãy xuất bản lại.</div>
+                <div className="text-xs font-bold text-rose-600/80 mt-1">Các lớp dưới đây chưa đúng định mức tiết của {getScheduleSemesterMeta(scheduleSemester).label}. Sửa xong hãy xuất bản lại.</div>
               </div>
               <button type="button" onClick={() => setValidationErrors([])} className="w-10 h-10 rounded-full bg-rose-600 text-white flex items-center justify-center shadow-md">
                 <X className="w-5 h-5" />
@@ -591,8 +1198,8 @@ export default function SimpleScheduleTable({ subjects = [], currentSchoolYear =
                         className="w-full rounded-xl border border-slate-200 bg-white px-2 py-2 text-xs font-bold text-slate-800 focus:outline-none focus:border-emerald-400"
                       >
                         <option value="">-</option>
-                        {getScheduleSubjectOptions(schedule[row.id]?.[day.key]?.[period] || '').map(subject => (
-                          <option key={subject} value={subject}>{displayEditorSubject(subject)}</option>
+                        {getScheduleSubjectOptions(schedule[row.id]?.[day.key]?.[period] || '', row).map(subject => (
+                          <option key={subject} value={subject}>{compactScheduleCellValue(subject, teacherShortNameByKey)}</option>
                         ))}
                       </select>
                     </td>

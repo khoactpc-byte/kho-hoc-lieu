@@ -5,6 +5,46 @@
 .hide-scrollbar::-webkit-scrollbar { display: none; }
 .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
 
+.teaching-assignment-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  background: #f1f5f9;
+  box-shadow: 0 1px 0 rgba(148, 163, 184, 0.4);
+  background-clip: padding-box;
+}
+
+.teaching-assignment-table thead tr:nth-child(2) th {
+  top: 2.05rem;
+  background: #f8fafc;
+}
+
+.teaching-assignment-panel {
+  height: 100% !important;
+  min-height: 0 !important;
+  max-height: 100% !important;
+  overscroll-behavior: contain;
+}
+
+.teaching-assignment-scroll {
+  height: 100% !important;
+  min-height: 0 !important;
+  max-height: 100% !important;
+  overscroll-behavior: contain;
+  contain: layout paint;
+  will-change: scroll-position;
+}
+
+.teaching-assignment-table thead::before {
+  content: "";
+  position: sticky;
+  top: 0;
+  display: block;
+  height: 0;
+  z-index: 49;
+  background: #f1f5f9;
+}
+
 .home-panels-wrap {
   flex: none !important;
 }
