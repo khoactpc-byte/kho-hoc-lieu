@@ -50,6 +50,49 @@ const AdminSettingsWorkspace = lazy(() => import('./components/AdminSettingsWork
 
 const THD_TEACHING_ASSIGNMENT_CHUNK_SIZE = 250000;
 
+class WorkspaceErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+
+  componentDidUpdate(prevProps) {
+    if (prevProps.resetKey !== this.props.resetKey && this.state.error) {
+      this.setState({ error: null });
+    }
+  }
+
+  componentDidCatch(error, info) {
+    console.error('Workspace render error:', error, info);
+  }
+
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <div className="fixed inset-x-0 top-[84px] bottom-0 z-[160] bg-white p-6 flex items-center justify-center">
+        <div className="max-w-xl rounded-2xl border border-rose-200 bg-rose-50 p-5 shadow-lg">
+          <div className="text-lg font-black text-rose-800">{this.props.title || 'Màn hình đang lỗi'}</div>
+          <div className="mt-2 text-sm font-bold text-rose-700">
+            Có lỗi khi mở màn này. App vẫn hoạt động, bạn đóng màn này rồi thử lại.
+          </div>
+          <div className="mt-3 rounded-xl bg-white px-3 py-2 text-xs font-bold text-slate-600">
+            {this.state.error?.message || 'Không đọc được nội dung lỗi.'}
+          </div>
+          {this.props.onClose && (
+            <button type="button" onClick={this.props.onClose} className="mt-4 h-10 rounded-xl bg-rose-600 px-4 text-sm font-black text-white hover:bg-rose-700">
+              Đóng màn này
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
+}
+
 const splitTextIntoChunks = (text = '', size = THD_TEACHING_ASSIGNMENT_CHUNK_SIZE) => {
   const chunks = [];
   for (let index = 0; index < text.length; index += size) {
@@ -66,6 +109,16 @@ const ADMIN_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const STUDENT_PROFILE_EDIT_FIELDS = [
   { key: 'fullName', label: 'Họ và tên' },
   { key: 'birthDate', label: 'Ngày sinh' },
+  { key: 'birthProvince', label: 'Tỉnh nơi sinh' },
+  { key: 'birthDistrict', label: 'Huyện nơi sinh' },
+  { key: 'birthWard', label: 'Xã nơi sinh' },
+  { key: 'birthPlaceName', label: 'Tên nơi sinh' },
+  { key: 'birthRegistrationProvince', label: 'Tỉnh đăng ký khai sinh' },
+  { key: 'birthRegistrationDistrict', label: 'Huyện đăng ký khai sinh' },
+  { key: 'birthRegistrationWard', label: 'Xã đăng ký khai sinh' },
+  { key: 'hometownProvince', label: 'Tỉnh quê quán' },
+  { key: 'hometownDistrict', label: 'Huyện quê quán' },
+  { key: 'hometownWard', label: 'Xã quê quán' },
   { key: 'identityCode', label: 'Mã định danh' },
   { key: 'phone', label: 'Số điện thoại' },
   { key: 'province', label: 'Tỉnh / Thành' },
@@ -876,9 +929,9 @@ function App() {
   const [activeQuickScoreRowKey, setActiveQuickScoreRowKey] = useState('');
   const [showAdminCheckWorkspace, setShowAdminCheckWorkspace] = useState(false);
   const [showPasswordWorkspace, setShowPasswordWorkspace] = useState(false);
-  const [showAdminSettingsWorkspace, setShowAdminSettingsWorkspace] = useState(false);
-  const [adminSettingsInitialPanel, setAdminSettingsInitialPanel] = useState('general');
-  const [adminModule, setAdminModule] = useState(() => initialAdminSession?.module || 'thcs');
+  const [showAdminSettingsWorkspace, setShowAdminSettingsWorkspace] = useState(() => initialAdminSession?.scope === 'thd');
+  const [adminSettingsInitialPanel, setAdminSettingsInitialPanel] = useState(() => (initialAdminSession?.scope === 'thd' ? 'thdTeachingAssignments' : 'general'));
+  const [adminModule, setAdminModule] = useState(() => (initialAdminSession?.scope === 'thd' ? 'thd' : (initialAdminSession?.module || 'thcs')));
   const [adminAccessScope, setAdminAccessScope] = useState(() => initialAdminSession?.scope === 'thd' ? 'thd' : 'full');
   const [mobileHomeTab, setMobileHomeTab] = useState('notifications'); 
   const [teacherTab, setTeacherTab] = useState('giang_day');
@@ -1741,6 +1794,14 @@ function App() {
     setLoginRole(null);
     setAdminAccessScope(sessionScope);
     if (session.module) setAdminModule(session.module);
+    if (sessionScope === 'thd') {
+      setAdminModule('thd');
+      setAdminSettingsInitialPanel('thdTeachingAssignments');
+      setShowAdminSettingsWorkspace(true);
+      if (typeof window !== 'undefined') {
+        window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}#/admin/tran-hung-dao/assignments`);
+      }
+    }
   }, [adminPass, adminSettingsLoaded, closeAdminSessionView, isAdmin, thdAdminPass, user]);
 
   useEffect(() => {
@@ -2130,6 +2191,21 @@ function App() {
     }
   }, [openQuickScoreWorkspace]);
 
+  const openScorebookWorkspace = useCallback((mode = 'scorebook', gradeValue = '6') => {
+    const nextMode = mode === 'transcript' ? 'transcript' : 'scorebook';
+    setShowAdminSettingsWorkspace(false);
+    setShowStudentDatabase(false);
+    setShowScheduleWorkspace(false);
+    setShowAttendanceWorkspace(false);
+    setShowLearningResultsWorkspace(false);
+    setQuickScoreLockedContext(null);
+    setShowAdminCheckWorkspace(false);
+    setShowPasswordWorkspace(false);
+    setIsAdminTextbookExpanded(false);
+    setScorebookInitialMode(nextMode);
+    setScorebookGrade(String(gradeValue || '6'));
+  }, []);
+
   const runAdminMenuAction = useCallback(async (action) => {
     setShowAdminSettingsWorkspace(false);
     setShowStudentDatabase(false);
@@ -2217,13 +2293,11 @@ function App() {
       },
       '/scorebook': () => {
         setAdminModule('thcs');
-        setScorebookInitialMode('scorebook');
-        setScorebookGrade('6');
+        openScorebookWorkspace('scorebook', '6');
       },
       '/transcript': () => {
         setAdminModule('thcs');
-        setScorebookInitialMode('transcript');
-        setScorebookGrade('6');
+        openScorebookWorkspace('transcript', '6');
       },
       '/utilities/textbooks': () => setIsAdminTextbookExpanded(true),
       '/utilities/check': () => setShowAdminCheckWorkspace(true),
@@ -2233,7 +2307,7 @@ function App() {
     if (!routeAction) return false;
     runAdminMenuAction(routeAction);
     return true;
-  }, [adminAccessScope, adminModule, openAdminQuickScore, openAdminSettingsPanel, openStudentDatabaseTab, runAdminMenuAction]);
+  }, [adminAccessScope, adminModule, openAdminQuickScore, openAdminSettingsPanel, openScorebookWorkspace, openStudentDatabaseTab, runAdminMenuAction]);
 
   useEffect(() => {
     if (!isAdmin || typeof window === 'undefined') return undefined;
@@ -2395,8 +2469,8 @@ function App() {
           { key: 'attendance', label: 'Nhập điểm danh', href: getAdminRouteHref(isPrimary ? '/primary/input/attendance' : '/thcs/input/attendance'), action: () => setShowAttendanceWorkspace(true) }
         ]
       },
-      { key: 'scorebook', label: 'Sổ điểm', desc: isPrimary ? 'Phần sổ điểm tiểu học sẽ tính sau.' : 'Mở sổ điểm theo lớp 6, 7, 8, 9.', icon: FileText, pending: isPrimary, href: isPrimary ? '' : getAdminRouteHref('/scorebook'), action: isPrimary ? null : () => { setScorebookInitialMode('scorebook'); setScorebookGrade('6'); } },
-      { key: 'transcript', label: 'Học bạ', desc: isPrimary ? 'Phần học bạ tiểu học sẽ tính sau.' : 'Mở học bạ theo lớp 6, 7, 8, 9.', icon: BookOpen, pending: isPrimary, href: isPrimary ? '' : getAdminRouteHref('/transcript'), action: isPrimary ? null : () => { setScorebookInitialMode('transcript'); setScorebookGrade('6'); } },
+      { key: 'scorebook', label: 'Sổ điểm', desc: isPrimary ? 'Phần sổ điểm tiểu học sẽ tính sau.' : 'Mở sổ điểm theo lớp 6, 7, 8, 9.', icon: FileText, pending: isPrimary, href: isPrimary ? '' : getAdminRouteHref('/scorebook'), action: isPrimary ? null : () => openScorebookWorkspace('scorebook', '6') },
+      { key: 'transcript', label: 'Học bạ', desc: isPrimary ? 'Phần học bạ tiểu học sẽ tính sau.' : 'Mở học bạ theo lớp 6, 7, 8, 9.', icon: BookOpen, pending: isPrimary, href: isPrimary ? '' : getAdminRouteHref('/transcript'), action: isPrimary ? null : () => openScorebookWorkspace('transcript', '6') },
       {
         key: 'stats',
         label: 'Tiện ích',
@@ -2410,7 +2484,7 @@ function App() {
         ]
       }
     ];
-  }, [adminAccessScope, adminModule, getAdminRouteHref, openAdminQuickScore, openAdminSettingsPanel, openNoticeHome, openStudentDatabaseTab, showNotification, studentProfileRequestCount]);
+  }, [adminAccessScope, adminModule, getAdminRouteHref, openAdminQuickScore, openAdminSettingsPanel, openNoticeHome, openScorebookWorkspace, openStudentDatabaseTab, showNotification, studentProfileRequestCount]);
 
   const saveQuickScoreValue = useCallback(async (semester, pageIndex, rowIndex, scoreIndex, rawValue) => {
     if (!user) return false;
@@ -2972,11 +3046,14 @@ function App() {
   const handleLogin = () => {
     if (modalMode === 'admin') {
       if (passwordInput === adminPass) {
-        writeStoredAdminSession(adminPass, adminModule, 'full');
+        writeStoredAdminSession(adminPass, 'thcs', 'full');
         setAdminAccessScope('full');
+        setAdminModule('thcs');
         setIsAdmin(true);
         setRole('admin');
         setLoginRole(null);
+        setAdminSettingsInitialPanel('general');
+        setShowAdminSettingsWorkspace(false);
         setShowPasswordModal(false);
         showNotification("Đã vào Quản trị");
       } else {
@@ -3018,6 +3095,10 @@ function App() {
   const handleExitAdmin = () => {
     clearStoredAdminSession();
     closeAdminSessionView();
+    setAdminAccessScope('full');
+    setAdminModule('thcs');
+    setAdminSettingsInitialPanel('general');
+    setShowAdminSettingsWorkspace(false);
     resetNavigationWithClean();
     if (typeof window !== 'undefined' && window.location.hash.toLowerCase().startsWith('#/admin')) {
       window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
@@ -6107,7 +6188,7 @@ ${lessonBlocks}`;
                     </div>
                     <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                       {GRADES.map(grade => (
-                        <button key={`scorebook-${grade}`} type="button" onClick={() => { setScorebookInitialMode('scorebook'); setScorebookGrade(String(grade)); }} className="min-h-[110px] rounded-2xl border border-violet-100 bg-violet-50 text-violet-800 p-3 flex flex-col items-center justify-center gap-2 hover:bg-violet-600 hover:text-white transition-colors">
+                        <button key={`scorebook-${grade}`} type="button" onClick={() => openScorebookWorkspace('scorebook', grade)} className="min-h-[110px] rounded-2xl border border-violet-100 bg-violet-50 text-violet-800 p-3 flex flex-col items-center justify-center gap-2 hover:bg-violet-600 hover:text-white transition-colors">
                           <FileText className="w-6 h-6" />
                           <span className="text-xs font-black uppercase">Khối {grade}</span>
                         </button>
@@ -6124,7 +6205,7 @@ ${lessonBlocks}`;
                     </div>
                     <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                       {GRADES.map(grade => (
-                        <button key={`transcript-${grade}`} type="button" onClick={() => { setScorebookInitialMode('transcript'); setScorebookGrade(String(grade)); }} className="min-h-[110px] rounded-2xl border border-blue-100 bg-blue-50 text-blue-800 p-3 flex flex-col items-center justify-center gap-2 hover:bg-blue-600 hover:text-white transition-colors">
+                        <button key={`transcript-${grade}`} type="button" onClick={() => openScorebookWorkspace('transcript', grade)} className="min-h-[110px] rounded-2xl border border-blue-100 bg-blue-50 text-blue-800 p-3 flex flex-col items-center justify-center gap-2 hover:bg-blue-600 hover:text-white transition-colors">
                           <BookOpen className="w-6 h-6" />
                           <span className="text-xs font-black uppercase">Khối {grade}</span>
                         </button>
@@ -6159,10 +6240,17 @@ ${lessonBlocks}`;
                       </button>}
                       {isAdmin && <button
                         type="button"
-                        onClick={() => { setScorebookInitialMode('scorebook'); setScorebookGrade(String(quickScoreGrade)); }}
+                        onClick={() => openScorebookWorkspace('scorebook', quickScoreGrade)}
                         className="h-10 rounded-xl border border-violet-200 bg-violet-50 px-3 text-xs font-black uppercase text-violet-700 hover:bg-violet-100"
                       >
                         Mở sổ khối {quickScoreGrade}
+                      </button>}
+                      {isAdmin && <button
+                        type="button"
+                        onClick={() => openScorebookWorkspace('transcript', quickScoreGrade)}
+                        className="h-10 rounded-xl border border-blue-200 bg-blue-50 px-3 text-xs font-black uppercase text-blue-700 hover:bg-blue-100"
+                      >
+                        Học bạ khối {quickScoreGrade}
                       </button>}
                     </div>
                   </div>
@@ -6407,6 +6495,11 @@ ${lessonBlocks}`;
           )}
           {isAdmin && scorebookGrade && (
             <Suspense fallback={<div className="fixed inset-x-0 top-[84px] bottom-0 z-[140] bg-white flex items-center justify-center text-sm font-black text-violet-700">Đang mở sổ điểm...</div>}>
+              <WorkspaceErrorBoundary
+                resetKey={`${scorebookInitialMode}-${scorebookGrade}-${activeSchoolYear}`}
+                title={scorebookInitialMode === 'transcript' ? 'Màn Học bạ đang lỗi' : 'Màn Sổ điểm đang lỗi'}
+                onClose={() => setScorebookGrade(null)}
+              >
                 <ScorebookWorkspace
                 grade={scorebookGrade}
                 initialMode={scorebookInitialMode}
@@ -6427,6 +6520,7 @@ ${lessonBlocks}`;
                 onClose={() => setScorebookGrade(null)}
                 showNotification={showNotification}
               />
+              </WorkspaceErrorBoundary>
             </Suspense>
           )}
           {isAdmin && showAdminCheckWorkspace && (
@@ -6552,7 +6646,7 @@ ${lessonBlocks}`;
               />
             </div>
           )}
-          <div className={`home-panels-wrap ${isAdmin ? 'admin-home-panels-wrap max-w-none' : 'max-w-6xl'} w-full mb-3 sm:mb-4 flex flex-col min-h-0`}>
+          <div className={`home-panels-wrap ${isAdmin && (adminAccessScope === 'thd' || adminModule === 'thd') ? 'hidden' : ''} ${isAdmin ? 'admin-home-panels-wrap max-w-none' : 'max-w-6xl'} w-full mb-3 sm:mb-4 flex flex-col min-h-0`}>
               <div className="lg:hidden flex flex-col items-center w-full min-h-0">
                   <div className="bg-white/60 p-1.5 rounded-full mb-3 flex w-[280px] shadow-sm border border-white shrink-0">
                       <button onClick={() => setMobileHomeTab('notifications')} className={`flex-1 py-2 rounded-full text-xs font-black uppercase tracking-widest transition-all ${mobileHomeTab === 'notifications' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-500 hover:text-blue-600'}`}>Thông báo</button>

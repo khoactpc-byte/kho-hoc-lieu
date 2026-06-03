@@ -37,6 +37,16 @@ const STUDENT_FIELDS = [
   { key: 'fullName', label: 'Họ và tên', required: true, sticky: true },
   { key: 'birthDate', label: 'Ngày sinh' },
   { key: 'gender', label: 'Giới tính' },
+  { key: 'birthProvince', label: 'Tỉnh nơi sinh' },
+  { key: 'birthDistrict', label: 'Huyện nơi sinh' },
+  { key: 'birthWard', label: 'Xã nơi sinh' },
+  { key: 'birthPlaceName', label: 'Tên nơi sinh' },
+  { key: 'birthRegistrationProvince', label: 'Tỉnh đăng ký khai sinh' },
+  { key: 'birthRegistrationDistrict', label: 'Huyện đăng ký khai sinh' },
+  { key: 'birthRegistrationWard', label: 'Xã đăng ký khai sinh' },
+  { key: 'hometownProvince', label: 'Tỉnh quê quán' },
+  { key: 'hometownDistrict', label: 'Huyện quê quán' },
+  { key: 'hometownWard', label: 'Xã quê quán' },
   { key: 'identityCode', label: 'Mã định danh' },
   { key: 'phone', label: 'Số điện thoại' },
   { key: 'className', label: 'Lớp học', required: true },
@@ -75,6 +85,16 @@ const ADMIN_EDIT_FIELD_ORDER = [
   'fullName',
   'birthDate',
   'gender',
+  'birthProvince',
+  'birthDistrict',
+  'birthWard',
+  'birthPlaceName',
+  'birthRegistrationProvince',
+  'birthRegistrationDistrict',
+  'birthRegistrationWard',
+  'hometownProvince',
+  'hometownDistrict',
+  'hometownWard',
   'identityCode',
   'phone',
   'className',
@@ -124,6 +144,7 @@ const DEFAULT_VISIBLE_COLUMNS = [
   'enrollmentYear',
   'birthDate',
   'gender',
+  'birthProvince',
   'identityCode',
   'phone',
   'className',
@@ -134,6 +155,7 @@ const REGISTRATION_DEFAULT_VISIBLE_COLUMNS = [
   'fullName',
   'birthDate',
   'gender',
+  'birthProvince',
   'identityCode',
   'phone',
   'className',
@@ -232,6 +254,8 @@ const HEADER_MAP = {
   'ngày sinh': 'birthDate',
   'gioi tinh': 'gender',
   'giới tính': 'gender',
+  'ma hoc sinh': 'accessCode',
+  'mã học sinh': 'accessCode',
   'ma dinh danh': 'identityCode',
   'mã định danh': 'identityCode',
   'so dien thoai': 'phone',
@@ -246,6 +270,34 @@ const HEADER_MAP = {
   'xã / phường': 'ward',
   'tinh / thanh': 'province',
   'tỉnh / thành': 'province',
+  'ten noi sinh': 'birthPlaceName',
+  'tên nơi sinh': 'birthPlaceName',
+  'tinh noi sinh': 'birthProvince',
+  'tỉnh nơi sinh': 'birthProvince',
+  'huyen noi sinh': 'birthDistrict',
+  'huyện nơi sinh': 'birthDistrict',
+  'xa noi sinh': 'birthWard',
+  'xã nơi sinh': 'birthWard',
+  'noi sinh day du': 'birthPlace',
+  'nơi sinh đầy đủ': 'birthPlace',
+  'noi sinh': 'birthPlace',
+  'nơi sinh': 'birthPlace',
+  'tinh dang ky khai sinh': 'birthRegistrationProvince',
+  'tỉnh đăng ký khai sinh': 'birthRegistrationProvince',
+  'huyen dang ky khai sinh': 'birthRegistrationDistrict',
+  'huyện đăng ký khai sinh': 'birthRegistrationDistrict',
+  'xa dang ky khai sinh': 'birthRegistrationWard',
+  'xã đăng ký khai sinh': 'birthRegistrationWard',
+  'noi dang ky khai sinh day du': 'birthRegistrationPlace',
+  'nơi đăng ký khai sinh đầy đủ': 'birthRegistrationPlace',
+  'tinh que quan': 'hometownProvince',
+  'tỉnh quê quán': 'hometownProvince',
+  'huyen que quan': 'hometownDistrict',
+  'huyện quê quán': 'hometownDistrict',
+  'xa que quan': 'hometownWard',
+  'xã quê quán': 'hometownWard',
+  'que quan day du': 'hometownPlace',
+  'quê quán đầy đủ': 'hometownPlace',
   'so nha / khu pho kp': 'householdAddress',
   'số nhà / khu phố kp': 'householdAddress',
   'xa / phuong hk': 'householdWard',
@@ -313,6 +365,19 @@ const emptyStudent = {
   address: '',
   ward: '',
   province: '',
+  birthPlaceName: '',
+  birthProvince: '',
+  birthDistrict: '',
+  birthWard: '',
+  birthPlace: '',
+  birthRegistrationProvince: '',
+  birthRegistrationDistrict: '',
+  birthRegistrationWard: '',
+  birthRegistrationPlace: '',
+  hometownProvince: '',
+  hometownDistrict: '',
+  hometownWard: '',
+  hometownPlace: '',
   householdAddress: '',
   householdWard: '',
   householdProvince: '',
@@ -367,18 +432,47 @@ const pickText = (...values) => {
   return '';
 };
 
+const formatStudentFullName = (value = '') => {
+  const text = safePlainValue(value).replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  return text
+    .toLocaleLowerCase('vi-VN')
+    .replace(/(^|[\s\-'.’])(\p{L})/gu, (_, prefix, letter) => `${prefix}${letter.toLocaleUpperCase('vi-VN')}`);
+};
+
+const isUsefulSheetValue = (value = '') => {
+  const text = safePlainValue(value);
+  if (!text) return false;
+  const normalized = text.trim().toUpperCase();
+  return !normalized.startsWith('#') && normalized !== 'N/A' && normalized !== 'NA' && normalized !== 'NULL' && normalized !== 'UNDEFINED';
+};
+
 const registrationToStudentData = (registration = {}, currentSchoolYear = '') => ({
   ...emptyStudent,
-  fullName: pickText(registration.fullName, registration.hoVaTen),
+  fullName: formatStudentFullName(pickText(registration.fullName, registration.hoVaTen)),
   birthDate: formatDisplayDate(pickText(registration.birthDate, registration.ngaySinh)),
   gender: pickText(registration.gender, registration.gioiTinh),
+  accessCode: pickText(registration.accessCode, registration.maHocSinh).toUpperCase().replace(/\s/g, ''),
   identityCode: pickText(registration.identityCode, registration.maDinhDanh).replace(/^'/, ''),
   phone: pickText(registration.phone, registration.soDienThoai).replace(/^'/, ''),
-  className: pickText(registration.className, registration.lopHoc),
+  className: pickText(registration.currentClassName, registration.className, registration.lopHoc),
   enrollmentYear: pickText(registration.enrollmentYear, registration.tinhTrangHocSinh, registration.hocTuNam),
   address: pickText(registration.address, registration.soNha),
   ward: pickText(registration.ward, registration.xaPhuong),
   province: pickText(registration.province, registration.tinhThanh),
+  birthPlaceName: pickText(registration.birthPlaceName),
+  birthProvince: pickText(registration.birthProvince),
+  birthDistrict: pickText(registration.birthDistrict),
+  birthWard: pickText(registration.birthWard),
+  birthPlace: pickText(registration.birthPlace, registration.birthProvince),
+  birthRegistrationProvince: pickText(registration.birthRegistrationProvince),
+  birthRegistrationDistrict: pickText(registration.birthRegistrationDistrict),
+  birthRegistrationWard: pickText(registration.birthRegistrationWard),
+  birthRegistrationPlace: pickText(registration.birthRegistrationPlace, registration.birthRegistrationProvince),
+  hometownProvince: pickText(registration.hometownProvince),
+  hometownDistrict: pickText(registration.hometownDistrict),
+  hometownWard: pickText(registration.hometownWard),
+  hometownPlace: pickText(registration.hometownPlace, registration.hometownProvince),
   householdAddress: pickText(registration.householdAddress, registration.soNhaHK),
   householdWard: pickText(registration.householdWard, registration.xaPhuongHK),
   householdProvince: pickText(registration.householdProvince, registration.tinhThanhHK),
@@ -420,6 +514,7 @@ const normalizeStudentRecord = (student = {}, fallbackSchoolYear = '') => {
   normalized.id = safePlainValue(student.id);
   normalized.previousStudentId = safePlainValue(student.previousStudentId);
   normalized.schoolYear = safePlainValue(student.schoolYear || fallbackSchoolYear);
+  normalized.fullName = formatStudentFullName(normalized.fullName);
   normalized.birthDate = formatDisplayDate(normalized.birthDate);
   normalized.identityCode = normalized.identityCode.replace(/^'/, '');
   normalized.phone = normalized.phone.replace(/^'/, '');
@@ -450,7 +545,11 @@ const sanitizeStudentChanges = (changes = {}) => {
   if (!changes || typeof changes !== 'object' || Array.isArray(changes)) return {};
   return Object.fromEntries(Object.entries(changes)
     .filter(([key]) => Object.prototype.hasOwnProperty.call(emptyStudent, key) || key === 'schoolYear' || key === 'previousStudentId')
-    .map(([key, value]) => [key, key === 'isClassLeader' ? Boolean(value) : safePlainValue(value)]));
+    .map(([key, value]) => {
+      if (key === 'isClassLeader') return [key, Boolean(value)];
+      if (key === 'fullName') return [key, formatStudentFullName(value)];
+      return [key, safePlainValue(value)];
+    }));
 };
 
 const normalizeHeader = (value = '') => String(value || '')
@@ -701,7 +800,7 @@ const parseSheetPaste = (text = '', currentSchoolYear = '') => {
     headers.forEach((key, index) => {
       if (key) item[key] = String(cells[index] || '').trim();
     });
-    return item;
+    return normalizeStudentRecord(item, currentSchoolYear);
   }).filter(item => item.fullName || item.identityCode);
 };
 
@@ -1029,6 +1128,7 @@ const loadRegistrationDataAction = (action = '', paramsObject = {}) => new Promi
 });
 
 const toSheetStudentParams = (student = {}, schoolYear = '') => ({
+  accessCode: student.accessCode || student.studentCode || '',
   identityCode: String(student.identityCode || '').replace(/^'/, ''),
   fullName: student.fullName || '',
   birthDate: formatDisplayDate(student.birthDate || ''),
@@ -1039,6 +1139,17 @@ const toSheetStudentParams = (student = {}, schoolYear = '') => ({
   address: student.address || '',
   ward: student.ward || '',
   province: student.province || '',
+  birthPlaceName: student.birthPlaceName || '',
+  birthProvince: student.birthProvince || '',
+  birthDistrict: student.birthDistrict || '',
+  birthWard: student.birthWard || '',
+  birthPlace: student.birthPlace || student.birthProvince || '',
+  birthRegistrationProvince: student.birthRegistrationProvince || '',
+  birthRegistrationDistrict: student.birthRegistrationDistrict || '',
+  birthRegistrationWard: student.birthRegistrationWard || '',
+  hometownProvince: student.hometownProvince || '',
+  hometownDistrict: student.hometownDistrict || '',
+  hometownWard: student.hometownWard || '',
   householdAddress: student.householdAddress || '',
   householdWard: student.householdWard || '',
   householdProvince: student.householdProvince || '',
@@ -1081,6 +1192,7 @@ const STUDENT_DOCUMENTS = [
 const MISSING_INFO_CHECK_FIELDS = [
   { key: 'birthDate', label: 'ngày sinh' },
   { key: 'gender', label: 'giới tính' },
+  { key: 'birthProvince', label: 'tỉnh nơi sinh' },
   { key: 'identityCode', label: 'mã định danh' },
   { key: 'className', label: 'lớp' },
   { key: 'phone', label: 'số điện thoại học sinh' },
@@ -1091,6 +1203,51 @@ const MISSING_INFO_CHECK_FIELDS = [
   { key: 'birthCertificateUrl', label: 'khai sinh', document: true },
   { key: 'identityCardUrl', label: 'căn cước', document: true },
   { key: 'transcriptUrl', label: 'học bạ', document: true }
+];
+
+const SHEET_TO_DATABASE_SYNC_FIELDS = [
+  'fullName',
+  'birthDate',
+  'gender',
+  'identityCode',
+  'phone',
+  'className',
+  'enrollmentYear',
+  'address',
+  'ward',
+  'province',
+  'householdAddress',
+  'householdWard',
+  'householdProvince',
+  'fatherName',
+  'fatherBirthYear',
+  'fatherJob',
+  'fatherPhone',
+  'motherName',
+  'motherBirthYear',
+  'motherJob',
+  'motherPhone',
+  'temporaryStatus',
+  'transport',
+  'birthPlaceName',
+  'birthProvince',
+  'birthDistrict',
+  'birthWard',
+  'birthPlace',
+  'birthRegistrationProvince',
+  'birthRegistrationDistrict',
+  'birthRegistrationWard',
+  'hometownProvince',
+  'hometownDistrict',
+  'hometownWard',
+  'hocLucLop6',
+  'hanhKiemLop6',
+  'hocLucLop7',
+  'hanhKiemLop7',
+  'hocLucLop8',
+  'hanhKiemLop8',
+  'hocLucLop9',
+  'hanhKiemLop9'
 ];
 
 const ACADEMIC_RESULT_CHECK_FIELDS = [
@@ -1172,6 +1329,7 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
   const [showClassPicker, setShowClassPicker] = useState(false);
   const [showClassStats, setShowClassStats] = useState(false);
   const [showExportChoice, setShowExportChoice] = useState(false);
+  const [showUtilitiesMenu, setShowUtilitiesMenu] = useState(false);
   const [isSharingPdf, setIsSharingPdf] = useState(false);
   const [sharedPdfLink, setSharedPdfLink] = useState('');
   const [missingInfoReport, setMissingInfoReport] = useState('');
@@ -1308,12 +1466,7 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
         .filter(student => !journeyYearFilter || student.schoolYear === journeyYearFilter)
         .map(student => student.className)
     ).sort((a, b) => a.localeCompare(b, 'vi', { numeric: true, sensitivity: 'base' }));
-    const grades = uniqueTextItems(classes.map(className => getGradeFromClass(className)))
-      .sort((a, b) => Number(a) - Number(b));
-    return [
-      ...grades.map(grade => ({ value: `grade:${grade}`, label: `Khối ${grade}` })),
-      ...classes.map(className => ({ value: `class:${className}`, label: `Lớp ${className}` }))
-    ];
+    return classes.map(className => ({ value: className, label: `Lop ${className}` }));
   }, [safeStudents, journeyYearFilter]);
   const journeyStudentsByYearGrade = useMemo(() => {
     const map = new Map();
@@ -1891,6 +2044,49 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
     });
   };
 
+  const toggleAllVisibleColumns = () => {
+    setVisibleColumns(prev => {
+      const allKeys = STUDENT_FIELDS.map(field => field.key);
+      const isAllSelected = allKeys.every(key => prev.includes(key));
+      return isAllSelected ? ['fullName'] : allKeys;
+    });
+  };
+
+  const normalizeCurrentYearStudentNames = async () => {
+    const rawStudents = Array.isArray(students) ? students : [];
+    const targets = rawStudents
+      .filter(student => String(student.schoolYear || currentSchoolYear) === String(currentSchoolYear))
+      .map(student => {
+        const currentName = safePlainValue(student.fullName);
+        const nextName = formatStudentFullName(currentName);
+        return { ...student, currentName, nextName };
+      })
+      .filter(student => student.id && student.nextName && student.currentName !== student.nextName);
+
+    if (!targets.length) {
+      showNotification?.('Tên học sinh năm này đã đúng dạng hoa đầu từ.');
+      return;
+    }
+    if (!window.confirm(`Chuẩn hóa ${targets.length} tên học sinh của năm ${currentSchoolYear} sang dạng hoa đầu từ?`)) return;
+    setIsSaving(true);
+    try {
+      await Promise.all(targets.map(student => setDoc(
+        doc(db, 'artifacts', appId, 'public', 'data', 'students', student.id),
+        {
+          fullName: student.nextName,
+          updatedAt: Date.now(),
+          updatedBy: user?.uid || ''
+        },
+        { merge: true }
+      )));
+      showNotification?.(`Đã chuẩn hóa ${targets.length} tên học sinh.`);
+    } catch (error) {
+      showNotification?.(`Chưa chuẩn hóa được tên học sinh: ${error.message}`, 'error');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
   const saveStudent = async () => {
     if (uploadingDocumentKey) {
       showNotification?.('Đang tải file giấy tờ, chờ xong rồi lưu hồ sơ nhé.', 'error');
@@ -2414,6 +2610,79 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
     }
   };
 
+  const syncStudentsFromSheet = async () => {
+    if (!yearStudents.length) {
+      showNotification?.('Chưa có học sinh trong database để khớp với Sheet.', 'error');
+      return;
+    }
+    if (!window.confirm('Cập nhật database từ Google Sheet cho các học sinh đã khớp? Hệ thống chỉ ghi đè ô Sheet có dữ liệu, không xóa dữ liệu đang có trong database.')) return;
+    setIsSaving(true);
+    try {
+      const response = await loadRegistrationDataAction('listStudents', { schoolYear: currentSchoolYear });
+      const sheetRows = Array.isArray(response.items) ? response.items : [];
+      if (!sheetRows.length) {
+        showNotification?.('Chưa đọc được dòng nào từ Sheet.', 'error');
+        return;
+      }
+      let matchedCount = 0;
+      let updatedCount = 0;
+      let skippedCount = 0;
+      const errors = [];
+
+      for (const row of sheetRows) {
+        const sheetStudent = registrationToStudentData(row, currentSchoolYear);
+        const accessCode = String(sheetStudent.accessCode || '').trim().toUpperCase();
+        const identityCode = String(sheetStudent.identityCode || '').replace(/^'/, '').trim();
+        const existing = (accessCode
+          ? yearStudents.find(student => String(student.accessCode || student.studentCode || '').trim().toUpperCase() === accessCode)
+          : null)
+          || (/^\d{12}$/.test(identityCode)
+          ? yearStudents.find(student => String(student.identityCode || '').replace(/^'/, '').trim() === identityCode)
+          : null)
+          || yearStudents.find(student =>
+            normalizeVietnameseName(student.fullName || '') === normalizeVietnameseName(sheetStudent.fullName || '')
+            && normalizeBirthDate(student.birthDate || '') === normalizeBirthDate(sheetStudent.birthDate || '')
+          );
+        if (!existing?.id) {
+          skippedCount += 1;
+          continue;
+        }
+        matchedCount += 1;
+        const changes = {};
+        SHEET_TO_DATABASE_SYNC_FIELDS.forEach(key => {
+          const nextValue = key === 'birthDate'
+            ? formatDisplayDate(sheetStudent[key] || '')
+            : safePlainValue(sheetStudent[key]);
+          if (!isUsefulSheetValue(nextValue)) return;
+          if (safePlainValue(existing[key]) === nextValue) return;
+          changes[key] = nextValue;
+        });
+        if (!Object.keys(changes).length) continue;
+        try {
+          await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'students', existing.id), {
+            ...changes,
+            updatedAt: Date.now(),
+            updatedBy: user?.uid || ''
+          }, { merge: true });
+          updatedCount += 1;
+        } catch (error) {
+          errors.push(`${existing.fullName || existing.accessCode || 'Học sinh'}: ${error.message}`);
+        }
+      }
+
+      if (errors.length) {
+        console.warn('Lỗi cập nhật database từ Sheet:', errors);
+        showNotification?.(`Đã cập nhật ${updatedCount} hồ sơ, ${errors.length} hồ sơ lỗi. Khớp ${matchedCount}, bỏ qua ${skippedCount}.`, 'error');
+      } else {
+        showNotification?.(`Đã cập nhật database từ Sheet: ${updatedCount} hồ sơ. Khớp ${matchedCount}, bỏ qua ${skippedCount}.`);
+      }
+    } catch (error) {
+      showNotification?.(`Chưa đồng bộ được từ Sheet: ${error.message}`, 'error');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
   const registrationToStudent = (registration = {}) => registrationToStudentData(registration, currentSchoolYear);
 
   const removePendingRegistrationLocally = (registration = {}) => {
@@ -2596,6 +2865,7 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
   };
 
   const editingProfileRequests = editing?.id ? (profileRequestsByStudent.get(editing.id) || []) : [];
+  const utilityButtonClass = 'flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm font-normal text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-45';
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-white/95 rounded-2xl border border-indigo-100 shadow-xl overflow-hidden">
@@ -2611,72 +2881,119 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
             <GraduationCap className="w-5 h-5 text-indigo-600" /> Học sinh {currentSchoolYear}
           </h3>
         </div>
-        <div className="flex flex-wrap items-center justify-start gap-2 pb-1 lg:pb-0 lg:flex-nowrap lg:justify-end lg:overflow-x-auto lg:max-w-[calc(100vw-520px)] lg:shrink-0">
+        <div className="flex flex-wrap items-center justify-start gap-2 pb-1 lg:pb-0 lg:justify-end lg:shrink-0">
           {onBack && (
             <button type="button" onClick={onBack} title="Đóng database" className="hidden sm:flex sm:order-last shrink-0 w-10 h-10 bg-rose-600 text-white hover:bg-rose-700 rounded-full shadow-lg items-center justify-center transition-colors">
               <X className="w-5 h-5" />
             </button>
           )}
           {onOpenAttendance && (
-            <button type="button" onClick={onOpenAttendance} className="shrink-0 h-9 px-2.5 bg-cyan-600 text-white rounded-xl text-[10px] font-black uppercase flex items-center justify-center gap-1 shadow-sm">
-              <CalendarDays className="w-3.5 h-3.5" /> Điểm danh
-            </button>
-          )}
-          <button type="button" onClick={() => window.open(STUDENT_DATA_SHEET_URL, '_blank', 'noopener,noreferrer')} className="shrink-0 h-9 px-2.5 rounded-xl text-[10px] font-black uppercase text-emerald-700 bg-emerald-50 border border-emerald-100 hover:bg-emerald-100 flex items-center justify-center gap-1">
-            <ExternalLink className="w-3.5 h-3.5" /> Mở dữ liệu
-          </button>
-          {studentTab === 'current' && (
-            <button type="button" onClick={syncAllStudentsToSheet} disabled={isSaving || yearStudents.length === 0} className="shrink-0 h-9 px-2.5 rounded-xl text-[10px] font-black uppercase text-teal-700 bg-teal-50 border border-teal-100 hover:bg-teal-100 disabled:opacity-50 flex items-center justify-center gap-1">
-              <RefreshCw className="w-3.5 h-3.5" /> Cập nhật
-            </button>
-          )}
-          {studentTab === 'current' && (
-            <button type="button" onClick={syncPreviousYear} disabled={isSaving || !previousSchoolYear} className="shrink-0 h-9 px-2.5 rounded-xl text-[10px] font-black uppercase text-emerald-700 bg-emerald-50 border border-emerald-100 hover:bg-emerald-100 disabled:opacity-50 flex items-center justify-center gap-1">
-              <RefreshCw className="w-3.5 h-3.5" /> Năm trước
-            </button>
-          )}
-          {studentTab === 'current' && (
-            <button type="button" onClick={() => setShowImport(prev => !prev)} className="shrink-0 h-9 px-2.5 rounded-xl text-[10px] font-black uppercase text-indigo-700 bg-indigo-50 border border-indigo-100 hover:bg-indigo-100 flex items-center justify-center gap-1">
-              <UploadCloud className="w-3.5 h-3.5" /> Nhập Sheet
+            <button
+              type="button"
+              onClick={onOpenAttendance}
+              className="flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-lg border border-cyan-100 bg-cyan-50 px-3 text-sm font-normal text-cyan-700 hover:bg-cyan-100"
+            >
+              <CalendarDays className="h-4 w-4" /> Điểm danh
             </button>
           )}
           {studentTab !== 'journey' && studentTab !== 'profileRequests' && (
-            <button type="button" onClick={() => setShowColumns(prev => !prev)} className="shrink-0 h-9 px-2.5 bg-white text-slate-700 border border-slate-200 rounded-xl text-[10px] font-black uppercase flex items-center justify-center gap-1.5">
-              <Columns className="w-4 h-4" /> Cấu hình
-            </button>
-          )}
-          {studentTab === 'current' && (
-            <button type="button" onClick={() => setShowCodeChoiceModal(true)} disabled={isSaving} className="shrink-0 h-9 px-2.5 bg-amber-50 text-amber-700 border border-amber-100 rounded-xl text-[10px] font-black uppercase flex items-center justify-center gap-1.5 disabled:opacity-60">
-              <KeyRound className="w-4 h-4" /> Tạo mã
+            <button
+              type="button"
+              onClick={() => setShowColumns(prev => !prev)}
+              className="flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-sm font-normal text-slate-700 hover:bg-slate-50"
+            >
+              <Columns className="h-4 w-4" /> Cột
             </button>
           )}
           {studentTab !== 'journey' && studentTab !== 'profileRequests' && (
-            <button type="button" onClick={() => setShowExportChoice(true)} className="shrink-0 h-9 px-2.5 bg-cyan-50 text-cyan-700 border border-cyan-100 rounded-xl text-[10px] font-black uppercase flex items-center justify-center gap-1.5">
-              <FileSpreadsheet className="w-4 h-4" /> Xuất DS
+            <button
+              type="button"
+              onClick={() => setShowExportChoice(true)}
+              className="flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-lg border border-cyan-100 bg-cyan-50 px-3 text-sm font-normal text-cyan-700 hover:bg-cyan-100"
+            >
+              <FileSpreadsheet className="h-4 w-4" /> Xuất
             </button>
           )}
           {studentTab === 'current' && (
-            <button type="button" onClick={createMissingInfoReport} className="shrink-0 h-9 px-2.5 bg-orange-50 text-orange-700 border border-orange-100 rounded-xl text-[10px] font-black uppercase flex items-center justify-center gap-1.5">
-              <ClipboardCheck className="w-4 h-4" /> Kiểm tra thiếu
+            <button
+              type="button"
+              onClick={removeSelectedStudents}
+              disabled={isSaving || selectedCount === 0}
+              className="flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-lg border border-rose-100 bg-rose-50 px-3 text-sm font-normal text-rose-600 hover:bg-rose-100 disabled:opacity-40"
+              title="Xóa các học sinh đang được tích chọn"
+            >
+              <Trash2 className="h-4 w-4" /> Xóa {selectedCount ? `(${selectedCount})` : ''}
             </button>
           )}
-          {studentTab === 'registrations' && (
-            <button type="button" onClick={loadPendingRegistrations} disabled={isLoadingRegistrations} className="shrink-0 h-9 px-2.5 bg-emerald-600 text-white rounded-xl text-[10px] font-black uppercase flex items-center justify-center gap-1.5 disabled:opacity-60">
-              <RefreshCw className="w-4 h-4" /> {isLoadingRegistrations ? 'Đang tải...' : 'Tải mới'}
+          <div className="relative shrink-0">
+            <button
+              type="button"
+              onClick={() => setShowUtilitiesMenu(prev => !prev)}
+              className="flex h-9 items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-sm font-normal text-slate-700 shadow-sm hover:bg-slate-50"
+              aria-expanded={showUtilitiesMenu}
+            >
+              <FileText className="h-4 w-4 text-blue-600" />
+              Tiện ích
+              <ChevronDown className={`h-3.5 w-3.5 transition-transform ${showUtilitiesMenu ? 'rotate-180' : ''}`} />
             </button>
-          )}
-          {studentTab === 'registrations' && (
-            <button type="button" onClick={() => approveRegistrations()} disabled={isSaving || selectedRegistrationIds.size === 0} className="shrink-0 h-9 px-2.5 bg-indigo-600 text-white rounded-xl text-[10px] font-black uppercase flex items-center justify-center gap-1.5 disabled:opacity-40">
-              <CheckCircle2 className="w-4 h-4" /> Duyệt chọn ({selectedRegistrationIds.size})
-            </button>
-          )}
+            {showUtilitiesMenu && (
+              <>
+                <button type="button" className="fixed inset-0 z-[80] cursor-default bg-transparent" onClick={() => setShowUtilitiesMenu(false)} aria-label="Đóng tiện ích" />
+                <div className="absolute right-0 top-11 z-[90] w-72 overflow-hidden rounded-xl border border-slate-200 bg-white p-1.5 shadow-xl">
+                  <button type="button" onClick={() => { setShowUtilitiesMenu(false); window.open(STUDENT_DATA_SHEET_URL, '_blank', 'noopener,noreferrer'); }} className={utilityButtonClass}>
+                    <ExternalLink className="h-4 w-4 text-emerald-600" /> Mo du lieu Sheet
+                  </button>
+                  {studentTab === 'current' && (
+                    <button type="button" onClick={() => { setShowUtilitiesMenu(false); syncAllStudentsToSheet(); }} disabled={isSaving || yearStudents.length === 0} className={utilityButtonClass}>
+                      <RefreshCw className="h-4 w-4 text-teal-600" /> Cap nhat len Sheet
+                    </button>
+                  )}
+                  {studentTab === 'current' && (
+                    <button type="button" onClick={() => { setShowUtilitiesMenu(false); syncStudentsFromSheet(); }} disabled={isSaving || yearStudents.length === 0} className={utilityButtonClass}>
+                      <RefreshCw className="h-4 w-4 text-blue-600" /> Cap nhat tu Sheet
+                    </button>
+                  )}
+                  {studentTab === 'current' && (
+                    <button type="button" onClick={() => { setShowUtilitiesMenu(false); syncPreviousYear(); }} disabled={isSaving || !previousSchoolYear} className={utilityButtonClass}>
+                      <RefreshCw className="h-4 w-4 text-emerald-600" /> Dong bo nam truoc
+                    </button>
+                  )}
+                  {studentTab === 'current' && (
+                    <button type="button" onClick={() => { setShowUtilitiesMenu(false); setShowImport(prev => !prev); }} className={utilityButtonClass}>
+                      <UploadCloud className="h-4 w-4 text-indigo-600" /> Nhap Sheet
+                    </button>
+                  )}
+                  {studentTab === 'current' && (
+                    <button type="button" onClick={() => { setShowUtilitiesMenu(false); setShowCodeChoiceModal(true); }} disabled={isSaving} className={utilityButtonClass}>
+                      <KeyRound className="h-4 w-4 text-amber-600" /> Tao ma hoc sinh
+                    </button>
+                  )}
+                  {studentTab === 'current' && (
+                    <button type="button" onClick={() => { setShowUtilitiesMenu(false); normalizeCurrentYearStudentNames(); }} disabled={isSaving || yearStudents.length === 0} className={utilityButtonClass}>
+                      <UserRound className="h-4 w-4 text-violet-600" /> Chuan hoa ten
+                    </button>
+                  )}
+                  {studentTab === 'current' && (
+                    <button type="button" onClick={() => { setShowUtilitiesMenu(false); createMissingInfoReport(); }} className={utilityButtonClass}>
+                      <ClipboardCheck className="h-4 w-4 text-orange-600" /> Kiem tra thieu thong tin
+                    </button>
+                  )}
+                  {studentTab === 'registrations' && (
+                    <button type="button" onClick={() => { setShowUtilitiesMenu(false); loadPendingRegistrations(); }} disabled={isLoadingRegistrations} className={utilityButtonClass}>
+                      <RefreshCw className="h-4 w-4 text-emerald-600" /> {isLoadingRegistrations ? 'Dang tai...' : 'Tai moi'}
+                    </button>
+                  )}
+                  {studentTab === 'registrations' && (
+                    <button type="button" onClick={() => { setShowUtilitiesMenu(false); approveRegistrations(); }} disabled={isSaving || selectedRegistrationIds.size === 0} className={utilityButtonClass}>
+                      <CheckCircle2 className="h-4 w-4 text-indigo-600" /> Duyet chon ({selectedRegistrationIds.size})
+                    </button>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
           {studentTab === 'current' && (
-            <button type="button" onClick={removeSelectedStudents} disabled={isSaving || selectedCount === 0} className="shrink-0 h-9 px-2.5 bg-rose-50 text-rose-700 border border-rose-100 rounded-xl text-[10px] font-black uppercase flex items-center justify-center gap-1.5 disabled:opacity-40" title="Xóa các học sinh đang được tích chọn">
-              <Trash2 className="w-4 h-4" /> Xóa chọn {selectedCount ? `(${selectedCount})` : ''}
-            </button>
-          )}
-          {studentTab === 'current' && (
-            <button type="button" onClick={openCreate} className="shrink-0 h-9 px-2.5 bg-indigo-600 text-white rounded-xl text-[10px] font-black uppercase shadow-md flex items-center justify-center gap-1.5">
+            <button type="button" onClick={openCreate} className="flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-lg bg-indigo-600 px-3 text-sm font-normal text-white shadow-sm hover:bg-indigo-700">
               <Plus className="w-4 h-4" /> Thêm
             </button>
           )}
@@ -2826,7 +3143,7 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
               {journeyYearOptions.map(year => <option key={year} value={year}>{year}</option>)}
             </select>
             <select value={journeyClassFilter} onChange={(e) => setJourneyClassFilter(e.target.value)} className="rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-black bg-white">
-              <option value="all">Tất cả lớp/khối</option>
+              <option value="all">Tat ca lop</option>
               {journeyClassOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
             </select>
           </div>
@@ -2974,7 +3291,7 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
             <div className="flex gap-2">
               <button type="button" onClick={() => setVisibleColumns(COMPACT_VISIBLE_COLUMNS)} className="px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-[10px] font-black uppercase text-slate-600">Gọn</button>
               <button type="button" onClick={() => setVisibleColumns(IMAGE_ONLY_VISIBLE_COLUMNS)} className="px-3 py-2 rounded-xl bg-emerald-50 border border-emerald-100 text-[10px] font-black uppercase text-emerald-700">Chỉ ảnh</button>
-              <button type="button" onClick={() => setVisibleColumns(STUDENT_FIELDS.map(field => field.key))} className="px-3 py-2 rounded-xl bg-indigo-50 border border-indigo-100 text-[10px] font-black uppercase text-indigo-700">Tất cả</button>
+              <button type="button" onClick={toggleAllVisibleColumns} className="px-3 py-2 rounded-xl bg-indigo-50 border border-indigo-100 text-[10px] font-black uppercase text-indigo-700">Tất cả</button>
               <button type="button" onClick={() => setVisibleColumns(typeof window !== 'undefined' && window.innerWidth < 640 ? MOBILE_VISIBLE_COLUMNS : DEFAULT_VISIBLE_COLUMNS)} className="px-3 py-2 rounded-xl bg-blue-50 border border-blue-100 text-[10px] font-black uppercase text-blue-700">Mặc định</button>
               <button type="button" onClick={() => setShowColumns(false)} className="px-3 py-2 rounded-xl bg-white border border-slate-200 text-[10px] font-black uppercase text-slate-600 flex items-center gap-1.5"><X className="w-3.5 h-3.5" /> Đóng</button>
             </div>

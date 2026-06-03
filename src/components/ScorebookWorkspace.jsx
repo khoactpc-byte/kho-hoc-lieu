@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import { collection, doc, onSnapshot, setDoc } from 'firebase/firestore';
-import { BookOpenText, ChevronLeft, ChevronRight, Download, FileSpreadsheet, Save, Search, UsersRound, X } from 'lucide-react';
+import { BookOpenText, ChevronLeft, ChevronRight, Download, FileSpreadsheet, Save, Search, X } from 'lucide-react';
 import { appId, db } from '../config/firebase';
 import scorebookTemplate from '../data/scorebookTemplate.json';
 
@@ -11,14 +11,59 @@ const makeCellKey = (sheetName, row, col) => `${sheetName}!${row}:${col}`;
 
 const cleanDocId = (value) => String(value || 'default').replace(/[^\w-]+/g, '_');
 
+const coerceDisplayText = (value) => {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (Array.isArray(value)) return value.map(coerceDisplayText).filter(Boolean).join('\n');
+  if (typeof value === 'object') {
+    const directKey = ['text', 'value', 'label', 'name', 'date', 'display', 'title'].find(key => value[key] !== undefined && value[key] !== null);
+    if (directKey) return coerceDisplayText(value[directKey]);
+    const semesterParts = [
+      value.hk1,
+      value.hk2,
+      value.hki,
+      value.hkii,
+      value.semester1,
+      value.semester2,
+      value.term1,
+      value.term2
+    ].map(coerceDisplayText).map(item => item.trim()).filter(Boolean);
+    if (semesterParts.length) return [...new Set(semesterParts)].join('\n');
+    return Object.values(value).map(coerceDisplayText).filter(Boolean).join('\n');
+  }
+  return String(value);
+};
+
 const decodeDisplayText = (value) => {
-  if (typeof value !== 'string') return value;
-  return value
+  const text = coerceDisplayText(value);
+  return text
     .replace(/\\u([0-9a-fA-F]{4})/g, (_, code) => String.fromCharCode(parseInt(code, 16)))
     .replace(/u([0-9a-fA-F]{4})/g, (_, code) => String.fromCharCode(parseInt(code, 16)));
 };
 
-const firstUrl = (value = '') => String(value || '').split(/\s*,\s*|\n+/).map(item => item.trim()).filter(Boolean)[0] || '';
+const decodeSemesterDisplayText = (value, preferredSemester = 'hk2') => {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const preferredKeys = preferredSemester === 'hk1'
+      ? ['hk1', 'hki', 'semester1', 'term1']
+      : ['hk2', 'hkii', 'semester2', 'term2'];
+    const preferredText = preferredKeys
+      .map(key => decodeDisplayText(value[key]).trim())
+      .find(Boolean);
+    if (preferredText) return preferredText;
+    const fallbackText = ['fullYear', 'value', 'teacherName', 'name', 'text', 'label', 'display', 'title']
+      .map(key => decodeDisplayText(value[key]).trim())
+      .find(Boolean);
+    if (fallbackText) return fallbackText;
+  }
+  return decodeDisplayText(value);
+};
+
+const firstUrl = (value = '') => {
+  const text = String(value || '').trim();
+  if (/^data:image\//i.test(text)) return text;
+  return text.split(/\s*,\s*|\n+/).map(item => item.trim()).filter(Boolean)[0] || '';
+};
 
 const extractDriveFileId = (value = '') => {
   const text = String(value || '');
@@ -473,7 +518,7 @@ const styleFromCell = (cell, rowHeight) => {
 
 function ScorebookCell({ cell, editValue, originalValue, rowHeight, rowSpan, colSpan, onCommit }) {
   const ref = useRef(null);
-  const value = editValue ?? originalValue;
+  const value = decodeDisplayText(editValue ?? originalValue);
 
   useEffect(() => {
     if (ref.current && ref.current.textContent !== value) {
@@ -509,12 +554,13 @@ function ScorebookCell({ cell, editValue, originalValue, rowHeight, rowSpan, col
 
 function EditableText({ value, onCommit, className = '', style = {}, as: Tag = 'div' }) {
   const ref = useRef(null);
+  const displayValue = decodeDisplayText(value);
 
   useEffect(() => {
-    if (ref.current && ref.current.textContent !== value) {
-      ref.current.textContent = value;
+    if (ref.current && ref.current.textContent !== displayValue) {
+      ref.current.textContent = displayValue;
     }
-  }, [value]);
+  }, [displayValue]);
 
   return (
     <Tag
@@ -531,7 +577,7 @@ function EditableText({ value, onCommit, className = '', style = {}, as: Tag = '
       }}
       onBlur={(event) => onCommit(event.currentTarget.textContent || '')}
     >
-      {value}
+      {displayValue}
     </Tag>
   );
 }
@@ -568,6 +614,34 @@ function TranscriptStudentPhoto({ url, alt = 'Ảnh học sinh' }) {
       onError={() => setFallbackMode(true)}
       referrerPolicy="no-referrer"
       style={{ ...frameStyle, transform: 'scale(1.035)' }}
+    />
+  );
+}
+
+function TeacherSignatureImage({ url, alt = 'Chu ky giao vien', style = {} }) {
+  const [hidden, setHidden] = useState(false);
+  const imageUrl = normalizeImageUrl(url);
+
+  useEffect(() => {
+    setHidden(false);
+  }, [imageUrl]);
+
+  if (!imageUrl || hidden) return null;
+  return (
+    <img
+      src={imageUrl}
+      alt={alt}
+      onError={() => setHidden(true)}
+      referrerPolicy="no-referrer"
+      style={{
+        maxWidth: '100%',
+        maxHeight: '100%',
+        objectFit: 'contain',
+        display: 'block',
+        margin: '0 auto',
+        mixBlendMode: 'multiply',
+        ...style
+      }}
     />
   );
 }
@@ -625,7 +699,7 @@ export default function ScorebookWorkspace({
   }, [initialMode]);
 
   const docId = useMemo(() => cleanDocId(`${currentSchoolYear || 'nam-hoc'}_${scorebookTemplate.sourceFile || 'so-diem'}_khoi_${grade || 'tat-ca'}`), [currentSchoolYear, grade]);
-  const activeSheet = sheets.find((sheet) => sheet.name === activeSheetName) || sheets[0];
+  const activeSheet = sheets.find((sheet) => sheet.name === activeSheetName) || sheets[0] || { name: '', label: '', rows: 0, cols: 0 };
   const sheetMaps = useMemo(() => buildSheetMaps(activeSheet || {}), [activeSheet]);
   const currentSchoolYearKey = compactSchoolYearLabel(currentSchoolYear);
   const legacyTeacherYearKey = compactSchoolYearLabel(schoolYearLabelFromStart(TRANSCRIPT_DIGITAL_START_YEAR));
@@ -947,8 +1021,6 @@ export default function ScorebookWorkspace({
     }
   };
 
-  if (!activeSheet) return null;
-
   const rowNumbers = Array.from({ length: activeSheet.rows || 0 }, (_, index) => index + 1);
   const colNumbers = Array.from({ length: activeSheet.cols || 0 }, (_, index) => index + 1);
   const activeColWidths = colNumbers.map((col) => Math.max(18, Number(columnWidthsBySheet[activeSheet.name]?.[col - 1] ?? activeSheet.colWidths?.[col - 1]) || 72));
@@ -981,16 +1053,57 @@ export default function ScorebookWorkspace({
   const isClassificationSheet = activeSheet.name === 'DanhGiaXepLoai';
   const isPrincipalCommentSheet = activeSheet.name === 'NhanXetCuaHT_CaNam';
   const classLabel = getClassLabel(grade);
-  const homeroomTeacherName = getTeacherAssignmentsForYearGrade(currentSchoolYear, grade)?.['Chủ nhiệm']
+  const homeroomTeacherName = decodeSemesterDisplayText(
+    getTeacherAssignmentsForYearGrade(currentSchoolYear, grade)?.['Chủ nhiệm']
     || getTeacherAssignmentsForYearGrade(currentSchoolYear, grade)?.['Chu nhiem']
-    || '';
+    || '',
+    'hk2'
+  );
+  const teacherSignatureByKey = useMemo(() => {
+    const map = new Map();
+    (Array.isArray(nanTeachers) ? nanTeachers : []).forEach((teacher) => {
+      const signatureUrl = String(teacher.signatureUrl || teacher.signature || teacher.signUrl || teacher.signatureLink || '').trim();
+      if (!signatureUrl) return;
+      const candidates = [
+        teacher.name,
+        teacher.shortName,
+        teacher.abbrev,
+        teacher.shortLabel,
+        teacher.teacherShortName
+      ].map(value => normalizeSortText(decodeDisplayText(value))).filter(Boolean);
+      [...new Set(candidates)].forEach(key => map.set(key, signatureUrl));
+    });
+    return map;
+  }, [nanTeachers]);
+
+  const getTeacherSignatureUrl = (teacherName = '') => {
+    const rawText = decodeDisplayText(teacherName).trim();
+    if (!rawText) return '';
+    const candidates = [
+      normalizeSortText(rawText),
+      ...rawText.split(/\s*(?:-|–|—|,|;|\/|\n)\s*/).map(normalizeSortText)
+    ].filter(Boolean);
+    for (const key of candidates) {
+      if (teacherSignatureByKey.has(key)) return teacherSignatureByKey.get(key);
+    }
+    for (const key of candidates) {
+      for (const [teacherKey, url] of teacherSignatureByKey.entries()) {
+        if (teacherKey && (key.includes(teacherKey) || teacherKey.includes(key))) return url;
+      }
+    }
+    return '';
+  };
+
   const getAssignedTeacherName = (subject = {}, context = {}) => {
     if (subject.loadTeacher === false) return '';
     const contextGrade = context.gradeValue ?? grade;
     const contextSchoolYear = context.schoolYear ?? currentSchoolYear;
+    const preferredSemester = context.preferredSemester || '';
     const assignments = getTeacherAssignmentsForYearGrade(contextSchoolYear, contextGrade);
     if (subject.classSubject && assignments[subject.classSubject]) {
-      return assignments[subject.classSubject];
+      return preferredSemester
+        ? decodeSemesterDisplayText(assignments[subject.classSubject], preferredSemester)
+        : decodeDisplayText(assignments[subject.classSubject]);
     }
     const teacherKeys = (subject.teacherKeys || []).map(normalizeSortText);
     const compactTeacherKeys = (subject.teacherKeys || []).map(normalizeSubjectKey);
@@ -1003,7 +1116,12 @@ export default function ScorebookWorkspace({
       })
       .map(([, value]) => value)
       .filter(Boolean);
-    if (assignmentNames.length) return [...new Set(assignmentNames)].join(' - ');
+    if (assignmentNames.length) {
+      const names = assignmentNames
+        .map(value => preferredSemester ? decodeSemesterDisplayText(value, preferredSemester) : decodeDisplayText(value))
+        .filter(Boolean);
+      return [...new Set(names)].join(' - ');
+    }
 
     const teacherNames = (Array.isArray(nanTeachers) ? nanTeachers : [])
       .filter(teacher => Array.isArray(teacher.grades) && teacher.grades.map(String).includes(String(contextGrade)))
@@ -1012,7 +1130,7 @@ export default function ScorebookWorkspace({
         const compactKey = normalizeSubjectKey(item);
         return teacherKeys.includes(normalizedKey) || compactTeacherKeys.includes(compactKey);
       }))
-      .map(teacher => String(teacher.name || '').trim())
+      .map(teacher => decodeDisplayText(teacher.name).trim())
       .filter(Boolean);
     return [...new Set(teacherNames)].join(' - ');
   };
@@ -1534,7 +1652,7 @@ export default function ScorebookWorkspace({
                   <td style={{ ...cellBase, textAlign: 'center', borderBottom }}>{index + 1}</td>
                   <td style={{ ...cellBase, borderBottom }}><div style={twoLine}>{titleCaseText(student.fullName) || ''}</div></td>
                   <td style={{ ...cellBase, textAlign: 'center', borderBottom }}>{student.birthDate || ''}</td>
-                  <td style={{ ...cellBase, borderBottom }}><div style={twoLine}>{titleCaseText(student.birthPlace || student.birthProvince || student.province) || ''}</div></td>
+                  <td style={{ ...cellBase, borderBottom }}><div style={twoLine}>{titleCaseText(student.birthProvince || student.birthPlace || student.province) || ''}</div></td>
                   <td style={{ ...cellBase, textAlign: 'center', borderBottom }}>{formatGender(student.gender)}</td>
                   <td style={{ ...cellBase, textAlign: 'center', borderBottom }}>{titleCaseText(student.ethnicity || student.ethnic || (student.fullName ? 'Kinh' : ''))}</td>
                   <td style={{ ...cellBase, textAlign: 'center', borderBottom }}>{student.priorityObject || student.policyObject || ''}</td>
@@ -1779,6 +1897,8 @@ export default function ScorebookWorkspace({
     const subjectKey = `${keyPrefix}:${pageIndex}:subject`;
     const teacherName = getAssignedTeacherName(subject);
     const teacherKey = `${keyPrefix}:${pageIndex}:teacher`;
+    const teacherDisplay = customTextOrFallback(teacherKey, teacherName);
+    const teacherSignatureUrl = getTeacherSignatureUrl(teacherDisplay || teacherName);
     const signatureStyle = subject.loadStudents
       ? { marginTop: 25, marginLeft: 'auto', marginRight: scoreSheetInsetX + 40 }
       : { position: 'absolute', right: scoreSheetInsetX + 40, bottom: 122 };
@@ -1869,10 +1989,13 @@ export default function ScorebookWorkspace({
         <div style={{ width: 250, textAlign: 'center', fontSize: 17, ...signatureStyle }}>
           <div style={{ fontWeight: 700 }}>Giáo viên môn học</div>
           <div style={{ fontStyle: 'italic', marginTop: 5 }}>(Kí và ghi rõ họ tên)</div>
+          <div style={{ height: 68, marginTop: 8, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <TeacherSignatureImage url={teacherSignatureUrl} alt={`Chu ky ${teacherDisplay || teacherName}`} style={{ height: 64 }} />
+          </div>
           <EditableText
-            value={customTextOrFallback(teacherKey, teacherName)}
+            value={teacherDisplay}
             onCommit={(next) => commitCustomText(teacherKey, teacherName, next)}
-            style={{ marginTop: 74, minHeight: 24, fontWeight: 700 }}
+            style={{ minHeight: 24, fontWeight: 700 }}
           />
         </div>
       </div>
@@ -1916,6 +2039,8 @@ export default function ScorebookWorkspace({
     const subjectKey = `${keyPrefix}:${pageIndex}:subject`;
     const teacherName = subject.loadTeacher === false ? '' : getAssignedTeacherName(subject);
     const teacherKey = `${keyPrefix}:${pageIndex}:teacher`;
+    const teacherDisplay = customTextOrFallback(teacherKey, teacherName);
+    const teacherSignatureUrl = getTeacherSignatureUrl(teacherDisplay || teacherName);
     const scoreValue = (rowIndex, scoreIndex) => {
       if (scoreIndex === 6 || (isHkii && scoreIndex === 7)) return getSemesterScoreResult(semester, pageIndex, rowIndex, scoreIndex);
       return formatScoreDisplayValue(customText(`${keyPrefix}:${pageIndex}:r${rowIndex}:s${scoreIndex}`, ''));
@@ -1990,10 +2115,13 @@ export default function ScorebookWorkspace({
         <div style={{ width: 250, textAlign: 'center', fontSize: 17, marginTop: 25, marginLeft: 'auto', marginRight: scoreSheetInsetX + 40 }}>
           <div style={{ fontWeight: 700 }}>Giáo viên môn học</div>
           <div style={{ fontStyle: 'italic', marginTop: 5 }}>(Kí và ghi rõ họ tên)</div>
+          <div style={{ height: 68, marginTop: 8, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <TeacherSignatureImage url={teacherSignatureUrl} alt={`Chu ky ${teacherDisplay || teacherName}`} style={{ height: 64 }} />
+          </div>
           <EditableText
-            value={customTextOrFallback(teacherKey, teacherName)}
+            value={teacherDisplay}
             onCommit={(next) => commitCustomText(teacherKey, teacherName, next)}
-            style={{ marginTop: 74, minHeight: 24, fontWeight: 700 }}
+            style={{ minHeight: 24, fontWeight: 700 }}
           />
         </div>
       </div>
@@ -2429,9 +2557,9 @@ export default function ScorebookWorkspace({
     );
   };
 
-  const transcriptStudentName = (student = selectedTranscriptStudent) => titleCaseText(student?.fullName || '');
-  const transcriptStudentClass = (student = selectedTranscriptStudent) => getPcClassName(student?.className || student?.grade, grade);
-  const transcriptRegisterCode = (student = selectedTranscriptStudent) => student?.pcgdCode || student?.registerCode || student?.studentCode || student?.accessCode || '';
+  const transcriptStudentName = (student = selectedTranscriptStudent) => titleCaseText(decodeDisplayText(student?.fullName));
+  const transcriptStudentClass = (student = selectedTranscriptStudent) => getPcClassName(decodeDisplayText(student?.className || student?.grade), grade);
+  const transcriptRegisterCode = (student = selectedTranscriptStudent) => decodeDisplayText(student?.pcgdCode || student?.registerCode || student?.studentCode || student?.accessCode || '');
   const transcriptStudentPhotoUrl = (student = selectedTranscriptStudent) => {
     const directPhoto = student?.portraitUrl || student?.portraitURL || student?.photoUrl || student?.photoURL || student?.avatarUrl || student?.avatarURL || student?.imageUrl || student?.profileImageUrl || student?.studentPhotoUrl || student?.pictureUrl || student?.portrait || student?.photo || student?.avatar || student?.picture || '';
     const scannedPhoto = Object.entries(student || {}).find(([key, value]) => (
@@ -2451,35 +2579,35 @@ export default function ScorebookWorkspace({
     const startYear = getSchoolYearStartYear(schoolYearLabel);
     return formatSignatureDateText(addDaysToDateKey(lastWeekdayOfMonth(startYear + 1, 5, 4), -5));
   };
-  const getTranscriptDateFallback = (dateMap = {}, schoolYearLabel = currentSchoolYear, defaultValue = '') => {
+  const getTranscriptDateFallback = (dateMap = {}, schoolYearLabel = currentSchoolYear, defaultValue = '', preferredSemester = 'hk2') => {
     const key = compactSchoolYearLabel(schoolYearLabel);
-    return formatSignatureDateText(dateMap?.[key] || dateMap?.[schoolYearLabel] || defaultValue);
+    return formatSignatureDateText(decodeSemesterDisplayText(dateMap?.[key] || dateMap?.[schoolYearLabel] || defaultValue, preferredSemester));
   };
   const getTranscriptStartDateText = (schoolYearLabel = currentSchoolYear) => {
     const key = compactSchoolYearLabel(schoolYearLabel);
-    const fallback = getTranscriptDateFallback(transcriptStartDates, schoolYearLabel, defaultTranscriptStartDateText(schoolYearLabel));
+    const fallback = getTranscriptDateFallback(transcriptStartDates, schoolYearLabel, defaultTranscriptStartDateText(schoolYearLabel), 'hk1');
     return customText(`transcript:date:start:${key}`, fallback);
   };
   const getTranscriptEndDateText = (schoolYearLabel = currentSchoolYear, gradeNumber = grade) => {
     const key = compactSchoolYearLabel(schoolYearLabel);
     const isGrade9 = String(gradeNumber || '').replace(/[^\d]/g, '') === '9';
     const fallback = isGrade9
-      ? getTranscriptDateFallback(transcriptGrade9EndDates, schoolYearLabel, defaultTranscriptGrade9EndDateText(schoolYearLabel))
-      : getTranscriptDateFallback(transcriptEndDates, schoolYearLabel, defaultTranscriptEndDateText(schoolYearLabel));
+      ? getTranscriptDateFallback(transcriptGrade9EndDates, schoolYearLabel, defaultTranscriptGrade9EndDateText(schoolYearLabel), 'hk2')
+      : getTranscriptDateFallback(transcriptEndDates, schoolYearLabel, defaultTranscriptEndDateText(schoolYearLabel), 'hk2');
     const legacyFallback = isGrade9 ? customText(`transcript:date:end:${key}`, fallback) : fallback;
     return customText(`transcript:date:${isGrade9 ? 'grade9-end' : 'end'}:${key}`, legacyFallback);
   };
-  const getTranscriptSignerFallback = (signerMap = {}, schoolYearLabel = currentSchoolYear) => {
+  const getTranscriptSignerFallback = (signerMap = {}, schoolYearLabel = currentSchoolYear, preferredSemester = 'hk2') => {
     const key = compactSchoolYearLabel(schoolYearLabel);
-    return String(signerMap?.[key] || signerMap?.[schoolYearLabel] || principalName || '').trim();
+    return decodeSemesterDisplayText(signerMap?.[key] || signerMap?.[schoolYearLabel] || principalName || '', preferredSemester).trim();
   };
   const getTranscriptStartSignerText = (schoolYearLabel = currentSchoolYear) => {
     const key = compactSchoolYearLabel(schoolYearLabel);
-    return customText(`transcript:signer:start:${key}`, getTranscriptSignerFallback(transcriptStartSigners, schoolYearLabel));
+    return customText(`transcript:signer:start:${key}`, getTranscriptSignerFallback(transcriptStartSigners, schoolYearLabel, 'hk1'));
   };
   const getTranscriptEndSignerText = (schoolYearLabel = currentSchoolYear) => {
     const key = compactSchoolYearLabel(schoolYearLabel);
-    return customText(`transcript:signer:end:${key}`, getTranscriptSignerFallback(transcriptEndSigners, schoolYearLabel));
+    return customText(`transcript:signer:end:${key}`, getTranscriptSignerFallback(transcriptEndSigners, schoolYearLabel, 'hk2'));
   };
   const transcriptEditKey = (page, key, student = selectedTranscriptStudent) => `transcript:${student?.id || 'student'}:${page}:${key}`;
   const getTranscriptFirstStartYear = (student = selectedTranscriptStudent) => {
@@ -2633,7 +2761,7 @@ export default function ScorebookWorkspace({
     if (!subject.teacherSubject) return '';
     return getAssignedTeacherName(
       { classSubject: subject.teacherSubject, teacherKeys: [subject.teacherSubject] },
-      { schoolYear: yearEntry?.schoolYear, gradeValue: yearEntry?.gradeNumber }
+      { schoolYear: yearEntry?.schoolYear, gradeValue: yearEntry?.gradeNumber, preferredSemester: 'hk2' }
     );
   };
   const getTranscriptAcademicResult = (yearEntry, period = 'hkii', student = selectedTranscriptStudent) => {
@@ -2815,34 +2943,37 @@ export default function ScorebookWorkspace({
     const processRows = Array.from({ length: 5 }, (_, index) => yearEntries[index] || null);
     const entrySchoolYear = yearEntries?.[0]?.schoolYear || currentSchoolYear;
     const entrySchoolYearKey = compactSchoolYearLabel(entrySchoolYear);
-    const entryDateFallback = getTranscriptDateFallback(transcriptStartDates, entrySchoolYear, defaultTranscriptStartDateText(entrySchoolYear));
+    const entryDateFallback = getTranscriptDateFallback(transcriptStartDates, entrySchoolYear, defaultTranscriptStartDateText(entrySchoolYear), 'hk1');
     const entryDateText = getTranscriptStartDateText(entrySchoolYear);
     const entrySignerText = getTranscriptStartSignerText(entrySchoolYear);
     const pageInsets = getTranscriptInnerInsets(pageNumber);
     const absoluteLeft = 38 + pageInsets.left;
     const absoluteRight = 38 + pageInsets.right;
-    const infoLine = (label, value, extra = null, options = {}) => (
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 11, fontSize: 18.5, lineHeight: 1.16 }}>
-        <span style={options.singleLine ? { flex: '0 0 auto', whiteSpace: 'nowrap' } : undefined}>{label}</span>
-        <span
-          style={{
-            fontWeight: 700,
-            ...(options.singleLine ? {
-              flex: '1 1 auto',
-              minWidth: 0,
-              whiteSpace: 'nowrap',
-              overflow: 'hidden',
-              textOverflow: 'clip',
-              fontSize: fitSingleLineFontSize(value, 18.5, 11.5, options.fitLength || 58),
-              lineHeight: 1
-            } : {})
-          }}
-        >
-          {value || ''}
-        </span>
-        {extra}
-      </div>
-    );
+    const infoLine = (label, value, extra = null, options = {}) => {
+      const displayValue = decodeDisplayText(value);
+      return (
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 11, fontSize: 18.5, lineHeight: 1.16 }}>
+          <span style={options.singleLine ? { flex: '0 0 auto', whiteSpace: 'nowrap' } : undefined}>{label}</span>
+          <span
+            style={{
+              fontWeight: 700,
+              ...(options.singleLine ? {
+                flex: '1 1 auto',
+                minWidth: 0,
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'clip',
+                fontSize: fitSingleLineFontSize(displayValue, 18.5, 11.5, options.fitLength || 58),
+                lineHeight: 1
+              } : {})
+            }}
+          >
+            {displayValue}
+          </span>
+          {extra}
+        </div>
+      );
+    };
     return renderTranscriptPageShell((
       <>
         <div style={{ textAlign: 'center', fontWeight: 700, lineHeight: 1.22 }}>
@@ -2863,7 +2994,7 @@ export default function ScorebookWorkspace({
             {infoLine('Gi\u1edbi t\u00ednh.', formatGender(student.gender))}
           </div>
           {infoLine('Ng\u00e0y sinh:', student.birthDate)}
-          {infoLine('N\u01a1i sinh:', titleCaseText(student.birthPlace || student.birthProvince || student.province))}
+          {infoLine('N\u01a1i sinh:', titleCaseText(student.birthProvince || student.birthPlace || student.province))}
           {infoLine('D\u00e2n t\u1ed9c:', titleCaseText(student.ethnicity || student.ethnic || (student.fullName ? 'Kinh' : '')))}
           {infoLine('\u0110\u1ed1i t\u01b0\u1ee3ng (Con li\u1ec7t s\u0129, con th\u01b0\u01a1ng binh,...):', student.priorityObject || student.policyObject)}
           {infoLine('Ch\u1ed7 \u1edf hi\u1ec7n t\u1ea1i:', studentAddress(student, 58), null, { singleLine: true, fitLength: 58 })}
@@ -2950,6 +3081,7 @@ export default function ScorebookWorkspace({
               const teacherFallback = transcriptSubjectTeacher(subject, yearEntry);
               const remarkKey = transcriptEditKey('learning', `${yearEntry?.startYear || 'year'}:subject-${index}-remark`, student);
               const teacherDisplay = customTextOrFallback(remarkKey, teacherFallback);
+              const teacherSignatureUrl = getTeacherSignatureUrl(teacherDisplay || teacherFallback);
               return (
                 <tr key={`transcript-subject-${subject.label}`} style={{ height: 43 }}>
                   <td style={{ ...cell, textAlign: 'center', whiteSpace: 'pre-line' }}>{subject.label}</td>
@@ -2959,13 +3091,16 @@ export default function ScorebookWorkspace({
                   <td style={{ ...cell }} />
                   <td style={{ ...cell, padding: 0, fontSize: 16 }}>
                     <div style={{ display: 'grid', gridTemplateColumns: '2fr 3fr', minHeight: 40 }}>
-                      <div style={{ borderRight: '1px solid transparent' }} />
-                      <div style={{ padding: '3px 5px 2px 6px' }}>
+                      <div style={{ borderRight: '1px solid transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: 40, padding: '2px 4px' }}>
+                        <TeacherSignatureImage url={teacherSignatureUrl} alt={`Chu ky ${teacherDisplay || teacherFallback}`} style={{ height: 32 }} />
+                      </div>
+                      <div style={{ minHeight: 40, padding: '3px 5px 2px 6px', display: 'flex', alignItems: 'center', justifyContent: 'flex-start' }}>
                         <EditableText
                           value={teacherDisplay}
                           onCommit={(next) => commitCustomText(remarkKey, teacherFallback, next)}
                           style={{
                             minHeight: 22,
+                            width: '100%',
                             fontSize: fitTeacherSignatureFontSize(teacherDisplay),
                             textAlign: 'left',
                             lineHeight: 1.08,
@@ -3023,8 +3158,8 @@ export default function ScorebookWorkspace({
       : '';
     const finalGradeCompletionText = isGrade9Assessment && isPassingFullYear ? 'Hoàn thành chương trình trung học cơ sở' : '';
     const assessmentDateFallback = isGrade9Assessment
-      ? getTranscriptDateFallback(transcriptGrade9EndDates, assessmentSchoolYear, defaultTranscriptGrade9EndDateText(assessmentSchoolYear))
-      : getTranscriptDateFallback(transcriptEndDates, assessmentSchoolYear, defaultTranscriptEndDateText(assessmentSchoolYear));
+      ? getTranscriptDateFallback(transcriptGrade9EndDates, assessmentSchoolYear, defaultTranscriptGrade9EndDateText(assessmentSchoolYear), 'hk2')
+      : getTranscriptDateFallback(transcriptEndDates, assessmentSchoolYear, defaultTranscriptEndDateText(assessmentSchoolYear), 'hk2');
     const assessmentDateKey = `transcript:date:${isGrade9Assessment ? 'grade9-end' : 'end'}:${assessmentSchoolYearKey}`;
     const assessmentDateText = getTranscriptEndDateText(assessmentSchoolYear, yearEntry?.gradeNumber);
     const assessmentSignerText = getTranscriptEndSignerText(assessmentSchoolYear);
@@ -3150,7 +3285,7 @@ export default function ScorebookWorkspace({
     ]);
   };
   const getTranscriptVisiblePages = (selection = transcriptPrintSelection) => {
-    if (!selection) return getTranscriptPagesForStudent(selectedTranscriptStudent);
+    if (!selection) return selectedTranscriptStudent ? getTranscriptPagesForStudent(selectedTranscriptStudent) : [];
     const selectedIds = Array.isArray(selection.studentIds) && selection.studentIds.length
       ? selection.studentIds
       : [selectedTranscriptStudent?.id].filter(Boolean);
@@ -3168,17 +3303,16 @@ export default function ScorebookWorkspace({
       return pages;
     });
   };
-  const transcriptVisiblePages = getTranscriptVisiblePages();
+  const isTranscriptMode = workspaceMode === 'transcript';
+  const transcriptVisiblePages = isTranscriptMode ? getTranscriptVisiblePages() : [];
   const transcriptDraftStudentIds = transcriptPrintStudentIds.filter(id => transcriptStudents.some(student => student.id === id));
-  const transcriptDraftPageCount = getTranscriptVisiblePages({
+  const transcriptDraftPageCount = isTranscriptMode ? getTranscriptVisiblePages({
     includeCover: transcriptPrintDraft.includeCover,
     mode: transcriptPrintDraft.mode,
     year: transcriptPrintDraft.year || transcriptYearEntries[transcriptYearEntries.length - 1]?.schoolYear || currentSchoolYear,
     duplexBlank: transcriptPrintDraft.duplexBlank,
     studentIds: transcriptDraftStudentIds.length ? transcriptDraftStudentIds : [selectedTranscriptStudent?.id].filter(Boolean)
-  }).length;
-
-  const isTranscriptMode = workspaceMode === 'transcript';
+  }).length : 0;
   const boundedPrintPageIndex = Math.min(Math.max(printPageIndex, 0), Math.max(activePageSegments.length - 1, 0));
   const visiblePageSegments = previewMode && printMode === 'workbook'
     ? workbookPageEntries
@@ -3210,17 +3344,19 @@ export default function ScorebookWorkspace({
         @page { size: ${isTranscriptMode ? '210mm 297mm' : '297mm 420mm'}; margin: ${isTranscriptMode ? '0' : '5mm 7mm'}; }
         .scorebook-print-root, .scorebook-print-root table, .scorebook-print-root td, .scorebook-print-root th { font-family: "Times New Roman", Times, serif; }
         @media print {
-          body:has(.scorebook-print-root) #root,
-          body:has(.scorebook-print-root) #root > div,
-          body:has(.scorebook-print-root) #root > div > div:has(.scorebook-print-root) {
-            display: contents !important;
-          }
+          body:has(.scorebook-print-root) > :not(#root),
           body:has(.scorebook-print-root) #root > div > :not(:has(.scorebook-print-root)),
           body:has(.scorebook-print-root) #root > div > div:has(.scorebook-print-root) > :not(.scorebook-workspace-shell):not(:has(.scorebook-print-root)) {
             display: none !important;
           }
-          body * { visibility: hidden !important; }
-          .scorebook-print-root, .scorebook-print-root * { visibility: visible !important; }
+          body:has(.scorebook-print-root) #root,
+          body:has(.scorebook-print-root) #root > div,
+          body:has(.scorebook-print-root) #root > div > div:has(.scorebook-print-root),
+          body:has(.scorebook-print-root) .scorebook-workspace-shell,
+          body:has(.scorebook-print-root) .scorebook-print-root {
+            display: block !important;
+            visibility: visible !important;
+          }
           html, body { width: ${isTranscriptMode ? '210mm' : '283mm'} !important; min-height: ${isTranscriptMode ? '297mm' : '410mm'} !important; margin: 0 !important; padding: 0 !important; background: white !important; overflow: visible !important; }
           .scorebook-workspace-shell { position: static !important; inset: auto !important; width: ${isTranscriptMode ? '210mm' : '283mm'} !important; min-height: ${isTranscriptMode ? '297mm' : '410mm'} !important; margin: 0 !important; padding: 0 !important; background: white !important; overflow: visible !important; }
           .scorebook-print-root { position: static !important; width: ${isTranscriptMode ? '210mm' : '283mm'} !important; min-height: ${isTranscriptMode ? '297mm' : '410mm'} !important; margin: 0 !important; padding: 0 !important; background: white !important; overflow: visible !important; display: block !important; }
@@ -3361,12 +3497,11 @@ export default function ScorebookWorkspace({
                 ))}
               </select>
             )}
-            <button type="button" onClick={saveScorebook} disabled={isSaving} className="h-11 rounded-xl bg-blue-600 px-4 text-sm font-black text-white shadow hover:bg-blue-700 disabled:opacity-60 flex items-center gap-2">
-              <Save className="w-4 h-4" /> {isSaving ? 'Đang lưu' : 'Lưu'}
-            </button>
-            <button type="button" onClick={() => setShowTeacherPanel(true)} className="h-11 rounded-xl bg-white border border-blue-200 px-4 text-sm font-black text-blue-700 shadow hover:bg-blue-50 flex items-center gap-2">
-              <UsersRound className="w-4 h-4" /> GV khối {grade}
-            </button>
+            {!isTranscriptMode && (
+              <button type="button" onClick={saveScorebook} disabled={isSaving} className="h-11 rounded-xl bg-blue-600 px-4 text-sm font-black text-white shadow hover:bg-blue-700 disabled:opacity-60 flex items-center gap-2">
+                <Save className="w-4 h-4" /> {isSaving ? 'Đang lưu' : 'Lưu'}
+              </button>
+            )}
             {!isTranscriptMode && (
               <button type="button" onClick={() => setPreviewMode((value) => !value)} className={`h-11 rounded-xl px-4 text-sm font-black shadow flex items-center gap-2 ${previewMode ? 'bg-violet-600 text-white hover:bg-violet-700' : 'bg-white border border-violet-200 text-violet-700 hover:bg-violet-50'}`}>
                 {previewMode ? 'Sửa bảng' : 'Xem trước A3'}

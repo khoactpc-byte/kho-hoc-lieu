@@ -162,6 +162,7 @@ export default function ThdTeachingAssignmentsToolbar({
             >
               GV mới: {newTeachersComparedToPreviousBatch.length}
             </button>
+            {isEditingActiveTeachingBatch && (
             <button
               type="button"
               onClick={deleteSelectedTeachingBatch}
@@ -169,6 +170,7 @@ export default function ThdTeachingAssignmentsToolbar({
             >
               <Trash2 className="h-4 w-4" /> Xóa đợt
             </button>
+            )}
           </>
         )}
         <div className="ml-auto flex flex-wrap gap-1.5">

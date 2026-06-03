@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { CalendarDays, ClipboardPaste, Save, Trash2 } from 'lucide-react';
+import { CalendarDays, ClipboardPaste, Loader2, Save, Trash2 } from 'lucide-react';
 import NewTeachersModal from '../features/tran-hung-dao/NewTeachersModal';
 import TeachingCheckModal from '../features/tran-hung-dao/TeachingCheckModal';
 import TeachingTimeSettingsModal from '../features/tran-hung-dao/TeachingTimeSettingsModal';
@@ -29,8 +29,9 @@ import {
   normalizeThdSubjectGrades,
   normalizeTypedAssignmentClassName
 } from '../features/tran-hung-dao/thdHelpers';
+import { postAppsScript } from '../utils/helpers';
 
-const emptyTeacher = () => ({ name: '', shortName: '', subject: '', grades: [], periods: '', moneyPerPeriod: '' });
+const emptyTeacher = () => ({ name: '', shortName: '', subject: '', grades: [], periods: '', moneyPerPeriod: '', signatureUrl: '' });
 const emptyTeachingAssignment = () => ({
   teacherName: '',
   position: 'GV',
@@ -56,6 +57,60 @@ const emptyTeachingAssignment = () => ({
   transcriptSigner: false
 });
 const XLSX_CDN_URL = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
+const TEACHER_SIGNATURE_DRIVE_FOLDER_ID = '16jtHG0OvBsMn_B-lX2HsnhegjVmn1t3a';
+const TEACHER_SIGNATURE_MAX_WIDTH = 420;
+const TEACHER_SIGNATURE_MAX_HEIGHT = 160;
+
+const readFileAsDataUrl = (file) => new Promise((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onload = () => resolve(String(reader.result || ''));
+  reader.onerror = () => reject(reader.error || new Error('Khong doc duoc anh chu ky.'));
+  reader.readAsDataURL(file);
+});
+
+const resizeTeacherSignatureFile = async (file) => {
+  if (!file || !String(file.type || '').startsWith('image/')) {
+    throw new Error('Hay chon file anh chu ky.');
+  }
+  const sourceUrl = await readFileAsDataUrl(file);
+  const image = await new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('Khong mo duoc anh chu ky.'));
+    img.src = sourceUrl;
+  });
+  const scale = Math.min(
+    1,
+    TEACHER_SIGNATURE_MAX_WIDTH / Math.max(1, image.naturalWidth || image.width),
+    TEACHER_SIGNATURE_MAX_HEIGHT / Math.max(1, image.naturalHeight || image.height)
+  );
+  const width = Math.max(1, Math.round((image.naturalWidth || image.width) * scale));
+  const height = Math.max(1, Math.round((image.naturalHeight || image.height) * scale));
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext('2d');
+  context.clearRect(0, 0, width, height);
+  context.drawImage(image, 0, 0, width, height);
+  const webp = canvas.toDataURL('image/webp', 0.68);
+  return webp.startsWith('data:image/webp') ? webp : canvas.toDataURL('image/png');
+};
+
+const dataUrlToUploadPayload = (dataUrl = '') => {
+  const match = String(dataUrl || '').match(/^data:([^;]+);base64,(.+)$/);
+  if (!match) throw new Error('Khong doc duoc du lieu anh chu ky.');
+  const mimeType = match[1] || 'image/png';
+  const extension = mimeType.includes('webp') ? 'webp' : (mimeType.includes('jpeg') || mimeType.includes('jpg') ? 'jpg' : 'png');
+  return { mimeType, base64: match[2], extension };
+};
+
+const safeTeacherSignatureFileName = (teacherName = '') => {
+  const name = String(teacherName || 'giao-vien')
+    .replace(/[\\/:*?"<>|]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim() || 'giao-vien';
+  return name;
+};
 
 const suggestTeacherShortName = (name = '') => {
   const parts = String(name || '')
@@ -77,7 +132,8 @@ const normalizeTeacher = (teacher = {}) => ({
   subject: String(teacher.subject || '').trim(),
   grades: Array.isArray(teacher.grades) ? teacher.grades.map(String) : [],
   periods: String(teacher.periods ?? teacher.teachingPeriods ?? teacher.lessonCount ?? '').trim(),
-  moneyPerPeriod: String(teacher.moneyPerPeriod ?? teacher.ratePerPeriod ?? teacher.money ?? '').trim()
+  moneyPerPeriod: String(teacher.moneyPerPeriod ?? teacher.ratePerPeriod ?? teacher.money ?? '').trim(),
+  signatureUrl: String(teacher.signatureUrl ?? teacher.signature ?? teacher.signUrl ?? teacher.signatureLink ?? '').trim()
 });
 
 const normalizeThdTeacher = (teacher = {}) => ({
@@ -1975,6 +2031,7 @@ export default function AdminSettingsWorkspace({
   const [showTeacherPaste, setShowTeacherPaste] = useState(false);
   const [thdPasteText, setThdPasteText] = useState('');
   const [showThdTeacherPaste, setShowThdTeacherPaste] = useState(false);
+  const [uploadingTeacherSignatureIndex, setUploadingTeacherSignatureIndex] = useState(null);
   const [activeTeacherPickerIndex, setActiveTeacherPickerIndex] = useState(null);
   const [teacherPickerPosition, setTeacherPickerPosition] = useState({ top: 0, left: 0, width: 420 });
   const [activeClassPickerIndex, setActiveClassPickerIndex] = useState(null);
@@ -3151,8 +3208,8 @@ export default function AdminSettingsWorkspace({
       const [grade, subject] = key.split('|');
       const currentValue = normalizeClassTeacherAssignmentValue(nextYearMap?.[grade]?.[subject] || '');
       nextYearMap[grade][subject] = {
-        hk1: currentValue.hk1 || currentValue.hk2,
-        hk2: currentValue.hk2 || currentValue.hk1
+        hk1: currentValue.hk1,
+        hk2: currentValue.hk2
       };
     });
     if (!touchedKeys.size) {
@@ -4397,6 +4454,30 @@ export default function AdminSettingsWorkspace({
     setTeachersDraft(prev => prev.map((item, rowIndex) => rowIndex === index ? normalizeTeacher({ ...item, ...patch }) : item));
   };
 
+  const chooseTeacherSignature = async (index, file) => {
+    if (!file) return;
+    const teacherName = teachersDraft[index]?.name || `giao-vien-${index + 1}`;
+    setUploadingTeacherSignatureIndex(index);
+    try {
+      const signatureDataUrl = await resizeTeacherSignatureFile(file);
+      const uploadPayload = dataUrlToUploadPayload(signatureDataUrl);
+      const response = await postAppsScript({
+        filename: `[CHU_KY_GV]_${safeTeacherSignatureFileName(teacherName)}.${uploadPayload.extension}`,
+        mimeType: uploadPayload.mimeType,
+        base64: uploadPayload.base64,
+        folderId: TEACHER_SIGNATURE_DRIVE_FOLDER_ID
+      });
+      const signatureUrl = response.webViewLink || response.url || (response.fileId ? `https://drive.google.com/file/d/${response.fileId}/view` : '');
+      if (!signatureUrl) throw new Error('Drive da nhan anh nhung chua tra ve link.');
+      updateTeacher(index, { signatureUrl });
+      showNotification?.('Đã tải chữ ký lên Drive và gắn vào giáo viên.');
+    } catch (error) {
+      showNotification?.(error?.message || 'Chưa tải được ảnh chữ ký lên Drive.', 'error');
+    } finally {
+      setUploadingTeacherSignatureIndex(null);
+    }
+  };
+
   const updateThdTeacher = (index, patch) => {
     setThdTeachersDraft(prev => prev.map((item, rowIndex) => rowIndex === index ? normalizeThdTeacher({ ...item, ...patch }) : item));
   };
@@ -4861,13 +4942,14 @@ export default function AdminSettingsWorkspace({
                     { offset: Math.ceil(teachersDraft.length / 2), rows: teachersDraft.slice(Math.ceil(teachersDraft.length / 2)) }
                   ].map((group, groupIndex) => (
                     <div key={`nan-teacher-col-${groupIndex}`} className={`${groupIndex === 1 && !group.rows.length ? 'hidden xl:block' : ''} rounded-2xl border border-slate-200 bg-white p-3 shadow-sm overflow-x-auto`}>
-                      <table className="w-full min-w-[860px] border-separate border-spacing-y-1 text-sm">
+                      <table className="w-full min-w-[1040px] border-separate border-spacing-y-1 text-sm">
                         <thead>
                           <tr className="text-left text-[11px] font-semibold uppercase text-slate-500">
                             <th className="w-10 px-2">STT</th>
                             <th className="px-2">Tên giáo viên</th>
                             <th className="w-32 px-2">Ghi tắt</th>
                             <th className="w-44 px-2">Môn</th>
+                            <th className="w-44 px-2">Chữ ký</th>
                             <th className="w-20 px-2 text-center">Số tiết</th>
                             <th className="w-28 px-2 text-center">Số tiền</th>
                             <th className="w-12 px-2 text-center">Xóa</th>
@@ -4876,12 +4958,35 @@ export default function AdminSettingsWorkspace({
                         <tbody>
                           {group.rows.map((teacher, rowIndex) => {
                             const index = rowIndex + group.offset;
+                            const isUploadingSignature = uploadingTeacherSignatureIndex === index;
                             return (
                               <tr key={`teacher-${index}`} className="bg-slate-50">
                                 <td className="rounded-l-lg px-2 py-1.5 text-center text-slate-500">{index + 1}</td>
                                 <td className="px-2 py-1.5"><input value={teacher.name} onChange={(event) => updateTeacher(index, { name: event.target.value })} className="h-8 w-full rounded-md border border-slate-200 bg-white px-2 font-normal outline-none focus:border-blue-400" /></td>
                                 <td className="px-2 py-1.5"><input value={teacher.shortName || ''} onChange={(event) => updateTeacher(index, { shortName: event.target.value })} placeholder={suggestTeacherShortName(teacher.name) || 'TM Triết'} className="h-8 w-full rounded-md border border-slate-200 bg-white px-2 font-normal outline-none focus:border-blue-400" /></td>
                                 <td className="px-2 py-1.5"><input value={teacher.subject} onChange={(event) => updateTeacher(index, { subject: event.target.value })} list="nan-subjects" placeholder="VD: Toán" className="h-8 w-full rounded-md border border-slate-200 bg-white px-2 font-normal outline-none focus:border-blue-400" /></td>
+                                <td className="px-2 py-1.5">
+                                  <input
+                                    id={`nan-teacher-signature-${index}`}
+                                    type="file"
+                                    accept="image/*"
+                                    className="hidden"
+                                    disabled={isUploadingSignature}
+                                    onChange={(event) => {
+                                      chooseTeacherSignature(index, event.target.files?.[0]);
+                                      event.target.value = '';
+                                    }}
+                                  />
+                                  <div className="flex items-center gap-2">
+                                    <label htmlFor={`nan-teacher-signature-${index}`} className={`inline-flex h-8 items-center justify-center gap-1.5 rounded-md border px-3 text-xs font-semibold ${isUploadingSignature ? 'cursor-wait border-slate-200 bg-slate-100 text-slate-400' : 'cursor-pointer border-sky-200 bg-sky-50 text-sky-700 hover:bg-sky-100'}`}>
+                                      {isUploadingSignature && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                                      {isUploadingSignature ? 'Đang tải...' : (teacher.signatureUrl ? 'Đổi chữ ký' : 'Chèn chữ ký')}
+                                    </label>
+                                    <span className={`text-[11px] font-semibold ${teacher.signatureUrl ? 'text-emerald-600' : 'text-slate-400'}`}>
+                                      {teacher.signatureUrl ? 'Đã có' : 'Chưa có'}
+                                    </span>
+                                  </div>
+                                </td>
                                 <td className="px-2 py-1.5"><input value={teacher.periods || ''} onChange={(event) => updateTeacher(index, { periods: event.target.value })} inputMode="decimal" placeholder="19" className="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-center font-normal outline-none focus:border-blue-400" /></td>
                                 <td className="px-2 py-1.5"><input value={teacher.moneyPerPeriod || ''} onChange={(event) => updateTeacher(index, { moneyPerPeriod: normalizeMoney(event.target.value) })} inputMode="numeric" placeholder="50000" className="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-center font-normal outline-none focus:border-blue-400" /></td>
                                 <td className="rounded-r-lg px-2 py-1.5 text-center">
