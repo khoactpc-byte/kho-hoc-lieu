@@ -144,7 +144,9 @@ const copyTextSafely = async (text) => {
     try {
       await navigator.clipboard.writeText(text);
       return true;
-    } catch (error) {}
+    } catch {
+      // Fall back to the textarea copy path below.
+    }
   }
   const textarea = document.createElement('textarea');
   textarea.value = text;
@@ -156,14 +158,13 @@ const copyTextSafely = async (text) => {
   textarea.focus();
   textarea.select();
   textarea.setSelectionRange(0, text.length);
-  let copied = false;
   try {
-    copied = document.execCommand('copy');
-  } catch (error) {
-    copied = false;
+    return document.execCommand('copy');
+  } catch {
+    return false;
+  } finally {
+    document.body.removeChild(textarea);
   }
-  document.body.removeChild(textarea);
-  return copied;
 };
 
 const uniqueClassesFrom = (students = [], timetable = {}) => {
@@ -511,7 +512,7 @@ function AdminAttendanceStaticTable({ currentSchoolYear = '', students = [], use
               <tr>
                 <td colSpan={(reportMode === 'month' ? days.length : reportMonths.length * 2) + 6} className="px-4 py-8 text-center text-slate-400 font-bold">Chưa có học sinh trong khối đang chọn.</td>
               </tr>
-            ) : rowsWithStats.map((row, index) => {
+            ) : rowsWithStats.map((row) => {
               const rowBg = row.cp + row.kp > 0 ? 'bg-amber-50' : 'bg-white';
               const stickyBg = row.cp + row.kp > 0 ? 'bg-amber-100' : 'bg-white';
               return (

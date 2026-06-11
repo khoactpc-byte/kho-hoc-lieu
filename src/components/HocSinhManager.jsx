@@ -737,12 +737,6 @@ const getJourneyStudentKey = (student = {}) => {
   return `${normalizeSearch(student.fullName)}__${String(student.birthDate || '').trim()}`;
 };
 
-const toDateKey = (date) => {
-  const day = String(date.getDate()).padStart(2, '0');
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  return `${date.getFullYear()}-${month}-${day}`;
-};
-
 const getJourneyScoreInputValue = (editsMap, semester, pageIndex, rowIndex, scoreIndex) => {
   if (pageIndex === null || pageIndex === undefined || rowIndex < 0) return '';
   return String(getScorebookEditText(editsMap, `${semester}Score:${pageIndex}:r${rowIndex}:s${scoreIndex}`, '') || '').trim();
@@ -996,7 +990,9 @@ const copyTextToClipboard = async (text = '') => {
   try {
     await navigator.clipboard?.writeText(value);
     return true;
-  } catch (clipboardError) {}
+  } catch {
+    // Fall back to the hidden textarea copy path below.
+  }
   if (typeof document === 'undefined') return false;
   try {
     const input = document.createElement('textarea');
@@ -1009,7 +1005,7 @@ const copyTextToClipboard = async (text = '') => {
     const copied = document.execCommand('copy');
     input.remove();
     return copied;
-  } catch (fallbackError) {
+  } catch {
     return false;
   }
 };
@@ -1044,7 +1040,9 @@ const copyRichReportToClipboard = async (text = '') => {
         })
       ]);
       return true;
-    } catch (error) {}
+    } catch {
+      return false;
+    }
   }
   return copyTextToClipboard(plainText);
 };
@@ -1367,7 +1365,9 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
         quickIssueFilter,
         visibleColumns
       }));
-    } catch {}
+    } catch {
+      localStorage.removeItem(STUDENT_DB_PREFS_KEY);
+    }
   }, [classFilter, statusFilter, quickIssueFilter, visibleColumns]);
 
   useEffect(() => {
@@ -1691,7 +1691,9 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
         });
         return;
       }
-    } catch {}
+    } catch {
+      localStorage.removeItem(ADDRESS_DIRECTORY_CACHE_KEY);
+    }
     let active = true;
     loadRegistrationDataAction('addressDirectory')
       .then(response => {
@@ -2120,7 +2122,8 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
         const { id, ...data } = payload;
         await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'students', id), data, { merge: true });
       } else {
-        const { id, ...data } = payload;
+        const data = { ...payload };
+        delete data.id;
         data.createdAt = Date.now();
         data.createdBy = user?.uid || '';
         await addDoc(studentsCollection, data);
@@ -2365,22 +2368,17 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
     try {
       const codes = new Set(existingCodes);
       await Promise.all(candidates.sort((a, b) => compareClassThenName({ ...a.student, className: a.nextClass }, { ...b.student, className: b.nextClass })).map(({ student, nextClass }) => {
-        const {
-          id,
-          createdAt,
-          createdBy,
-          updatedAt,
-          updatedBy,
-          syncedFromSchoolYear,
-          previousStudentId,
-          ...baseData
-        } = student;
+        const baseData = { ...student };
+        const sourceStudentId = baseData.id;
+        const sourcePreviousStudentId = baseData.previousStudentId;
+        const sourceSyncedFromSchoolYear = baseData.syncedFromSchoolYear;
+        ['id', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy', 'syncedFromSchoolYear', 'previousStudentId'].forEach(key => delete baseData[key]);
         const payload = {
           ...baseData,
           className: nextClass,
           schoolYear: currentSchoolYear,
-          previousStudentId: id || previousStudentId || '',
-          syncedFromSchoolYear: syncedFromSchoolYear || previousSchoolYear,
+          previousStudentId: sourceStudentId || sourcePreviousStudentId || '',
+          syncedFromSchoolYear: sourceSyncedFromSchoolYear || previousSchoolYear,
           status: 'active',
           accessCode: baseData.accessCode || nextSequentialCode({ ...baseData, className: nextClass, schoolYear: currentSchoolYear }, codes, currentSchoolYear),
           createdAt: Date.now(),
@@ -2783,7 +2781,8 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
       const codes = new Set(existingCodes);
       const approvedEntries = await Promise.all(validEntries.map(async ({ registration, student }) => {
         const accessCode = codeMap.get(student) || nextSequentialCode(student, codes, currentSchoolYear);
-        const { id, tempId, duplicateReason, duplicateStudentName, duplicateAccessCode, ...data } = student;
+        const data = { ...student };
+        ['id', 'tempId', 'duplicateReason', 'duplicateStudentName', 'duplicateAccessCode'].forEach(key => delete data[key]);
         codes.add(accessCode);
         await addDoc(studentsCollection, {
           ...data,
@@ -3961,21 +3960,6 @@ function DocumentViewerModal({ viewer, onClose, onSelect, onPrevious, onNext }) 
           </div>
         )}
       </div>
-    </div>
-  );
-}
-
-function Stat({ label, value, tone }) {
-  const tones = {
-    blue: 'bg-blue-50 text-blue-700 border-blue-100',
-    emerald: 'bg-emerald-50 text-emerald-700 border-emerald-100',
-    rose: 'bg-rose-50 text-rose-700 border-rose-100',
-    amber: 'bg-amber-50 text-amber-700 border-amber-100'
-  };
-  return (
-    <div className={`rounded-full border px-3 py-1.5 flex items-center gap-2 ${tones[tone] || tones.blue}`}>
-      <div className="text-base font-black leading-none">{value}</div>
-      <div className="text-[9px] font-black uppercase tracking-widest whitespace-nowrap">{label}</div>
     </div>
   );
 }

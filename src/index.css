@@ -47,6 +47,7 @@
 
 .home-panels-wrap {
   flex: none !important;
+  width: min(100%, calc(100vw - clamp(1rem, 4vw, 4rem)));
 }
 
 .home-mobile-panel {
@@ -59,6 +60,37 @@
   height: clamp(460px, calc(100svh - 300px), 700px) !important;
   max-height: 700px !important;
   min-height: 460px !important;
+}
+
+.home-news-shell {
+  background: rgba(255, 255, 255, 0.62);
+  backdrop-filter: blur(8px);
+}
+
+.home-news-grid {
+  max-height: calc(100% - 2.5rem);
+  min-height: clamp(500px, 62svh, 720px) !important;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.home-news-media {
+  height: clamp(290px, 40svh, 460px);
+}
+
+.admin-home-news-media {
+  height: clamp(430px, 56svh, 640px);
+}
+
+.home-news-grid::-webkit-scrollbar,
+.home-news-grid .overflow-y-auto::-webkit-scrollbar {
+  width: 6px;
+}
+
+.home-news-grid::-webkit-scrollbar-thumb,
+.home-news-grid .overflow-y-auto::-webkit-scrollbar-thumb {
+  background: rgba(147, 197, 253, 0.7);
+  border-radius: 999px;
 }
 
 .home-panel-card {
@@ -80,6 +112,10 @@
   min-height: 0 !important;
 }
 
+.admin-home-panels-wrap .home-news-grid {
+  min-height: clamp(650px, 78svh, 900px) !important;
+}
+
 .admin-home-panels-wrap .home-panel-card {
   max-height: none !important;
 }
@@ -91,6 +127,50 @@
 
 .home-role-actions {
   margin-top: 0.75rem !important;
+}
+
+@media (max-height: 820px) {
+  .home-desktop-panels {
+    height: clamp(330px, calc(100svh - 300px), 520px) !important;
+    max-height: 520px !important;
+    min-height: 330px !important;
+  }
+
+  .home-news-grid {
+    min-height: clamp(270px, 38svh, 430px) !important;
+  }
+
+  .home-news-media {
+    height: clamp(210px, 30svh, 350px);
+  }
+
+  .admin-home-news-media {
+    height: clamp(320px, 44svh, 520px);
+  }
+
+  .home-role-actions {
+    margin-top: 0.5rem !important;
+  }
+}
+
+@media (max-height: 700px) {
+  .home-desktop-panels {
+    height: clamp(280px, calc(100svh - 270px), 430px) !important;
+    max-height: 430px !important;
+    min-height: 280px !important;
+  }
+
+  .home-news-grid {
+    min-height: clamp(230px, 34svh, 340px) !important;
+  }
+
+  .home-news-media {
+    height: clamp(170px, 26svh, 280px);
+  }
+
+  .admin-home-news-media {
+    height: clamp(250px, 38svh, 430px);
+  }
 }
 
 .quiz-attachment-preview {

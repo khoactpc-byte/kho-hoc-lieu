@@ -1991,6 +1991,9 @@ export default function AdminSettingsWorkspace({
   adminSchoolYear,
   schoolYears,
   principalName,
+  pcResponsibleName = '',
+  pcResponsibleByYear = {},
+  extraSchoolYears = [],
   inputYearLocks,
   transcriptStartDates,
   transcriptEndDates,
@@ -2012,6 +2015,8 @@ export default function AdminSettingsWorkspace({
 }) {
   const [yearDraft, setYearDraft] = useState(currentSchoolYear || '');
   const [principalDraft, setPrincipalDraft] = useState(principalName || '');
+  const [pcResponsibleDraft, setPcResponsibleDraft] = useState(pcResponsibleName || '');
+  const [pcResponsibleByYearDraft, setPcResponsibleByYearDraft] = useState({});
   const [inputLocksDraft, setInputLocksDraft] = useState({});
   const [transcriptStartDatesDraft, setTranscriptStartDatesDraft] = useState({});
   const [transcriptEndDatesDraft, setTranscriptEndDatesDraft] = useState({});
@@ -2051,6 +2056,7 @@ export default function AdminSettingsWorkspace({
   const [showTeachingMoneyColumns, setShowTeachingMoneyColumns] = useState(true);
   const [teachingFilter, setTeachingFilter] = useState('all');
   const [showTeachingFilterMenu, setShowTeachingFilterMenu] = useState(false);
+  const [savingInputLockKey, setSavingInputLockKey] = useState('');
   const [teachingImportStartDate, setTeachingImportStartDate] = useState('');
   const [teachingImportEndDate, setTeachingImportEndDate] = useState('');
   const teachingImportFileRef = useRef(null);
@@ -2122,6 +2128,14 @@ export default function AdminSettingsWorkspace({
   useEffect(() => {
     setPrincipalDraft(principalName || '');
   }, [principalName]);
+
+  useEffect(() => {
+    setPcResponsibleDraft(pcResponsibleName || '');
+  }, [pcResponsibleName]);
+
+  useEffect(() => {
+    setPcResponsibleByYearDraft(pcResponsibleByYear && typeof pcResponsibleByYear === 'object' ? pcResponsibleByYear : {});
+  }, [pcResponsibleByYear]);
 
   useEffect(() => {
     setInputLocksDraft(inputYearLocks && typeof inputYearLocks === 'object' ? inputYearLocks : {});
@@ -2213,11 +2227,13 @@ export default function AdminSettingsWorkspace({
   const transcriptSignerNames = useMemo(() => {
     return [...new Set([
       principalDraft,
+      pcResponsibleDraft,
+      ...Object.values(pcResponsibleByYearDraft || {}),
       ...Object.values(transcriptStartSignersDraft || {}),
       ...Object.values(transcriptEndSignersDraft || {}),
       ...teacherNames
     ].map(item => String(item || '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'vi'));
-  }, [principalDraft, teacherNames, transcriptEndSignersDraft, transcriptStartSignersDraft]);
+  }, [pcResponsibleByYearDraft, pcResponsibleDraft, principalDraft, teacherNames, transcriptEndSignersDraft, transcriptStartSignersDraft]);
 
   const selectedSchoolYear = adminSchoolYear || currentSchoolYear || '';
   const selectedSchoolYearKey = compactSchoolYearLabel(selectedSchoolYear);
@@ -4319,13 +4335,24 @@ export default function AdminSettingsWorkspace({
     printHtmlDocument(html, () => showNotification?.('Chưa mở được hộp thoại in PDF.', 'error'));
   };
 
-  const setYearLockDraft = (year, locked) => {
+  const setYearLockDraft = async (year, locked) => {
     const yearKey = compactSchoolYearLabel(year);
     if (!yearKey) return;
-    setInputLocksDraft(prev => ({
-      ...(prev || {}),
+    const nextLocks = {
+      ...(inputLocksDraft || {}),
       [yearKey]: Boolean(locked)
-    }));
+    };
+    setInputLocksDraft(nextLocks);
+    if (typeof onSaveSetting !== 'function') return;
+    setSavingInputLockKey(yearKey);
+    try {
+      await onSaveSetting('inputYearLocks', nextLocks);
+    } catch {
+      setInputLocksDraft(inputYearLocks && typeof inputYearLocks === 'object' ? inputYearLocks : {});
+      showNotification?.('Chưa lưu được trạng thái khóa nhập liệu.', 'error');
+    } finally {
+      setSavingInputLockKey(currentKey => currentKey === yearKey ? '' : currentKey);
+    }
   };
 
   const cleanTeachersDraft = useMemo(
@@ -4360,6 +4387,8 @@ export default function AdminSettingsWorkspace({
   const changedSettings = useMemo(() => ({
     schoolYear: String(yearDraft || '') !== String(currentSchoolYear || ''),
     principalName: String(principalDraft || '').trim() !== String(principalName || '').trim(),
+    pcResponsibleName: String(pcResponsibleDraft || '').trim() !== String(pcResponsibleName || '').trim(),
+    pcResponsibleByYear: !sameJson(pcResponsibleByYearDraft, pcResponsibleByYear && typeof pcResponsibleByYear === 'object' ? pcResponsibleByYear : {}),
     inputYearLocks: !sameJson(inputLocksDraft, inputYearLocks && typeof inputYearLocks === 'object' ? inputYearLocks : {}),
     transcriptStartDates: !sameJson(transcriptStartDatesDraft, transcriptStartDates && typeof transcriptStartDates === 'object' ? transcriptStartDates : {}),
     transcriptEndDates: !sameJson(transcriptEndDatesDraft, transcriptEndDates && typeof transcriptEndDates === 'object' ? transcriptEndDates : {}),
@@ -4385,6 +4414,10 @@ export default function AdminSettingsWorkspace({
     inputLocksDraft,
     inputYearLocks,
     nanTeachers,
+    pcResponsibleByYear,
+    pcResponsibleByYearDraft,
+    pcResponsibleDraft,
+    pcResponsibleName,
     principalDraft,
     principalName,
     teachingAssignmentsDirty,
@@ -4406,6 +4439,21 @@ export default function AdminSettingsWorkspace({
   ]);
 
   const hasChanges = Object.values(changedSettings).some(Boolean);
+
+  const addNextSchoolYear = async () => {
+    const getStartYear = (year = '') => Number(String(year || '').match(/\d{4}/)?.[0] || 0);
+    const maxStartYear = Math.max(...(schoolYears || []).map(getStartYear), getStartYear(currentSchoolYear), 0);
+    const nextStartYear = maxStartYear + 1;
+    const nextYear = `${nextStartYear}-${nextStartYear + 1}`;
+    const nextExtraYears = [...new Set([...(Array.isArray(extraSchoolYears) ? extraSchoolYears : []), nextYear])];
+    setYearDraft(nextYear);
+    try {
+      await onSaveSetting?.('extraSchoolYears', nextExtraYears);
+      showNotification?.(`Đã thêm năm học ${nextYear}.`);
+    } catch {
+      showNotification?.('Chưa thêm được năm học mới.', 'error');
+    }
+  };
 
   useEffect(() => {
     if (!changedSettings.nanTeachers || typeof onSaveSetting !== 'function') return undefined;
@@ -4442,6 +4490,19 @@ export default function AdminSettingsWorkspace({
     const cleanValue = String(value || '').trim();
     const setter = type === 'start' ? setTranscriptStartSignersDraft : setTranscriptEndSignersDraft;
     setter(prev => {
+      const next = { ...(prev || {}) };
+      yearsToUpdate.forEach(year => {
+        next[compactSchoolYearLabel(year)] = cleanValue;
+      });
+      return next;
+    });
+  };
+
+  const updatePcResponsibleByYearDraft = (schoolYear, value) => {
+    const startIndex = schoolYears.findIndex(year => compactSchoolYearLabel(year) === compactSchoolYearLabel(schoolYear));
+    const yearsToUpdate = schoolYears.slice(Math.max(0, startIndex));
+    const cleanValue = String(value || '').trim();
+    setPcResponsibleByYearDraft(prev => {
       const next = { ...(prev || {}) };
       yearsToUpdate.forEach(year => {
         next[compactSchoolYearLabel(year)] = cleanValue;
@@ -4742,6 +4803,8 @@ export default function AdminSettingsWorkspace({
     const saveTasks = [];
     if (changedSettings.schoolYear) saveTasks.push(onSaveSetting('schoolYear', yearDraft));
     if (changedSettings.principalName) saveTasks.push(onSaveSetting('principalName', principalDraft.trim()));
+    if (changedSettings.pcResponsibleName) saveTasks.push(onSaveSetting('pcResponsibleName', pcResponsibleDraft.trim()));
+    if (changedSettings.pcResponsibleByYear) saveTasks.push(onSaveSetting('pcResponsibleByYear', pcResponsibleByYearDraft));
     if (changedSettings.inputYearLocks) saveTasks.push(onSaveSetting('inputYearLocks', inputLocksDraft));
     if (changedSettings.transcriptStartDates) saveTasks.push(onSaveSetting('transcriptStartDates', transcriptStartDatesDraft));
     if (changedSettings.transcriptEndDates) saveTasks.push(onSaveSetting('transcriptEndDates', transcriptEndDatesDraft));
@@ -4796,9 +4859,12 @@ export default function AdminSettingsWorkspace({
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <label className="block">
                     <div className="text-xs font-black uppercase text-blue-900 mb-2">Năm học hệ thống</div>
-                    <select value={yearDraft} onChange={(event) => setYearDraft(event.target.value)} className="w-full bg-white border border-blue-200 p-3 rounded-xl focus:outline-none focus:border-blue-500 font-black text-sm shadow-sm">
-                      {schoolYears.map(year => <option key={year} value={year}>{year}</option>)}
-                    </select>
+                    <div className="flex gap-2">
+                      <select value={yearDraft} onChange={(event) => setYearDraft(event.target.value)} className="min-w-0 flex-1 bg-white border border-blue-200 p-3 rounded-xl focus:outline-none focus:border-blue-500 font-black text-sm shadow-sm">
+                        {[...new Set([...(schoolYears || []), yearDraft].filter(Boolean))].map(year => <option key={year} value={year}>{year}</option>)}
+                      </select>
+                      <button type="button" onClick={addNextSchoolYear} title="Thêm năm học kế tiếp" className="w-12 rounded-xl bg-blue-600 text-white text-xl font-black shadow-sm hover:bg-blue-700">+</button>
+                    </div>
                   </label>
                   <label className="block">
                     <div className="text-xs font-black uppercase text-blue-900 mb-2">Họ tên hiệu trưởng</div>
@@ -4808,32 +4874,42 @@ export default function AdminSettingsWorkspace({
                     <input
                       type="checkbox"
                       checked={isSystemYearLocked}
-                      onChange={(event) => setInputLocksDraft(prev => ({
-                        ...(prev || {}),
-                        [systemSchoolYearKey]: event.target.checked
-                      }))}
+                      disabled={savingInputLockKey === systemSchoolYearKey}
+                      onChange={(event) => setYearLockDraft(yearDraft || currentSchoolYear, event.target.checked)}
                       className="mt-1 w-5 h-5 accent-rose-600"
                     />
                     <span>
-                      <span className={`block text-sm font-black uppercase ${isSystemYearLocked ? 'text-rose-800' : 'text-emerald-800'}`}>
+                      <span className={`flex items-center gap-2 text-sm font-black uppercase ${isSystemYearLocked ? 'text-rose-800' : 'text-emerald-800'}`}>
+                        {savingInputLockKey === systemSchoolYearKey && <Loader2 className="h-4 w-4 animate-spin" />}
                         Khóa nhập liệu năm {yearDraft || currentSchoolYear}
                       </span>
                       <span className={`block text-xs font-bold mt-1 ${isSystemYearLocked ? 'text-rose-700' : 'text-emerald-700'}`}>
-                        Khi tích khóa, học sinh vẫn vào xem bài và gửi chỉnh sửa hồ sơ; hệ thống chỉ khóa nộp bài/làm bài kiểm tra, ghi điểm và phát đề cho năm này. Bỏ tích rồi bấm Lưu để mở lại.
+                        Khi tích khóa, học sinh vẫn vào xem bài và gửi chỉnh sửa hồ sơ; hệ thống chỉ khóa nộp bài/làm bài kiểm tra, ghi điểm và phát đề cho năm này. Bỏ tích để mở lại, hệ thống sẽ tự lưu ngay.
                       </span>
                     </span>
                   </label>
                   <div className="md:col-span-2 rounded-2xl border border-amber-100 bg-amber-50/40 p-4">
-                    <div className="mb-3 flex items-center gap-2 font-black uppercase text-amber-900">
-                      <CalendarDays className="w-5 h-5" /> Ngày ký học bạ theo năm học
+                    <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 font-black uppercase text-amber-900">
+                        <CalendarDays className="w-5 h-5" /> Ngày ký học bạ theo năm học
+                      </div>
+                      <button
+                        type="button"
+                        onClick={saveAll}
+                        disabled={!hasChanges}
+                        className={`inline-flex h-9 items-center gap-2 rounded-xl px-4 text-xs font-black uppercase transition-colors ${hasChanges ? 'bg-emerald-600 text-white shadow hover:bg-emerald-700' : 'cursor-not-allowed bg-slate-100 text-slate-400'}`}
+                      >
+                        <Save className="h-4 w-4" /> Lưu
+                      </button>
                     </div>
                     <div className="overflow-x-auto rounded-2xl border border-amber-100 bg-white">
-                      <table className="w-full min-w-[1480px] border-collapse text-sm">
+                      <table className="w-full min-w-[1680px] border-collapse text-sm">
                         <thead>
                           <tr className="bg-amber-50 text-left text-[11px] font-black uppercase text-amber-900">
                             <th className="w-36 border-b border-amber-100 px-3 py-2">Năm học</th>
                             <th className="border-b border-amber-100 px-3 py-2">Ngày ký đầu năm, trang 3</th>
                             <th className="border-b border-amber-100 px-3 py-2">Người ký đầu năm</th>
+                            <th className="border-b border-amber-100 px-3 py-2">Chuyên trách PC</th>
                             <th className="border-b border-amber-100 px-3 py-2">Ngày ký cuối năm</th>
                             <th className="border-b border-amber-100 px-3 py-2">Ngày ký lớp 9</th>
                             <th className="border-b border-amber-100 px-3 py-2">Người ký cuối năm</th>
@@ -4866,6 +4942,15 @@ export default function AdminSettingsWorkspace({
                                 </td>
                                 <td className="px-3 py-2">
                                   <input
+                                    value={pcResponsibleByYearDraft?.[yearKey] ?? pcResponsibleDraft}
+                                    onChange={(event) => updatePcResponsibleByYearDraft(year, event.target.value)}
+                                    list="transcript-signer-names"
+                                    placeholder="Chuyên trách PC..."
+                                    className="w-full rounded-xl border border-amber-100 bg-white p-2 font-bold outline-none focus:border-amber-400"
+                                  />
+                                </td>
+                                <td className="px-3 py-2">
+                                  <input
                                     type="date"
                                     value={toDateInputValue(transcriptEndDatesDraft?.[yearKey]) || defaultTranscriptEndDate(year)}
                                     onChange={(event) => updateTranscriptDateDraft('end', year, event.target.value)}
@@ -4893,9 +4978,13 @@ export default function AdminSettingsWorkspace({
                                   <button
                                     type="button"
                                     onClick={() => setYearLockDraft(year, !isYearLocked)}
+                                    disabled={savingInputLockKey === yearKey}
                                     className={`w-full rounded-xl border px-3 py-2 text-xs font-black uppercase transition-colors ${isYearLocked ? 'border-rose-200 bg-rose-100 text-rose-700 hover:bg-rose-200' : 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'}`}
                                   >
-                                    {isYearLocked ? 'Đang khóa' : 'Đang mở'}
+                                    <span className="inline-flex items-center justify-center gap-1.5">
+                                      {savingInputLockKey === yearKey && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                                      {isYearLocked ? 'Đang khóa' : 'Đang mở'}
+                                    </span>
                                   </button>
                                 </td>
                               </tr>

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { addDoc, collection, deleteDoc, doc, getDocs, onSnapshot, setDoc } from 'firebase/firestore';
-import { BarChart3, ChevronDown, EyeOff, HelpCircle, Save, Send, Sparkles, Trash2, Users, X } from 'lucide-react';
+import { AlertTriangle, BarChart3, ChevronDown, EyeOff, FileSpreadsheet, FileText, HelpCircle, Save, Send, Sparkles, Trash2, Users, X } from 'lucide-react';
 import { appId, db } from '../config/firebase';
 
 const BASE_CLASSES = ['6', '7', '8', '9'];
@@ -14,6 +14,7 @@ const DAYS = [
   { key: '7', label: 'T7' }
 ];
 const EXTRA_SUBJECTS = ['Giáo dục địa phương', 'HDTT', 'Chủ nhiệm'];
+const OFF_SLOT_VALUE = '__OFF__';
 const SCHEDULE_SEMESTERS = [
   { key: 'hk1', label: 'HK1', namePrefix: 'HK1' },
   { key: 'hk2', label: 'HK2', namePrefix: 'HK2' }
@@ -31,6 +32,7 @@ const REQUIRED_LOADS = [
 ];
 const SINGLE_VISIT_SUBJECT_KEYS = new Set(['gdcd', 'congnghe', 'gddp', 'hdtt']);
 const HOMEROOM_PAIR_SUBJECT_KEYS = new Set(['gddp', 'cn']);
+const getCurrentTimestamp = () => Date.now();
 
 const defaultRows = () => BASE_CLASSES.map(className => ({
   id: className,
@@ -92,6 +94,7 @@ const subjectKey = (value = '') => {
 };
 const hasTeacherSuffix = (value = '') => /\s[-–—]\s/.test(String(value || ''));
 const displayPublicSubject = (value = '') => {
+  if (value === OFF_SLOT_VALUE) return 'Nghỉ';
   if (hasTeacherSuffix(value)) return value;
   const key = subjectKey(value);
   if (key === 'gddp') return 'GDĐP';
@@ -100,6 +103,7 @@ const displayPublicSubject = (value = '') => {
   return value || '-';
 };
 const displayEditorSubject = (value = '') => {
+  if (value === OFF_SLOT_VALUE) return 'Nghỉ';
   if (hasTeacherSuffix(value)) return value;
   const key = subjectKey(value);
   if (key === 'gddp') return 'GDĐP';
@@ -154,12 +158,20 @@ const formatScheduleCellValue = (subjectLabel = '', teacherName = '', teacherSho
 };
 const compactScheduleCellValue = (value = '', teacherShortNameByKey = new Map(), displaySubject = displayEditorSubject) => {
   const text = String(value || '').trim();
+  if (text === OFF_SLOT_VALUE) return OFF_SLOT_VALUE;
   if (!text || !hasTeacherSuffix(text)) return displaySubject(text);
   const [subjectText, ...teacherParts] = text.split(/\s[-–—]\s/);
   const teacherLabel = getScheduleTeacherLabel(teacherParts.join(' - '), teacherShortNameByKey);
   const subjectLabel = displaySubject(subjectText);
   return teacherLabel ? `${subjectLabel} - ${teacherLabel}` : subjectLabel;
 };
+const getScheduleCellTeacherText = (value = '') => {
+  const text = String(value || '').trim();
+  if (!text || text === OFF_SLOT_VALUE || !hasTeacherSuffix(text)) return '';
+  const [, ...teacherParts] = text.split(/\s[-–—]\s/);
+  return teacherParts.join(' - ').trim();
+};
+const getScheduleCellTeacherKeys = (value = '') => getTeacherKeys(getScheduleCellTeacherText(value));
 const compactScheduleForSave = (schedule = {}, rows = defaultRows(), teacherShortNameByKey = new Map()) => {
   const normalized = normalizeSchedule(schedule, rows);
   return Object.fromEntries(rows.map(row => [
@@ -194,6 +206,38 @@ const isBlankScheduleValue = (value = '') => {
   const text = String(value || '').trim();
   return !text || text === '-';
 };
+const isOffScheduleValue = (value = '') => String(value || '').trim() === OFF_SLOT_VALUE;
+const isOpenScheduleValue = (value = '') => isBlankScheduleValue(value) || isOffScheduleValue(value);
+const escapeHtml = (value = '') => String(value ?? '')
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;')
+  .replace(/'/g, '&#39;');
+const makeSafeFileName = (value = 'thoi-khoa-bieu') => removeAccentsLocal(value)
+  .replace(/[^a-z0-9]+/g, '-')
+  .replace(/^-+|-+$/g, '')
+  .slice(0, 80) || 'thoi-khoa-bieu';
+const formatSchoolYearDisplay = (schoolYear = '') => String(schoolYear || '').replace(/\s*-\s*/g, ' - ').trim();
+const getSemesterNumber = (semesterLabel = '') => String(semesterLabel || '').match(/\d+/)?.[0] || (removeAccentsLocal(semesterLabel).includes('2') ? '2' : '1');
+const getSchoolYearStartYearForSchedule = (schoolYear = '') => Number(String(schoolYear || '').match(/\d{4}/)?.[0] || new Date().getFullYear());
+const getScheduleSigningDateText = (schoolYear = '', semesterLabel = '') => {
+  const startYear = getSchoolYearStartYearForSchedule(schoolYear);
+  const isSemester2 = getSemesterNumber(semesterLabel) === '2';
+  const month = isSemester2 ? '01' : '09';
+  const year = isSemester2 ? startYear + 1 : startYear;
+  return `Ngày 15 tháng ${month} năm ${year}`;
+};
+const downloadBlobFile = (filename, blob) => {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+};
 const getContentVisibleDays = ({ rows = [], visibleDays = [], schedule = {}, periodCount = 5 }) => {
   const selectedDays = DAYS.filter(day => visibleDays.includes(day.key));
   const daysWithContent = selectedDays.filter(day => (
@@ -205,19 +249,30 @@ const getContentVisibleDays = ({ rows = [], visibleDays = [], schedule = {}, per
 const makeScheduleNewsHtml = ({ name, rows, visibleDays, schedule, periodCount = 5 }) => {
   const shownDayKeys = getContentVisibleDays({ rows, visibleDays, schedule, periodCount });
   const shownDays = DAYS.filter(day => shownDayKeys.includes(day.key));
-  const header = shownDays.map(day => `<th class="schedule-day-head" style="border:1px solid #dbeafe;padding:6px;background:#eff6ff;">${day.label}</th>`).join('');
+  const header = shownDays.map(day => `<th class="schedule-day-head">${day.label}</th>`).join('');
   const body = rows.map(row => {
     return PERIODS.slice(0, periodCount).map((period, index) => {
-      const classCell = index === 0 ? `<th class="schedule-class-cell" rowspan="${periodCount}" style="border:1px solid #dbeafe;padding:6px;background:#f8fafc;line-height:1.2;width:54px;min-width:54px;">${compactClassHtml(row)}</th>` : '';
-      const cells = shownDays.map(day => `<td class="schedule-subject-cell" style="border:1px solid #e2e8f0;padding:6px;text-align:center;line-height:1.25;">${displayPublicSubject(schedule?.[row.id]?.[day.key]?.[period])}</td>`).join('');
-      return `<tr>${classCell}<th class="schedule-period-cell" style="border:1px solid #e2e8f0;padding:6px;background:#f8fafc;width:36px;min-width:36px;">${period}</th>${cells}</tr>`;
+      const rowClass = [
+        'schedule-period-row',
+        index === 0 ? 'schedule-class-start' : '',
+        index === periodCount - 1 ? 'schedule-class-end' : ''
+      ].filter(Boolean).join(' ');
+      const classCell = index === 0 ? `<th class="schedule-class-cell" rowspan="${periodCount}">${compactClassHtml(row)}</th>` : '';
+      const cells = shownDays.map(day => `<td class="schedule-subject-cell">${displayPublicSubject(schedule?.[row.id]?.[day.key]?.[period])}</td>`).join('');
+      return `<tr class="${rowClass}">${classCell}<th class="schedule-period-cell">${period}</th>${cells}</tr>`;
     }).join('');
   }).join('');
   return `<style>
-    .schedule-news table{border-collapse:collapse;width:100%;font-size:14px;table-layout:fixed}
-    .schedule-news th,.schedule-news td{word-break:normal;overflow-wrap:anywhere}
+    .schedule-news table{border:2px solid #93c5fd;border-collapse:collapse;width:100%;font-size:14px;table-layout:fixed}
+    .schedule-news th,.schedule-news td{border-left:1px solid #dbeafe;border-right:1px solid #dbeafe;border-top:1px dashed #cbd5e1;border-bottom:1px dashed #cbd5e1;padding:6px;text-align:center;word-break:normal;overflow-wrap:anywhere}
+    .schedule-news thead th{border:1.5px solid #93c5fd;background:#eff6ff;font-weight:800}
     .schedule-news .schedule-class-head{width:54px}
     .schedule-news .schedule-period-head{width:36px}
+    .schedule-news .schedule-class-cell{width:54px;min-width:54px;background:#f8fafc;font-weight:800;line-height:1.2;border:2px solid #93c5fd}
+    .schedule-news .schedule-period-cell{width:36px;min-width:36px;background:#f8fafc;font-weight:800}
+    .schedule-news .schedule-subject-cell{line-height:1.25}
+    .schedule-news tbody tr.schedule-class-start>th,.schedule-news tbody tr.schedule-class-start>td{border-top:2px solid #93c5fd}
+    .schedule-news tbody tr.schedule-class-end>th,.schedule-news tbody tr.schedule-class-end>td{border-bottom:2px solid #93c5fd}
     @media (max-width:640px){
       .schedule-news table{font-size:12px}
       .schedule-news th,.schedule-news td{padding:5px!important}
@@ -225,10 +280,128 @@ const makeScheduleNewsHtml = ({ name, rows, visibleDays, schedule, periodCount =
       .schedule-news .schedule-period-head,.schedule-news .schedule-period-cell{width:28px!important;min-width:28px!important}
       .schedule-news .schedule-subject-cell{line-height:1.18}
     }
-  </style><div class="schedule-news"><h2>${name}</h2><p>Thời khóa biểu đã được xuất bản.</p><table><thead><tr><th class="schedule-class-head" style="border:1px solid #dbeafe;padding:6px;background:#eff6ff;">Lớp</th><th class="schedule-period-head" style="border:1px solid #dbeafe;padding:6px;background:#eff6ff;">Tiết</th>${header}</tr></thead><tbody>${body}</tbody></table></div>`;
+  </style><div class="schedule-news"><h2>${name}</h2><p>Thời khóa biểu đã được xuất bản.</p><table><thead><tr><th class="schedule-class-head">Lớp</th><th class="schedule-period-head">Tiết</th>${header}</tr></thead><tbody>${body}</tbody></table></div>`;
 };
 
-export default function SimpleScheduleTable({ subjects = [], currentSchoolYear = '', classTeacherAssignments = {}, teachers = [], user, onClose, showNotification }) {
+const makeScheduleExportHtml = ({ name, schoolYear, semesterLabel, rows, visibleDays, schedule, periodCount = 5, principalName = '', pcResponsibleName = '', includePrintButton = false }) => {
+  const shownDays = DAYS.filter(day => visibleDays.includes(day.key));
+  const normalized = normalizeSchedule(schedule, rows);
+  const semesterNumber = getSemesterNumber(semesterLabel);
+  const schoolYearText = formatSchoolYearDisplay(schoolYear);
+  const signingDateText = getScheduleSigningDateText(schoolYear, semesterLabel);
+  const documentTitle = `THỜI KHÓA BIỂU HỌC KỲ ${semesterNumber} LỚP PHỔ CẬP THCS`;
+  const header = shownDays.map(day => `<th>${escapeHtml(day.label)}</th>`).join('');
+  const body = rows.map(row => PERIODS.slice(0, periodCount).map((period, index) => {
+    const rowClass = [
+      'period-row',
+      index === 0 ? 'class-start' : '',
+      index === periodCount - 1 ? 'class-end' : ''
+    ].filter(Boolean).join(' ');
+    const classCell = index === 0 ? `<th rowspan="${periodCount}" class="class-cell">${escapeHtml(row.label || row.id)}</th>` : '';
+    const cells = shownDays.map(day => `<td>${escapeHtml(displayPublicSubject(normalized?.[row.id]?.[day.key]?.[period] || ''))}</td>`).join('');
+    return `<tr class="${rowClass}">${classCell}<th class="period-cell">Tiết ${period}</th>${cells}</tr>`;
+  }).join('')).join('');
+
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>${escapeHtml(name)}</title>
+  <style>
+    @page { size: A4 landscape; margin: 6mm; }
+    body { font-family: "Times New Roman", Times, serif; color: #0f172a; }
+    .doc-header { width: 100%; border-collapse: collapse; table-layout: fixed; margin-bottom: 5px; font-family: "Times New Roman", Arial, sans-serif; }
+    .doc-header td { border: 0; padding: 1px 4px; text-align: center; vertical-align: top; line-height: 1.2; }
+    .doc-left { width: 42%; font-size: 13pt; }
+    .doc-right { width: 58%; font-size: 13pt; font-weight: 700; }
+    .motto { font-size: 14pt; }
+    .school-name { font-size: 13pt; font-weight: 800; text-transform: uppercase; }
+    .motto-line { display: inline-block; border-bottom: 1.5px solid #111; padding-bottom: 2px; }
+    .school-line { display: inline-block; }
+    .school-half-line { display: block; width: 50%; margin: 4px auto 0; border-bottom: 1.5px solid #111; }
+    .doc-title { margin: 5px 0 0; text-align: center; font-family: "Times New Roman", Arial, sans-serif; font-size: 18px; font-weight: 800; text-transform: uppercase; }
+    .doc-year { margin: 0 0 5px; text-align: center; font-family: "Times New Roman", Arial, sans-serif; font-size: 15px; font-weight: 700; text-transform: uppercase; }
+    .period-note { margin-top: 5px; width: 100%; border-collapse: collapse; table-layout: fixed; font-family: "Times New Roman", Times, serif; font-size: 12.2pt; page-break-inside: avoid; break-inside: avoid; }
+    .period-note td { border: 0; padding: 1px 4px; vertical-align: top; }
+    .period-left { width: 42%; line-height: 1.25; }
+    .period-middle, .period-right { width: 29%; text-align: center; }
+    .sign-date { min-height: 22px; }
+    .sign-title { min-height: 24px; font-weight: 800; text-transform: uppercase; margin-top: 4px; }
+    .pc-title { text-transform: none; font-weight: 400; }
+    .sign-name { min-height: 84px; padding-top: 74px; font-size: 14pt; font-weight: 800; }
+    .pc-name { font-weight: 400; }
+    .schedule-table { width: 100%; border: 1.5px solid #111827; border-right-width: 2.5px; border-collapse: collapse; table-layout: fixed; font-size: 11.2px; }
+    .schedule-table th, .schedule-table td { border-left: 1px solid #1f2937; border-right: 1px solid #1f2937; border-top: 1px dashed #64748b; border-bottom: 1px dashed #64748b; padding: 5px 4px; text-align: center; vertical-align: middle; line-height: 1.18; word-break: normal; overflow-wrap: anywhere; }
+    .schedule-table thead th { border: 1px solid #1f2937; background: #dbeafe; font-weight: 800; }
+    .schedule-table tbody tr.class-start > th, .schedule-table tbody tr.class-start > td { border-top: 1px solid #1f2937; }
+    .schedule-table tbody tr.class-end > th, .schedule-table tbody tr.class-end > td { border-bottom: 1px solid #1f2937; }
+    .schedule-table tr > :first-child { border-left: 1.5px solid #111827; }
+    .schedule-table tr > :last-child { border-right: 1.5px solid #111827; }
+    .schedule-table thead tr:first-child > th { border-top: 1.5px solid #111827; }
+    .schedule-table tbody tr:last-child > th, .schedule-table tbody tr:last-child > td { border-bottom: 1.5px solid #111827; }
+    .class-cell { width: 70px; background: #eff6ff; font-weight: 800; }
+    .period-cell { width: 58px; background: #f8fafc; font-weight: 800; }
+    .print-actions { position: sticky; top: 0; z-index: 10; margin: 0 0 12px; display: flex; gap: 8px; background: #fff; padding: 8px 0; }
+    .print-actions button { border: 0; border-radius: 10px; background: #2563eb; color: #fff; padding: 9px 14px; font-weight: 800; cursor: pointer; }
+    .print-actions .close-btn { background: #ef4444; }
+    @media print {
+      html, body { margin: 0; padding: 0; overflow: hidden; }
+      .print-actions { display: none; }
+      .doc-header { margin-bottom: 4px; }
+      .doc-title { margin-top: 4px; }
+      .doc-year { margin-bottom: 4px; }
+      .period-note { margin-top: 4px; }
+      .schedule-table th, .schedule-table td { padding-top: 4.7px; padding-bottom: 4.7px; }
+    }
+  </style>
+</head>
+<body>
+  ${includePrintButton ? '<div class="print-actions"><button onclick="window.print()">In / lưu PDF</button><button class="close-btn" onclick="window.close()">Đóng</button></div>' : ''}
+  <table class="doc-header">
+    <tr>
+      <td class="doc-left">ỦY BAN NHÂN DÂN</td>
+      <td class="doc-right">Cộng hòa xã hội chủ nghĩa Việt Nam</td>
+    </tr>
+    <tr>
+      <td class="doc-left">PHƯỜNG TRUNG MỸ TÂY</td>
+      <td class="doc-right motto"><span class="motto-line">Độc lập - Tự do - Hạnh phúc</span></td>
+    </tr>
+    <tr>
+      <td class="doc-left school-name"><span class="school-line">TRƯỜNG THCS NGUYỄN AN NINH<span class="school-half-line"></span></span></td>
+      <td></td>
+    </tr>
+  </table>
+  <div class="doc-title">${escapeHtml(documentTitle)}</div>
+  <div class="doc-year">NĂM HỌC ${escapeHtml(schoolYearText)}</div>
+  <table class="schedule-table">
+    <thead><tr><th class="class-cell">Lớp</th><th class="period-cell">Tiết</th>${header}</tr></thead>
+    <tbody>${body}</tbody>
+  </table>
+  <table class="period-note">
+    <tr>
+      <td class="period-left">
+        <div>Tiết 1 Từ : 18h00 đến 18h45</div>
+        <div>Tiết 2 Từ : 18h45 đến 19h30</div>
+        <div>Tiết 3 Từ : 19h30 đến 20h15</div>
+        <div>Tiết 4 Từ : 20h15 đến 21h00</div>
+      </td>
+      <td class="period-middle">
+        <div class="sign-date">&nbsp;</div>
+        <div class="sign-title pc-title">Chuyên trách phổ cập</div>
+        <div class="sign-name pc-name">${escapeHtml(pcResponsibleName || '')}</div>
+      </td>
+      <td class="period-right">
+        <div class="sign-date">${escapeHtml(signingDateText)}</div>
+        <div class="sign-title">HIỆU TRƯỞNG</div>
+        <div class="sign-name principal-name">${escapeHtml(principalName || '')}</div>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`;
+};
+
+export default function SimpleScheduleTable({ subjects = [], currentSchoolYear = '', classTeacherAssignments = {}, teachers = [], principalName = '', pcResponsibleName = '', user, onClose, showNotification }) {
   const [savedSchedules, setSavedSchedules] = useState([]);
   const [activeId, setActiveId] = useState('');
   const [scheduleSemester, setScheduleSemester] = useState('hk1');
@@ -429,6 +602,7 @@ export default function SimpleScheduleTable({ subjects = [], currentSchoolYear =
     const seen = new Set();
     const addOption = (value) => {
       const cleanValue = String(value || '').trim();
+      if (cleanValue === OFF_SLOT_VALUE) return;
       if (!cleanValue || seen.has(cleanValue)) return;
       seen.add(cleanValue);
       options.push(cleanValue);
@@ -492,6 +666,7 @@ export default function SimpleScheduleTable({ subjects = [], currentSchoolYear =
   const resolveScheduleCellValue = (row, value = '') => {
     const text = String(value || '').trim();
     if (!text) return '';
+    if (text === OFF_SLOT_VALUE) return OFF_SLOT_VALUE;
     if (hasTeacherSuffix(text)) {
       return compactScheduleCellValue(text, teacherShortNameByKey, displayEditorSubject);
     }
@@ -518,6 +693,22 @@ export default function SimpleScheduleTable({ subjects = [], currentSchoolYear =
     }));
   };
 
+  const toggleOffSlot = (rowId, dayKey, period) => {
+    applySchedule(prev => {
+      const currentValue = prev?.[rowId]?.[dayKey]?.[period] || '';
+      return {
+        ...prev,
+        [rowId]: {
+          ...(prev[rowId] || emptyRow()),
+          [dayKey]: {
+            ...((prev[rowId] || emptyRow())[dayKey] || emptyDay()),
+            [period]: isOffScheduleValue(currentValue) ? '' : OFF_SLOT_VALUE
+          }
+        }
+      };
+    });
+  };
+
   const saveSchedule = async (status = 'draft') => {
     setIsSaving(true);
     try {
@@ -526,7 +717,8 @@ export default function SimpleScheduleTable({ subjects = [], currentSchoolYear =
       const desiredName = withSemesterPrefix(scheduleName.trim() || `TKB ${currentSchoolYear}`, scheduleSemester);
       const activeSchedule = savedSchedules.find(item => item.id === activeId);
       const shouldForkSchedule = Boolean(activeSchedule && desiredName !== (activeSchedule.name || activeSchedule.id || ''));
-      const id = activeId && !shouldForkSchedule ? activeId : `tkb_${Date.now()}`;
+      const now = getCurrentTimestamp();
+      const id = activeId && !shouldForkSchedule ? activeId : `tkb_${now}`;
       const effectiveStatus = status === 'draft' && activeSchedule?.status === 'published' && !shouldForkSchedule ? 'published' : status;
       const normalized = compactScheduleForSave(latestSchedule, classRows, teacherShortNameByKey);
       if (effectiveStatus === 'published') {
@@ -552,17 +744,16 @@ export default function SimpleScheduleTable({ subjects = [], currentSchoolYear =
         periodCount,
         schedule: normalized,
         status: effectiveStatus,
-        publishedAt: effectiveStatus === 'published' ? Date.now() : null,
-        updatedAt: Date.now()
+        publishedAt: effectiveStatus === 'published' ? now : null,
+        updatedAt: now
       };
       if (effectiveStatus === 'published') {
         await Promise.all(savedSchedules
           .filter(item => item.id !== id && item.status === 'published' && inferScheduleSemester(item.semester, item.name) === scheduleSemester)
-          .map(item => setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'class_schedules', item.id), { status: 'draft', publishedAt: null, updatedAt: Date.now() }, { merge: true })));
+          .map(item => setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'class_schedules', item.id), { status: 'draft', publishedAt: null, updatedAt: now }, { merge: true })));
       }
       await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'class_schedules', id), payload, { merge: true });
       if (effectiveStatus === 'published') {
-        const now = Date.now();
         const title = `THỜI KHÓA BIỂU ${semesterMeta.label}: ${stripSemesterPrefix(payload.name)}`;
         const content = makeScheduleNewsHtml({ name: payload.name, rows: classRows, visibleDays: payload.visibleDays, schedule: normalized, periodCount });
         const newsSnapshot = await getDocs(newsCollection);
@@ -605,6 +796,55 @@ export default function SimpleScheduleTable({ subjects = [], currentSchoolYear =
     } finally {
       setIsSaving(false);
     }
+  };
+
+  const buildCurrentScheduleExport = () => {
+    const latestSchedule = collectScheduleFromVisibleInputs();
+    const semesterMeta = getScheduleSemesterMeta(scheduleSemester);
+    const name = withSemesterPrefix(scheduleName.trim() || `TKB ${currentSchoolYear}`, scheduleSemester);
+    const selectedVisibleDays = DAYS.map(day => day.key).filter(dayKey => visibleDays.includes(dayKey));
+    return {
+      name,
+      schoolYear: currentSchoolYear,
+      semesterLabel: semesterMeta.label,
+      principalName,
+      pcResponsibleName,
+      rows: classRows,
+      visibleDays: selectedVisibleDays,
+      schedule: compactScheduleForSave(latestSchedule, classRows, teacherShortNameByKey),
+      periodCount
+    };
+  };
+
+  const exportScheduleExcel = () => {
+    const data = buildCurrentScheduleExport();
+    const html = makeScheduleExportHtml(data);
+    const blob = new Blob([`\ufeff${html}`], { type: 'application/vnd.ms-excel;charset=utf-8' });
+    downloadBlobFile(`${makeSafeFileName(data.name)}.xls`, blob);
+    showNotification?.('Đã tải file Excel thời khóa biểu.');
+  };
+
+  const exportSchedulePdf = () => {
+    const data = buildCurrentScheduleExport();
+    const html = makeScheduleExportHtml({ ...data, includePrintButton: true });
+    const printWindow = window.open('', '_blank');
+    if (!printWindow) {
+      const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+      downloadBlobFile(`${makeSafeFileName(data.name)}-in-pdf.html`, blob);
+      showNotification?.('Trình duyệt chặn cửa sổ PDF. App đã tải file in xuống, mở file đó rồi chọn In/Lưu PDF.', 'error');
+      return;
+    }
+    printWindow.document.open();
+    printWindow.document.write(html);
+    printWindow.document.close();
+    printWindow.focus();
+    setTimeout(() => {
+      try {
+        printWindow.print();
+      } catch {
+        showNotification?.('Chưa mở được hộp thoại in PDF.', 'error');
+      }
+    }, 450);
   };
 
   const deleteActiveSchedule = async () => {
@@ -655,7 +895,7 @@ export default function SimpleScheduleTable({ subjects = [], currentSchoolYear =
         ...(prev[rowId] || emptyRow()),
         [dayKey]: PERIODS.reduce((acc, period) => {
           const current = prev[rowId]?.[dayKey]?.[period] || '';
-          const previous = acc[period - 1] || '';
+          const previous = isOffScheduleValue(acc[period - 1]) ? '' : (acc[period - 1] || '');
           if (period > periodCount) acc[period] = current;
           else acc[period] = current || previous;
           return acc;
@@ -678,24 +918,55 @@ export default function SimpleScheduleTable({ subjects = [], currentSchoolYear =
     const hasExistingContent = Object.values(latestSchedule || {}).some(row => (
       DAYS.some(day => PERIODS.some(period => !isBlankScheduleValue(row?.[day.key]?.[period])))
     ));
-    if (hasExistingContent && !window.confirm('Xếp tự động sẽ ghi đè thời khóa biểu đang có. Tiếp tục?')) return;
+    const preservedSlotCount = Object.values(latestSchedule || {}).reduce((total, row) => (
+      total + DAYS.reduce((dayTotal, day) => (
+        dayTotal + PERIODS.filter(period => !isBlankScheduleValue(row?.[day.key]?.[period])).length
+      ), 0)
+    ), 0);
 
-    const rows = defaultRows();
+    const rows = classRows?.length ? classRows : defaultRows();
+    const lockedSchedule = normalizeSchedule(latestSchedule, rows);
     const allDayKeys = DAYS.map(day => day.key);
+    const getLockedSubjectCounts = (row) => {
+      const counts = {};
+      DAYS.forEach(day => {
+        PERIODS.forEach(period => {
+          const value = lockedSchedule?.[row.id]?.[day.key]?.[period] || '';
+          if (isOpenScheduleValue(value)) return;
+          const key = subjectKey(value);
+          if (!key) return;
+          counts[key] = (counts[key] || 0) + 1;
+        });
+      });
+      return counts;
+    };
+    const remainingLoadsByRowId = Object.fromEntries(rows.map(row => {
+      const lockedCounts = getLockedSubjectCounts(row);
+      const loads = getRequiredLoadsForRow(row).map(load => {
+        const requiredSlots = Number(load.scheduleSlots ?? load.required ?? 0);
+        const alreadyPlaced = Number(lockedCounts[load.key] || 0);
+        return {
+          ...load,
+          remainingSlots: Math.max(0, requiredSlots - alreadyPlaced),
+          alreadyPlaced
+        };
+      });
+      return [row.id, loads];
+    }));
     const maxRequiredSlots = Math.max(...rows.map(row => (
-      getRequiredLoadsForRow(row).reduce((sum, item) => sum + Number(item.scheduleSlots ?? item.required ?? 0), 0)
+      (remainingLoadsByRowId[row.id] || []).reduce((sum, item) => sum + Number(item.remainingSlots || 0), 0)
     )), 0);
 
     const loadPriorityByKey = Object.fromEntries(REQUIRED_LOADS.map((item, index) => [item.key, index]));
     const rawTasks = rows.flatMap((row, rowIndex) => {
       const grade = getPrimaryGrade(row);
       const teacherMap = teacherAssignmentsByGrade[grade] || {};
-      return getRequiredLoadsForRow(row).flatMap((load, loadIndex) => {
+      return (remainingLoadsByRowId[row.id] || []).flatMap((load, loadIndex) => {
         const teacherName = teacherMap[load.key] || '';
         const teacherKeys = getTeacherKeys(teacherName);
         const value = formatScheduleCellValue(load.label, teacherName, teacherShortNameByKey);
         const tasks = [];
-        let remaining = Number(load.scheduleSlots ?? load.required ?? 0);
+        let remaining = Number(load.remainingSlots || 0);
         let blockIndex = 0;
         const compactVisit = SINGLE_VISIT_SUBJECT_KEYS.has(load.key) && !load.paired && teacherKeys.length > 0;
         const homeroomPair = HOMEROOM_PAIR_SUBJECT_KEYS.has(load.key);
@@ -738,7 +1009,14 @@ export default function SimpleScheduleTable({ subjects = [], currentSchoolYear =
     const seenConfigs = new Set();
     const addAttemptConfig = (dayKeys, attemptPeriodCount) => {
       const orderedDayKeys = allDayKeys.filter(dayKey => dayKeys.includes(dayKey));
-      if (!orderedDayKeys.length || orderedDayKeys.length * attemptPeriodCount < maxRequiredSlots) return;
+      const hasEnoughOpenSlots = rows.every(row => {
+        const requiredSlots = (remainingLoadsByRowId[row.id] || []).reduce((sum, item) => sum + Number(item.remainingSlots || 0), 0);
+        const openSlots = orderedDayKeys.reduce((sum, dayKey) => (
+          sum + PERIODS.slice(0, attemptPeriodCount).filter(period => isBlankScheduleValue(lockedSchedule?.[row.id]?.[dayKey]?.[period])).length
+        ), 0);
+        return openSlots >= requiredSlots;
+      });
+      if (!orderedDayKeys.length || orderedDayKeys.length * attemptPeriodCount < maxRequiredSlots || !hasEnoughOpenSlots) return;
       const configKey = `${orderedDayKeys.join(',')}-${attemptPeriodCount}`;
       if (seenConfigs.has(configKey)) return;
       seenConfigs.add(configKey);
@@ -771,14 +1049,6 @@ export default function SimpleScheduleTable({ subjects = [], currentSchoolYear =
       const next = makeEmptySchedule(rows);
       const teacherBusy = new Map();
       const compactVisitCounts = new Map();
-      let placedSlotCount = 0;
-
-      const isTeacherAvailable = (teacherKeys, dayKey, periods) => (
-        !teacherKeys.length || periods.every(period => {
-          const busySet = teacherBusy.get(`${dayKey}-${period}`);
-          return !busySet || teacherKeys.every(key => !busySet.has(key));
-        })
-      );
       const markTeacherBusy = (teacherKeys, dayKey, periods) => {
         if (!teacherKeys.length) return;
         periods.forEach(period => {
@@ -788,9 +1058,29 @@ export default function SimpleScheduleTable({ subjects = [], currentSchoolYear =
           teacherBusy.set(busyKey, busySet);
         });
       };
+      rows.forEach(row => {
+        DAYS.forEach(day => {
+          PERIODS.forEach(period => {
+            const lockedValue = lockedSchedule?.[row.id]?.[day.key]?.[period] || '';
+            if (isBlankScheduleValue(lockedValue)) return;
+            next[row.id][day.key][period] = lockedValue;
+            getScheduleCellTeacherKeys(lockedValue).forEach(teacherKey => {
+              markTeacherBusy([teacherKey], day.key, [period]);
+            });
+          });
+        });
+      });
+      let placedSlotCount = 0;
+
+      const isTeacherAvailable = (teacherKeys, dayKey, periods) => (
+        !teacherKeys.length || periods.every(period => {
+          const busySet = teacherBusy.get(`${dayKey}-${period}`);
+          return !busySet || teacherKeys.every(key => !busySet.has(key));
+        })
+      );
       const isSlotEmpty = (rowId, dayKey, periods) => periods.every(period => isBlankScheduleValue(next?.[rowId]?.[dayKey]?.[period]));
       const countUsedPeriods = (rowId, dayKey) => PERIODS.slice(0, attemptPeriodCount)
-        .filter(period => !isBlankScheduleValue(next?.[rowId]?.[dayKey]?.[period]))
+        .filter(period => !isOpenScheduleValue(next?.[rowId]?.[dayKey]?.[period]))
         .length;
       const countSubjectOnDay = (rowId, dayKey, key) => PERIODS.slice(0, attemptPeriodCount)
         .filter(period => subjectKey(next?.[rowId]?.[dayKey]?.[period]) === key)
@@ -969,7 +1259,8 @@ export default function SimpleScheduleTable({ subjects = [], currentSchoolYear =
       const openedDays = result.dayKeys.filter(dayKey => !baseDayKeys.includes(dayKey)).map(dayKey => DAYS.find(day => day.key === dayKey)?.label || dayKey);
       const detail = [
         result.periodCount !== periodCount ? `${result.periodCount} tiết/ngày` : '',
-        openedDays.length ? `mở thêm ${openedDays.join(', ')}` : ''
+        openedDays.length ? `mở thêm ${openedDays.join(', ')}` : '',
+        hasExistingContent ? `giữ ${preservedSlotCount} ô đã xếp` : ''
       ].filter(Boolean).join(', ');
       showNotification?.(`Đã xếp đủ số tiết${detail ? ` (${detail})` : ''}.`);
       return;
@@ -978,6 +1269,70 @@ export default function SimpleScheduleTable({ subjects = [], currentSchoolYear =
     showNotification?.(`Đã thử ép đủ nhưng còn ${result.validationErrors.length} mục chưa đạt do trùng giáo viên hoặc thiếu chỗ. Tôi đã giữ phương án gần nhất để xem lại.`, 'error');
   };
   const shownDays = DAYS.filter(day => visibleDays.includes(day.key));
+  const scheduleDiagnostics = (() => {
+    const normalized = normalizeSchedule(schedule, classRows);
+    const overSubjectCells = new Map();
+    const overLoadWarnings = [];
+    const conflictCells = new Map();
+    const teacherSlotMap = new Map();
+    const activeDayKeys = new Set(visibleDays);
+
+    classRows.forEach(row => {
+      const rowLoads = getRequiredLoadsForRow(row);
+      const loadByKey = Object.fromEntries(rowLoads.map(item => [item.key, item]));
+      const counts = countRowSubjects(row, normalized);
+
+      Object.entries(counts).forEach(([key, actual]) => {
+        const load = loadByKey[key];
+        if (!load || actual <= load.required) return;
+
+        const teacherNames = new Set();
+        DAYS.filter(day => activeDayKeys.has(day.key)).forEach(day => {
+          PERIODS.slice(0, periodCount).forEach(period => {
+            const value = normalized?.[row.id]?.[day.key]?.[period] || '';
+            if (subjectKey(value) !== key) return;
+            const teacherText = getScheduleCellTeacherText(value);
+            if (teacherText) teacherNames.add(teacherText);
+          });
+        });
+
+        const message = `${row.label || row.id}: ${load.label} dư ${actual - load.required} tiết${teacherNames.size ? ` (${[...teacherNames].join(', ')})` : ''}`;
+        overLoadWarnings.push(message);
+        overSubjectCells.set(`${row.id}-${key}`, { message });
+      });
+    });
+
+    DAYS.filter(day => activeDayKeys.has(day.key)).forEach(day => {
+      PERIODS.slice(0, periodCount).forEach(period => {
+        classRows.forEach(row => {
+          const value = normalized?.[row.id]?.[day.key]?.[period] || '';
+          if (isOpenScheduleValue(value)) return;
+          const teacherText = getScheduleCellTeacherText(value);
+          getScheduleCellTeacherKeys(value).forEach(teacherKey => {
+            const mapKey = `${day.key}-${period}-${teacherKey}`;
+            const slots = teacherSlotMap.get(mapKey) || [];
+            slots.push({ rowId: row.id, rowLabel: row.label || row.id, dayKey: day.key, dayLabel: day.label, period, teacherText, value });
+            teacherSlotMap.set(mapKey, slots);
+          });
+        });
+      });
+    });
+
+    const teacherConflictWarnings = [];
+    teacherSlotMap.forEach(slots => {
+      const rowIds = new Set(slots.map(slot => slot.rowId));
+      if (rowIds.size <= 1) return;
+      const first = slots[0];
+      const teacherName = first.teacherText || 'Giáo viên';
+      const message = `${teacherName} trùng ${first.dayLabel} tiết ${first.period}: ${slots.map(slot => slot.rowLabel).join(', ')}`;
+      teacherConflictWarnings.push(message);
+      slots.forEach(slot => {
+        conflictCells.set(`${slot.rowId}-${slot.dayKey}-${slot.period}`, { message });
+      });
+    });
+
+    return { overSubjectCells, overLoadWarnings, conflictCells, teacherConflictWarnings };
+  })();
 
   return (
     <div className="min-h-screen w-full bg-white border-0 sm:border-2 sm:border-emerald-100 sm:shadow-xl overflow-hidden">
@@ -1014,6 +1369,12 @@ export default function SimpleScheduleTable({ subjects = [], currentSchoolYear =
             </button>
             <button type="button" onClick={deleteActiveSchedule} disabled={!activeId || isSaving} className="h-9 rounded-lg bg-rose-50 border border-rose-100 px-2.5 text-rose-600 text-[10px] sm:text-xs font-black uppercase inline-flex items-center justify-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed">
               <Trash2 className="w-4 h-4" /> <span>Xóa</span>
+            </button>
+            <button type="button" onClick={exportScheduleExcel} disabled={isSaving} className="h-9 rounded-lg bg-emerald-50 border border-emerald-100 px-2.5 text-emerald-700 text-[10px] sm:text-xs font-black uppercase inline-flex items-center justify-center gap-1.5 disabled:opacity-60">
+              <FileSpreadsheet className="w-4 h-4" /> Excel
+            </button>
+            <button type="button" onClick={exportSchedulePdf} disabled={isSaving} className="h-9 rounded-lg bg-cyan-50 border border-cyan-100 px-2.5 text-cyan-700 text-[10px] sm:text-xs font-black uppercase inline-flex items-center justify-center gap-1.5 disabled:opacity-60">
+              <FileText className="w-4 h-4" /> PDF
             </button>
             <button type="button" onClick={() => saveSchedule('draft')} disabled={isSaving} className="h-9 rounded-lg bg-emerald-600 px-3 text-white text-[10px] sm:text-xs font-black uppercase inline-flex items-center justify-center gap-1.5 disabled:opacity-60">
               <Save className="w-4 h-4" /> Lưu
@@ -1080,6 +1441,24 @@ export default function SimpleScheduleTable({ subjects = [], currentSchoolYear =
           </button>
         </div>
       </div>
+
+      {(scheduleDiagnostics.teacherConflictWarnings.length > 0 || scheduleDiagnostics.overLoadWarnings.length > 0) && (
+        <div className="border-b border-rose-100 bg-rose-50 px-3 py-2">
+          <div className="flex flex-wrap items-start gap-2 text-xs font-bold text-rose-800">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-rose-600" />
+            <div className="min-w-0 flex-1">
+              <div className="font-black uppercase">
+                Có {scheduleDiagnostics.teacherConflictWarnings.length} trùng giáo viên, {scheduleDiagnostics.overLoadWarnings.length} mục dư tiết
+              </div>
+              <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-rose-700">
+                {[...scheduleDiagnostics.teacherConflictWarnings, ...scheduleDiagnostics.overLoadWarnings].slice(0, 4).map((message, index) => (
+                  <span key={`${message}-${index}`}>{message}</span>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showStats && (
         <div className="p-3 sm:p-4 bg-amber-50 border-b border-amber-100 overflow-x-auto">
@@ -1187,23 +1566,59 @@ export default function SimpleScheduleTable({ subjects = [], currentSchoolYear =
                     <span className="hidden sm:inline text-[10px] font-black text-slate-400 uppercase">Tiết </span>
                     <span className="font-black text-slate-500">{period}</span>
                   </td>
-                  {shownDays.map(day => (
-                    <td key={day.key} className="px-2 py-2 align-middle border-b border-r border-slate-100">
-                      <select
-                        data-row-id={row.id}
-                        data-day-key={day.key}
-                        data-period={period}
-                        value={schedule[row.id]?.[day.key]?.[period] || ''}
-                        onChange={(event) => updateCell(row.id, day.key, period, event.target.value)}
-                        className="w-full rounded-xl border border-slate-200 bg-white px-2 py-2 text-xs font-bold text-slate-800 focus:outline-none focus:border-emerald-400"
-                      >
-                        <option value="">-</option>
-                        {getScheduleSubjectOptions(schedule[row.id]?.[day.key]?.[period] || '', row).map(subject => (
-                          <option key={subject} value={subject}>{compactScheduleCellValue(subject, teacherShortNameByKey)}</option>
-                        ))}
-                      </select>
-                    </td>
-                  ))}
+                  {shownDays.map(day => {
+                    const cellValue = schedule[row.id]?.[day.key]?.[period] || '';
+                    const cellIsOff = isOffScheduleValue(cellValue);
+                    const conflictIssue = scheduleDiagnostics.conflictCells.get(`${row.id}-${day.key}-${period}`);
+                    const overIssue = !cellIsOff && !isBlankScheduleValue(cellValue)
+                      ? scheduleDiagnostics.overSubjectCells.get(`${row.id}-${subjectKey(cellValue)}`)
+                      : null;
+                    const issueTitle = [conflictIssue?.message, overIssue?.message].filter(Boolean).join(' | ');
+                    const cellToneClass = conflictIssue
+                      ? 'border-rose-200 bg-rose-100/80'
+                      : overIssue
+                        ? 'border-amber-200 bg-amber-50/90'
+                        : cellIsOff
+                          ? 'border-rose-100 bg-rose-50/60'
+                          : 'border-slate-100';
+                    const selectToneClass = conflictIssue
+                      ? 'border-rose-400 bg-rose-50 text-rose-800 ring-2 ring-rose-200'
+                      : overIssue
+                        ? 'border-amber-400 bg-amber-50 text-amber-900 ring-2 ring-amber-200'
+                        : cellIsOff
+                          ? 'border-rose-200 bg-rose-50 text-rose-700'
+                          : 'border-slate-200 bg-white text-slate-800';
+                    return (
+                      <td key={day.key} className={`px-2 py-2 align-middle border-b border-r ${cellToneClass}`}>
+                        <div className="flex items-center gap-1.5">
+                          <select
+                            data-row-id={row.id}
+                            data-day-key={day.key}
+                            data-period={period}
+                            value={cellIsOff ? OFF_SLOT_VALUE : cellValue}
+                            disabled={cellIsOff}
+                            title={issueTitle || undefined}
+                            onChange={(event) => updateCell(row.id, day.key, period, event.target.value)}
+                            className={`min-w-0 flex-1 rounded-xl border px-2 py-2 text-xs font-bold focus:outline-none focus:border-emerald-400 disabled:cursor-not-allowed ${selectToneClass}`}
+                          >
+                            <option value="">-</option>
+                            <option value={OFF_SLOT_VALUE}>Nghỉ</option>
+                            {getScheduleSubjectOptions(cellValue, row).map(subject => (
+                              <option key={subject} value={subject}>{compactScheduleCellValue(subject, teacherShortNameByKey)}</option>
+                            ))}
+                          </select>
+                          <button
+                            type="button"
+                            onClick={() => toggleOffSlot(row.id, day.key, period)}
+                            title={cellIsOff ? 'Mở lại ô này' : 'Cho lớp nghỉ tiết này'}
+                            className={`h-9 w-9 shrink-0 rounded-xl border text-[11px] font-black transition-all ${cellIsOff ? 'border-rose-300 bg-rose-600 text-white shadow-sm hover:bg-rose-700' : 'border-slate-200 bg-white text-slate-400 hover:border-rose-200 hover:bg-rose-50 hover:text-rose-600'}`}
+                          >
+                            X
+                          </button>
+                        </div>
+                      </td>
+                    );
+                  })}
                 </tr>
               )),
               <tr key={`${row.id}-fill`} className="border-t border-blue-50 bg-blue-50/30">

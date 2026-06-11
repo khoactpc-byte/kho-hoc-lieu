@@ -7,7 +7,7 @@ import {
   Calendar, Clock, Sparkles, UploadCloud, RefreshCw, ListChecks, Maximize, 
   Minimize, ArrowUpAZ, ArrowDownAZ, Bold, Italic, Underline, Palette, 
   AlignLeft, AlignCenter, AlignRight, AlignJustify, Camera, ArrowUp,
-  ArrowDown, ChevronDown, ChevronUp, Pin, Briefcase, Pencil, Eye 
+  ArrowDown, ChevronDown, ChevronUp, Pin, Briefcase, Pencil, Eye, BarChart3
 } from 'lucide-react';
 import { collection, onSnapshot, addDoc, deleteDoc, doc, setDoc, updateDoc, getDoc, deleteField, increment } from 'firebase/firestore';
 import { signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
@@ -17,10 +17,10 @@ import {
   GOOGLE_API_KEY, GEMINI_MODELS, DEFAULT_GEMINI_MODEL, 
   TEXTBOOK_FOLDERS, MASTER_DRIVE_FOLDER_ID, IMAGE_DRIVE_FOLDER_ID, 
   STUDENT_SUBMISSION_FOLDER_ID, TEACHER_PLAN_FOLDER_ID, QUIZ_DRIVE_FOLDER_ID,
-  APPS_SCRIPT_URL, APPS_SCRIPT_SECRET_TOKEN, BACKGROUND_URL, IS_LOCAL_PREVIEW, 
+  BACKGROUND_URL, IS_LOCAL_PREVIEW, 
   getWeekData, getWeekDisplayName, typesetMath, removeAccents, 
   formatTextbookName, getSubjectShortName, getSubjectRank, 
-  getYouTubeId, isYouTubeUrl, getEmbedUrl, getYouTubeWatchUrl, 
+  isYouTubeUrl, getEmbedUrl, getYouTubeWatchUrl, 
   getDefaultLinkTitle, extractDriveFileId, getDriveDisplayName, 
   getDriveBaseName, cleanDriveTitle, normalizeServiceErrorMessage, postAppsScript 
 } from './utils/helpers';
@@ -105,6 +105,37 @@ const REGISTRATION_WEB_APP_URL = 'https://script.google.com/macros/s/AKfycby6e5y
 const ADDRESS_DIRECTORY_CACHE_KEY = 'khl-address-directory-v2';
 const ADMIN_SESSION_STORAGE_KEY = 'khl-admin-session-v1';
 const ADMIN_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
+const getCurrentTimestamp = () => Date.now();
+const SHOW_LEGACY_ADMIN_SETTINGS_PANEL = false;
+const SHOW_LEGACY_TEACHER_TABS = false;
+const SHOW_LEGACY_PROFESSIONAL_PANEL = false;
+const NEWS_TEXT_COLORS = [
+  { label: 'Đen', value: '#0f172a' },
+  { label: 'Đỏ', value: '#dc2626' },
+  { label: 'Cam', value: '#ea580c' },
+  { label: 'Vàng', value: '#ca8a04' },
+  { label: 'Xanh lá', value: '#16a34a' },
+  { label: 'Xanh dương', value: '#2563eb' },
+  { label: 'Tím', value: '#7c3aed' },
+  { label: 'Hồng', value: '#db2777' }
+];
+const NEWS_QUICK_ICONS = [
+  { label: 'Loa thông báo', value: '📢' },
+  { label: 'Chuông', value: '🔔' },
+  { label: 'Ghim', value: '📌' },
+  { label: 'Lưu ý', value: '⚠️' },
+  { label: 'Hoàn tất', value: '✅' },
+  { label: 'Nổi bật', value: '⭐' },
+  { label: 'Thời gian', value: '🕒' },
+  { label: 'Sự kiện', value: '🎉' }
+];
+const getNewsCreatedTime = (news = {}) => Number(news.createdAt || news.updatedAt || 0);
+const getNewsManualSortTime = (news = {}) => Number(news.sortOrder ?? news.createdAt ?? news.updatedAt ?? 0);
+const sortNewsForDisplay = (a = {}, b = {}) => {
+  if (Boolean(a.isPinned) !== Boolean(b.isPinned)) return a.isPinned ? -1 : 1;
+  if (a.isPinned && b.isPinned) return getNewsCreatedTime(b) - getNewsCreatedTime(a);
+  return getNewsManualSortTime(b) - getNewsManualSortTime(a);
+};
 
 const STUDENT_PROFILE_EDIT_FIELDS = [
   { key: 'fullName', label: 'Họ và tên' },
@@ -227,7 +258,7 @@ const readStoredAdminSession = () => {
       return null;
     }
     return session;
-  } catch (error) {
+  } catch {
     window.localStorage.removeItem(ADMIN_SESSION_STORAGE_KEY);
     return null;
   }
@@ -880,7 +911,6 @@ function App() {
   const [passwordInput, setPasswordInput] = useState('');
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
-  const [isAdminPassEnabled, setIsAdminPassEnabled] = useState(true);
   const [adminPass, setAdminPass] = useState('123321');
   const [thdAdminPass, setThdAdminPass] = useState('');
   const [adminSettingsLoaded, setAdminSettingsLoaded] = useState(false);
@@ -890,6 +920,9 @@ function App() {
   const [currentSchoolYear, setCurrentSchoolYear] = useState('2025-2026'); 
   const [adminSchoolYear, setAdminSchoolYear] = useState('');
   const [principalName, setPrincipalName] = useState('');
+  const [pcResponsibleName, setPcResponsibleName] = useState('');
+  const [pcResponsibleByYear, setPcResponsibleByYear] = useState({});
+  const [extraSchoolYears, setExtraSchoolYears] = useState([]);
   const [inputYearLocks, setInputYearLocks] = useState({});
   const [transcriptStartDates, setTranscriptStartDates] = useState({});
   const [transcriptEndDates, setTranscriptEndDates] = useState({});
@@ -908,7 +941,6 @@ function App() {
   const [studentDatabaseInitialTab, setStudentDatabaseInitialTab] = useState('current');
   const [studentDatabaseOpenKey, setStudentDatabaseOpenKey] = useState(0);
   const [showClassOps, setShowClassOps] = useState(false);
-  const [classOpsView, setClassOpsView] = useState('schedule');
   const [showScheduleWorkspace, setShowScheduleWorkspace] = useState(false);
   const [showAttendanceWorkspace, setShowAttendanceWorkspace] = useState(false);
   const [showLearningResultsWorkspace, setShowLearningResultsWorkspace] = useState(false);
@@ -933,6 +965,10 @@ function App() {
   const [adminSettingsInitialPanel, setAdminSettingsInitialPanel] = useState(() => (initialAdminSession?.scope === 'thd' ? 'thdTeachingAssignments' : 'general'));
   const [adminModule, setAdminModule] = useState(() => (initialAdminSession?.scope === 'thd' ? 'thd' : (initialAdminSession?.module || 'thcs')));
   const [adminAccessScope, setAdminAccessScope] = useState(() => initialAdminSession?.scope === 'thd' ? 'thd' : 'full');
+  const [adminCheckGrade, setAdminCheckGrade] = useState('all');
+  const [adminCheckSubject, setAdminCheckSubject] = useState('all');
+  const [adminCheckView, setAdminCheckView] = useState('uploads');
+  const [adminCheckSubmissionFilter, setAdminCheckSubmissionFilter] = useState('all');
   const [mobileHomeTab, setMobileHomeTab] = useState('notifications'); 
   const [teacherTab, setTeacherTab] = useState('giang_day');
   const [newsList, setNewsList] = useState([]);
@@ -1036,7 +1072,6 @@ function App() {
   const [quizFiles, setQuizFiles] = useState([]);
   const [quizAttachments, setQuizAttachments] = useState([]);
   const [showQuizToolbar, setShowQuizToolbar] = useState(false);
-  const [showQuizAttachment, setShowQuizAttachment] = useState(false);
   const [isPreviousQuizLoaded, setIsPreviousQuizLoaded] = useState(false);
   const autoSaveTimeoutRef = useRef(null);
   const studentQuizNameRef = useRef(null);
@@ -1066,7 +1101,6 @@ function App() {
   const [viewingMaterial, setViewingMaterial] = useState(null);
   const [driveFiles, setDriveFiles] = useState([]);
   const [driveSort, setDriveSort] = useState({ key: 'name', direction: 'asc' });
-  const [materialSort, setMaterialSort] = useState('asc');
   const [isLoadingDrive, setIsLoadingDrive] = useState(false);
   const [driveError, setDriveError] = useState('');
   const [showAiModal, setShowAiModal] = useState(false);
@@ -1090,14 +1124,23 @@ function App() {
   const [planStatus, setPlanStatus] = useState('');
   const [planSubject, setPlanSubject] = useState(''); 
   const [allQuizzes, setAllQuizzes] = useState([]);
-  const [nowMs, setNowMs] = useState(Date.now());
+  const [nowMs, setNowMs] = useState(getCurrentTimestamp);
 
-  const adminSelectedSchoolYear = adminSchoolYear || currentSchoolYear || SCHOOL_YEARS[0] || '';
+  const schoolYearOptions = useMemo(() => {
+    const getStartYear = (year = '') => Number(String(year || '').match(/\d{4}/)?.[0] || 0);
+    return [...new Set([...SCHOOL_YEARS, ...extraSchoolYears, currentSchoolYear, adminSchoolYear].filter(Boolean))]
+      .sort((a, b) => getStartYear(a) - getStartYear(b));
+  }, [adminSchoolYear, currentSchoolYear, extraSchoolYears]);
+  const adminSelectedSchoolYear = adminSchoolYear || currentSchoolYear || schoolYearOptions[0] || '';
   const activeSchoolYear = isAdmin ? adminSelectedSchoolYear : currentSchoolYear;
   const isAdminViewingDifferentYear = isAdmin && String(adminSelectedSchoolYear || '') !== String(currentSchoolYear || '');
   const noteId = selectedGrade && selectedSubject && selectedLesson ? `g${selectedGrade}_${selectedSubject.replace(/\s/g, '')}_l${selectedLesson}` : null;
   const quizId = selectedGrade && selectedSubject && selectedLesson && activeSchoolYear ? `${activeSchoolYear}_g${selectedGrade}_${selectedSubject.replace(/\s/g, '')}_l${selectedLesson}` : null;
   const currentSchoolYearKey = useMemo(() => compactSchoolYearLabel(activeSchoolYear), [activeSchoolYear]);
+  const activePcResponsibleName = pcResponsibleByYear?.[currentSchoolYearKey]
+    || pcResponsibleByYear?.[compactSchoolYearLabel(currentSchoolYear)]
+    || Object.values(pcResponsibleByYear || {}).find(Boolean)
+    || pcResponsibleName;
   const isCurrentSchoolYearInputLocked = useMemo(() => Boolean(inputYearLocks?.[currentSchoolYearKey]), [inputYearLocks, currentSchoolYearKey]);
   const canWriteCurrentSchoolYear = !isCurrentSchoolYearInputLocked;
   useEffect(() => {
@@ -1235,7 +1278,7 @@ function App() {
           [provinceName]: items
         }
       }));
-    } catch (error) {
+    } catch {
       setAddressDirectory(prev => ({
         ...prev,
         communes: {
@@ -1269,7 +1312,9 @@ function App() {
         });
         return;
       }
-    } catch {}
+    } catch {
+      localStorage.removeItem(ADDRESS_DIRECTORY_CACHE_KEY);
+    }
     let active = true;
     loadRegistrationJsonp({ action: 'addressDirectory' })
       .then(data => {
@@ -1675,7 +1720,9 @@ function App() {
         if (typeof window !== 'undefined' && typeof window.__initial_auth_token !== 'undefined' && window.__initial_auth_token) {
           await signInWithCustomToken(auth, window.__initial_auth_token);
         } else { await signInAnonymously(auth); }
-      } catch (e) {}
+      } catch {
+        setErrorMsg('Không đăng nhập được. Vui lòng tải lại trang.');
+      }
     };
     initAuth();
     const unsubAuth = onAuthStateChanged(auth, setUser); return () => unsubAuth();
@@ -1683,7 +1730,7 @@ function App() {
 
   useEffect(() => {
     if (!user) return;
-    const unsubNews = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'news'), (snapshot) => { const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })); docs.sort((a, b) => (b.sortOrder ?? b.createdAt ?? 0) - (a.sortOrder ?? a.createdAt ?? 0)); setNewsList(docs); });
+    const unsubNews = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'news'), (snapshot) => { const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })); docs.sort(sortNewsForDisplay); setNewsList(docs); });
     const unsubMats = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'materials'), (snapshot) => { const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })); setAllMaterials(docs); });
     const unsubNotes = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'lesson_notes'), (snapshot) => { const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })); setAllNotes(docs); });
     const unsubQuizzes = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'lesson_quizzes'), (snapshot) => { const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })); setAllQuizzes(docs); });
@@ -1710,13 +1757,15 @@ function App() {
       }
       const data = docSnap.data();
       if (data.schoolYear) setCurrentSchoolYear(data.schoolYear);
-      setIsAdminPassEnabled(true);
       if (typeof data.adminPass === 'string') setAdminPass(data.adminPass);
       if (typeof data.thdAdminPass === 'string') setThdAdminPass(data.thdAdminPass);
       if (typeof data.isTeacherPassEnabled === 'boolean') setIsTeacherPassEnabled(data.isTeacherPassEnabled);
       if (typeof data.teacherPass === 'string') setTeacherPass(data.teacherPass);
       if (typeof data.isStudentCodeEnabled === 'boolean') setIsStudentCodeEnabled(data.isStudentCodeEnabled);
       if (typeof data.principalName === 'string') setPrincipalName(data.principalName);
+      if (typeof data.pcResponsibleName === 'string') setPcResponsibleName(data.pcResponsibleName);
+      if (data.pcResponsibleByYear && typeof data.pcResponsibleByYear === 'object') setPcResponsibleByYear(data.pcResponsibleByYear);
+      if (Array.isArray(data.extraSchoolYears)) setExtraSchoolYears(data.extraSchoolYears);
       if (data.inputYearLocks && typeof data.inputYearLocks === 'object') setInputYearLocks(data.inputYearLocks);
       if (data.transcriptStartDates && typeof data.transcriptStartDates === 'object') setTranscriptStartDates(data.transcriptStartDates);
       if (data.transcriptEndDates && typeof data.transcriptEndDates === 'object') setTranscriptEndDates(data.transcriptEndDates);
@@ -2014,68 +2063,6 @@ function App() {
     return list;
   }, [quickVisibleSemesters]);
 
-  const quickVisibleScoreColumns = useMemo(() => {
-    return quickSelectedSubjects.flatMap((subject) => (
-      quickSelectedSemesters.flatMap((semester) => {
-        const txColumns = Array.from({ length: subject.txCount || 4 }, (_, idx) => ({
-          id: `${subject.key}-${semester.key}-tx${idx + 1}`,
-          semester: semester.key,
-          semesterLabel: semester.label,
-          subjectKey: subject.key,
-          subjectLabel: subject.label,
-          pageIndex: subject.pageIndex,
-          scoreIndex: idx,
-          header: `TX${idx + 1}`,
-          editable: true
-        }));
-        return [
-          ...txColumns,
-          {
-            id: `${subject.key}-${semester.key}-gk`,
-            semester: semester.key,
-            semesterLabel: semester.label,
-            subjectKey: subject.key,
-            subjectLabel: subject.label,
-            pageIndex: subject.pageIndex,
-            scoreIndex: 4,
-            header: 'GK',
-            editable: true
-          },
-          {
-            id: `${subject.key}-${semester.key}-ck`,
-            semester: semester.key,
-            semesterLabel: semester.label,
-            subjectKey: subject.key,
-            subjectLabel: subject.label,
-            pageIndex: subject.pageIndex,
-            scoreIndex: 5,
-            header: 'CK',
-            editable: true
-          },
-          {
-            id: `${subject.key}-${semester.key}-dtb`,
-            semester: semester.key,
-            semesterLabel: semester.label,
-            subjectKey: subject.key,
-            subjectLabel: subject.label,
-            pageIndex: subject.pageIndex,
-            scoreIndex: 6,
-            header: 'ĐTB',
-            editable: false
-          }
-        ];
-      })
-    ));
-  }, [quickSelectedSemesters, quickSelectedSubjects]);
-
-  const quickSubjectColSpan = useMemo(() => {
-    return quickSelectedSubjects.reduce((acc, subject) => {
-      const total = quickSelectedSemesters.length * ((subject.txCount || 4) + 3);
-      acc[subject.key] = total;
-      return acc;
-    }, {});
-  }, [quickSelectedSemesters, quickSelectedSubjects]);
-
   const quickVisibleScoreColumnsBySubject = useMemo(() => {
     return quickSelectedSubjects.flatMap((subject) => (
       quickSelectedSemesters.flatMap((semester) => {
@@ -2309,17 +2296,22 @@ function App() {
     return true;
   }, [adminAccessScope, adminModule, openAdminQuickScore, openAdminSettingsPanel, openScorebookWorkspace, openStudentDatabaseTab, runAdminMenuAction]);
 
+  const openAdminRouteRef = useRef(openAdminRoute);
+  useEffect(() => {
+    openAdminRouteRef.current = openAdminRoute;
+  }, [openAdminRoute]);
+
   useEffect(() => {
     if (!isAdmin || typeof window === 'undefined') return undefined;
     const handleAdminRoute = () => {
       const hash = window.location.hash || '';
       if (!hash.toLowerCase().startsWith('#/admin')) return;
-      openAdminRoute(hash);
+      openAdminRouteRef.current(hash);
     };
     handleAdminRoute();
     window.addEventListener('hashchange', handleAdminRoute);
     return () => window.removeEventListener('hashchange', handleAdminRoute);
-  }, [isAdmin, openAdminRoute]);
+  }, [isAdmin]);
 
   const handleAdminMenuLinkClick = useCallback((event, item) => {
     if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
@@ -2869,13 +2861,17 @@ function App() {
       if (profileName) setStudentQuizName(profileName);
       else if (saved.name) setStudentQuizName(saved.name);
       if (saved.answers && typeof saved.answers === 'object') setStudentQuizAnswers(saved.answers);
-    } catch (e) {}
+    } catch {
+      localStorage.removeItem(studentQuizDraftKey);
+    }
   }, [studentQuizDraftKey, role, activeStudentProfile?.fullName, currentStudent?.fullName]);
   useEffect(() => {
     if (!studentQuizDraftKey || role === 'teacher' || studentQuizResult) return;
     try {
       localStorage.setItem(studentQuizDraftKey, JSON.stringify({ name: activeStudentProfile?.fullName || currentStudent?.fullName || studentQuizName, answers: studentQuizAnswers, updatedAt: Date.now() }));
-    } catch (e) {}
+    } catch {
+      // Draft persistence is optional.
+    }
   }, [studentQuizDraftKey, role, studentQuizName, studentQuizAnswers, studentQuizResult, activeStudentProfile?.fullName, currentStudent?.fullName]);
   useEffect(() => {
     if (!submissionFile) {
@@ -2923,22 +2919,21 @@ function App() {
   };
 
   const moveAdminSchoolYear = (direction) => {
-    const currentIndex = SCHOOL_YEARS.findIndex(year => String(year) === String(adminSelectedSchoolYear));
-    const fallbackIndex = SCHOOL_YEARS.findIndex(year => String(year) === String(currentSchoolYear));
+    const currentIndex = schoolYearOptions.findIndex(year => String(year) === String(adminSelectedSchoolYear));
+    const fallbackIndex = schoolYearOptions.findIndex(year => String(year) === String(currentSchoolYear));
     const baseIndex = currentIndex >= 0 ? currentIndex : Math.max(0, fallbackIndex);
-    const nextIndex = Math.min(SCHOOL_YEARS.length - 1, Math.max(0, baseIndex + direction));
+    const nextIndex = Math.min(schoolYearOptions.length - 1, Math.max(0, baseIndex + direction));
     adminSchoolYearTouchedRef.current = true;
-    setAdminSchoolYear(SCHOOL_YEARS[nextIndex] || adminSelectedSchoolYear);
+    setAdminSchoolYear(schoolYearOptions[nextIndex] || adminSelectedSchoolYear);
   };
 
   const updateGlobalSetting = async (key, value) => {
     if (key === 'isAdminPassEnabled') {
-      setIsAdminPassEnabled(true);
       if (!user) return;
       try {
         await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'global'), { isAdminPassEnabled: true }, { merge: true });
         showNotification('Đã khóa mật khẩu admin.');
-      } catch (e) {
+      } catch {
         showNotification('Chưa lưu được thiết lập.', 'error');
       }
       return;
@@ -2950,6 +2945,9 @@ function App() {
     if (key === 'isStudentCodeEnabled') setIsStudentCodeEnabled(value);
     if (key === 'schoolYear') setCurrentSchoolYear(value);
     if (key === 'principalName') setPrincipalName(value);
+    if (key === 'pcResponsibleName') setPcResponsibleName(value);
+    if (key === 'pcResponsibleByYear') setPcResponsibleByYear(value && typeof value === 'object' ? value : {});
+    if (key === 'extraSchoolYears') setExtraSchoolYears(Array.isArray(value) ? value : []);
     if (key === 'inputYearLocks') setInputYearLocks(value && typeof value === 'object' ? value : {});
     if (key === 'transcriptStartDates') setTranscriptStartDates(value && typeof value === 'object' ? value : {});
     if (key === 'transcriptEndDates') setTranscriptEndDates(value && typeof value === 'object' ? value : {});
@@ -2998,7 +2996,7 @@ function App() {
     const fetchSGK = async () => {
       if (!selectedGrade) return; const fId = TEXTBOOK_FOLDERS[selectedGrade]; if (!fId) { setTextbookFiles([]); return; }
       setIsLoadingTextbooks(true);
-      try { const resp = await fetch(`https://www.googleapis.com/drive/v3/files?q='${fId}'+in+parents+and+trashed=false&key=${GOOGLE_API_KEY}&fields=files(id,name,mimeType,webViewLink,iconLink)`); const data = await resp.json(); if (data.files) setTextbookFiles(data.files); } catch (e) {} finally { setIsLoadingTextbooks(false); }
+      try { const resp = await fetch(`https://www.googleapis.com/drive/v3/files?q='${fId}'+in+parents+and+trashed=false&key=${GOOGLE_API_KEY}&fields=files(id,name,mimeType,webViewLink,iconLink)`); const data = await resp.json(); if (data.files) setTextbookFiles(data.files); } catch { setTextbookFiles([]); } finally { setIsLoadingTextbooks(false); }
     };
     fetchSGK();
   }, [selectedGrade]);
@@ -3017,7 +3015,7 @@ function App() {
         const stalePinnedMaterials = allMaterials.filter(m => String(m.grade) === String(selectedGrade) && String(m.subject) === String(selectedSubject) && m.driveFileId && !visibleDriveIds.has(m.driveFileId) );
         if (stalePinnedMaterials.length > 0 && user && role === 'teacher') { await Promise.all(stalePinnedMaterials.map(m => deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'materials', m.id)) )); }
       }
-    } catch (e) { setDriveError('Lỗi kết nối API Drive.'); } finally { setIsLoadingDrive(false); }
+    } catch { setDriveError('Lỗi kết nối API Drive.'); } finally { setIsLoadingDrive(false); }
   }, [role, selectedGrade, selectedSubject, allMaterials, user]);
 
   useEffect(() => { fetchDriveData(); }, [fetchDriveData]);
@@ -3046,14 +3044,15 @@ function App() {
   const handleLogin = () => {
     if (modalMode === 'admin') {
       if (passwordInput === adminPass) {
-        writeStoredAdminSession(adminPass, 'thcs', 'full');
+        writeStoredAdminSession(adminPass, 'notice', 'full');
         setAdminAccessScope('full');
-        setAdminModule('thcs');
+        setAdminModule('notice');
         setIsAdmin(true);
         setRole('admin');
         setLoginRole(null);
         setAdminSettingsInitialPanel('general');
         setShowAdminSettingsWorkspace(false);
+        openNoticeHome('list');
         setShowPasswordModal(false);
         showNotification("Đã vào Quản trị");
       } else {
@@ -3127,6 +3126,18 @@ function App() {
     if (newsContentRef.current) newsContentRef.current.innerHTML = '';
   };
 
+  const applyNewsTextColor = (color) => {
+    if (!newsContentRef.current) return;
+    newsContentRef.current.focus();
+    document.execCommand('foreColor', false, color);
+  };
+
+  const insertNewsQuickIcon = (icon) => {
+    if (!newsContentRef.current) return;
+    newsContentRef.current.focus();
+    document.execCommand('insertText', false, `${icon} `);
+  };
+
   const handleAddNews = async () => {
     const content = newsContentRef.current?.innerHTML?.trim();
     if (!user || !newsTitle.trim() || !content || content === '<br>') { showNotification("Vui lòng nhập đủ Tiêu đề và Nội dung!", "error"); return; }
@@ -3147,14 +3158,14 @@ function App() {
         showNotification("Đã đăng tin thành công!");
       }
       closeNewsForm();
-    } catch (e) { showNotification(editingNews?.id ? "Lỗi cập nhật tin" : "Lỗi đăng tin", "error"); } finally { setIsSubmittingNews(false); }
+    } catch { showNotification(editingNews?.id ? "Lỗi cập nhật tin" : "Lỗi đăng tin", "error"); } finally { setIsSubmittingNews(false); }
   };
 
   const handleDeleteNews = async (id) => { setConfirmModal({ show: true, message: 'Bạn có chắc chắn muốn xóa bản tin này?', onConfirm: async () => { await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'news', id)); showNotification("Đã xóa bản tin"); } }); };
 
-  const handleTogglePinNews = async (e, n) => { e.stopPropagation(); try { await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'news', n.id), { isPinned: !n.isPinned, pinSource: !n.isPinned ? 'manual' : '' }); showNotification(n.isPinned ? "Đã bỏ ghim bản tin" : "Đã ghim bản tin lên thông báo khẩn!"); } catch(err) { showNotification("Lỗi khi ghim tin", "error"); } };
+  const handleTogglePinNews = async (e, n) => { e.stopPropagation(); try { await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'news', n.id), { isPinned: !n.isPinned, pinSource: !n.isPinned ? 'manual' : '' }); showNotification(n.isPinned ? "Đã bỏ ghim bản tin" : "Đã ghim bản tin lên thông báo khẩn!"); } catch { showNotification("Lỗi khi ghim tin", "error"); } };
 
-  const handleToggleHotNews = async (e, n) => { e.stopPropagation(); try { await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'news', n.id), { isHot: !n.isHot }); showNotification(n.isHot ? "Đã bỏ tin nóng" : "Đã đánh dấu tin nóng!"); } catch(err) { showNotification("Lỗi khi cập nhật tin nóng", "error"); } };
+  const handleToggleHotNews = async (e, n) => { e.stopPropagation(); try { await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'news', n.id), { isHot: !n.isHot }); showNotification(n.isHot ? "Đã bỏ tin nóng" : "Đã đánh dấu tin nóng!"); } catch { showNotification("Lỗi khi cập nhật tin nóng", "error"); } };
 
   const handleEditNews = (e, n) => {
     e.stopPropagation();
@@ -3164,9 +3175,11 @@ function App() {
 
   const handleMoveNews = async (e, n, direction) => {
     e.stopPropagation();
-    const currentIndex = newsList.findIndex(item => item.id === n.id);
+    if (n.isPinned) return;
+    const movableNewsList = newsList.filter(item => !item.isPinned);
+    const currentIndex = movableNewsList.findIndex(item => item.id === n.id);
     const targetIndex = direction === 'up' ? currentIndex - 1 : currentIndex + 1;
-    const target = newsList[targetIndex];
+    const target = movableNewsList[targetIndex];
     if (currentIndex < 0 || !target) return;
     const currentOrder = n.sortOrder ?? n.createdAt ?? Date.now();
     const targetOrder = target.sortOrder ?? target.createdAt ?? Date.now();
@@ -3176,7 +3189,7 @@ function App() {
         updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'news', target.id), { sortOrder: currentOrder })
       ]);
       showNotification("Đã đổi thứ tự bản tin");
-    } catch (err) {
+    } catch {
       showNotification("Lỗi khi đổi thứ tự tin", "error");
     }
   };
@@ -3186,7 +3199,7 @@ function App() {
     let fType = 'link'; const mime = file.mimeType.toLowerCase();
     if (mime.includes('pdf')) fType = 'pdf'; else if (mime.includes('presentation') || file.name.includes('.ppt')) fType = 'ppt'; else if (mime.includes('image')) fType = 'image';
     let title = file.name.replace(/\[.*?\]_/, '').replace(/\.[^/.]+$/, "");
-    try { await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'materials'), { grade: String(selectedGrade), subject: String(selectedSubject), lesson: String(selectedLesson), title: title, url: file.webViewLink, driveFileId: file.id, type: fType, createdAt: Date.now(), authorId: user.uid }); showNotification("Đã ghim tài liệu thành công!"); } catch(e) { showNotification("Lỗi ghim tài liệu", "error"); }
+    try { await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'materials'), { grade: String(selectedGrade), subject: String(selectedSubject), lesson: String(selectedLesson), title: title, url: file.webViewLink, driveFileId: file.id, type: fType, createdAt: Date.now(), authorId: user.uid }); showNotification("Đã ghim tài liệu thành công!"); } catch { showNotification("Lỗi ghim tài liệu", "error"); }
   };
 
   const getMaterialsForDriveFile = useCallback((file, { currentOnly = true } = {}) => {
@@ -3199,7 +3212,7 @@ function App() {
 
   const handleHideFromDrive = async (file) => {
     if (!user || role !== 'teacher') return;
-    setConfirmModal({ show: true, message: `File này sẽ được đổi tên thêm [CHO_XOA] ở phía trước để ẩn khỏi Kho chung. File vẫn còn trong Google Drive để thầy cô có thể xóa tay sau. Bạn có chắc chắn?`, onConfirm: async () => { const oldName = file.name; setDriveFiles(prev => prev.filter(f => f.id !== file.id)); showNotification("Đang ẩn file khỏi Kho chung...", "success"); try { const res = await postAppsScript({ action: 'rename', fileId: file.id }); if (res.status === 'success') { const linkedMaterials = getMaterialsForDriveFile(file, { currentOnly: false }); if (linkedMaterials.length > 0) { await Promise.all(linkedMaterials.map(m => deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'materials', m.id)) )); } showNotification(`Đã ẩn file "${oldName.replace(/\[.*?\]_/, '')}" khỏi Kho chung${linkedMaterials.length ? ` và gỡ ${linkedMaterials.length} ghim` : ''}.`); } else { showNotification(`Lỗi: ${res.message}`, "error"); fetchDriveData(); } } catch (e) { fetchDriveData(); } } });
+    setConfirmModal({ show: true, message: `File này sẽ được đổi tên thêm [CHO_XOA] ở phía trước để ẩn khỏi Kho chung. File vẫn còn trong Google Drive để thầy cô có thể xóa tay sau. Bạn có chắc chắn?`, onConfirm: async () => { const oldName = file.name; setDriveFiles(prev => prev.filter(f => f.id !== file.id)); showNotification("Đang ẩn file khỏi Kho chung...", "success"); try { const res = await postAppsScript({ action: 'rename', fileId: file.id }); if (res.status === 'success') { const linkedMaterials = getMaterialsForDriveFile(file, { currentOnly: false }); if (linkedMaterials.length > 0) { await Promise.all(linkedMaterials.map(m => deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'materials', m.id)) )); } showNotification(`Đã ẩn file "${oldName.replace(/\[.*?\]_/, '')}" khỏi Kho chung${linkedMaterials.length ? ` và gỡ ${linkedMaterials.length} ghim` : ''}.`); } else { showNotification(`Lỗi: ${res.message}`, "error"); fetchDriveData(); } } catch { fetchDriveData(); } } });
   };
 
   const handleEditorInput = () => { if (role !== 'teacher' || !noteId) return; if (contentEditableRef.current) setNoteHtml(contentEditableRef.current.innerHTML); setAutoSaveStatus('Đang chờ lưu...'); if (autoSaveTimeoutRef.current) clearTimeout(autoSaveTimeoutRef.current); autoSaveTimeoutRef.current = setTimeout(() => { handleAutoSave(); }, 2000); };
@@ -3207,7 +3220,7 @@ function App() {
   const handleAutoSave = async () => {
      if (!contentEditableRef.current || !noteId || !user) return;
      setAutoSaveStatus('Đang lưu...');
-     try { const savedContent = contentEditableRef.current.innerHTML; await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'lesson_notes', noteId), { content: savedContent, updatedAt: Date.now(), authorId: user.uid, grade: String(selectedGrade), subject: String(selectedSubject), lesson: String(selectedLesson) }); setNoteHtml(savedContent); contentEditableRef.current.setAttribute('data-loaded-id', noteId); setAutoSaveStatus('☁️ Đã lưu tự động'); setTimeout(() => setAutoSaveStatus(''), 4000); } catch (e) { setAutoSaveStatus('Lỗi lưu tự động'); }
+     try { const savedContent = contentEditableRef.current.innerHTML; await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'lesson_notes', noteId), { content: savedContent, updatedAt: Date.now(), authorId: user.uid, grade: String(selectedGrade), subject: String(selectedSubject), lesson: String(selectedLesson) }); setNoteHtml(savedContent); contentEditableRef.current.setAttribute('data-loaded-id', noteId); setAutoSaveStatus('☁️ Đã lưu tự động'); setTimeout(() => setAutoSaveStatus(''), 4000); } catch { setAutoSaveStatus('Lỗi lưu tự động'); }
   };
 
   const handleSaveNote = async () => {
@@ -3489,7 +3502,7 @@ ${answerText || '(Chua co dap an, hay tu tao dap an dung va bieu diem)'}`;
         const snap = await getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'scorebooks', getScorebookDocIdForGrade(selectedGrade)));
         const data = snap.exists() ? (snap.data() || {}) : {};
         setScoreTargetEdits(data.edits && typeof data.edits === 'object' ? data.edits : {});
-      } catch (error) {
+      } catch {
         setScoreTargetEdits({});
       }
     }
@@ -3601,7 +3614,7 @@ ${answerText || '(Chua co dap an, hay tu tao dap an dung va bieu diem)'}`;
       setQuizAttachments(extractQuizAttachments(content));
       setIsPreviousQuizLoaded(true);
       showNotification(`Đã lấy đề năm ${previousSchoolYear}.`);
-    } catch (e) { showNotification('Không lấy được đề năm trước.', 'error'); }
+    } catch { showNotification('Không lấy được đề năm trước.', 'error'); }
   };
 
   const savedQuizArchive = useMemo(() => {
@@ -3647,7 +3660,7 @@ ${answerText || '(Chua co dap an, hay tu tao dap an dung va bieu diem)'}`;
       if (addedAttachments.length) setQuizAttachments(prev => [...prev, ...addedAttachments]);
       setQuizFiles([]);
       showNotification('\u0110\u00e3 up file v\u00e0 ch\u00e8n v\u00e0o b\u00e0i ki\u1ec3m tra.');
-    } catch (e) { showNotification('L\u1ed7i up file b\u00e0i ki\u1ec3m tra.', 'error'); } finally { setIsSubmitting(false); }
+    } catch { showNotification('L\u1ed7i up file b\u00e0i ki\u1ec3m tra.', 'error'); } finally { setIsSubmitting(false); }
   };
 
   const handleRemoveQuizAttachment = (attachmentId) => {
@@ -3662,7 +3675,7 @@ ${answerText || '(Chua co dap an, hay tu tao dap an dung va bieu diem)'}`;
 
   const handleEditorImageClick = (e, owner = 'lesson') => { if (e.target.tagName === 'IMG') { setSelectedImage(e.target); setSelectedImageOwner(owner); const rect = e.target.getBoundingClientRect(); const containerRect = e.currentTarget.parentElement.getBoundingClientRect(); setImagePopupPos({ x: rect.left - containerRect.left + (rect.width / 2), y: rect.top - containerRect.top - 40 }); } else { setSelectedImage(null); } };
 
-  const handleDeleteSelectedImage = async (e) => { e.preventDefault(); if (!selectedImage) return; const imgSrc = selectedImage.src; selectedImage.remove(); setSelectedImage(null); showNotification("?? x?a ?nh kh?i khung so?n th?o"); const driveIdMatch = imgSrc.match(/id=([^&]+)/); if (driveIdMatch && driveIdMatch[1]) { try { await postAppsScript({ action: 'rename', fileId: driveIdMatch[1] }); } catch (err) {} } selectedImageOwner === 'quiz' ? handleQuizEditorInput() : handleEditorInput(); };
+  const handleDeleteSelectedImage = async (e) => { e.preventDefault(); if (!selectedImage) return; const imgSrc = selectedImage.src; selectedImage.remove(); setSelectedImage(null); showNotification("?? x?a ?nh kh?i khung so?n th?o"); const driveIdMatch = imgSrc.match(/id=([^&]+)/); if (driveIdMatch && driveIdMatch[1]) { try { await postAppsScript({ action: 'rename', fileId: driveIdMatch[1] }); } catch { /* intentionally ignored */ } } selectedImageOwner === 'quiz' ? handleQuizEditorInput() : handleEditorInput(); };
 
   const extractQuizTextFromImage = async (compressedBase64) => {
     if (IS_LOCAL_PREVIEW) return 'Nội dung đề được OCR từ ảnh dán vào.';
@@ -3694,8 +3707,8 @@ YEU CAU:
     const fileId = imgEl.dataset?.driveFileId || extractDriveFileId(imgEl.dataset?.driveSrc || imgEl.src || '');
     if (!fileId) return;
     const candidates = [
-      `https://lh3.googleusercontent.com/d/${fileId}=w1000`,
-      `https://drive.google.com/thumbnail?id=${fileId}&sz=w1000`
+      `https://lh3.googleusercontent.com/d/${fileId}=w1600`,
+      `https://drive.google.com/thumbnail?id=${fileId}&sz=w1600`
     ].filter(url => url && url !== imgEl.src);
     const attempt = Number(imgEl.dataset.imageFallbackAttempt || '0');
     if (attempt < candidates.length) {
@@ -3739,7 +3752,7 @@ YEU CAU:
     const applyRemoteImage = () => {
       if (settled || !imgEl.isConnected) return;
       settled = true;
-      imgEl.src = targetType === 'news' ? compressedBase64 : remoteUrl;
+      imgEl.src = remoteUrl;
       imgEl.alt = 'Ảnh đã chèn';
       imgEl.style.opacity = '1';
       imgEl.style.filter = 'none';
@@ -3767,7 +3780,7 @@ YEU CAU:
     reader.onload = async (ev) => {
       const imgId = "img_" + Date.now(); const base64Local = ev.target.result; const img = new window.Image();
       img.onload = async () => {
-        const canvas = document.createElement('canvas'); const MAX_W = 1000; let w = img.width; let h = img.height; if (w > MAX_W) { h *= MAX_W / w; w = MAX_W; } canvas.width = w; canvas.height = h; canvas.getContext('2d').drawImage(img, 0, 0, w, h); const compressedBase64 = canvas.toDataURL('image/jpeg', 0.8);
+        const canvas = document.createElement('canvas'); const MAX_W = targetType === 'news' ? 1600 : 1000; const imageQuality = targetType === 'news' ? 0.92 : 0.8; let w = img.width; let h = img.height; if (w > MAX_W) { h *= MAX_W / w; w = MAX_W; } canvas.width = w; canvas.height = h; canvas.getContext('2d').drawImage(img, 0, 0, w, h); const compressedBase64 = canvas.toDataURL('image/jpeg', imageQuality);
         const selection = window.getSelection(); selection.removeAllRanges(); if (range) { selection.addRange(range); }
         if (targetType === 'quiz') {
           const markerId = `ocr_${imgId}`;
@@ -3795,7 +3808,7 @@ YEU CAU:
           const base64Data = compressedBase64.split(',')[1]; const prefix = targetType === 'news' ? '[TIN_TUC]' : (targetType === 'quiz' ? `[KIEMTRA_${activeSchoolYear}_K${selectedGrade}_${selectedSubject}_B${selectedLesson}]` : `[K${selectedGrade}_${selectedSubject}_B${selectedLesson}]`);
           const res = await postAppsScript({ filename: `${prefix}_ẢnhDán_${Date.now()}.jpg`, mimeType: 'image/jpeg', base64: base64Data, folderId: targetType === 'quiz' ? QUIZ_DRIVE_FOLDER_ID : IMAGE_DRIVE_FOLDER_ID });
           if (res.status === 'success') { applyUploadedImageToEditor({ imgId, targetType, compressedBase64, res }); showNotification("Đã tải và hiển thị ảnh thành công!"); } else { applyUploadedImageToEditor({ imgId, targetType, compressedBase64, res: null }); showNotification("Chưa tải ảnh lên Drive được, ảnh vẫn được giữ trong bài.", "error"); }
-        } catch (err) { applyUploadedImageToEditor({ imgId, targetType, compressedBase64, res: null }); showNotification("Chưa tải ảnh lên Drive được, ảnh vẫn được giữ trong bài.", "error"); } finally { setIsPastingImage(false); }
+        } catch { applyUploadedImageToEditor({ imgId, targetType, compressedBase64, res: null }); showNotification("Chưa tải ảnh lên Drive được, ảnh vẫn được giữ trong bài.", "error"); } finally { setIsPastingImage(false); }
       }; img.src = base64Local;
     }; reader.readAsDataURL(file);
   };
@@ -3811,7 +3824,7 @@ YEU CAU:
   const handleQuizImageUpload = (e) => { if (e.target.files && e.target.files[0]) { const file = e.target.files[0]; if (quizEditorRef.current) { quizEditorRef.current.focus(); } const selection = window.getSelection(); let range; if (selection.rangeCount > 0) { range = selection.getRangeAt(0); } else if (quizEditorRef.current) { range = document.createRange(); range.selectNodeContents(quizEditorRef.current); range.collapse(false); } uploadAndInsertImage(file, range, 'quiz'); e.target.value = null; } };
   const handleNewsImageUpload = (e) => { if (e.target.files && e.target.files[0]) { const file = e.target.files[0]; if (newsContentRef.current) { newsContentRef.current.focus(); } const selection = window.getSelection(); let range; if (selection.rangeCount > 0) { range = selection.getRangeAt(0); } else if (newsContentRef.current) { range = document.createRange(); range.selectNodeContents(newsContentRef.current); range.collapse(false); } uploadAndInsertImage(file, range, true); e.target.value = null; } };
   const handleLessonFileChange = (lessonNum, files) => { if (!files || files.length === 0) return; setLessonFilesMap(prev => ({ ...prev, [lessonNum]: Array.from(files) })); };
-  const removeFileFromLesson = (lessonNum, fileIndex) => { setLessonFilesMap(prev => { const newFiles = [...prev[lessonNum]]; newFiles.splice(fileIndex, 1); if (newFiles.length === 0) { const { [lessonNum]: _, ...rest } = prev; return rest; } return { ...prev, [lessonNum]: newFiles }; }); };
+  const removeFileFromLesson = (lessonNum, fileIndex) => { setLessonFilesMap(prev => { const newFiles = [...prev[lessonNum]]; newFiles.splice(fileIndex, 1); if (newFiles.length === 0) { const rest = { ...prev }; delete rest[lessonNum]; return rest; } return { ...prev, [lessonNum]: newFiles }; }); };
 
   const handleGlobalUpload = async (e) => {
     e.preventDefault(); if (!user) return;
@@ -3819,7 +3832,7 @@ YEU CAU:
       if (manualFiles.length === 0) { showNotification("Vui lòng chọn ít nhất 1 file!", "error"); return; } setIsSubmitting(true); setUploadProgress({ current: 0, total: manualFiles.length });
       for (let i = 0; i < manualFiles.length; i++) {
         const file = manualFiles[i]; setUploadProgress(prev => ({ ...prev, current: i + 1 })); if (file.size > 30 * 1024 * 1024) continue;
-        try { const base64Data = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result.split(',')[1]); r.onerror = rej; r.readAsDataURL(file); }); const payload = { filename: `[K${selectedGrade}_${selectedSubject}]_${file.name}`, mimeType: file.type, base64: base64Data, folderId: MASTER_DRIVE_FOLDER_ID }; await postAppsScript(payload); } catch (err) {}
+        try { const base64Data = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result.split(',')[1]); r.onerror = rej; r.readAsDataURL(file); }); const payload = { filename: `[K${selectedGrade}_${selectedSubject}]_${file.name}`, mimeType: file.type, base64: base64Data, folderId: MASTER_DRIVE_FOLDER_ID }; await postAppsScript(payload); } catch { /* intentionally ignored */ }
       } setIsSubmitting(false); setManualFiles([]); setShowBulkUpload(false); fetchDriveData(); showNotification("Đã up toàn bộ file lên Kho Chung Drive thành công!");
     } else if (uploadTab === 'bylesson') {
       let tasks = []; Object.keys(lessonFilesMap).forEach(lesson => { lessonFilesMap[lesson].forEach(file => tasks.push({ lesson: String(lesson), file })); });
@@ -3830,17 +3843,17 @@ YEU CAU:
           const base64Data = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result.split(',')[1]); r.onerror = rej; r.readAsDataURL(file); });
           const res = await postAppsScript({ filename: `[K${selectedGrade}_${selectedSubject}_B${lesson}]_${file.name}`, mimeType: file.type, base64: base64Data, folderId: MASTER_DRIVE_FOLDER_ID });
           if (res.status === 'success') { let fType = 'link'; const mime = file.type.toLowerCase(); if (mime.includes('pdf')) fType = 'pdf'; else if (mime.includes('presentation') || file.name.includes('.ppt')) fType = 'ppt'; else if (mime.includes('image')) fType = 'image'; const savedTitle = (res.filename || file.name).replace(/\[.*?\]_/, '').replace(/\.[^/.]+$/, ""); await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'materials'), { grade: String(selectedGrade), subject: String(selectedSubject), lesson: String(lesson), title: savedTitle, url: res.url, driveFileId: res.fileId, type: fType, createdAt: Date.now(), authorId: user.uid }); }
-        } catch (err) {}
+        } catch { /* intentionally ignored */ }
       } setIsSubmitting(false); setLessonFilesMap({}); setShowBulkUpload(false); fetchDriveData(); showNotification("Đã up và TỰ ĐỘNG GHIM tất cả file thành công!");
     } else if (uploadTab === 'link') {
       if (!linkData.url) { showNotification("Vui lòng nhập đường dẫn link!", "error"); return; } setIsSubmitting(true);
-      try { const linkTitle = linkData.title.trim() || getDefaultLinkTitle(linkData.url); await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'materials'), { grade: String(selectedGrade), subject: String(selectedSubject), lesson: String(linkData.lesson), title: linkTitle, url: linkData.url, type: linkData.type, createdAt: Date.now(), authorId: user.uid }); showNotification(`Đã ghim link thành công vào Tuần ${linkData.lesson}!`); setLinkData({ title: '', url: '', lesson: linkData.lesson, type: 'pdf' }); setShowBulkUpload(false); } catch (e) {} finally { setIsSubmitting(false); }
+      try { const linkTitle = linkData.title.trim() || getDefaultLinkTitle(linkData.url); await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'materials'), { grade: String(selectedGrade), subject: String(selectedSubject), lesson: String(linkData.lesson), title: linkTitle, url: linkData.url, type: linkData.type, createdAt: Date.now(), authorId: user.uid }); showNotification(`Đã ghim link thành công vào Tuần ${linkData.lesson}!`); setLinkData({ title: '', url: '', lesson: linkData.lesson, type: 'pdf' }); setShowBulkUpload(false); } catch { /* intentionally ignored */ } finally { setIsSubmitting(false); }
     }
   };
 
   const handleInlineLinkSubmit = async (e) => {
     e.preventDefault(); if (!user || !selectedGrade || !selectedSubject || !selectedLesson) return; if (!inlineLinkData.url) { showNotification("Vui lòng nhập đường dẫn link!", "error"); return; } setIsSubmitting(true);
-    try { const linkTitle = inlineLinkData.title.trim() || getDefaultLinkTitle(inlineLinkData.url); await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'materials'), { grade: String(selectedGrade), subject: String(selectedSubject), lesson: String(selectedLesson), title: linkTitle, url: inlineLinkData.url, type: inlineLinkData.type, createdAt: Date.now(), authorId: user.uid }); setInlineLinkData({ title: '', url: '', type: 'link' }); setShowInlineLink(false); showNotification(`Đã thêm link vào bài!`); } catch (err) { showNotification("Lỗi thêm link", "error"); } finally { setIsSubmitting(false); }
+    try { const linkTitle = inlineLinkData.title.trim() || getDefaultLinkTitle(inlineLinkData.url); await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'materials'), { grade: String(selectedGrade), subject: String(selectedSubject), lesson: String(selectedLesson), title: linkTitle, url: inlineLinkData.url, type: inlineLinkData.type, createdAt: Date.now(), authorId: user.uid }); setInlineLinkData({ title: '', url: '', type: 'link' }); setShowInlineLink(false); showNotification(`Đã thêm link vào bài!`); } catch { showNotification("Lỗi thêm link", "error"); } finally { setIsSubmitting(false); }
   };
 
   const sortedDriveFiles = useMemo(() => {
@@ -3850,7 +3863,7 @@ YEU CAU:
   }, [driveFiles, driveSort, getPinnedLessonsForDriveFile]);
 
   const isFormulaSubject = useCallback(() => { const normalized = removeAccents(selectedSubject || ''); return normalized.includes('toan') || normalized.includes('khoa hoc tu nhien') || normalized.includes('khtn'); }, [selectedSubject]);
-  const getFormulaFormatInstruction = useCallback(() => { if (!isFormulaSubject()) return ''; return `\n\nYEU CAU RIENG CHO TOAN/KHTN CO CONG THUC:\n- Chi tao MOT BAN DUY NHAT de dan vao web cho hoc sinh xem, tuyet doi khong chia thanh PHAN 1/PHAN 2.\n- Khong viet cac tieu de: PHAN 1 - BAN GIAO VIEN DE HINH DUNG, PHAN 2 - BAN DAN VAO WEB CHO HOC SINH.\n- Cong thuc phai trinh bay bang LaTeX de web hien thi dep: cong thuc trong dong dat trong \\( ... \\), cong thuc rieng dong dat trong \\[ ... \\].\n- Van tao day du dap an/goi y cham o cuoi de, nhung phai boc toan bo dap an trong <div class=\"teacher-only\">...</div> de hoc sinh khong thay.`; }, [isFormulaSubject]);
+  const getFormulaFormatInstruction = useCallback(() => { if (!isFormulaSubject()) return ''; return `\n\nYEU CAU RIENG CHO TOAN/KHTN CO CONG THUC:\n- Chi tao MOT BAN DUY NHAT de dan vao web cho hoc sinh xem, tuyet doi khong chia thanh PHAN 1/PHAN 2.\n- Khong viet cac tieu de: PHAN 1 - BAN GIAO VIEN DE HINH DUNG, PHAN 2 - BAN DAN VAO WEB CHO HOC SINH.\n- Cong thuc phai trinh bay bang LaTeX de web hien thi dep: cong thuc trong dong dat trong \\( ... \\), cong thuc rieng dong dat trong \\[ ... \\].\n- Van tao day du dap an/goi y cham o cuoi de, nhung phai boc toan bo dap an trong <div class="teacher-only">...</div> de hoc sinh khong thay.`; }, [isFormulaSubject]);
 
   const extractAiText = (data) => {
     if (!data) return '';
@@ -3901,7 +3914,7 @@ YEU CAU:
         const isLastModel = modelId === modelIds[modelIds.length - 1];
         if (!shouldTryNextGeminiModel(cleanMessage) || isLastModel) {
           const triedModels = failures.map(item => `- ${item}`).join('\n');
-          throw new Error(failures.length > 1 ? `Da tu dong thu cac model AI nhung chua thanh cong:\n${triedModels}` : cleanMessage);
+          throw new Error(failures.length > 1 ? `Da tu dong thu cac model AI nhung chua thanh cong:\n${triedModels}` : cleanMessage, { cause: error });
         }
       }
     }
@@ -3913,6 +3926,10 @@ YEU CAU:
       const data = await postAppsScript({
         action: 'gemini',
         modelId,
+        grade: String(selectedGrade || ''),
+        subject: String(selectedSubject || ''),
+        lesson: String(selectedLesson || ''),
+        schoolYear: String(activeSchoolYear || currentSchoolYear || ''),
         contents: payload.contents,
         systemInstruction: payload.systemInstruction,
         generationConfig: payload.generationConfig
@@ -3947,12 +3964,6 @@ YEU CAU:
   };
 
   const formatAiText = (text) => { return String(text || '').replace(/\r\n/g, '\n').replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>').replace(/\n/g, '<br/>'); };
-
-  const appendAiToEditor = async () => {
-    if (!contentEditableRef.current || !aiResponse) return;
-    contentEditableRef.current.innerHTML += `<div style="margin-top:20px;padding:15px;background:#f8fafc;border-left:4px solid #3b82f6;border-radius:12px;"><h4 class="ai-suggestion-title" style="color:#1e40af;margin-bottom:10px;">✨ GỢI Ý TỪ TRỢ LÝ AI</h4>${formatAiText(aiResponse)}</div><p><br/></p>`; setShowAiModal(false); setAiResponse('');
-    if (noteId && user) { setIsSavingNote(true); try { await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'lesson_notes', noteId), { content: contentEditableRef.current.innerHTML, updatedAt: Date.now(), authorId: user.uid, grade: String(selectedGrade), subject: String(selectedSubject), lesson: String(selectedLesson) }); showNotification("Đã chèn nội dung AI và TỰ ĐỘNG LƯU thành công!"); } catch (e) { showNotification("Lỗi lưu tự động!", "error"); } finally { setIsSavingNote(false); } }
-  };
 
   const appendAiToQuickQuiz = async () => {
     if (!aiResponse || !user || !selectedGrade || !selectedSubject || !selectedLesson) return;
@@ -4117,7 +4128,7 @@ QUY TAC BAT BUOC:
 - Chi tao MOT BAN DUY NHAT, khong ghi PHAN 1/PHAN 2, khong ghi BAN GIAO VIEN/BAN DAN VAO WEB.
 - Luon co dap an/goi y cham va bieu diem ro tung cau, tung y o cuoi bai; boc toan bo phan nay trong <div class="teacher-only">...</div> de hoc sinh khong thay.
 - Tong diem 10: toan trac nghiem chia deu 10 diem; vua trac nghiem vua tu luan thi trac nghiem 5 diem chia deu va tu luan 5 diem chia theo cau/y; toan tu luan thi tu chia 10 diem theo cau/y.
-- Voi Toan/KHTN, cong thuc dung LaTeX \( ... \) hoac \[ ... \].
+- Voi Toan/KHTN, cong thuc dung LaTeX \\( ... \\) hoac \\[ ... \\].
 
 Giáo viên có thể sửa prompt này trước khi bấm tạo câu hỏi.`;
     setAiPrompt(professionalPrompt);
@@ -4252,7 +4263,32 @@ ${lessonBlocks}`;
   }, [aiSelectedLessons, selectedLesson, getLessonOfficialText]);
 
   const copyTextSafely = async (text) => {
-    const textarea = document.createElement('textarea'); textarea.value = text; textarea.setAttribute('readonly', ''); textarea.style.position = 'fixed'; textarea.style.left = '-9999px'; textarea.style.top = '0'; document.body.appendChild(textarea); textarea.focus(); textarea.select(); textarea.setSelectionRange(0, text.length); let copied = false; try { copied = document.execCommand('copy'); } catch (e) { copied = false; } document.body.removeChild(textarea); if (copied) return true; if (navigator.clipboard && window.isSecureContext) { try { await navigator.clipboard.writeText(text); return true; } catch (e) {} } return false;
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.setAttribute('readonly', '');
+    textarea.style.position = 'fixed';
+    textarea.style.left = '-9999px';
+    textarea.style.top = '0';
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    textarea.setSelectionRange(0, text.length);
+    try {
+      if (document.execCommand('copy')) return true;
+    } catch {
+      // Fall back to navigator.clipboard below.
+    } finally {
+      document.body.removeChild(textarea);
+    }
+    if (navigator.clipboard && window.isSecureContext) {
+      try {
+        await navigator.clipboard.writeText(text);
+        return true;
+      } catch {
+        // Copy can fail when browser permissions block clipboard access.
+      }
+    }
+    return false;
   };
 
   useEffect(() => { if (showAiModal && aiToolTab === 'pro') setAiContextContent(buildGeminiProPrompt()); }, [showAiModal, aiToolTab, buildGeminiProPrompt]);
@@ -4386,8 +4422,8 @@ ${lessonBlocks}`;
   const extractAiScore = (text = '') => {
     const normalized = String(text || '').replace(',', '.');
     const folded = normalized.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').replace(/Đ/g, 'D').toLowerCase();
-    const match = folded.match(/diem\s*tu\s*luan(?:\/viet\s*tay)?(?:\s*de\s*xuat)?\s*[:\-]?\s*([0-9]+(?:\.[0-9]+)?)\s*\/\s*([0-9]+(?:\.[0-9]+)?)/i)
-      || folded.match(/(?:diem(?:\s*de\s*xuat)?|score)\s*[:\-]?\s*([0-9]+(?:\.[0-9]+)?)\s*\/\s*([0-9]+(?:\.[0-9]+)?)/i)
+    const match = folded.match(/diem\s*tu\s*luan(?:\/viet\s*tay)?(?:\s*de\s*xuat)?\s*[:-]?\s*([0-9]+(?:\.[0-9]+)?)\s*\/\s*([0-9]+(?:\.[0-9]+)?)/i)
+      || folded.match(/(?:diem(?:\s*de\s*xuat)?|score)\s*[:-]?\s*([0-9]+(?:\.[0-9]+)?)\s*\/\s*([0-9]+(?:\.[0-9]+)?)/i)
       || folded.match(/([0-9]+(?:\.[0-9]+)?)\s*\/\s*10\b/);
     if (!match) return { score: '', maxScore: '10' };
     return { score: match[1] || '', maxScore: match[2] || '10' };
@@ -4461,7 +4497,7 @@ ${lessonBlocks}`;
         setQuickScoreSources(prev => ({ ...(prev || {}), [scoreKey]: { source: 'quiz', updatedAt: Date.now() } }));
       }
       return true;
-    } catch (error) {
+    } catch {
       return false;
     }
   }, [user, canWriteCurrentSchoolYear, quizScoreTarget, selectedGrade, findScorebookRowIndexForStudent, normalizeQuizScoreForScorebook, getScorebookDocIdForGrade, getQuickScoreKey, activeSchoolYear, quickScorebookDocId]);
@@ -4547,7 +4583,7 @@ ${lessonBlocks}`;
           return next;
         });
         cleared = true;
-      } catch (error) {
+      } catch {
         // Continue clearing the remaining grade documents; stale score cleanup should be best-effort.
       }
     }
@@ -4588,6 +4624,10 @@ ${lessonBlocks}`;
         const gradingPayload = {
           fileId: submission.fileId,
           model: modelId,
+          grade: String(submission.grade || selectedGrade || ''),
+          subject: String(submission.subject || selectedSubject || ''),
+          lesson: String(submission.lesson || selectedLesson || ''),
+          schoolYear: String(submission.schoolYear || activeSchoolYear || currentSchoolYear || ''),
           prompt: gradingPrompt
         };
         try {
@@ -4809,14 +4849,14 @@ ${lessonBlocks}`;
           } else {
             setSubmissionStatus('Loi tai len');
           }
-        } catch (e) {
+        } catch {
           setSubmissionStatus('Loi ket noi');
         } finally {
           setIsSubmittingWork(false);
         }
       };
       reader.readAsDataURL(submissionFile);
-    } catch (e) {
+    } catch {
       setSubmissionStatus('Loi he thong');
       setIsSubmittingWork(false);
     }
@@ -4829,9 +4869,9 @@ ${lessonBlocks}`;
     try {
       const reader = new FileReader();
       reader.onload = async () => {
-        try { const payload = { filename: `[KHBD_${currentSchoolYear}]_[K${selectedGrade}]_[${uploadSubject}]_${planFile.name}`, mimeType: planFile.type, base64: reader.result.split(',')[1], folderId: TEACHER_PLAN_FOLDER_ID }; const res = await postAppsScript(payload); if (res.status === 'success') { setPlanStatus('🎉 Đã nộp Kế hoạch Bài dạy thành công!'); setPlanFile(null); setPlanSubject(uploadSubject); } else setPlanStatus('❌ Lỗi tải lên'); } catch (e) { setPlanStatus('❌ Lỗi kết nối'); } finally { setIsUploadingPlan(false); }
+        try { const payload = { filename: `[KHBD_${currentSchoolYear}]_[K${selectedGrade}]_[${uploadSubject}]_${planFile.name}`, mimeType: planFile.type, base64: reader.result.split(',')[1], folderId: TEACHER_PLAN_FOLDER_ID }; const res = await postAppsScript(payload); if (res.status === 'success') { setPlanStatus('🎉 Đã nộp Kế hoạch Bài dạy thành công!'); setPlanFile(null); setPlanSubject(uploadSubject); } else setPlanStatus('❌ Lỗi tải lên'); } catch { setPlanStatus('❌ Lỗi kết nối'); } finally { setIsUploadingPlan(false); }
       }; reader.readAsDataURL(planFile);
-    } catch (e) { setPlanStatus('❌ Lỗi hệ thống'); setIsUploadingPlan(false); }
+    } catch { setPlanStatus('❌ Lỗi hệ thống'); setIsUploadingPlan(false); }
   };
 
   const uploadInlineMaterials = async (files = [], { successMessage = 'Đã up và ghim file vào bài thành công!' } = {}) => {
@@ -4842,7 +4882,7 @@ ${lessonBlocks}`;
     let successCount = 0;
     for (let i = 0; i < filesToUpload.length; i++) {
         const file = filesToUpload[i]; setUploadProgress(prev => ({ ...prev, current: i + 1 })); if (file.size > 30 * 1024 * 1024) continue;
-        try { const safeName = file.name || `AnhDan_${Date.now()}_${i + 1}.jpg`; const base64Data = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result.split(',')[1]); r.onerror = rej; r.readAsDataURL(file); }); const payload = { filename: `[K${selectedGrade}_${selectedSubject}_B${selectedLesson}]_${safeName}`, mimeType: file.type || 'image/jpeg', base64: base64Data, folderId: MASTER_DRIVE_FOLDER_ID }; const res = await postAppsScript(payload); if (res.status === 'success') { let fType = 'link'; const mime = String(file.type || '').toLowerCase(); if (mime.includes('pdf')) fType = 'pdf'; else if (mime.includes('presentation') || safeName.includes('.ppt')) fType = 'ppt'; else if (mime.includes('image')) fType = 'image'; const savedTitle = (res.filename || safeName).replace(/\[.*?\]_/, '').replace(/\.[^/.]+$/, ""); await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'materials'), { grade: String(selectedGrade), subject: String(selectedSubject), lesson: String(selectedLesson), title: savedTitle, url: res.url, driveFileId: res.fileId, type: fType, createdAt: Date.now(), authorId: user.uid }); successCount++; } } catch (err) {}
+        try { const safeName = file.name || `AnhDan_${Date.now()}_${i + 1}.jpg`; const base64Data = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result.split(',')[1]); r.onerror = rej; r.readAsDataURL(file); }); const payload = { filename: `[K${selectedGrade}_${selectedSubject}_B${selectedLesson}]_${safeName}`, mimeType: file.type || 'image/jpeg', base64: base64Data, folderId: MASTER_DRIVE_FOLDER_ID }; const res = await postAppsScript(payload); if (res.status === 'success') { let fType = 'link'; const mime = String(file.type || '').toLowerCase(); if (mime.includes('pdf')) fType = 'pdf'; else if (mime.includes('presentation') || safeName.includes('.ppt')) fType = 'ppt'; else if (mime.includes('image')) fType = 'image'; const savedTitle = (res.filename || safeName).replace(/\[.*?\]_/, '').replace(/\.[^/.]+$/, ""); await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'materials'), { grade: String(selectedGrade), subject: String(selectedSubject), lesson: String(selectedLesson), title: savedTitle, url: res.url, driveFileId: res.fileId, type: fType, createdAt: Date.now(), authorId: user.uid }); successCount++; } } catch { /* intentionally ignored */ }
     }
     setIsSubmitting(false);
     if (successCount > 0) { setShowInlineLink(false); showNotification(successMessage); }
@@ -4866,7 +4906,7 @@ ${lessonBlocks}`;
 
   const handleDeleteMaterial = async (id) => { if (role !== 'teacher') return; setConfirmModal({ show: true, message: 'Gỡ tài liệu này khỏi bài học?', onConfirm: async () => { await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'materials', id)); showNotification("Đã gỡ tài liệu"); } }); };
   const resetNavigationWithClean = () => { setSelectedGrade(null); setSelectedSubject(null); setSelectedLesson(null); setViewingMaterial(null); setShowCommonLibraryWorkspace(false); setTeacherTab('giang_day'); setPlanSubject(''); setIsTextbookExpanded(window.innerWidth >= 640); };
-  const handleCopyLink = async (url) => { try { await navigator.clipboard.writeText(url); showNotification("Đã copy liên kết tải tài liệu"); } catch (err) { const t = document.createElement("textarea"); t.value = url; document.body.appendChild(t); t.select(); try { document.execCommand('copy'); showNotification("Đã copy liên kết tải tài liệu"); } catch (e) {} document.body.removeChild(t); } };
+  const handleCopyLink = async (url) => { try { await navigator.clipboard.writeText(url); showNotification("Đã copy liên kết tải tài liệu"); } catch { const t = document.createElement("textarea"); t.value = url; document.body.appendChild(t); t.select(); try { document.execCommand('copy'); showNotification("Đã copy liên kết tải tài liệu"); } catch { /* intentionally ignored */ } document.body.removeChild(t); } };
   const renderIcon = (type) => { switch(type) { case 'quick_quiz': return <ListChecks className="w-6 h-6 text-emerald-600" />; case 'pdf': return <FileText className="w-6 h-6 text-red-500" />; case 'ppt': return <MonitorPlay className="w-6 h-6 text-orange-500" />; case 'image': return <ImageIcon className="w-6 h-6 text-green-500" />; default: return <LinkIcon className="w-6 h-6 text-blue-500" />; } };
 
   const handleSubmitQuickMaterialQuiz = async () => {
@@ -4930,7 +4970,7 @@ ${lessonBlocks}`;
   };
 
   const currentMaterialsFiltered = useMemo(() => { return allMaterials.filter(m => String(m.grade) === String(selectedGrade) && String(m.subject) === String(selectedSubject) && String(m.lesson) === String(selectedLesson)); }, [allMaterials, selectedGrade, selectedSubject, selectedLesson]);
-  const sortedCurrentMaterials = useMemo(() => { return [...currentMaterialsFiltered].sort((a, b) => { const direction = materialSort === 'asc' ? 1 : -1; return (a.title || '').localeCompare(b.title || '', 'vi') * direction; }); }, [currentMaterialsFiltered, materialSort]);
+  const sortedCurrentMaterials = useMemo(() => [...currentMaterialsFiltered].sort((a, b) => (a.title || '').localeCompare(b.title || '', 'vi')), [currentMaterialsFiltered]);
   const currentQuickQuizMaterials = useMemo(() => sortedCurrentMaterials.filter(m => m.type === 'quick_quiz'), [sortedCurrentMaterials]);
   const sortedCurrentStudyMaterials = useMemo(() => sortedCurrentMaterials.filter(m => m.type !== 'quick_quiz'), [sortedCurrentMaterials]);
   const viewingQuickQuizData = useMemo(() => {
@@ -4946,7 +4986,7 @@ ${lessonBlocks}`;
   const viewingQuickQuizQuestions = useMemo(() => buildSelfQuizQuestionsForStudent(viewingQuickQuizData), [viewingQuickQuizData, viewingMaterial?.id, quickMaterialAttemptSeed]);
   const currentQuickMaterialAttemptData = useMemo(() => viewingQuickQuizData ? {
     ...viewingQuickQuizData,
-    questions: viewingQuickQuizQuestions.map(({ displayOptions, ...question }) => question)
+    questions: viewingQuickQuizQuestions.map((question) => { const nextQuestion = { ...question }; delete nextQuestion.displayOptions; return nextQuestion; })
   } : null, [viewingQuickQuizData, viewingQuickQuizQuestions]);
   useEffect(() => { if (viewingMaterial?.type === 'quick_quiz') typesetMath(quickMaterialContentRef.current); }, [viewingMaterial?.id, viewingMaterial?.type, viewingQuickQuizQuestions, quickMaterialAnswers, quickMaterialResult, role]);
   useEffect(() => {
@@ -4976,7 +5016,7 @@ ${lessonBlocks}`;
   }, [activeSelfQuiz, quizId, studentSelfQuizAttemptSeed]);
   const currentSelfQuizAttemptData = useMemo(() => activeSelfQuiz ? {
     ...activeSelfQuiz,
-    questions: shuffledSelfQuizQuestions.map(({ displayOptions, ...question }) => question)
+    questions: shuffledSelfQuizQuestions.map((question) => { const nextQuestion = { ...question }; delete nextQuestion.displayOptions; return nextQuestion; })
   } : null, [activeSelfQuiz, shuffledSelfQuizQuestions]);
   const currentQuizResults = useMemo(() => {
     return filterQuizResultsForContext(allQuizResults, { quizId, schoolYear: activeSchoolYear, grade: selectedGrade, subject: selectedSubject, lesson: selectedLesson });
@@ -5155,7 +5195,7 @@ ${lessonBlocks}`;
       await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'handwritten_submissions'), submissionPayload);
       setSubmissionFile(null);
       setSubmissionStatus('Em đã thoát ra ngoài nên bài tự luận đã bị khóa. Hãy báo giáo viên nếu cần mở lại.');
-    } catch (error) {
+    } catch {
       setSubmissionStatus('Chưa khóa được bài khi thoát ra ngoài. Em báo giáo viên kiểm tra lại.');
     }
   };
@@ -5495,26 +5535,428 @@ ${lessonBlocks}`;
     });
     return completed;
   }, [role, allQuizResults, allHandwrittenSubmissions, currentSchoolYear, selectedGrade, selectedSubject, isCurrentStudentRecord]);
-  const pinnedNewsFeed = useMemo(() => newsList.filter(n => n.isPinned).sort((a, b) => (b.sortOrder ?? b.createdAt ?? 0) - (a.sortOrder ?? a.createdAt ?? 0)).map(n => ({ ...n, isAuto: false, timestamp: n.createdAt })), [newsList]);
+  const adminCheckUploadRows = useMemo(() => {
+    const yearMatches = (item = {}) => !item.schoolYear || String(item.schoolYear) === String(activeSchoolYear || '');
+    const filterContext = (item = {}) => (
+      (adminCheckGrade === 'all' || String(item.grade || '') === String(adminCheckGrade)) &&
+      (adminCheckSubject === 'all' || String(item.subject || '') === String(adminCheckSubject))
+    );
+    const ensureRow = (map, grade, subject) => {
+      const key = `${grade}__${subject}`;
+      if (!map.has(key)) {
+        map.set(key, {
+          key,
+          grade: String(grade || ''),
+          subject: String(subject || ''),
+          materialCount: 0,
+          noteCount: 0,
+          quizCount: 0,
+          lessons: new Set(),
+          latestAt: 0
+        });
+      }
+      return map.get(key);
+    };
+    const rows = new Map();
+    allMaterials
+      .filter(item => item.type !== 'quick_quiz')
+      .filter(yearMatches)
+      .filter(filterContext)
+      .forEach(item => {
+        if (!item.grade || !item.subject) return;
+        const row = ensureRow(rows, item.grade, item.subject);
+        row.materialCount += 1;
+        if (item.lesson) row.lessons.add(String(item.lesson));
+        row.latestAt = Math.max(row.latestAt, Number(item.createdAt || item.updatedAt || 0));
+      });
+    allNotes
+      .filter(yearMatches)
+      .filter(filterContext)
+      .forEach(item => {
+        if (!item.grade || !item.subject) return;
+        const row = ensureRow(rows, item.grade, item.subject);
+        row.noteCount += 1;
+        if (item.lesson) row.lessons.add(String(item.lesson));
+        row.latestAt = Math.max(row.latestAt, Number(item.updatedAt || item.createdAt || 0));
+      });
+    allQuizzes
+      .filter(item => String(item.schoolYear || activeSchoolYear || '') === String(activeSchoolYear || ''))
+      .filter(filterContext)
+      .filter(isQuizVisibleForStudents)
+      .forEach(item => {
+        if (!item.grade || !item.subject) return;
+        const row = ensureRow(rows, item.grade, item.subject);
+        row.quizCount += 1;
+        if (item.lesson) row.lessons.add(String(item.lesson));
+        row.latestAt = Math.max(row.latestAt, Number(item.updatedAt || item.createdAt || item.publishAt || 0));
+      });
+    return [...rows.values()]
+      .map(row => {
+        const lessonList = [...row.lessons].sort((a, b) => Number(a) - Number(b));
+        const visibleLessons = lessonList.slice(0, 8).map(lesson => getWeekDisplayName(lesson));
+        return {
+          ...row,
+          lessonCount: lessonList.length,
+          lessonsText: lessonList.length
+            ? `${visibleLessons.join(', ')}${lessonList.length > visibleLessons.length ? ` +${lessonList.length - visibleLessons.length}` : ''}`
+            : 'Chưa gắn bài/tuần'
+        };
+      })
+      .sort((a, b) => {
+        const gradeCompare = String(a.grade).localeCompare(String(b.grade), 'vi', { numeric: true });
+        if (gradeCompare) return gradeCompare;
+        return String(a.subject).localeCompare(String(b.subject), 'vi', { sensitivity: 'base' });
+      });
+  }, [allMaterials, allNotes, allQuizzes, activeSchoolYear, adminCheckGrade, adminCheckSubject, isQuizVisibleForStudents]);
+  const adminCheckUploadTotals = useMemo(() => (
+    adminCheckUploadRows.reduce((total, row) => ({
+      groups: total.groups + 1,
+      materialCount: total.materialCount + row.materialCount,
+      noteCount: total.noteCount + row.noteCount,
+      quizCount: total.quizCount + row.quizCount,
+      lessonCount: total.lessonCount + row.lessonCount
+    }), { groups: 0, materialCount: 0, noteCount: 0, quizCount: 0, lessonCount: 0 })
+  ), [adminCheckUploadRows]);
+  const adminCheckMissingQuizRows = useMemo(() => {
+    const getWorkKey = (item = {}) => {
+      const code = String(item.studentAccessCode || item.accessCode || '').trim().toUpperCase();
+      if (code) return `code:${code}`;
+      const name = normalizeNameKey(item.studentName || item.fullName || '');
+      return name ? `name:${name}` : '';
+    };
+    return allQuizzes
+      .filter(quiz => String(quiz.schoolYear || activeSchoolYear || '') === String(activeSchoolYear || ''))
+      .filter(quiz => adminCheckGrade === 'all' || String(quiz.grade || '') === String(adminCheckGrade))
+      .filter(quiz => adminCheckSubject === 'all' || String(quiz.subject || '') === String(adminCheckSubject))
+      .filter(isQuizVisibleForStudents)
+      .map(quiz => {
+        const contextMatches = (record = {}) => (
+          String(record.quizId || '') === String(quiz.id || '') ||
+          (
+            String(record.schoolYear || '') === String(activeSchoolYear || '') &&
+            String(record.grade || '') === String(quiz.grade || '') &&
+            String(record.subject || '') === String(quiz.subject || '') &&
+            String(record.lesson || '') === String(quiz.lesson || '')
+          )
+        );
+        const submittedKeys = new Set([
+          ...allQuizResults.filter(contextMatches),
+          ...allHandwrittenSubmissions.filter(contextMatches)
+        ].map(getWorkKey).filter(Boolean));
+        const students = getScorebookStudentsForGrade(quiz.grade);
+        const missingStudents = students.filter(student => {
+          const studentKey = getWorkKey(student);
+          return studentKey && !submittedKeys.has(studentKey);
+        });
+        return {
+          id: quiz.id,
+          grade: String(quiz.grade || ''),
+          subject: String(quiz.subject || ''),
+          lesson: String(quiz.lesson || ''),
+          title: quiz.title || `${quiz.subject || ''} ${quiz.grade || ''} - ${getWeekDisplayName(quiz.lesson || '')}`,
+          expectedCount: students.length,
+          submittedCount: Math.max(0, students.length - missingStudents.length),
+          missingCount: missingStudents.length,
+          missingStudents,
+          updatedAt: Number(quiz.updatedAt || quiz.publishAt || 0)
+        };
+      })
+      .sort((a, b) => {
+        if (b.missingCount !== a.missingCount) return b.missingCount - a.missingCount;
+        const gradeCompare = String(a.grade).localeCompare(String(b.grade), 'vi', { numeric: true });
+        if (gradeCompare) return gradeCompare;
+        const subjectCompare = String(a.subject).localeCompare(String(b.subject), 'vi', { sensitivity: 'base' });
+        if (subjectCompare) return subjectCompare;
+        return Number(a.lesson || 0) - Number(b.lesson || 0);
+      });
+  }, [allQuizzes, allQuizResults, allHandwrittenSubmissions, activeSchoolYear, adminCheckGrade, adminCheckSubject, getScorebookStudentsForGrade, isQuizVisibleForStudents]);
+  const adminCheckMissingTotals = useMemo(() => (
+    adminCheckMissingQuizRows.reduce((total, row) => ({
+      quizCount: total.quizCount + 1,
+      expectedCount: total.expectedCount + row.expectedCount,
+      submittedCount: total.submittedCount + row.submittedCount,
+      missingCount: total.missingCount + row.missingCount
+    }), { quizCount: 0, expectedCount: 0, submittedCount: 0, missingCount: 0 })
+  ), [adminCheckMissingQuizRows]);
+  const adminCheckMissingMatrix = useMemo(() => {
+    const getWorkKey = (item = {}) => {
+      const code = String(item.studentAccessCode || item.accessCode || '').trim().toUpperCase();
+      if (code) return `code:${code}`;
+      const name = normalizeNameKey(item.studentName || item.fullName || '');
+      return name ? `name:${name}` : '';
+    };
+    const gradeList = adminCheckGrade === 'all' ? GRADES : [String(adminCheckGrade)];
+    const columns = allQuizzes
+      .filter(quiz => String(quiz.schoolYear || activeSchoolYear || '') === String(activeSchoolYear || ''))
+      .filter(quiz => gradeList.includes(String(quiz.grade || '')))
+      .filter(quiz => adminCheckSubject === 'all' || String(quiz.subject || '') === String(adminCheckSubject))
+      .filter(isQuizVisibleForStudents)
+      .map(quiz => {
+        const contextMatches = (record = {}) => (
+          String(record.quizId || '') === String(quiz.id || '') ||
+          (
+            String(record.schoolYear || '') === String(activeSchoolYear || '') &&
+            String(record.grade || '') === String(quiz.grade || '') &&
+            String(record.subject || '') === String(quiz.subject || '') &&
+            String(record.lesson || '') === String(quiz.lesson || '')
+          )
+        );
+        const submittedKeys = new Set([
+          ...allQuizResults.filter(contextMatches),
+          ...allHandwrittenSubmissions.filter(contextMatches)
+        ].map(getWorkKey).filter(Boolean));
+        return {
+          id: quiz.id,
+          grade: String(quiz.grade || ''),
+          subject: String(quiz.subject || ''),
+          lesson: String(quiz.lesson || ''),
+          label: getWeekDisplayName(quiz.lesson || ''),
+          title: quiz.title || `${quiz.subject || ''} ${quiz.grade || ''} - ${getWeekDisplayName(quiz.lesson || '')}`,
+          submittedKeys
+        };
+      })
+      .sort((a, b) => {
+        const gradeCompare = String(a.grade).localeCompare(String(b.grade), 'vi', { numeric: true });
+        if (gradeCompare) return gradeCompare;
+        const subjectCompare = String(a.subject).localeCompare(String(b.subject), 'vi', { sensitivity: 'base' });
+        if (subjectCompare) return subjectCompare;
+        return Number(a.lesson || 0) - Number(b.lesson || 0);
+      });
+    const studentKeySet = new Set();
+    const students = gradeList.flatMap(gradeValue => getScorebookStudentsForGrade(gradeValue))
+      .filter(student => {
+        const key = getWorkKey(student) || student.id || student.fullName;
+        if (!key || studentKeySet.has(key)) return false;
+        studentKeySet.add(key);
+        return true;
+      })
+      .sort((a, b) => {
+        const gradeCompare = String(getGradeFromClassName(a.className || a.grade || '')).localeCompare(String(getGradeFromClassName(b.className || b.grade || '')), 'vi', { numeric: true });
+        if (gradeCompare) return gradeCompare;
+        return getGivenNameSortKey(a.fullName).localeCompare(getGivenNameSortKey(b.fullName), 'vi', { sensitivity: 'base' });
+      });
+    const rows = students.map(student => {
+      const key = getWorkKey(student);
+      const cells = columns.map(column => {
+        const submitted = key && column.submittedKeys.has(key);
+        return { columnId: column.id, submitted };
+      });
+      const submittedCount = cells.filter(cell => cell.submitted).length;
+      const missingCount = Math.max(0, columns.length - submittedCount);
+      return { student, key: key || student.id || student.fullName, cells, submittedCount, missingCount };
+    });
+    const visibleRows = rows.filter(row => {
+      if (adminCheckSubmissionFilter === 'all') return true;
+      if (adminCheckSubmissionFilter === 'done') return columns.length > 0 && row.missingCount === 0;
+      return row.missingCount > 0;
+    });
+    return { columns, rows, visibleRows };
+  }, [allQuizzes, allQuizResults, allHandwrittenSubmissions, activeSchoolYear, adminCheckGrade, adminCheckSubject, adminCheckSubmissionFilter, getScorebookStudentsForGrade, isQuizVisibleForStudents]);
+  const adminCheckLearningRows = useMemo(() => {
+    const getWorkKey = (item = {}) => {
+      const code = String(item.studentAccessCode || item.accessCode || '').trim().toUpperCase();
+      if (code) return `code:${code}`;
+      const name = normalizeNameKey(item.studentName || item.fullName || '');
+      return name ? `name:${name}` : '';
+    };
+    const gradeList = adminCheckGrade === 'all' ? GRADES : [String(adminCheckGrade)];
+    const contentPairs = new Map();
+    const addPair = (item = {}) => {
+      const gradeValue = String(item.grade || '');
+      const subjectValue = String(item.subject || '');
+      const lessonValue = String(item.lesson || '');
+      if (!gradeValue || !subjectValue || !lessonValue) return;
+      if (!gradeList.includes(gradeValue)) return;
+      if (adminCheckSubject !== 'all' && String(adminCheckSubject) !== subjectValue) return;
+      const yearValue = String(item.schoolYear || activeSchoolYear || '');
+      if (yearValue && yearValue !== String(activeSchoolYear || '')) return;
+      const lessonInfo = getWeekData(lessonValue);
+      if (lessonInfo?.isExam) return;
+      const key = `${gradeValue}__${subjectValue}__${lessonValue}`;
+      if (!contentPairs.has(key)) {
+        contentPairs.set(key, {
+          grade: gradeValue,
+          subject: subjectValue,
+          lesson: lessonValue,
+          hasTheory: false,
+          hasQuickQuiz: false
+        });
+      }
+      const pair = contentPairs.get(key);
+      if (item.type === 'quick_quiz') pair.hasQuickQuiz = true;
+      else pair.hasTheory = true;
+    };
+    allMaterials.filter(item => item.type !== 'quick_quiz').forEach(addPair);
+    allNotes.forEach(item => addPair({ ...item, type: 'note' }));
+    allMaterials.filter(item => item.type === 'quick_quiz').forEach(addPair);
+    const pairs = [...contentPairs.values()];
+    const pairsByGrade = pairs.reduce((map, pair) => {
+      if (!map[pair.grade]) map[pair.grade] = [];
+      map[pair.grade].push(pair);
+      return map;
+    }, {});
+    const progressByStudentPair = new Map();
+    allLessonProgress
+      .filter(item => String(item.schoolYear || '') === String(activeSchoolYear || ''))
+      .forEach(item => {
+        const key = getWorkKey(item);
+        if (!key) return;
+        const pairKey = `${String(item.grade || '')}__${String(item.subject || '')}__${String(item.lesson || '')}`;
+        const current = progressByStudentPair.get(`${key}__${pairKey}`) || 0;
+        progressByStudentPair.set(`${key}__${pairKey}`, Math.max(current, Number(item.elapsedMs || 0)));
+      });
+    const quickPassedByStudentPair = new Set();
+    allQuickQuizResults
+      .filter(item => String(item.schoolYear || '') === String(activeSchoolYear || ''))
+      .filter(item => Number(item.percent || 0) >= 80)
+      .forEach(item => {
+        const key = getWorkKey(item);
+        if (!key) return;
+        quickPassedByStudentPair.add(`${key}__${String(item.grade || '')}__${String(item.subject || '')}__${String(item.lesson || '')}`);
+      });
+    return gradeList.flatMap(gradeValue => {
+      const gradePairs = pairsByGrade[String(gradeValue)] || [];
+      return getScorebookStudentsForGrade(gradeValue).map(student => {
+        const studentKey = getWorkKey(student);
+        const stats = gradePairs.reduce((acc, pair) => {
+          const pairKey = `${pair.grade}__${pair.subject}__${pair.lesson}`;
+          const elapsedMs = progressByStudentPair.get(`${studentKey}__${pairKey}`) || 0;
+          const theoryDone = elapsedMs >= LESSON_THEORY_TARGET_MS;
+          const quickPassed = !pair.hasQuickQuiz || quickPassedByStudentPair.has(`${studentKey}__${pairKey}`);
+          const lessonPercent = pair.hasQuickQuiz
+            ? Math.round((Math.min(1, elapsedMs / LESSON_THEORY_TARGET_MS) * 50) + (quickPassed ? 50 : 0))
+            : Math.round(Math.min(1, elapsedMs / LESSON_THEORY_TARGET_MS) * 100);
+          return {
+            totalPercent: acc.totalPercent + lessonPercent,
+            targetCount: acc.targetCount + 1,
+            theoryDoneCount: acc.theoryDoneCount + (theoryDone ? 1 : 0),
+            quickTargetCount: acc.quickTargetCount + (pair.hasQuickQuiz ? 1 : 0),
+            quickDoneCount: acc.quickDoneCount + (pair.hasQuickQuiz && quickPassed ? 1 : 0)
+          };
+        }, { totalPercent: 0, targetCount: 0, theoryDoneCount: 0, quickTargetCount: 0, quickDoneCount: 0 });
+        const percent = stats.targetCount ? Math.round(stats.totalPercent / stats.targetCount) : 0;
+        return {
+          key: student.id || `${gradeValue}-${student.fullName}`,
+          grade: String(gradeValue),
+          student,
+          percent,
+          ...stats
+        };
+      });
+    }).sort((a, b) => {
+      if (a.percent !== b.percent) return a.percent - b.percent;
+      const gradeCompare = String(a.grade).localeCompare(String(b.grade), 'vi', { numeric: true });
+      if (gradeCompare) return gradeCompare;
+      return getGivenNameSortKey(a.student.fullName).localeCompare(getGivenNameSortKey(b.student.fullName), 'vi', { sensitivity: 'base' });
+    });
+  }, [allMaterials, allNotes, allLessonProgress, allQuickQuizResults, activeSchoolYear, adminCheckGrade, adminCheckSubject, getScorebookStudentsForGrade]);
+  const adminCheckLearningTotals = useMemo(() => {
+    const rowsWithTargets = adminCheckLearningRows.filter(row => row.targetCount > 0);
+    const averagePercent = rowsWithTargets.length
+      ? Math.round(rowsWithTargets.reduce((sum, row) => sum + row.percent, 0) / rowsWithTargets.length)
+      : 0;
+    return {
+      studentCount: adminCheckLearningRows.length,
+      targetStudentCount: rowsWithTargets.length,
+      averagePercent,
+      lowCount: rowsWithTargets.filter(row => row.percent < 50).length
+    };
+  }, [adminCheckLearningRows]);
+  const pinnedNewsFeed = useMemo(() => newsList.filter(n => n.isPinned).sort((a, b) => getNewsCreatedTime(b) - getNewsCreatedTime(a)).map(n => ({ ...n, isAuto: false, timestamp: n.createdAt })), [newsList]);
   const combinedFeedSorted = useMemo(() => {
     const materialItems = [...allMaterials].filter(m => m.type !== 'quick_quiz').sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).slice(0, 4).map(m => ({ id: `m_${m.id}`, isAuto: true, iconType: 'material', targetGrade: m.grade, targetSubject: m.subject, targetLesson: m.lesson, title: `TÀI LIỆU MỚI: ${m.subject} ${m.grade} - ${getWeekDisplayName(m.lesson)}`, content: `<p>Vừa cập nhật: <b>${m.title}</b></p>`, timestamp: m.createdAt }));
     const noteItems = [...allNotes].filter(n => n.grade).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)).slice(0, 4).map(n => ({ id: `n_${n.id}`, isAuto: true, iconType: 'note', targetGrade: n.grade, targetSubject: n.subject, targetLesson: n.lesson, title: `GV đã up bài học: ${n.subject} ${n.grade} - ${getWeekDisplayName(n.lesson)}`, content: '<p>Nội dung bài học vừa được cập nhật.</p>', timestamp: n.updatedAt }));
     const quizItems = [...allQuizzes].filter(q => q.grade && String(q.schoolYear || currentSchoolYear) === String(currentSchoolYear) && isQuizVisibleForStudents(q) && (role !== 'student' || !activeStudentGrade || String(q.grade) === String(activeStudentGrade))).sort((a, b) => (b.updatedAt || b.publishAt || 0) - (a.updatedAt || a.publishAt || 0)).slice(0, 4).map(q => ({ id: `q_${q.id}`, isAuto: true, iconType: 'quiz', targetGrade: q.grade, targetSubject: q.subject, targetLesson: q.lesson, title: `GV đã up bài kiểm tra: ${q.subject} ${q.grade} - ${getWeekDisplayName(q.lesson)}`, content: '<p>Bài kiểm tra đã sẵn sàng.</p>', timestamp: q.updatedAt || q.publishAt }));
     return [...materialItems, ...noteItems, ...quizItems].sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0)).slice(0, 4);
   }, [allMaterials, allNotes, allQuizzes, currentSchoolYear, isQuizVisibleForStudents, role, activeStudentGrade]);
+  const homepageNewsList = useMemo(() => [...newsList].sort(sortNewsForDisplay), [newsList]);
+  const featuredHomepageNews = homepageNewsList[0] || null;
+  const homepageSliderNews = homepageNewsList.slice(0, 5);
+  const homepageNewsSlideKeyframes = useMemo(() => {
+    const count = Math.max(1, homepageSliderNews.length);
+    if (count <= 1) return '';
+    const frame = 100 / count;
+    return Array.from({ length: count }, (_, index) => {
+      const start = index * frame;
+      const holdEnd = Math.min(100, start + frame * 0.72);
+      const offset = -(index * frame);
+      const nextOffset = -(((index + 1) % count) * frame);
+      return `
+        ${start.toFixed(2)}%, ${holdEnd.toFixed(2)}% { transform: translateX(${offset}%); }
+        ${Math.min(100, start + frame).toFixed(2)}% { transform: translateX(${index === count - 1 ? 0 : nextOffset}%); }
+      `;
+    }).join('\n');
+  }, [homepageSliderNews.length]);
+  const extractNewsDriveFileId = useCallback((html = '') => {
+    const content = String(html || '');
+    const fileIdMatch = content.match(/<img[^>]+data-drive-file-id=["']([^"']+)["']/i);
+    if (fileIdMatch) return fileIdMatch[1];
+    const driveMatch = content.match(/<img[^>]+data-drive-src=["']([^"']+)["']/i);
+    if (driveMatch) return extractDriveFileId(driveMatch[1]) || '';
+    return '';
+  }, []);
+  const extractNewsImageSrc = useCallback((html = '') => {
+    const content = String(html || '');
+    const fileId = extractNewsDriveFileId(content);
+    if (fileId) return `https://drive.google.com/thumbnail?id=${fileId}&sz=w1600`;
+    const driveMatch = content.match(/<img[^>]+data-drive-src=["']([^"']+)["']/i);
+    if (driveMatch) return driveMatch[1];
+    const match = content.match(/<img[^>]+src=["']([^"']+)["']/i);
+    return match ? match[1] : '';
+  }, [extractNewsDriveFileId]);
+  const getNewsImageFallbackSrc = useCallback((html = '') => {
+    const content = String(html || '');
+    const match = content.match(/<img[^>]+src=["']([^"']+)["']/i);
+    return match ? match[1] : '';
+  }, []);
+  const getSharpNewsImageSrc = useCallback((src = '') => {
+    const value = String(src || '').trim();
+    if (!value) return '';
+    if (/googleusercontent\.com|ggpht\.com/i.test(value) && /=w\d+(-h\d+)?/i.test(value)) {
+      return value.replace(/=w\d+(-h\d+)?[^&]*/i, '=w1600');
+    }
+    return value;
+  }, []);
+  const getNewsPlainText = useCallback((html = '') => (
+    String(html || '')
+      .replace(/<img[^>]*>/gi, ' ')
+      .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+      .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/\s+/g, ' ')
+      .trim()
+  ), []);
+  const openHomepageFeedItem = useCallback((item) => {
+    if (!item) return;
+    if (item.isAuto) {
+      setRole('student');
+      setLoginRole('student');
+      setSelectedGrade(item.targetGrade);
+      setSelectedSubject(item.targetSubject);
+      setSelectedLesson(item.targetLesson);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
+    setViewingNews(item);
+  }, []);
 
   const renderNewsAdminActions = (n) => {
-    const newsIndex = newsList.findIndex(item => item.id === n.id);
+    const movableNewsList = newsList.filter(item => !item.isPinned);
+    const newsIndex = n.isPinned ? -1 : movableNewsList.findIndex(item => item.id === n.id);
     const baseButton = 'transition-colors p-1.5 rounded-lg hover:bg-slate-100 disabled:opacity-25 disabled:hover:bg-transparent';
     return isAdmin ? (
       <div className="flex items-center gap-1 pl-2 border-l border-slate-200/60">
         <button type="button" onClick={(e) => handleEditNews(e, n)} className={`${baseButton} text-slate-400 hover:text-blue-600`} title="Sửa bản tin">
           <Pencil className="w-4 h-4" />
         </button>
-        <button type="button" onClick={(e) => handleMoveNews(e, n, 'up')} disabled={newsIndex <= 0} className={`${baseButton} text-slate-400 hover:text-emerald-600`} title="Đưa tin lên">
+        <button type="button" onClick={(e) => handleMoveNews(e, n, 'up')} disabled={n.isPinned || newsIndex <= 0} className={`${baseButton} text-slate-400 hover:text-emerald-600`} title={n.isPinned ? 'Tin ghim tự xếp theo ngày đăng' : 'Đưa tin lên'}>
           <ArrowUp className="w-4 h-4" />
         </button>
-        <button type="button" onClick={(e) => handleMoveNews(e, n, 'down')} disabled={newsIndex < 0 || newsIndex >= newsList.length - 1} className={`${baseButton} text-slate-400 hover:text-emerald-600`} title="Đưa tin xuống">
+        <button type="button" onClick={(e) => handleMoveNews(e, n, 'down')} disabled={n.isPinned || newsIndex < 0 || newsIndex >= movableNewsList.length - 1} className={`${baseButton} text-slate-400 hover:text-emerald-600`} title={n.isPinned ? 'Tin ghim tự xếp theo ngày đăng' : 'Đưa tin xuống'}>
           <ArrowDown className="w-4 h-4" />
         </button>
         <button type="button" onClick={(e) => handleToggleHotNews(e, n)} className={`${baseButton} ${n.isHot ? 'text-rose-500' : 'text-slate-300'} hover:text-rose-600`} title="Tin nóng">
@@ -5769,7 +6211,15 @@ ${lessonBlocks}`;
     backgroundColor: '#e0f2fe',
     backgroundImage: `linear-gradient(rgba(255,255,255,0.06), rgba(255,255,255,0.06)), url(${BACKGROUND_URL})`,
     backgroundSize: 'cover',
-    backgroundPosition: 'center',
+    backgroundPosition: 'center 62%',
+    backgroundRepeat: 'no-repeat',
+    backgroundAttachment: 'fixed'
+  };
+  const focusBackgroundStyle = {
+    backgroundColor: '#e8f0f5',
+    backgroundImage: 'linear-gradient(rgba(255,255,255,0.08), rgba(255,255,255,0.08)), url(/hinh-nen-hoc.jpg)',
+    backgroundSize: 'cover',
+    backgroundPosition: 'center top',
     backgroundRepeat: 'no-repeat',
     backgroundAttachment: 'fixed'
   };
@@ -5818,13 +6268,18 @@ ${lessonBlocks}`;
         )}
 
         <div className={`flex-1 flex flex-col items-center relative z-10 w-full mx-auto min-h-0 ${isAdmin ? 'max-w-none pt-0 px-0 pb-3' : 'max-w-7xl pt-3 px-4 pb-3 sm:pb-4'}`}>
-          {!isAdmin && <div className="text-center mb-3 sm:mb-6 drop-shadow-lg leading-tight shrink-0">
-            <h1 className="text-[13px] sm:text-xl md:text-2xl font-black text-blue-950 uppercase tracking-widest mb-1 sm:mb-2 leading-snug">
+          {!isAdmin && <div className="text-center mt-3 sm:mt-5 mb-3 sm:mb-5 leading-tight shrink-0 w-full">
+            <h1 className="text-[15px] sm:text-2xl md:text-[32px] font-extrabold text-[#1238a8] uppercase leading-tight" style={{ textShadow: '0 1px 0 rgba(255,255,255,0.75)' }}>
                 <span className="block sm:inline">TT Học tập cộng đồng</span>
                 <span className="hidden sm:inline"> </span>
                 <span className="block sm:inline">phường Trung Mỹ Tây</span>
             </h1>
-            <h1 className="text-lg sm:text-xl md:text-2xl font-black text-blue-950 uppercase">Trường THCS Nguyễn An Ninh</h1>
+            <h2 className="mt-1 text-[12px] sm:text-lg md:text-[22px] font-bold text-[#1238a8] uppercase leading-tight" style={{ textShadow: '0 1px 0 rgba(255,255,255,0.75)' }}>Trường THCS Nguyễn An Ninh</h2>
+            <div className="mx-auto mt-2 hidden sm:flex w-full max-w-[520px] items-center justify-center gap-3 text-[#1d5ee6]/90">
+              <span className="h-px flex-1 bg-gradient-to-r from-transparent via-[#1d5ee6]/45 to-[#1d5ee6]/70" />
+              <GraduationCap className="h-5 w-5 fill-[#1d5ee6]/10" />
+              <span className="h-px flex-1 bg-gradient-to-l from-transparent via-[#1d5ee6]/45 to-[#1d5ee6]/70" />
+            </div>
           </div>}
 
           {isAdmin && (
@@ -5856,7 +6311,7 @@ ${lessonBlocks}`;
                 <div className="hidden md:block text-sm font-semibold uppercase text-white">{adminModule === 'thd' ? 'THCS Trần Hưng Đạo' : 'THCS Nguyễn An Ninh'}</div>
                 <div className="ml-auto flex items-center gap-1.5 text-xs font-semibold">
                   <span className="hidden sm:inline text-white/80">Năm admin</span>
-                  <button type="button" onClick={() => moveAdminSchoolYear(-1)} disabled={SCHOOL_YEARS.findIndex(year => String(year) === String(adminSelectedSchoolYear)) <= 0} className="h-8 w-8 rounded-md border border-white/20 bg-white/10 text-white hover:bg-white/20 disabled:opacity-35" title="Lui nam admin dang xem">
+                  <button type="button" onClick={() => moveAdminSchoolYear(-1)} disabled={schoolYearOptions.findIndex(year => String(year) === String(adminSelectedSchoolYear)) <= 0} className="h-8 w-8 rounded-md border border-white/20 bg-white/10 text-white hover:bg-white/20 disabled:opacity-35" title="Lui nam admin dang xem">
                     <ChevronLeft className="mx-auto h-4 w-4" />
                   </button>
                   <select
@@ -5868,9 +6323,9 @@ ${lessonBlocks}`;
                     className="h-8 rounded-md border border-white/20 bg-white/15 px-2 text-xs font-semibold text-yellow-100 outline-none"
                     title="Chỉ đổi năm admin đang xem/sửa, không đổi năm học hệ thống"
                   >
-                    {SCHOOL_YEARS.map(year => <option key={year} value={year} className="text-slate-900">{year}</option>)}
+                    {schoolYearOptions.map(year => <option key={year} value={year} className="text-slate-900">{year}</option>)}
                   </select>
-                  <button type="button" onClick={() => moveAdminSchoolYear(1)} disabled={SCHOOL_YEARS.findIndex(year => String(year) === String(adminSelectedSchoolYear)) >= SCHOOL_YEARS.length - 1} className="h-8 w-8 rounded-md border border-white/20 bg-white/10 text-white hover:bg-white/20 disabled:opacity-35" title="Tien nam admin dang xem">
+                  <button type="button" onClick={() => moveAdminSchoolYear(1)} disabled={schoolYearOptions.findIndex(year => String(year) === String(adminSelectedSchoolYear)) >= schoolYearOptions.length - 1} className="h-8 w-8 rounded-md border border-white/20 bg-white/10 text-white hover:bg-white/20 disabled:opacity-35" title="Tien nam admin dang xem">
                     <ChevronRight className="mx-auto h-4 w-4" />
                   </button>
                   {isAdminViewingDifferentYear && (
@@ -5970,6 +6425,129 @@ ${lessonBlocks}`;
 
           {isAdmin && <div className="h-[84px] w-full shrink-0" />}
 
+          {isAdmin && adminModule === 'notice' && (
+            <div className="fixed inset-x-0 top-[84px] bottom-0 z-[85] overflow-y-auto bg-slate-100/95 p-3 sm:p-5 backdrop-blur-md">
+              <div className="mx-auto max-w-6xl space-y-4">
+                <div className="rounded-2xl border border-blue-100 bg-white p-4 shadow-sm">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <h2 className="flex items-center gap-2 text-xl font-semibold uppercase text-blue-950">
+                        <Bell className="h-5 w-5 text-blue-600" />
+                        Quản lý thông báo
+                      </h2>
+                      <p className="mt-1 text-sm font-medium text-slate-500">Đăng, sửa, ghim và sắp xếp tin hiển thị ở trang chủ.</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => showAddNews ? closeNewsForm() : openNewsForm()}
+                      className="inline-flex h-10 items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 text-sm font-semibold text-white shadow-sm hover:bg-blue-700"
+                    >
+                      {showAddNews ? <X className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
+                      {showAddNews ? 'Đóng khung soạn' : 'Thêm tin'}
+                    </button>
+                  </div>
+                </div>
+
+                {showAddNews && (
+                  <div className="rounded-2xl border border-blue-100 bg-white p-4 shadow-sm">
+                    <div className="mb-3 flex items-center justify-between gap-3">
+                      <h3 className="text-base font-semibold text-slate-900">{editingNews ? 'Sửa thông báo' : 'Thêm thông báo mới'}</h3>
+                      {editingNews && <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700">Đang sửa</span>}
+                    </div>
+                    <div className="space-y-3">
+                      <input
+                        type="text"
+                        placeholder="Tiêu đề thông báo..."
+                        className="w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-base font-semibold outline-none focus:border-blue-400 focus:bg-white"
+                        value={newsTitle}
+                        onChange={(event) => setNewsTitle(event.target.value)}
+                      />
+                      <div className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-white p-1.5">
+                        <button type="button" onMouseDown={event => { event.preventDefault(); document.execCommand('bold'); }} className="rounded-lg p-2 text-slate-700 hover:bg-slate-100"><Bold className="h-4 w-4" /></button>
+                        <button type="button" onMouseDown={event => { event.preventDefault(); document.execCommand('italic'); }} className="rounded-lg p-2 text-slate-700 hover:bg-slate-100"><Italic className="h-4 w-4" /></button>
+                        <div className="h-5 w-px bg-slate-200" />
+                        <div className="flex items-center gap-1 rounded-lg bg-slate-50 px-2 py-1">
+                          <Palette className="h-4 w-4 text-slate-500" />
+                          {NEWS_TEXT_COLORS.map(color => (
+                            <button
+                              key={color.value}
+                              type="button"
+                              aria-label={`Màu chữ ${color.label}`}
+                              title={`Màu chữ ${color.label}`}
+                              onMouseDown={event => { event.preventDefault(); applyNewsTextColor(color.value); }}
+                              className="h-5 w-5 rounded-full border border-white shadow-sm ring-1 ring-slate-200 hover:scale-110"
+                              style={{ backgroundColor: color.value }}
+                            />
+                          ))}
+                        </div>
+                        <div className="h-5 w-px bg-slate-200" />
+                        <div className="flex flex-wrap items-center gap-1">
+                          {NEWS_QUICK_ICONS.map(icon => (
+                            <button
+                              key={icon.label}
+                              type="button"
+                              aria-label={icon.label}
+                              title={icon.label}
+                              onMouseDown={event => { event.preventDefault(); insertNewsQuickIcon(icon.value); }}
+                              className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-base hover:border-blue-200 hover:bg-blue-50"
+                            >
+                              {icon.value}
+                            </button>
+                          ))}
+                        </div>
+                        <div className="h-5 w-px bg-slate-200" />
+                        <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg p-2 text-xs font-semibold text-emerald-700 hover:bg-emerald-50">
+                          <ImageIcon className="h-4 w-4" /> Tải ảnh
+                          <input type="file" accept="image/*" onChange={handleNewsImageUpload} className="hidden" />
+                        </label>
+                        <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg p-2 text-xs font-semibold text-emerald-700 hover:bg-emerald-50">
+                          <Camera className="h-4 w-4" /> Chụp
+                          <input type="file" accept="image/*" capture="environment" onChange={handleNewsImageUpload} className="hidden" />
+                        </label>
+                      </div>
+                      <div className="min-h-[240px] overflow-hidden rounded-xl border border-slate-200 bg-slate-50">
+                        <div ref={newsContentRef} contentEditable={true} onPaste={handlePasteToNews} data-placeholder="Nhập nội dung, có thể dán ảnh..." className="rich-editor min-h-[240px] w-full p-4 text-sm outline-none" />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleAddNews}
+                        disabled={isSubmittingNews}
+                        className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-blue-600 text-sm font-semibold text-white shadow-sm hover:bg-blue-700 disabled:opacity-60"
+                      >
+                        {isSubmittingNews ? <><Loader2 className="h-4 w-4 animate-spin" /> Đang gửi...</> : (editingNews ? 'Lưu thay đổi' : 'Đăng tin')}
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
+                  <div className="border-b border-slate-100 px-4 py-3">
+                    <h3 className="text-base font-semibold text-slate-900">Danh sách thông báo</h3>
+                  </div>
+                  {newsList.length === 0 ? (
+                    <div className="p-8 text-center text-sm font-medium text-slate-400">Chưa có thông báo nào.</div>
+                  ) : (
+                    <div className="divide-y divide-slate-100">
+                      {newsList.map(n => (
+                        <div key={n.id} className="group flex items-center gap-3 px-4 py-3 hover:bg-slate-50">
+                          <button type="button" onClick={() => setViewingNews(n)} className="min-w-0 flex-1 text-left">
+                            <div className="flex flex-wrap items-center gap-2">
+                              {n.isPinned && <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-semibold uppercase text-amber-700">Tin ghim</span>}
+                              {n.isHot && <span className="rounded-full bg-rose-50 px-2 py-0.5 text-[10px] font-semibold uppercase text-rose-700">Tin nóng</span>}
+                              <h4 className="min-w-0 text-sm font-semibold text-slate-900 line-clamp-1">{n.title}</h4>
+                            </div>
+                            <div className="mt-1 text-xs font-medium text-slate-400">{new Date(n.createdAt).toLocaleString('vi-VN')}</div>
+                          </button>
+                          <div className="shrink-0">{renderNewsAdminActions(n)}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
           {isAdmin && isAdminTextbookExpanded && (
             <div className="fixed inset-x-0 top-[84px] bottom-0 z-[90] overflow-y-auto bg-slate-100/95 p-2 sm:p-4 backdrop-blur-md">
               <div className="mx-auto max-w-5xl rounded-3xl border border-emerald-100 bg-white p-4 sm:p-6 shadow-xl">
@@ -6008,7 +6586,7 @@ ${lessonBlocks}`;
             </div>
           )}
 
-          {false && isAdmin && (
+          {SHOW_LEGACY_ADMIN_SETTINGS_PANEL && isAdmin && (
               <div className="admin-settings-panel w-full max-w-none mb-6 bg-white/90 p-5 rounded-3xl shadow-xl border border-blue-200 space-y-6">
                   <div className="flex justify-between items-center border-b border-blue-100 pb-3">
                       <h3 className="text-sm font-black text-slate-800 flex items-center gap-2 uppercase tracking-widest"><Settings className="w-4 h-4 text-blue-600"/> Quản trị hệ thống</h3>
@@ -6118,8 +6696,11 @@ ${lessonBlocks}`;
                 key={adminSettingsInitialPanel}
                 currentSchoolYear={currentSchoolYear}
                 adminSchoolYear={adminSelectedSchoolYear}
-                schoolYears={SCHOOL_YEARS}
+                schoolYears={schoolYearOptions}
                 principalName={principalName}
+                pcResponsibleName={pcResponsibleName}
+                pcResponsibleByYear={pcResponsibleByYear}
+                extraSchoolYears={extraSchoolYears}
                 inputYearLocks={inputYearLocks}
                 transcriptStartDates={transcriptStartDates}
                 transcriptEndDates={transcriptEndDates}
@@ -6511,6 +7092,7 @@ ${lessonBlocks}`;
                 transcriptStartSigners={transcriptStartSigners}
                 transcriptEndSigners={transcriptEndSigners}
                 nanTeachers={nanTeachers}
+                teachingAssignments={teachingAssignments}
                 thdTeachers={thdTeachers}
                 classTeacherAssignments={classTeacherAssignments}
                 students={allStudents}
@@ -6526,32 +7108,308 @@ ${lessonBlocks}`;
           {isAdmin && showAdminCheckWorkspace && (
             <div className="fixed inset-x-0 top-[84px] bottom-0 z-[120] bg-slate-100/95 backdrop-blur-md overflow-y-auto p-2 sm:p-3">
               <div className="w-full max-w-none mx-auto space-y-3">
-                <div className="sticky top-0 z-10 rounded-3xl border border-amber-100 bg-white/95 px-4 sm:px-6 py-4 shadow-lg backdrop-blur flex items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <h3 className="font-black text-amber-950 text-base sm:text-xl uppercase tracking-tight flex items-center gap-2">
-                      <CheckCircle2 className="w-5 h-5 text-amber-600" /> Kiểm tra
-                    </h3>
-                    <div className="text-[10px] sm:text-xs font-bold text-amber-700/70 truncate">Theo dõi tiến độ giáo viên up bài và học sinh làm bài kiểm tra</div>
+                <div className="sticky top-0 z-10 rounded-xl border border-slate-200 bg-white/95 p-1.5 shadow-md backdrop-blur">
+                  <div className="flex gap-1.5">
+                    <div className="grid flex-1 grid-cols-3 gap-1.5">
+                    <button type="button" onClick={() => setAdminCheckView('uploads')} className={`min-h-[52px] rounded-xl border px-2 py-1 text-left transition-all ${adminCheckView === 'uploads' ? 'border-amber-300 bg-amber-50 ring-1 ring-amber-200' : 'border-slate-200 bg-white hover:border-amber-200 hover:bg-amber-50/40'}`}>
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <div className="w-7 h-7 rounded-lg bg-amber-100 text-amber-700 flex items-center justify-center">
+                            <UploadCloud className="w-4 h-4" />
+                          </div>
+                          <div className="font-black text-amber-950 uppercase text-xs truncate">Up bài</div>
+                        </div>
+                        <div className="rounded-lg bg-white/80 border border-amber-100 px-2 py-0.5 text-right">
+                          <div className="text-sm font-black text-amber-800">{adminCheckUploadTotals.groups}</div>
+                          <div className="text-[8px] font-black uppercase text-amber-700">khối/môn</div>
+                        </div>
+                      </div>
+                    </button>
+                    <button type="button" onClick={() => setAdminCheckView('missing')} className={`min-h-[52px] rounded-xl border px-2 py-1 text-left transition-all ${adminCheckView === 'missing' ? 'border-rose-300 bg-rose-50 ring-1 ring-rose-200' : 'border-slate-200 bg-white hover:border-rose-200 hover:bg-rose-50/40'}`}>
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <div className="w-7 h-7 rounded-lg bg-rose-100 text-rose-700 flex items-center justify-center">
+                            <ListChecks className="w-4 h-4" />
+                          </div>
+                          <div className="font-black text-rose-950 uppercase text-xs truncate">Bài kiểm tra</div>
+                        </div>
+                        <div className="rounded-lg bg-white/80 border border-rose-100 px-2 py-0.5 text-right">
+                          <div className="text-sm font-black text-rose-700">{adminCheckMissingTotals.missingCount}</div>
+                          <div className="text-[8px] font-black uppercase text-rose-700">còn thiếu</div>
+                        </div>
+                      </div>
+                    </button>
+                    <button type="button" onClick={() => setAdminCheckView('learning')} className={`min-h-[52px] rounded-xl border px-2 py-1 text-left transition-all ${adminCheckView === 'learning' ? 'border-emerald-300 bg-emerald-50 ring-1 ring-emerald-200' : 'border-slate-200 bg-white hover:border-emerald-200 hover:bg-emerald-50/40'}`}>
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <div className="w-7 h-7 rounded-lg bg-emerald-100 text-emerald-700 flex items-center justify-center">
+                            <BarChart3 className="w-4 h-4" />
+                          </div>
+                          <div className="font-black text-emerald-950 uppercase text-xs truncate">% học</div>
+                        </div>
+                        <div className="rounded-lg bg-white/80 border border-emerald-100 px-2 py-0.5 text-right">
+                          <div className="text-sm font-black text-emerald-800">{adminCheckLearningTotals.averagePercent}%</div>
+                          <div className="text-[8px] font-black uppercase text-emerald-700">trung bình</div>
+                        </div>
+                      </div>
+                    </button>
+                    </div>
+                    <button type="button" onClick={() => setShowAdminCheckWorkspace(false)} title="Đóng" className="shrink-0 w-10 rounded-xl bg-rose-600 text-white shadow-sm flex items-center justify-center hover:bg-rose-700">
+                      <X className="w-5 h-5" />
+                    </button>
                   </div>
-                  <button type="button" onClick={() => setShowAdminCheckWorkspace(false)} title="Đóng" className="shrink-0 w-11 h-11 rounded-full bg-rose-600 text-white shadow-lg flex items-center justify-center hover:bg-rose-700">
-                    <X className="w-5 h-5" />
-                  </button>
+                  <div className="mt-1.5 flex items-center justify-between gap-2">
+                    <div className="text-[10px] font-black uppercase text-slate-500 px-1">{activeSchoolYear}</div>
+                    <div className="flex flex-wrap justify-end gap-1.5">
+                      <div className="flex flex-wrap gap-1 rounded-lg border border-slate-200 bg-slate-50 p-0.5">
+                        {['all', ...GRADES].map(gradeValue => (
+                          <button
+                            key={`admin-check-grade-button-${gradeValue}`}
+                            type="button"
+                            onClick={() => setAdminCheckGrade(gradeValue)}
+                            className={`h-7 rounded-md px-2.5 text-[10px] font-black uppercase ${adminCheckGrade === gradeValue ? 'bg-amber-600 text-white shadow-sm' : 'bg-white text-slate-600 hover:bg-amber-50'}`}
+                          >
+                            {gradeValue === 'all' ? 'Tất cả' : `Khối ${gradeValue}`}
+                          </button>
+                        ))}
+                      </div>
+                      <select value={adminCheckSubject} onChange={(event) => setAdminCheckSubject(event.target.value)} className="h-8 min-w-[150px] rounded-lg border border-slate-200 bg-white px-2 text-[11px] font-black text-slate-700 outline-none focus:border-amber-400">
+                        <option value="all">Tất cả môn</option>
+                        {SUBJECTS.map(subject => <option key={`admin-check-subject-${subject}`} value={subject}>{subject}</option>)}
+                      </select>
+                    </div>
+                  </div>
                 </div>
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-                  <button type="button" onClick={() => showNotification('Thống kê up bài sẽ được nối dữ liệu ở bước sau.')} className="rounded-3xl border border-amber-100 bg-white p-5 sm:p-6 text-left shadow-sm hover:border-amber-300 hover:shadow-md transition-all">
-                    <div className="w-12 h-12 rounded-2xl bg-amber-100 text-amber-700 flex items-center justify-center mb-4">
-                      <UploadCloud className="w-6 h-6" />
+                <div className="grid grid-cols-1 gap-3">
+                  <div className={`${adminCheckView === 'uploads' ? '' : 'hidden'} rounded-2xl border border-amber-100 bg-white p-3 shadow-sm`}>
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <div className="w-9 h-9 rounded-xl bg-amber-100 text-amber-700 flex items-center justify-center">
+                          <UploadCloud className="w-6 h-6" />
+                        </div>
+                        <div className="min-w-0">
+                          <div className="font-black text-amber-950 text-base uppercase">Thống kê up bài</div>
+                          <div className="text-xs font-bold text-slate-500 truncate">Tài liệu, bài học, đề kiểm tra đã phát</div>
+                        </div>
+                      </div>
+                      <div className="grid shrink-0 grid-cols-4 gap-1.5">
+                        <div className="rounded-xl bg-amber-50 border border-amber-100 px-2 py-1 text-center">
+                          <div className="text-sm font-black text-amber-800">{adminCheckUploadTotals.groups}</div>
+                          <div className="text-[8px] font-black uppercase text-amber-700">khối/môn</div>
+                        </div>
+                        <div className="rounded-xl bg-slate-50 border border-slate-100 px-2 py-1 text-center">
+                          <div className="text-sm font-black text-slate-900">{adminCheckUploadTotals.materialCount}</div>
+                          <div className="text-[8px] font-black uppercase text-slate-500">tài liệu</div>
+                        </div>
+                        <div className="rounded-xl bg-slate-50 border border-slate-100 px-2 py-1 text-center">
+                          <div className="text-sm font-black text-slate-900">{adminCheckUploadTotals.noteCount}</div>
+                          <div className="text-[8px] font-black uppercase text-slate-500">bài học</div>
+                        </div>
+                        <div className="rounded-xl bg-slate-50 border border-slate-100 px-2 py-1 text-center">
+                          <div className="text-sm font-black text-slate-900">{adminCheckUploadTotals.quizCount}</div>
+                          <div className="text-[8px] font-black uppercase text-slate-500">đề</div>
+                        </div>
+                      </div>
                     </div>
-                    <div className="font-black text-amber-950 text-lg uppercase">Thống kê up bài</div>
-                    <div className="mt-2 text-sm font-bold text-slate-600 leading-relaxed">Sau này dùng để xem giáo viên bài nào chưa up, theo khối, môn và tuần/bài.</div>
-                  </button>
-                  <button type="button" onClick={() => showNotification('Thống kê học sinh chưa làm bài kiểm tra sẽ được nối dữ liệu ở bước sau.')} className="rounded-3xl border border-rose-100 bg-white p-5 sm:p-6 text-left shadow-sm hover:border-rose-300 hover:shadow-md transition-all">
-                    <div className="w-12 h-12 rounded-2xl bg-rose-100 text-rose-700 flex items-center justify-center mb-4">
-                      <ListChecks className="w-6 h-6" />
+                    <div className="mt-2 overflow-x-auto rounded-xl border border-slate-200">
+                      <table className="min-w-full text-sm">
+                        <thead className="bg-amber-50 text-[11px] uppercase text-amber-900">
+                          <tr>
+                            <th className="px-3 py-2 text-left font-black">Khối</th>
+                            <th className="px-3 py-2 text-left font-black">Môn</th>
+                            <th className="px-3 py-2 text-center font-black">TL</th>
+                            <th className="px-3 py-2 text-center font-black">Bài</th>
+                            <th className="px-3 py-2 text-center font-black">KT</th>
+                            <th className="px-3 py-2 text-left font-black">Tuần/bài đã có</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {adminCheckUploadRows.length === 0 ? (
+                            <tr><td colSpan={6} className="px-3 py-6 text-center text-sm font-bold text-slate-400">Chưa có dữ liệu up bài theo bộ lọc này.</td></tr>
+                          ) : adminCheckUploadRows.map(row => (
+                            <tr key={row.key} className="hover:bg-amber-50/40">
+                              <td className="px-3 py-2 font-black text-slate-800">Khối {row.grade}</td>
+                              <td className="px-3 py-2 font-black text-slate-800">{row.subject}</td>
+                              <td className="px-3 py-2 text-center font-black text-amber-700">{row.materialCount}</td>
+                              <td className="px-3 py-2 text-center font-black text-blue-700">{row.noteCount}</td>
+                              <td className="px-3 py-2 text-center font-black text-rose-700">{row.quizCount}</td>
+                              <td className="px-3 py-2 text-xs font-bold text-slate-600">{row.lessonsText}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
                     </div>
-                    <div className="font-black text-rose-950 text-lg uppercase">Học sinh chưa làm</div>
-                    <div className="mt-2 text-sm font-bold text-slate-600 leading-relaxed">Thống kê học sinh có bài kiểm tra đã phát nhưng chưa làm hoặc chưa nộp.</div>
-                  </button>
+                  </div>
+                  <div className={`${adminCheckView === 'missing' ? '' : 'hidden'} rounded-2xl border border-rose-100 bg-white p-3 shadow-sm`}>
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <div className="w-9 h-9 rounded-xl bg-rose-100 text-rose-700 flex items-center justify-center">
+                          <ListChecks className="w-6 h-6" />
+                        </div>
+                        <div className="min-w-0">
+                          <div className="font-semibold text-rose-950 text-base uppercase">Bài kiểm tra</div>
+                          <div className="text-xs font-medium text-slate-500 truncate">Theo dõi tình trạng làm bài của học sinh</div>
+                        </div>
+                      </div>
+                      <div className="grid shrink-0 grid-cols-4 gap-1.5">
+                        <div className="rounded-xl bg-rose-50 border border-rose-100 px-2 py-1 text-center">
+                          <div className="text-sm font-black text-rose-700">{adminCheckMissingTotals.missingCount}</div>
+                          <div className="text-[8px] font-black uppercase text-rose-700">còn thiếu</div>
+                        </div>
+                        <div className="rounded-xl bg-slate-50 border border-slate-100 px-2 py-1 text-center">
+                          <div className="text-sm font-black text-slate-900">{adminCheckMissingTotals.quizCount}</div>
+                          <div className="text-[8px] font-black uppercase text-slate-500">đề</div>
+                        </div>
+                        <div className="rounded-xl bg-slate-50 border border-slate-100 px-2 py-1 text-center">
+                          <div className="text-sm font-black text-slate-900">{adminCheckMissingTotals.submittedCount}</div>
+                          <div className="text-[8px] font-black uppercase text-slate-500">đã nộp</div>
+                        </div>
+                        <div className="rounded-xl bg-slate-50 border border-slate-100 px-2 py-1 text-center">
+                          <div className="text-sm font-black text-slate-900">{adminCheckMissingTotals.expectedCount}</div>
+                          <div className="text-[8px] font-black uppercase text-slate-500">cần nộp</div>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex flex-wrap gap-1 rounded-full border border-slate-200 bg-slate-50 p-0.5 shadow-inner">
+                        {[
+                          { key: 'all', label: 'Tất cả', count: adminCheckMissingMatrix.rows.length },
+                          { key: 'missing', label: 'Còn thiếu', count: adminCheckMissingMatrix.rows.filter(row => row.missingCount > 0).length },
+                          { key: 'done', label: 'Đã đủ', count: adminCheckMissingMatrix.rows.filter(row => adminCheckMissingMatrix.columns.length > 0 && row.missingCount === 0).length }
+                        ].map(option => (
+                          <button
+                            key={`admin-check-submission-filter-${option.key}`}
+                            type="button"
+                            onClick={() => setAdminCheckSubmissionFilter(option.key)}
+                            className={`h-7 rounded-full px-3 text-[10px] font-semibold uppercase transition-all ${adminCheckSubmissionFilter === option.key ? 'bg-slate-900 text-white shadow-sm' : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-100'}`}
+                          >
+                            {option.label} <span className={adminCheckSubmissionFilter === option.key ? 'text-white/75' : 'text-slate-400'}>{option.count}</span>
+                          </button>
+                        ))}
+                      </div>
+                      <div className="text-[11px] font-bold text-slate-500">
+                        {adminCheckMissingMatrix.visibleRows.length}/{adminCheckMissingMatrix.rows.length} học sinh • {adminCheckMissingMatrix.columns.length} bài kiểm tra
+                      </div>
+                    </div>
+                    <div className="mt-2 overflow-auto rounded-xl border border-slate-200 max-h-[590px]">
+                      {adminCheckMissingMatrix.columns.length === 0 ? (
+                        <div className="p-5 text-center text-sm font-bold text-slate-400">Chưa có bài kiểm tra đã phát theo bộ lọc này.</div>
+                      ) : (
+                        <table className="min-w-full text-sm">
+                          <thead className="sticky top-0 z-10 bg-rose-50/70 text-[11px] uppercase text-rose-900">
+                            <tr>
+                              <th className="sticky left-0 z-20 min-w-[230px] border-r border-rose-100 bg-rose-50 px-3 py-2 text-left font-semibold">Học sinh</th>
+                              {adminCheckMissingMatrix.columns.map(column => (
+                                <th key={`quiz-col-${column.id}`} className="min-w-[86px] border-r border-rose-100 px-2 py-2 text-center font-semibold" title={column.title}>
+                                  <div>{column.label}</div>
+                                  <div className="mt-0.5 text-[9px] text-rose-700/70">{column.subject}</div>
+                                </th>
+                              ))}
+                              <th className="min-w-[90px] px-2 py-2 text-center font-semibold">Tổng</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100">
+                            {adminCheckMissingMatrix.visibleRows.length === 0 ? (
+                              <tr><td colSpan={adminCheckMissingMatrix.columns.length + 2} className="px-3 py-5 text-center text-sm font-bold text-slate-400">Không có học sinh theo bộ lọc này.</td></tr>
+                            ) : adminCheckMissingMatrix.visibleRows.map(row => {
+                              const gradeValue = getGradeFromClassName(row.student.className || row.student.grade || '') || '';
+                              const className = String(row.student.className || '').trim();
+                              const showClassName = className && className !== String(gradeValue);
+                              return (
+                                <tr key={`quiz-row-${row.key}`} className={row.missingCount ? 'bg-rose-50/30' : 'bg-emerald-50/25'}>
+                                  <td className="sticky left-0 z-10 border-r border-slate-100 bg-white px-3 py-2 font-medium text-slate-800">
+                                    <div>{row.student.fullName || row.student.studentName || 'Học sinh'}</div>
+                                    <div className="text-[10px] font-bold text-slate-400">Khối {gradeValue || '?'}{showClassName ? ` • ${className}` : ''}</div>
+                                  </td>
+                                  {row.cells.map(cell => (
+                                    <td key={`quiz-cell-${row.key}-${cell.columnId}`} className="border-r border-slate-100 px-2 py-1.5 text-center">
+                                      {cell.submitted ? (
+                                        <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200" title="Đã làm">
+                                          <CheckCircle2 className="h-3.5 w-3.5" />
+                                        </span>
+                                      ) : (
+                                        <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-rose-50 text-rose-600 ring-1 ring-rose-200" title="Chưa làm">
+                                          <X className="h-3.5 w-3.5" />
+                                        </span>
+                                      )}
+                                    </td>
+                                  ))}
+                                  <td className="px-2 py-2 text-center">
+                                    <span className={`inline-flex rounded-full px-2.5 py-0.5 text-[10px] font-semibold ${row.missingCount ? 'bg-rose-100 text-rose-700 ring-1 ring-rose-200' : 'bg-emerald-100 text-emerald-700 ring-1 ring-emerald-200'}`}>
+                                      {row.submittedCount}/{adminCheckMissingMatrix.columns.length}
+                                    </span>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      )}
+                    </div>
+                  </div>
+                </div>
+                <div className={`${adminCheckView === 'learning' ? '' : 'hidden'} rounded-2xl border border-emerald-100 bg-white p-3 shadow-sm`}>
+                  <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <div className="w-9 h-9 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center">
+                        <BarChart3 className="w-6 h-6" />
+                      </div>
+                      <div className="min-w-0">
+                        <div className="font-semibold text-emerald-950 text-base uppercase">% học của học sinh</div>
+                        <div className="text-xs font-medium text-slate-500 truncate">Mở bài đủ thời gian và qua hỏi đáp nhanh</div>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-3 gap-1.5 shrink-0 w-full lg:w-auto">
+                      <div className="rounded-xl bg-emerald-50 border border-emerald-100 px-3 py-1.5 text-center">
+                        <div className="text-base font-semibold text-emerald-800">{adminCheckLearningTotals.averagePercent}%</div>
+                        <div className="text-[9px] font-semibold uppercase text-emerald-700">trung bình</div>
+                      </div>
+                      <div className="rounded-xl bg-slate-50 border border-slate-100 px-3 py-1.5 text-center">
+                        <div className="text-base font-semibold text-slate-900">{adminCheckLearningTotals.targetStudentCount}</div>
+                        <div className="text-[9px] font-semibold uppercase text-slate-500">có học liệu</div>
+                      </div>
+                      <div className="rounded-xl bg-rose-50 border border-rose-100 px-3 py-1.5 text-center">
+                        <div className="text-base font-semibold text-rose-700">{adminCheckLearningTotals.lowCount}</div>
+                        <div className="text-[9px] font-semibold uppercase text-rose-700">dưới 50%</div>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="mt-2 overflow-x-auto rounded-xl border border-slate-200">
+                    <table className="min-w-full text-sm">
+                      <thead className="bg-emerald-50/70 text-[11px] uppercase text-emerald-900">
+                        <tr>
+                          <th className="px-3 py-2 text-left font-semibold">Khối</th>
+                          <th className="px-3 py-2 text-left font-semibold">Học sinh</th>
+                          <th className="px-3 py-2 text-center font-semibold">% học</th>
+                          <th className="px-3 py-2 text-center font-semibold">Bài đã mở</th>
+                          <th className="px-3 py-2 text-center font-semibold">Hỏi đáp</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {adminCheckLearningRows.length === 0 ? (
+                          <tr><td colSpan={5} className="px-3 py-6 text-center text-sm font-bold text-slate-400">Chưa có danh sách học sinh theo bộ lọc này.</td></tr>
+                        ) : adminCheckLearningRows.map(row => {
+                          const className = String(row.student.className || '').trim();
+                          const showClassName = className && className !== String(row.grade);
+                          return (
+                            <tr key={row.key} className={row.targetCount === 0 ? 'bg-slate-50/45 text-slate-400' : 'hover:bg-slate-50'}>
+                              <td className="px-3 py-2 font-medium">Khối {row.grade}</td>
+                              <td className="px-3 py-2 font-medium text-slate-800">
+                                {row.student.fullName || row.student.studentName || 'Học sinh'}{showClassName ? ` - ${className}` : ''}
+                              </td>
+                              <td className="px-3 py-2 text-center">
+                                <span className={`inline-flex min-w-14 justify-center rounded-full px-3 py-1 text-xs font-semibold ${row.targetCount === 0 ? 'bg-slate-100 text-slate-500' : row.percent < 50 ? 'bg-rose-100 text-rose-700 ring-1 ring-rose-200' : row.percent < 80 ? 'bg-amber-100 text-amber-800 ring-1 ring-amber-200' : 'bg-emerald-100 text-emerald-700 ring-1 ring-emerald-200'}`}>
+                                  {row.targetCount ? `${row.percent}%` : '-'}
+                                </span>
+                              </td>
+                              <td className="px-3 py-2 text-center font-medium text-slate-700">{row.theoryDoneCount}/{row.targetCount}</td>
+                              <td className="px-3 py-2 text-center font-medium text-slate-700">{row.quickTargetCount ? `${row.quickDoneCount}/${row.quickTargetCount}` : '-'}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               </div>
             </div>
@@ -6622,6 +7480,8 @@ ${lessonBlocks}`;
                 subjects={SUBJECTS}
                 classTeacherAssignments={classTeacherAssignments}
                 teachers={nanTeachers}
+                principalName={principalName}
+                pcResponsibleName={activePcResponsibleName}
                 user={user}
                 onClose={() => setShowScheduleWorkspace(false)}
                 showNotification={showNotification}
@@ -6646,7 +7506,8 @@ ${lessonBlocks}`;
               />
             </div>
           )}
-          <div className={`home-panels-wrap ${isAdmin && (adminAccessScope === 'thd' || adminModule === 'thd') ? 'hidden' : ''} ${isAdmin ? 'admin-home-panels-wrap max-w-none' : 'max-w-6xl'} w-full mb-3 sm:mb-4 flex flex-col min-h-0`}>
+          {!(isAdmin && (adminAccessScope === 'thd' || adminModule === 'thd' || adminModule === 'notice')) && (
+            <div className={`home-panels-wrap ${isAdmin ? 'admin-home-panels-wrap max-w-none' : 'max-w-6xl'} w-full mb-3 sm:mb-4 flex flex-col min-h-0`}>
               <div className="lg:hidden flex flex-col items-center w-full min-h-0">
                   <div className="bg-white/60 p-1.5 rounded-full mb-3 flex w-[280px] shadow-sm border border-white shrink-0">
                       <button onClick={() => setMobileHomeTab('notifications')} className={`flex-1 py-2 rounded-full text-xs font-black uppercase tracking-widest transition-all ${mobileHomeTab === 'notifications' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-500 hover:text-blue-600'}`}>Thông báo</button>
@@ -6654,19 +7515,19 @@ ${lessonBlocks}`;
                   </div>
                   
                   {/* Khung được chốt theo viewport để không phình ra sau khi tải thông báo. */}
-                  <div className="home-mobile-panel w-full bg-white/40 backdrop-blur-xl rounded-[2rem] border border-white/50 p-1.5 transition-all duration-300 relative overflow-hidden shadow-lg flex flex-col">
+                  <div className="home-mobile-panel w-full bg-white/[0.03] backdrop-blur-[2px] rounded-[2rem] border border-white/15 p-1.5 transition-all duration-300 relative overflow-hidden shadow-lg flex flex-col">
                       {mobileHomeTab === 'notifications' ? (
-                          <div className="bg-gradient-to-r from-white/90 to-white/60 rounded-[1.75rem] p-4 shadow-inner h-full flex flex-col relative overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+                          <div className="bg-gradient-to-r from-white/[0.12] to-white/[0.02] rounded-[1.75rem] p-4 shadow-inner h-full flex flex-col relative overflow-hidden animate-in fade-in zoom-in-95 duration-200">
                               <h3 className="font-extrabold text-blue-900 mb-3 flex items-center gap-2 text-sm uppercase whitespace-nowrap"><Bell className="w-5 h-5 animate-pulse text-rose-500 shrink-0" /> Thông báo</h3>
-                              <div className="flex-1 overflow-hidden bg-white/60 rounded-2xl p-3 border border-white/50 relative">
-                                  <div className="absolute top-0 left-0 right-0 h-6 bg-gradient-to-b from-white/95 to-transparent z-10 pointer-events-none"></div>
-                                  <div className="absolute bottom-0 left-0 right-0 h-6 bg-gradient-to-t from-white/95 to-transparent z-10 pointer-events-none"></div>
+                              <div className="flex-1 overflow-hidden bg-white/[0.03] rounded-2xl p-3 border border-white/15 relative">
+                                  <div className="absolute top-0 left-0 right-0 h-6 bg-gradient-to-b from-white/15 to-transparent z-10 pointer-events-none"></div>
+                                  <div className="absolute bottom-0 left-0 right-0 h-6 bg-gradient-to-t from-white/15 to-transparent z-10 pointer-events-none"></div>
                                   {pinnedNewsFeed.length > 0 && (
-                                      <div className="relative z-20 mb-3 space-y-2">
+                                      <div className="relative z-20 mb-2 space-y-1.5">
                                           {pinnedNewsFeed.map(item => (
-                                              <button key={item.id} onClick={() => setViewingNews(item)} className="w-full text-left bg-amber-50/95 border-2 border-amber-200 rounded-2xl p-3 shadow-sm hover:bg-amber-100 transition-all">
-                                                  <div className="flex items-center gap-2 text-[9px] font-black uppercase tracking-widest text-amber-600 mb-1"><Pin className="w-3.5 h-3.5" fill="currentColor" /> Tin ghim</div>
-                                                  <h4 className="font-black text-amber-950 text-sm leading-snug line-clamp-2">{item.title}</h4>
+                                              <button key={item.id} onClick={() => setViewingNews(item)} className="w-full text-left bg-amber-50/90 border border-amber-200 rounded-xl px-3 py-2 shadow-sm hover:bg-amber-100 transition-all">
+                                                  <div className="flex items-center gap-1.5 text-[8px] font-semibold uppercase tracking-wider text-amber-600 mb-0.5"><Pin className="w-3 h-3" fill="currentColor" /> Tin ghim</div>
+                                                  <h4 className="font-semibold text-amber-950 text-xs leading-snug line-clamp-2">{item.title}</h4>
                                               </button>
                                           ))}
                                       </div>
@@ -6675,12 +7536,11 @@ ${lessonBlocks}`;
                                       <marquee direction="up" scrollamount="2" className="h-full w-full" onMouseOver={(e) => e.currentTarget.stop()} onMouseOut={(e) => e.currentTarget.start()}>
                                           <div className="flex flex-col gap-4 pb-8 pt-2">
                                               {combinedFeedSorted.map(item => (
-                                                  <div key={item.id} onClick={() => { if (item.isAuto) { setRole('student'); setLoginRole('student'); setSelectedGrade(item.targetGrade); setSelectedSubject(item.targetSubject); setSelectedLesson(item.targetLesson); window.scrollTo({ top: 0, behavior: 'smooth' }); } else { setViewingNews(item); } }} className={`p-4 rounded-xl shadow-sm border cursor-pointer flex flex-col ${item.isAuto ? (item.iconType === 'quiz' ? 'bg-rose-50/90 border-rose-100' : item.iconType === 'note' ? 'bg-emerald-50/90 border-emerald-100' : 'bg-blue-50/90 border-blue-100') : 'bg-white/90 border-white'}`}>
-                                                      <h4 className={`font-extrabold text-sm mb-1.5 leading-snug ${item.isAuto ? (item.iconType === 'quiz' ? 'text-rose-700' : item.iconType === 'note' ? 'text-emerald-700' : 'text-blue-700') : 'text-blue-900'}`}>{item.title}</h4>
-                                                      <div className="text-[10px] text-slate-500 font-bold mb-2 pb-2 border-b border-slate-200/60">
+                                                  <div key={item.id} onClick={() => { if (item.isAuto) { setRole('student'); setLoginRole('student'); setSelectedGrade(item.targetGrade); setSelectedSubject(item.targetSubject); setSelectedLesson(item.targetLesson); window.scrollTo({ top: 0, behavior: 'smooth' }); } else { setViewingNews(item); } }} className={`px-3 py-2.5 rounded-xl shadow-sm border cursor-pointer flex flex-col ${item.isAuto ? (item.iconType === 'quiz' ? 'bg-rose-50/60 border-rose-100/70' : item.iconType === 'note' ? 'bg-emerald-50/60 border-emerald-100/70' : 'bg-blue-50/60 border-blue-100/70') : 'bg-white/55 border-white/70'}`}>
+                                                      <h4 className={`font-semibold text-xs mb-1 leading-snug ${item.isAuto ? (item.iconType === 'quiz' ? 'text-rose-700' : item.iconType === 'note' ? 'text-emerald-700' : 'text-blue-700') : 'text-blue-900'}`}>{item.title}</h4>
+                                                      <div className="text-[9px] text-slate-500 font-semibold mb-1.5 pb-1.5 border-b border-slate-200/40">
                                                           {item.isAuto ? (item.iconType === 'quiz' ? <CheckCircle2 className="w-3.5 h-3.5 text-rose-500 inline mr-1" /> : item.iconType === 'note' ? <BookOpen className="w-3.5 h-3.5 text-emerald-500 inline mr-1" /> : <FileText className="w-3.5 h-3.5 text-blue-500 inline mr-1" />) : <Calendar className="w-3.5 h-3.5 text-blue-400 inline mr-1" />}{new Date(item.timestamp).toLocaleDateString('vi-VN')}
                                                       </div>
-                                                      <div className="text-slate-700 text-xs line-clamp-2" dangerouslySetInnerHTML={{ __html: item.content }} />
                                                   </div>
                                               ))}
                                           </div>
@@ -6689,7 +7549,7 @@ ${lessonBlocks}`;
                               </div>
                           </div>
                       ) : (
-                          <div className="bg-gradient-to-l from-white/90 to-white/60 rounded-[1.75rem] p-4 shadow-inner h-full flex flex-col relative overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+                          <div className="bg-gradient-to-l from-white/[0.12] to-white/[0.02] rounded-[1.75rem] p-4 shadow-inner h-full flex flex-col relative overflow-hidden animate-in fade-in zoom-in-95 duration-200">
                               <div className="flex justify-between items-center mb-3">
                                   <h3 className="font-extrabold text-blue-900 flex items-center gap-2 uppercase text-sm whitespace-nowrap"><Newspaper className="w-5 h-5 text-blue-600 shrink-0" /> Bản tin</h3>
                                   {isAdmin && <button onClick={() => showAddNews ? closeNewsForm() : openNewsForm()} className="bg-blue-100 text-blue-700 p-1.5 rounded-lg shadow-sm">{showAddNews ? <X className="w-4 h-4" /> : <Plus className="w-4 h-4" />}</button>}
@@ -6711,7 +7571,7 @@ ${lessonBlocks}`;
                                           </label>
                                       </div>
                                       <div className="relative flex-1 bg-slate-50 rounded-xl border overflow-hidden min-h-[120px]">
-                                          <div ref={newsContentRef} contentEditable={true} onPaste={handlePasteToNews} data-placeholder="Nhập nội dung (có thể dán ảnh)..." className="rich-editor w-full h-full p-2 focus:outline-none text-xs overflow-y-auto" />
+                                          <div ref={adminModule === 'notice' ? null : newsContentRef} contentEditable={true} onPaste={handlePasteToNews} data-placeholder="Nhập nội dung (có thể dán ảnh)..." className="rich-editor w-full h-full p-2 focus:outline-none text-xs overflow-y-auto" />
                                       </div>
                                       <button onClick={handleAddNews} disabled={isSubmittingNews} className="w-full bg-blue-600 text-white p-2.5 rounded-xl text-xs font-black shadow-lg flex justify-center items-center gap-2">
                                           {isSubmittingNews ? <><Loader2 className="w-4 h-4 animate-spin"/> Đang gửi...</> : (editingNews ? 'Lưu sửa' : 'Đăng')}
@@ -6737,32 +7597,32 @@ ${lessonBlocks}`;
               </div>
 
               {/* Khung được chốt theo viewport để không phình ra sau khi tải thông báo. */}
-              <div className="home-desktop-panels hidden lg:grid grid-cols-12 gap-6">
-                <div className="home-panel-card col-span-6 bg-white/40 backdrop-blur-xl rounded-[2rem] border border-white/50 p-1.5 h-full">
-                  <div className="bg-gradient-to-r from-white/80 to-white/50 rounded-[1.75rem] p-5 border border-white/40 shadow-inner flex flex-col h-full relative overflow-hidden">
+              <div className="hidden">
+                <div className="home-panel-card col-span-6 bg-white/[0.03] backdrop-blur-[2px] rounded-[2rem] border border-white/15 p-1.5 h-full">
+                  <div className="bg-gradient-to-r from-white/[0.12] to-white/[0.02] rounded-[1.75rem] p-5 border border-white/15 shadow-inner flex flex-col h-full relative overflow-hidden">
                     <h3 className="font-extrabold text-blue-900 mb-4 flex items-center gap-2 text-sm uppercase font-black whitespace-nowrap"><Bell className="w-5 h-5 animate-pulse text-rose-500 shrink-0" /> Thông báo</h3>
-                    <div className="flex-1 overflow-hidden bg-white/50 rounded-2xl p-4 border border-white/40 relative">
-                      <div className="absolute top-0 left-0 right-0 h-10 bg-gradient-to-b from-white/95 to-transparent z-10 pointer-events-none"></div><div className="absolute bottom-0 left-0 right-0 h-10 bg-gradient-to-t from-white/95 to-transparent z-10 pointer-events-none"></div>
+                    <div className="flex-1 overflow-hidden bg-white/[0.03] rounded-2xl p-4 border border-white/15 relative">
+                      <div className="absolute top-0 left-0 right-0 h-10 bg-gradient-to-b from-white/15 to-transparent z-10 pointer-events-none"></div><div className="absolute bottom-0 left-0 right-0 h-10 bg-gradient-to-t from-white/15 to-transparent z-10 pointer-events-none"></div>
                       {pinnedNewsFeed.length > 0 && (
-                        <div className="relative z-20 mb-4 space-y-3">
+                        <div className="relative z-20 mb-3 space-y-2">
                           {pinnedNewsFeed.map(item => (
-                            <button key={item.id} onClick={() => setViewingNews(item)} className="w-full text-left bg-amber-50/95 border-2 border-amber-200 rounded-2xl p-4 shadow-sm hover:bg-amber-100 hover:shadow-md transition-all">
-                              <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-amber-600 mb-2"><Pin className="w-4 h-4" fill="currentColor" /> Tin ghim</div>
-                              <h4 className="font-black text-amber-950 text-base leading-snug line-clamp-2">{item.title}</h4>
+                            <button key={item.id} onClick={() => setViewingNews(item)} className="w-full text-left bg-amber-50/90 border border-amber-200 rounded-xl px-3 py-2.5 shadow-sm hover:bg-amber-100 hover:shadow-md transition-all">
+                              <div className="flex items-center gap-1.5 text-[9px] font-semibold uppercase tracking-wider text-amber-600 mb-1"><Pin className="w-3.5 h-3.5" fill="currentColor" /> Tin ghim</div>
+                              <h4 className="font-semibold text-amber-950 text-sm leading-snug line-clamp-1">{item.title}</h4>
                             </button>
                           ))}
                         </div>
                       )}
                       {combinedFeedSorted.length > 0 ? (
                         <marquee direction="up" scrollamount="2" className="h-full w-full" onMouseOver={(e) => e.currentTarget.stop()} onMouseOut={(e) => e.currentTarget.start()}>
-                          <div className="flex flex-col gap-6 pb-8 pt-4">{combinedFeedSorted.map(item => (<div key={item.id} onClick={() => { if (item.isAuto) { setRole('student'); setLoginRole('student'); setSelectedGrade(item.targetGrade); setSelectedSubject(item.targetSubject); setSelectedLesson(item.targetLesson); window.scrollTo({ top: 0, behavior: 'smooth' }); } else { setViewingNews(item); } }} className={`p-5 rounded-2xl shadow-sm border cursor-pointer flex flex-col ${item.isAuto ? (item.iconType === 'quiz' ? 'bg-rose-50/90 border-rose-100 hover:bg-rose-50' : item.iconType === 'note' ? 'bg-emerald-50/90 border-emerald-100 hover:bg-emerald-50' : 'bg-blue-50/90 border-blue-100 hover:bg-blue-50') : 'bg-white/90 border-white hover:bg-white'}`}><h4 className={`font-extrabold text-lg mb-2 leading-snug transition-colors ${item.isAuto ? (item.iconType === 'quiz' ? 'text-rose-700 group-hover:text-rose-900' : item.iconType === 'note' ? 'text-emerald-700 group-hover:text-emerald-900' : 'text-blue-700 group-hover:text-blue-900') : 'text-blue-900 group-hover:text-blue-600'}`}>{item.title}</h4><div className="text-xs text-slate-500 font-bold mb-3 pb-3 border-b border-slate-200/60">{item.isAuto ? (item.iconType === 'quiz' ? <CheckCircle2 className="w-4 h-4 text-rose-500 inline mr-1" /> : item.iconType === 'note' ? <BookOpen className="w-4 h-4 text-emerald-500 inline mr-1" /> : <FileText className="w-4 h-4 text-blue-500 inline mr-1" />) : <Calendar className="w-4 h-4 text-blue-400 inline mr-1" />}{new Date(item.timestamp).toLocaleDateString('vi-VN')}</div><div className="text-slate-700 text-sm line-clamp-2" dangerouslySetInnerHTML={{ __html: item.content }} /></div>))}</div>
+                          <div className="flex flex-col gap-3 pb-6 pt-2">{combinedFeedSorted.map(item => (<div key={item.id} onClick={() => { if (item.isAuto) { setRole('student'); setLoginRole('student'); setSelectedGrade(item.targetGrade); setSelectedSubject(item.targetSubject); setSelectedLesson(item.targetLesson); window.scrollTo({ top: 0, behavior: 'smooth' }); } else { setViewingNews(item); } }} className={`px-4 py-3 rounded-xl shadow-sm border cursor-pointer flex flex-col ${item.isAuto ? (item.iconType === 'quiz' ? 'bg-rose-50/60 border-rose-100/70 hover:bg-rose-50/75' : item.iconType === 'note' ? 'bg-emerald-50/60 border-emerald-100/70 hover:bg-emerald-50/75' : 'bg-blue-50/60 border-blue-100/70 hover:bg-blue-50/75') : 'bg-white/55 border-white/70 hover:bg-white/70'}`}><h4 className={`font-semibold text-sm mb-1 leading-snug transition-colors ${item.isAuto ? (item.iconType === 'quiz' ? 'text-rose-700' : item.iconType === 'note' ? 'text-emerald-700' : 'text-blue-700') : 'text-blue-900'}`}>{item.title}</h4><div className="text-[10px] text-slate-500 font-semibold">{item.isAuto ? (item.iconType === 'quiz' ? <CheckCircle2 className="w-3.5 h-3.5 text-rose-500 inline mr-1" /> : item.iconType === 'note' ? <BookOpen className="w-3.5 h-3.5 text-emerald-500 inline mr-1" /> : <FileText className="w-3.5 h-3.5 text-blue-500 inline mr-1" />) : <Calendar className="w-3.5 h-3.5 text-blue-400 inline mr-1" />}{new Date(item.timestamp).toLocaleDateString('vi-VN')}</div></div>))}</div>
                         </marquee>
                       ) : pinnedNewsFeed.length === 0 ? <p className="text-center text-sm text-slate-500 mt-10 italic">Đang cập nhật bản tin mới nhất...</p> : null}
                     </div>
                   </div>
                 </div>
-                <div className="home-panel-card col-span-6 bg-white/40 backdrop-blur-xl rounded-[2rem] border border-white/50 p-1.5 h-full">
-                  <div className="bg-gradient-to-l from-white/80 to-white/50 rounded-[1.75rem] p-5 border border-white/40 shadow-inner flex flex-col h-full overflow-hidden">
+                <div className="home-panel-card col-span-6 bg-white/[0.03] backdrop-blur-[2px] rounded-[2rem] border border-white/15 p-1.5 h-full">
+                  <div className="bg-gradient-to-l from-white/[0.12] to-white/[0.02] rounded-[1.75rem] p-5 border border-white/15 shadow-inner flex flex-col h-full overflow-hidden">
                     <div className="flex justify-between items-center mb-4 pl-2 gap-3"><h3 className="font-extrabold text-blue-900 flex items-center gap-2 uppercase text-sm font-black whitespace-nowrap"><Newspaper className="w-5 h-5 text-blue-600 shrink-0" /> Bản tin</h3>{isAdmin && <button onClick={() => showAddNews ? closeNewsForm() : openNewsForm()} className="bg-blue-100 text-blue-700 p-1.5 rounded-lg shadow-sm shrink-0">{showAddNews ? <X className="w-5 h-5" /> : <Plus className="w-5 h-5" />}</button>}</div>
                     {isAdmin && showAddNews ? (
                       <div className="flex flex-col gap-3 flex-1 overflow-hidden animate-in fade-in duration-300">
@@ -6781,7 +7641,7 @@ ${lessonBlocks}`;
                               </label>
                           </div>
                           <div className="relative flex-1 bg-slate-50 rounded-xl border overflow-hidden min-h-[150px]">
-                              <div ref={newsContentRef} contentEditable={true} onPaste={handlePasteToNews} data-placeholder="Nhập nội dung (có thể dán ảnh)..." className="rich-editor w-full h-full p-4 focus:outline-none text-sm overflow-y-auto" />
+                              <div ref={adminModule === 'notice' ? null : newsContentRef} contentEditable={true} onPaste={handlePasteToNews} data-placeholder="Nhập nội dung (có thể dán ảnh)..." className="rich-editor w-full h-full p-4 focus:outline-none text-sm overflow-y-auto" />
                           </div>
                           <button onClick={handleAddNews} disabled={isSubmittingNews} className="w-full bg-blue-600 text-white p-3 rounded-xl text-base font-black shadow-lg hover:bg-blue-700 transition-all flex justify-center items-center gap-2">
                               {isSubmittingNews ? <><Loader2 className="w-5 h-5 animate-spin"/> Đang gửi...</> : (editingNews ? 'Lưu bản tin' : 'Đăng tin ngay')}
@@ -6804,9 +7664,220 @@ ${lessonBlocks}`;
                   </div>
                 </div>
               </div>
-          </div>
 
-          <div className="home-role-actions w-full max-w-md mx-auto px-2 relative z-20 shrink-0 pb-1 sm:pb-2 mt-2 sm:mt-3">
+              <div className={`home-desktop-panels hidden lg:block w-full ${isAdmin ? 'max-w-[1320px]' : 'max-w-[920px]'} mx-auto`}>
+                {combinedFeedSorted.length > 0 && (
+                  <div className="mb-2 h-8 rounded-full border border-white/[0.55] bg-white/60 backdrop-blur-md shadow-sm overflow-hidden flex items-center">
+                    <div className="h-full px-3 bg-emerald-600 text-white text-[10px] font-semibold uppercase tracking-wide flex items-center gap-1.5 shrink-0">
+                      <BookOpen className="w-3.5 h-3.5" />
+                      Mới cập nhật
+                    </div>
+                    <marquee direction="left" scrollamount="4" className="text-[12px] font-medium text-slate-700" onMouseOver={(e) => e.currentTarget.stop()} onMouseOut={(e) => e.currentTarget.start()}>
+                      {combinedFeedSorted.map((item, index) => (
+                        <button key={item.id} type="button" onClick={() => openHomepageFeedItem(item)} className="mx-4 hover:text-blue-700">
+                          {index > 0 && <span className="mr-4 text-slate-300">|</span>}
+                          {item.title}
+                        </button>
+                      ))}
+                    </marquee>
+                  </div>
+                )}
+
+                <div className="home-news-shell rounded-[1.5rem] overflow-hidden bg-white/[0.62] backdrop-blur-md border border-white/55 shadow-lg">
+                  <div className="bg-rose-700 px-4 py-2.5 text-white flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2.5">
+                      <ListChecks className="w-5 h-5" />
+                      <h3 className="text-sm font-semibold uppercase tracking-wide">Tin tức - Sự kiện</h3>
+                    </div>
+                    {isAdmin && (
+                      <button onClick={() => showAddNews ? closeNewsForm() : openNewsForm()} className="h-8 w-8 rounded-lg bg-white/[0.15] hover:bg-white/[0.25] flex items-center justify-center transition-colors" title={showAddNews ? 'Đóng' : 'Thêm tin'}>
+                        {showAddNews ? <X className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
+                      </button>
+                    )}
+                  </div>
+
+                  {isAdmin && showAddNews ? (
+                    <div className="p-4 flex flex-col gap-3 animate-in fade-in duration-300">
+                      <input type="text" placeholder={editingNews ? "Sửa tiêu đề tin tức..." : "Tiêu đề tin tức..."} className="w-full bg-slate-50 border p-3 rounded-xl text-base font-semibold focus:outline-none focus:border-blue-400" value={newsTitle} onChange={(e) => setNewsTitle(e.target.value)} />
+                      <div className="flex items-center gap-2 bg-white p-1.5 rounded-2xl shadow-sm border border-slate-200 shrink-0">
+                        <button type="button" onMouseDown={e => {e.preventDefault(); document.execCommand('bold')}} className="p-2 hover:bg-slate-100 rounded-lg text-slate-700"><Bold className="w-4 h-4" /></button>
+                        <button type="button" onMouseDown={e => {e.preventDefault(); document.execCommand('italic')}} className="p-2 hover:bg-slate-100 rounded-lg text-slate-700"><Italic className="w-4 h-4" /></button>
+                        <div className="w-px h-5 bg-slate-200 mx-1"></div>
+                        <label className="flex items-center gap-1 p-2 hover:bg-emerald-50 text-emerald-700 rounded-lg cursor-pointer font-semibold text-xs">
+                          <ImageIcon className="w-4 h-4" /> Tải ảnh
+                          <input type="file" accept="image/*" onChange={handleNewsImageUpload} className="hidden" />
+                        </label>
+                        <label className="flex items-center gap-1 p-2 hover:bg-emerald-50 text-emerald-700 rounded-lg cursor-pointer font-semibold text-xs">
+                          <Camera className="w-4 h-4" /> Chụp
+                          <input type="file" accept="image/*" capture="environment" onChange={handleNewsImageUpload} className="hidden" />
+                        </label>
+                      </div>
+                      <div className="relative bg-slate-50 rounded-xl border overflow-hidden min-h-[170px]">
+                        <div ref={adminModule === 'notice' ? null : newsContentRef} contentEditable={true} onPaste={handlePasteToNews} data-placeholder="Nhập nội dung, có thể dán ảnh..." className="rich-editor w-full h-full p-4 focus:outline-none text-sm overflow-y-auto" />
+                      </div>
+                      <button onClick={handleAddNews} disabled={isSubmittingNews} className="w-full bg-blue-600 text-white p-3 rounded-xl text-sm font-semibold shadow-lg hover:bg-blue-700 transition-all flex justify-center items-center gap-2">
+                        {isSubmittingNews ? <><Loader2 className="w-5 h-5 animate-spin"/> Đang gửi...</> : (editingNews ? 'Lưu bản tin' : 'Đăng tin')}
+                      </button>
+                    </div>
+                  ) : (
+                    <div className={`home-news-grid grid grid-cols-12 gap-3 p-3 xl:gap-4 xl:p-4 ${isAdmin ? 'min-h-[clamp(650px,78svh,900px)]' : 'min-h-[clamp(500px,62svh,720px)]'}`}>
+                      <div className="col-span-7 flex min-h-0 flex-col overflow-hidden">
+                        {homepageSliderNews.length > 0 ? (
+                          <>
+                            {homepageSliderNews.length > 1 && (
+                              <style>{`
+                                @keyframes homepageNewsSlide {
+                                  ${homepageNewsSlideKeyframes}
+                                }
+                                .homepage-news-slider-track {
+                                  animation: homepageNewsSlide ${Math.max(18, homepageSliderNews.length * 7)}s ease-in-out infinite;
+                                }
+                                .homepage-news-slider-track:hover {
+                                  animation-play-state: paused;
+                                }
+                              `}</style>
+                            )}
+                            <div className="relative h-full overflow-hidden">
+                              <div className={`${homepageSliderNews.length > 1 ? 'homepage-news-slider-track' : ''} flex h-full`} style={{ width: `${homepageSliderNews.length * 100}%` }}>
+                                {homepageSliderNews.map((newsItem) => {
+                                  const newsImage = getSharpNewsImageSrc(extractNewsImageSrc(newsItem.content));
+                                  const newsFallbackImage = getNewsImageFallbackSrc(newsItem.content);
+                                  const newsFileId = extractNewsDriveFileId(newsItem.content);
+                                  const newsSummary = getNewsPlainText(newsItem.content);
+                                  return (
+                                    <button key={`homepage-slide-news-${newsItem.id}`} type="button" onClick={() => setViewingNews(newsItem)} className="flex h-full flex-col px-0.5 text-left group" style={{ width: `${100 / homepageSliderNews.length}%` }}>
+                                      <div className={`${isAdmin ? 'admin-home-news-media' : 'home-news-media'} rounded-xl bg-white/55 overflow-hidden border border-white/70 shadow-sm flex items-center justify-center`}>
+                                        {newsImage ? (
+                                          <img
+                                            src={newsImage}
+                                            alt={newsItem.title}
+                                            onError={(event) => {
+                                              const attempt = Number(event.currentTarget.dataset.newsImageAttempt || '0');
+                                              if (newsFileId && attempt === 0) {
+                                                event.currentTarget.dataset.newsImageAttempt = '1';
+                                                event.currentTarget.src = `https://lh3.googleusercontent.com/d/${newsFileId}=w1600`;
+                                                return;
+                                              }
+                                              if (newsFallbackImage && event.currentTarget.src !== newsFallbackImage) {
+                                                event.currentTarget.dataset.newsImageAttempt = '2';
+                                                event.currentTarget.src = newsFallbackImage;
+                                                return;
+                                              }
+                                              handleRichContentImageError(event);
+                                            }}
+                                            className="h-full w-full object-contain object-center transition-transform duration-500"
+                                          />
+                                        ) : (
+                                          <div className="h-full w-full bg-gradient-to-br from-blue-50 via-white to-sky-100 p-8 flex items-center justify-center">
+                                            <div className="max-w-md rounded-2xl border border-blue-100 bg-white/80 p-6 text-center shadow-sm">
+                                              <Newspaper className="mx-auto mb-3 h-10 w-10 text-blue-300" />
+                                              <div className="mb-2 text-[11px] font-semibold uppercase tracking-widest text-blue-500">Bản tin</div>
+                                              <h4 className="text-xl font-semibold leading-snug text-blue-800 line-clamp-3">{newsItem.title}</h4>
+                                              {newsSummary && <p className="mt-3 text-sm leading-relaxed text-slate-500 line-clamp-3">{newsSummary}</p>}
+                                            </div>
+                                          </div>
+                                        )}
+                                      </div>
+                                      <h4 className={`mt-3 text-lg xl:text-xl leading-snug font-semibold line-clamp-2 group-hover:underline ${newsItem.isHot ? 'text-rose-700' : 'text-blue-800'}`}>{newsItem.title}</h4>
+                                      <div className="mt-2 flex flex-wrap items-center gap-3 text-[12px] font-medium text-slate-500">
+                                        {newsItem.isPinned && <span className="inline-flex items-center gap-1 text-amber-600"><Pin className="w-3.5 h-3.5" fill="currentColor" /> Tin ghim</span>}
+                                        {newsItem.isHot && <span className="inline-flex items-center gap-1 text-rose-600"><Sparkles className="w-3.5 h-3.5" fill="currentColor" /> Tin nóng</span>}
+                                        <span className="inline-flex items-center gap-1 text-emerald-700"><Calendar className="w-3.5 h-3.5" /> {new Date(newsItem.createdAt).toLocaleDateString('vi-VN')}</span>
+                                      </div>
+                                      {newsSummary && <p className="mt-2 text-sm leading-relaxed text-slate-600 line-clamp-2">{newsSummary}</p>}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          </>
+                        ) : (
+                          <div className="h-full min-h-[220px] rounded-xl border border-dashed border-white/60 bg-white/40 flex items-center justify-center text-sm text-slate-400">
+                            Đang cập nhật tin tức...
+                          </div>
+                        )}
+                      </div>
+                      <div className="hidden">
+                        {featuredHomepageNews ? (() => {
+                          const featuredImage = getSharpNewsImageSrc(extractNewsImageSrc(featuredHomepageNews.content));
+                          const featuredFallbackImage = getNewsImageFallbackSrc(featuredHomepageNews.content);
+                          const featuredFileId = extractNewsDriveFileId(featuredHomepageNews.content);
+                          const featuredSummary = getNewsPlainText(featuredHomepageNews.content);
+                          return (
+                            <button type="button" onClick={() => setViewingNews(featuredHomepageNews)} className="w-full text-left group flex flex-col h-full">
+                              <div className="h-[clamp(220px,30vh,340px)] rounded-xl bg-white overflow-hidden border border-slate-100 shadow-sm flex items-center justify-center">
+                                {featuredImage ? (
+                                  <img
+                                    src={featuredImage}
+                                    alt={featuredHomepageNews.title}
+                                    onError={(event) => {
+                                      const attempt = Number(event.currentTarget.dataset.newsImageAttempt || '0');
+                                      if (featuredFileId && attempt === 0) {
+                                        event.currentTarget.dataset.newsImageAttempt = '1';
+                                        event.currentTarget.src = `https://lh3.googleusercontent.com/d/${featuredFileId}=w1600`;
+                                        return;
+                                      }
+                                      if (featuredFallbackImage && event.currentTarget.src !== featuredFallbackImage) {
+                                        event.currentTarget.dataset.newsImageAttempt = '2';
+                                        event.currentTarget.src = featuredFallbackImage;
+                                        return;
+                                      }
+                                      handleRichContentImageError(event);
+                                    }}
+                                    className="h-full w-full object-contain object-center transition-transform duration-500"
+                                  />
+                                ) : (
+                                  <div className="h-full w-full bg-gradient-to-br from-blue-50 via-white to-sky-100 flex items-center justify-center">
+                                    <Newspaper className="w-14 h-14 text-blue-200" />
+                                  </div>
+                                )}
+                              </div>
+                              <h4 className={`mt-3 text-xl leading-snug font-semibold group-hover:underline ${featuredHomepageNews.isHot ? 'text-rose-700' : 'text-blue-800'}`}>{featuredHomepageNews.title}</h4>
+                              <div className="mt-2 flex flex-wrap items-center gap-3 text-[12px] font-medium text-slate-500">
+                                {featuredHomepageNews.isPinned && <span className="inline-flex items-center gap-1 text-amber-600"><Pin className="w-3.5 h-3.5" fill="currentColor" /> Tin ghim</span>}
+                                {featuredHomepageNews.isHot && <span className="inline-flex items-center gap-1 text-rose-600"><Sparkles className="w-3.5 h-3.5" fill="currentColor" /> Tin nóng</span>}
+                                <span className="inline-flex items-center gap-1 text-emerald-700"><Calendar className="w-3.5 h-3.5" /> {new Date(featuredHomepageNews.createdAt).toLocaleDateString('vi-VN')}</span>
+                              </div>
+                              {featuredSummary && <p className="mt-2 text-sm leading-relaxed text-slate-600 line-clamp-2">{featuredSummary}</p>}
+                            </button>
+                          );
+                        })() : (
+                          <div className="h-full min-h-[260px] rounded-xl border border-dashed border-slate-200 bg-slate-50/70 flex items-center justify-center text-sm text-slate-400">
+                            Đang cập nhật tin tức...
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="col-span-5 h-full min-h-0 bg-white/35 rounded-xl overflow-y-auto border border-white/50 backdrop-blur-sm">
+                        {homepageNewsList.length === 0 ? (
+                          <p className="p-5 text-sm text-slate-400">Chưa có bản tin.</p>
+                        ) : (
+                          <div className="divide-y divide-slate-200/60">
+                            {homepageNewsList.slice(0, 7).map((n) => (
+                              <div key={n.id} className="group flex items-center gap-2.5 px-3.5 py-3 hover:bg-white/65 transition-colors">
+                                <button type="button" onClick={() => setViewingNews(n)} className="min-w-0 flex-1 text-left">
+                                  <div className="flex items-start gap-2">
+                                    <CheckCircle2 className={`mt-0.5 w-4 h-4 shrink-0 ${n.isHot ? 'text-rose-600' : n.isPinned ? 'text-amber-600' : 'text-sky-600'}`} />
+                                    <div className="min-w-0">
+                                      <h4 className={`text-[15px] leading-snug font-semibold line-clamp-2 ${n.isHot ? 'text-rose-700' : 'text-blue-800'}`}>{n.title}</h4>
+                                      <div className="mt-1.5 text-[12px] text-slate-400 font-semibold">{new Date(n.createdAt).toLocaleDateString('vi-VN')}</div>
+                                    </div>
+                                  </div>
+                                </button>
+                                {isAdmin && <div className="opacity-0 group-hover:opacity-100 transition-opacity">{renderNewsAdminActions(n)}</div>}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          <div className="home-role-actions w-full max-w-md mx-auto px-2 relative z-20 shrink-0 pb-1 sm:pb-2 mt-5 sm:mt-7">
             {!isAdmin && (
               <div className="flex flex-col gap-2 sm:gap-3">
                   <div className="flex flex-row gap-2 sm:gap-4 justify-center">
@@ -6871,7 +7942,7 @@ ${lessonBlocks}`;
   }
 
   return (
-    <div className="min-h-screen flex flex-col text-slate-800 font-sans relative" style={pageBackgroundStyle}><MainBackground />
+    <div className="min-h-screen flex flex-col text-slate-800 font-sans relative" style={focusBackgroundStyle}><MainBackground />
       <style>{`
         .rich-editor { min-height: 150px; outline: none; }
         .rich-editor:empty:before { content: attr(data-placeholder); color: #94a3b8; pointer-events: none; display: block; }
@@ -7360,7 +8431,7 @@ ${lessonBlocks}`;
         
         {role && !selectedLesson && !selectedSubject && (
            <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 flex-1 flex flex-col">
-              {false && role === 'teacher' && (
+              {SHOW_LEGACY_TEACHER_TABS && role === 'teacher' && (
                 <div className="flex justify-center mb-6">
                     <div className="bg-white/60 backdrop-blur-md p-1.5 rounded-full flex shadow-sm border border-white">
                       <button onClick={() => setTeacherTab('giang_day')} className={`px-6 py-2.5 rounded-full text-xs sm:text-sm font-black uppercase tracking-widest transition-all flex items-center gap-2 ${teacherTab === 'giang_day' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-500 hover:text-blue-600 hover:bg-white'}`}>
@@ -7409,7 +8480,7 @@ ${lessonBlocks}`;
 
                   {selectedGrade && (
                      <div className="flex-1 flex flex-col gap-6 sm:gap-8 animate-in fade-in zoom-in-95 duration-300">
-                        {false && role === 'teacher' && teacherTab === 'chuyen_mon' ? (
+                        {SHOW_LEGACY_PROFESSIONAL_PANEL && role === 'teacher' && teacherTab === 'chuyen_mon' ? (
                             <div className="bg-white/80 backdrop-blur-md rounded-[2rem] p-6 sm:p-10 shadow-xl border border-white w-full max-w-4xl mx-auto">
                                <h2 className="text-2xl font-black text-emerald-900 mb-8 uppercase text-center border-b-2 border-emerald-100 pb-4">Công tác chuyên môn Khối {selectedGrade}</h2>
                                <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
@@ -7602,7 +8673,7 @@ ${lessonBlocks}`;
 
         {selectedGrade && selectedSubject && selectedLesson && (
           <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 space-y-3 sm:space-y-4 flex-1 mt-0 pb-20 sm:pb-0">
-            <div className={`${role === 'teacher' ? 'hidden' : 'hidden sm:flex'} border-b-4 border-blue-100/50 pb-4 sm:pb-6 flex-col gap-4`}>
+            <div className="hidden">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                 <h2 className={`text-2xl sm:text-4xl md:text-5xl font-black ${getWeekData(selectedLesson).isExam ? getWeekData(selectedLesson).text : 'text-slate-800'} tracking-tighter flex items-center flex-wrap`}>
                   {getWeekDisplayName(selectedLesson)} 
@@ -7634,13 +8705,13 @@ ${lessonBlocks}`;
             </div>
             
             <div className="bg-white/95 rounded-2xl sm:rounded-[2.5rem] shadow-2xl border border-white/60 overflow-hidden">
-              <div className="bg-slate-50/80 px-4 sm:px-8 py-3 border-b flex flex-col">
+              <div className="bg-gradient-to-r from-indigo-100/95 via-blue-50/95 to-white px-4 sm:px-8 py-3 sm:py-4 border-b border-indigo-200 shadow-sm flex flex-col">
                 <div className="flex items-center justify-between w-full">
-                  <div className="flex items-center gap-3">
-                    <div className="bg-blue-100 p-2 sm:p-3 rounded-lg sm:rounded-2xl text-blue-600 shadow-inner">
-                      <FileText className="w-4 h-4 sm:w-6 sm:h-6" />
+                    <div className="flex items-center gap-2.5">
+                    <div className="bg-blue-600 p-2 sm:p-2.5 rounded-lg sm:rounded-xl text-white shadow-md ring-4 ring-blue-100/80">
+                      <FileText className="w-3.5 h-3.5 sm:w-5 sm:h-5" />
                     </div>
-                    <h3 className="font-black text-sm sm:text-xl text-slate-800 uppercase tracking-tight">Bài học</h3>
+                    <h3 className="font-black text-sm sm:text-xl text-indigo-950 uppercase tracking-wide">Bài học</h3>
                   </div>
 
                   {role === 'student' && activeStudentProfile?.isClassLeader && (
