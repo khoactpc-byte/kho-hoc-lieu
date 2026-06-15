@@ -316,21 +316,24 @@ body:has(.quiz-work-page) {
   }
 
   .home-panels-wrap {
+    flex: 1 1 auto !important;
+    min-height: 0 !important;
     width: min(100%, calc(100vw - 0.5rem)) !important;
     max-width: calc(100vw - 0.5rem) !important;
     margin-inline: auto !important;
-    margin-bottom: 0.25rem !important;
+    margin-bottom: 0.15rem !important;
   }
 
   .home-mobile-dashboard {
     width: 100%;
     max-width: 100%;
-    height: clamp(330px, calc(100svh - 205px), 455px);
-    max-height: 455px;
+    height: 100%;
+    max-height: none;
+    min-height: 330px;
   }
 
   .home-mobile-featured-media {
-    height: clamp(100px, 17svh, 145px);
+    height: clamp(120px, 21svh, 190px);
   }
 
   .home-mobile-news-list button {
@@ -342,7 +345,7 @@ body:has(.quiz-work-page) {
   .home-role-actions {
     width: min(100%, calc(100vw - 0.75rem)) !important;
     max-width: calc(100vw - 0.75rem) !important;
-    margin-top: 0.35rem !important;
+    margin-top: 0.2rem !important;
     padding-bottom: 0 !important;
   }
 
@@ -353,6 +356,12 @@ body:has(.quiz-work-page) {
   .home-role-actions > div > div:first-child button {
     padding-top: 0.65rem !important;
     padding-bottom: 0.65rem !important;
+  }
+
+  .home-contact-line {
+    margin-top: 0.1rem;
+    padding-bottom: max(0.1rem, env(safe-area-inset-bottom));
+    line-height: 1.1;
   }
 
   .lesson-readable-content {

@@ -6568,10 +6568,11 @@ ${lessonBlocks}`;
           </div>
         )}
 
-        <div className={`flex-1 flex flex-col items-center relative z-10 w-full mx-auto min-h-0 ${isAdmin ? 'max-w-none pt-0 px-0 pb-3' : 'max-w-7xl pt-3 px-4 pb-3 sm:pb-4'}`}>
+        <div className={`flex-1 flex flex-col items-center relative z-10 w-full mx-auto min-h-0 ${isAdmin ? 'max-w-none pt-0 px-0 pb-3' : 'max-w-7xl pt-3 px-4 pb-1 sm:pb-4'}`}>
           {!isAdmin && <div className="home-public-heading text-center mt-3 sm:mt-5 mb-3 sm:mb-5 leading-tight shrink-0 w-full">
             <h1 className="text-[15px] sm:text-2xl md:text-[32px] font-extrabold text-[#1238a8] uppercase leading-tight" style={{ textShadow: '0 1px 0 rgba(255,255,255,0.75)' }}>
-                <span className="sm:hidden whitespace-nowrap">TTHTCĐ P. Trung Mỹ Tây</span>
+                <span className="sm:hidden block">TT Học Tập Cộng Đồng</span>
+                <span className="sm:hidden mt-0.5 block">Phường Trung Mỹ Tây</span>
                 <span className="hidden sm:inline">TT Học tập cộng đồng phường Trung Mỹ Tây</span>
             </h1>
             <h2 className="mt-1 text-[12px] sm:text-lg md:text-[22px] font-bold text-[#1238a8] uppercase leading-tight" style={{ textShadow: '0 1px 0 rgba(255,255,255,0.75)' }}>Trường THCS Nguyễn An Ninh</h2>
@@ -7958,19 +7959,19 @@ ${lessonBlocks}`;
           {!(isAdmin && (adminAccessScope === 'thd' || adminModule === 'thd' || adminModule === 'notice')) && (
             <div className={`home-panels-wrap ${isAdmin ? 'admin-home-panels-wrap max-w-none' : 'max-w-6xl'} w-full mb-3 sm:mb-4 flex flex-col min-h-0`}>
               <div className="home-mobile-dashboard lg:hidden min-h-0 overflow-hidden rounded-2xl border border-white/45 bg-white/55 shadow-lg backdrop-blur-md">
-                <div className="home-mobile-updates flex h-9 shrink-0 items-center overflow-hidden border-b border-emerald-100 bg-white/75">
-                  <div className="flex h-full shrink-0 items-center gap-1.5 bg-emerald-600 px-2.5 text-[9px] font-black uppercase text-white">
-                    <BookOpen className="h-3.5 w-3.5" /> Mới cập nhật
+                <div className="home-mobile-updates flex h-7 shrink-0 items-center overflow-hidden border-b border-emerald-100 bg-white/75">
+                  <div className="flex h-full shrink-0 items-center gap-1 bg-emerald-600 px-2 text-[8px] font-black uppercase text-white">
+                    <BookOpen className="h-3 w-3" /> Mới cập nhật
                   </div>
                   {combinedFeedSorted.length > 0 ? (
-                    <marquee scrollamount="3" className="min-w-0 flex-1 text-[10px] font-bold text-slate-600">
+                    <marquee scrollamount="3" className="min-w-0 flex-1 text-[8px] font-bold text-slate-600">
                       {combinedFeedSorted.map((item, index) => (
-                        <button key={`mobile-update-${item.id}`} type="button" onClick={() => openHomepageFeedItem(item)} className="mx-3 whitespace-nowrap hover:text-emerald-700">
+                        <button key={`mobile-update-${item.id}`} type="button" onClick={() => openHomepageFeedItem(item)} className="mx-2 whitespace-nowrap hover:text-emerald-700">
                           {item.title}{index < combinedFeedSorted.length - 1 ? '  |  ' : ''}
                         </button>
                       ))}
                     </marquee>
-                  ) : <div className="px-3 text-[10px] font-bold text-slate-400">Đang cập nhật...</div>}
+                  ) : <div className="px-2 text-[8px] font-bold text-slate-400">Đang cập nhật...</div>}
                 </div>
 
                 <div className="flex items-center justify-between border-b border-white/70 px-3 py-2">
@@ -8434,25 +8435,36 @@ ${lessonBlocks}`;
             </div>
           )}
 
-          <div className="home-role-actions w-full max-w-md mx-auto px-2 relative z-20 shrink-0 pb-1 sm:pb-2 mt-5 sm:mt-7">
+          <div className="home-role-actions w-full max-w-md mx-auto px-2 relative z-20 shrink-0 pb-1 sm:pb-2 mt-3 sm:mt-7">
             {!isAdmin && (
-              <div className="flex flex-col gap-2 sm:gap-3">
-                  <div className="flex flex-row gap-2 sm:gap-4 justify-center">
-                    <button onClick={() => { clearStoredAdminSession(); setIsAdmin(false); setShowAdminSettingsWorkspace(false); setShowAdminCheckWorkspace(false); setShowPasswordWorkspace(false); setScorebookGrade(null); if (typeof window !== 'undefined' && window.location.hash.toLowerCase().startsWith('#/admin')) window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`); if (isStudentCodeEnabled) { setShowStudentAccessModal(true); setStudentForgotMode(false); setStudentFoundCode(''); } else { setRole('student'); setLoginRole('student'); } }} className="min-w-0 flex-1 flex items-center justify-center gap-1.5 sm:gap-2 bg-blue-600 text-white py-3 px-2 rounded-[1rem] sm:rounded-2xl font-black shadow-lg transition-all active:scale-95">
+              <div className="flex flex-col gap-1.5 sm:gap-3">
+                  <div className="grid grid-cols-[1.15fr_1.15fr_0.65fr_0.8fr] gap-1.5 sm:hidden">
+                    <button onClick={() => { clearStoredAdminSession(); setIsAdmin(false); setShowAdminSettingsWorkspace(false); setShowAdminCheckWorkspace(false); setShowPasswordWorkspace(false); setScorebookGrade(null); if (typeof window !== 'undefined' && window.location.hash.toLowerCase().startsWith('#/admin')) window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`); if (isStudentCodeEnabled) { setShowStudentAccessModal(true); setStudentForgotMode(false); setStudentFoundCode(''); } else { setRole('student'); setLoginRole('student'); } }} className="min-w-0 flex h-9 items-center justify-center gap-1 bg-blue-600 px-1 text-white rounded-xl font-black shadow-lg transition-all active:scale-95 sm:h-auto sm:flex-1 sm:gap-2 sm:py-3 sm:px-2 sm:rounded-2xl">
                        <User className="w-4 h-4 sm:w-5 sm:h-5" />
-                       <span className="min-w-0 text-[9px] sm:text-sm uppercase tracking-normal sm:tracking-wider whitespace-nowrap">Tôi là Học sinh</span>
+                       <span className="min-w-0 text-[9px] sm:text-sm uppercase tracking-normal sm:tracking-wider whitespace-nowrap"><span className="sm:hidden">Học sinh</span><span className="hidden sm:inline">Tôi là Học sinh</span></span>
                     </button>
-                    <button onClick={openTeacherLogin} className="min-w-0 flex-1 flex items-center justify-center gap-1.5 sm:gap-2 bg-emerald-50 text-emerald-700 border border-emerald-200 py-3 px-2 rounded-[1rem] sm:rounded-2xl font-black shadow-md transition-all active:scale-95">
+                    <button onClick={openTeacherLogin} className="min-w-0 flex h-9 items-center justify-center gap-1 bg-emerald-50 px-1 text-emerald-700 border border-emerald-200 rounded-xl font-black shadow-md transition-all active:scale-95 sm:h-auto sm:flex-1 sm:gap-2 sm:py-3 sm:px-2 sm:rounded-2xl">
                        <GraduationCap className="w-4 h-4 sm:w-5 sm:h-5" />
-                       <span className="min-w-0 text-[9px] sm:text-sm uppercase tracking-normal sm:tracking-wider whitespace-nowrap">Tôi là Giáo viên</span>
+                       <span className="min-w-0 text-[9px] sm:text-sm uppercase tracking-normal sm:tracking-wider whitespace-nowrap"><span className="sm:hidden">Giáo viên</span><span className="hidden sm:inline">Tôi là Giáo viên</span></span>
                     </button>
+                    <button onClick={() => { setModalMode('thdAdmin'); setPasswordInput(''); setErrorMsg(''); setShowPasswordModal(true); }} className="flex h-9 min-w-0 items-center justify-center gap-0.5 rounded-xl border border-sky-200/70 bg-white/55 px-1 text-[8px] font-black uppercase text-sky-600 backdrop-blur-sm transition-all hover:bg-white hover:text-sky-700 sm:h-auto sm:gap-1.5 sm:px-4 sm:py-2 sm:text-[10px] sm:rounded-full"><Briefcase className="w-3.5 h-3.5" /><span className="sm:hidden">THĐ</span><span className="hidden sm:inline">Trần Hưng Đạo</span></button>
+                    <button onClick={() => { setModalMode('admin'); setPasswordInput(''); setErrorMsg(''); setShowPasswordModal(true); }} className="flex h-9 min-w-0 items-center justify-center gap-0.5 rounded-xl border border-slate-200/60 bg-white/40 px-1 text-[8px] font-black uppercase text-slate-500 backdrop-blur-sm transition-all hover:bg-white hover:text-slate-600 sm:h-auto sm:gap-1.5 sm:px-4 sm:py-2 sm:text-[10px] sm:rounded-full"><Settings className="w-3.5 h-3.5" /><span className="sm:hidden">Admin</span><span className="hidden sm:inline">Quản trị</span></button>
                   </div>
-                  <div className="flex justify-center">
-                      <div className="flex flex-wrap justify-center gap-2">
-                        <button onClick={() => { setModalMode('thdAdmin'); setPasswordInput(''); setErrorMsg(''); setShowPasswordModal(true); }} className="flex items-center gap-1.5 text-[9px] sm:text-[10px] font-black uppercase text-sky-600 bg-white/55 px-4 py-2 rounded-full border border-sky-200/70 hover:bg-white hover:text-sky-700 transition-all backdrop-blur-sm"><Briefcase className="w-3.5 h-3.5" /> Trần Hưng Đạo</button>
-                        <button onClick={() => { setModalMode('admin'); setPasswordInput(''); setErrorMsg(''); setShowPasswordModal(true); }} className="flex items-center gap-1.5 text-[9px] sm:text-[10px] font-black uppercase text-slate-400 bg-white/40 px-4 py-2 rounded-full border border-slate-200/60 hover:bg-white hover:text-slate-600 transition-all backdrop-blur-sm"><Settings className="w-3.5 h-3.5" /> Quản trị</button>
-                      </div>
+                  <div className="hidden flex-col gap-3 sm:flex">
+                    <div className="flex flex-row justify-center gap-4">
+                      <button onClick={() => { clearStoredAdminSession(); setIsAdmin(false); setShowAdminSettingsWorkspace(false); setShowAdminCheckWorkspace(false); setShowPasswordWorkspace(false); setScorebookGrade(null); if (typeof window !== 'undefined' && window.location.hash.toLowerCase().startsWith('#/admin')) window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`); if (isStudentCodeEnabled) { setShowStudentAccessModal(true); setStudentForgotMode(false); setStudentFoundCode(''); } else { setRole('student'); setLoginRole('student'); } }} className="min-w-0 flex-1 flex items-center justify-center gap-2 bg-blue-600 text-white py-3 px-2 rounded-2xl font-black shadow-lg transition-all active:scale-95">
+                        <User className="w-5 h-5" /><span className="min-w-0 text-sm uppercase tracking-wider whitespace-nowrap">Tôi là Học sinh</span>
+                      </button>
+                      <button onClick={openTeacherLogin} className="min-w-0 flex-1 flex items-center justify-center gap-2 bg-emerald-50 text-emerald-700 border border-emerald-200 py-3 px-2 rounded-2xl font-black shadow-md transition-all active:scale-95">
+                        <GraduationCap className="w-5 h-5" /><span className="min-w-0 text-sm uppercase tracking-wider whitespace-nowrap">Tôi là Giáo viên</span>
+                      </button>
+                    </div>
+                    <div className="flex flex-wrap justify-center gap-2">
+                      <button onClick={() => { setModalMode('thdAdmin'); setPasswordInput(''); setErrorMsg(''); setShowPasswordModal(true); }} className="flex items-center gap-1.5 text-[10px] font-black uppercase text-sky-600 bg-white/55 px-4 py-2 rounded-full border border-sky-200/70 hover:bg-white hover:text-sky-700 transition-all backdrop-blur-sm"><Briefcase className="w-3.5 h-3.5" /> Trần Hưng Đạo</button>
+                      <button onClick={() => { setModalMode('admin'); setPasswordInput(''); setErrorMsg(''); setShowPasswordModal(true); }} className="flex items-center gap-1.5 text-[10px] font-black uppercase text-slate-400 bg-white/40 px-4 py-2 rounded-full border border-slate-200/60 hover:bg-white hover:text-slate-600 transition-all backdrop-blur-sm"><Settings className="w-3.5 h-3.5" /> Quản trị</button>
+                    </div>
                   </div>
+                  <div className="home-contact-line text-center text-[9px] font-bold text-blue-950/70 sm:hidden">Liên hệ: 0354667174 (Thầy Khoa)</div>
               </div>
             )}
           </div>
