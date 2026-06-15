@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { addDoc, collection, deleteDoc, doc, onSnapshot, setDoc } from 'firebase/firestore';
 import {
   ArrowDownAZ,
@@ -10,6 +11,7 @@ import {
   ChevronRight,
   ClipboardCheck,
   Columns,
+  Download,
   ExternalLink,
   FileSpreadsheet,
   FileText,
@@ -18,6 +20,7 @@ import {
   Image as ImageIcon,
   KeyRound,
   Loader2,
+  Mail,
   Pencil,
   Plus,
   RefreshCw,
@@ -1296,7 +1299,7 @@ const fileToBase64Payload = (file, documentItem = {}, student = {}) => new Promi
   reader.readAsDataURL(file);
 });
 
-export default function HocSinhManager({ students = [], currentSchoolYear, initialTab = 'current', initialTabKey = 0, user, showNotification, onBack, onOpenAttendance }) {
+export default function HocSinhManager({ students = [], currentSchoolYear, initialTab = 'current', initialTabKey = 0, user, showNotification, onBack, onOpenAttendance, onSendTestResults, onBeforeDangerousAction }) {
   const [query, setQuery] = useState('');
   const [studentTab, setStudentTab] = useState(initialTab === 'countStats' ? 'current' : (initialTab || 'current'));
   const [classFilter, setClassFilter] = useState(() => {
@@ -1327,9 +1330,14 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
   const [showClassPicker, setShowClassPicker] = useState(false);
   const [showClassStats, setShowClassStats] = useState(false);
   const [showExportChoice, setShowExportChoice] = useState(false);
+  const [sendingTestResultStudentId, setSendingTestResultStudentId] = useState('');
+  const [exportFormat, setExportFormat] = useState('');
+  const [excelExportAction, setExcelExportAction] = useState('');
   const [showUtilitiesMenu, setShowUtilitiesMenu] = useState(false);
   const [isSharingPdf, setIsSharingPdf] = useState(false);
+  const [isSharingSheet, setIsSharingSheet] = useState(false);
   const [sharedPdfLink, setSharedPdfLink] = useState('');
+  const [sharedSheetLink, setSharedSheetLink] = useState('');
   const [missingInfoReport, setMissingInfoReport] = useState('');
   const [addressDirectory, setAddressDirectory] = useState({ provinces: [], communes: {} });
   const [visibleColumns, setVisibleColumns] = useState(() => {
@@ -2191,6 +2199,7 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
         updatedBy: user?.uid || ''
       }, { merge: true });
       await updateProfileRequestAfterFieldDecision(request, fieldKey);
+      postAppsScript({ action: 'writeAuditLog', auditAction: 'duyet_mot_truong_ho_so', actor: user?.uid || 'Admin', details: { studentId: request.studentId, fieldKey, before: studentBefore?.[fieldKey] ?? '', after: nextValue } }).catch(() => undefined);
       if (editing?.id === request.studentId) {
         setEditing(prev => prev ? ({ ...prev, [fieldKey]: nextValue }) : prev);
       }
@@ -2252,7 +2261,9 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
     if (!window.confirm(`Xóa hồ sơ "${student.fullName}"?`)) return;
     setIsSaving(true);
     try {
+      await onBeforeDangerousAction?.('truoc-xoa-hoc-sinh');
       await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'students', student.id));
+      await postAppsScript({ action: 'writeAuditLog', auditAction: 'xoa_ho_so_hoc_sinh', actor: user?.uid || 'Admin', details: { studentId: student.id, fullName: student.fullName || '' } });
       showNotification?.('Đã xóa hồ sơ học sinh.');
     } catch (error) {
       showNotification?.(`Chưa xóa được: ${error.message}`, 'error');
@@ -2271,7 +2282,9 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
     if (!ok) return;
     setIsSaving(true);
     try {
+      await onBeforeDangerousAction?.('truoc-xoa-nhieu-hoc-sinh');
       await Promise.all(targets.map(student => deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'students', student.id))));
+      await postAppsScript({ action: 'writeAuditLog', auditAction: 'xoa_nhieu_hoc_sinh', actor: user?.uid || 'Admin', details: { count: targets.length, students: targets.map(student => ({ id: student.id, fullName: student.fullName || '' })) } });
       setSelectedIds(new Set());
       showNotification?.(`Đã xóa ${targets.length} học sinh đã chọn.`);
     } catch (error) {
@@ -2477,7 +2490,9 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
     link.remove();
     URL.revokeObjectURL(url);
     setShowExportChoice(false);
-    showNotification?.(`Đã xuất ${result.count} dòng ra Excel .xlsx dạng text, ${mode === 'all' ? 'tất cả cột' : 'theo cấu hình hiện tại'}.`);
+    setExportFormat('');
+    setExcelExportAction('');
+    showNotification?.(`Đã tải file Excel .xlsx gồm ${result.count} học sinh, ${mode === 'all' ? 'đầy đủ tất cả cột' : 'theo dữ liệu đang xem'}.`);
   };
 
   const sharePdfExportList = async (mode = 'current') => {
@@ -2505,6 +2520,34 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
       showNotification?.(`Chưa tạo được PDF: ${error.message}`, 'error');
     } finally {
       setIsSharingPdf(false);
+    }
+  };
+
+  const shareGoogleSheetExportList = async (mode = 'current') => {
+    const result = prepareExportRows(mode);
+    if (!result) return;
+    setIsSharingSheet(true);
+    setSharedSheetLink('');
+    try {
+      showNotification?.('Đang tạo Google Sheet và lấy liên kết...');
+      const response = await postAppsScript({
+        action: 'createStudentListSheet',
+        folderId: STUDENT_EXPORT_DRIVE_FOLDER_ID,
+        filename: result.fileName.replace(/\.xlsx$/i, ''),
+        title: result.title,
+        rows: result.rows
+      });
+      if (response?.url) {
+        setSharedSheetLink(response.url);
+        const copied = await copyTextToClipboard(response.url);
+        showNotification?.(copied ? `Đã tạo Google Sheet ${result.count} học sinh và copy liên kết.` : `Đã tạo Google Sheet ${result.count} học sinh. Bấm Copy link bên dưới để chia sẻ.`);
+      } else {
+        showNotification?.('Đã tạo Google Sheet nhưng máy chủ chưa trả liên kết.', 'error');
+      }
+    } catch (error) {
+      showNotification?.(`Chưa tạo được Google Sheet: ${error.message}`, 'error');
+    } finally {
+      setIsSharingSheet(false);
     }
   };
 
@@ -2840,6 +2883,7 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
         updatedBy: user?.uid || ''
       }, { merge: true });
       await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'student_profile_requests', request.id));
+      postAppsScript({ action: 'writeAuditLog', auditAction: 'duyet_ho_so_hoc_sinh', actor: user?.uid || 'Admin', details: { studentId: request.studentId, changes: cleanChanges } }).catch(() => undefined);
       hideProfileRequestFieldLocally(request.id);
       showNotification?.('Đã duyệt và cập nhật hồ sơ học sinh.');
     } catch (error) {
@@ -2854,6 +2898,7 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
     setIsSaving(true);
     try {
       await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'student_profile_requests', request.id));
+      postAppsScript({ action: 'writeAuditLog', auditAction: 'tu_choi_sua_ho_so', actor: user?.uid || 'Admin', details: { studentId: request.studentId || '', requestId: request.id } }).catch(() => undefined);
       hideProfileRequestFieldLocally(request.id);
       showNotification?.('Đã từ chối yêu cầu sửa hồ sơ.');
     } catch (error) {
@@ -2864,23 +2909,23 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
   };
 
   const editingProfileRequests = editing?.id ? (profileRequestsByStudent.get(editing.id) || []) : [];
-  const utilityButtonClass = 'flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm font-normal text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-45';
+  const utilityButtonClass = 'flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-[11px] font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-45 sm:gap-2 sm:rounded-lg sm:px-3 sm:py-2 sm:text-sm sm:font-normal';
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-white/95 rounded-2xl border border-indigo-100 shadow-xl overflow-hidden">
-      {onBack && (
-        <button type="button" onClick={onBack} className="sm:hidden fixed top-3 right-3 z-[120] w-10 h-10 rounded-full bg-rose-600 text-white shadow-xl flex items-center justify-center">
-          <X className="w-5 h-5" />
-        </button>
-      )}
-      <div className="shrink-0 bg-gradient-to-r from-indigo-50 to-blue-50 p-3 border-b border-indigo-100 flex flex-col gap-3">
+      <div className="shrink-0 bg-gradient-to-r from-indigo-50 to-blue-50 p-2 sm:p-3 border-b border-indigo-100 flex flex-col gap-1.5 sm:gap-3">
         <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-3">
-        <div className="min-w-0 lg:flex-1 lg:pr-4">
+        <div className="flex min-w-0 items-center justify-between gap-2 lg:flex-1 lg:pr-4">
           <h3 className="font-black text-indigo-950 text-sm sm:text-base uppercase flex items-center gap-2">
             <GraduationCap className="w-5 h-5 text-indigo-600" /> Học sinh {currentSchoolYear}
           </h3>
+          {onBack && (
+            <button type="button" onClick={onBack} title="Đóng database" className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-rose-600 text-white shadow-sm sm:hidden">
+              <X className="h-4 w-4" />
+            </button>
+          )}
         </div>
-        <div className="flex flex-wrap items-center justify-start gap-2 pb-1 lg:pb-0 lg:justify-end lg:shrink-0">
+        <div className="flex flex-nowrap items-center justify-start gap-1 overflow-x-auto pb-1 sm:flex-wrap sm:gap-2 lg:pb-0 lg:justify-end lg:shrink-0">
           {onBack && (
             <button type="button" onClick={onBack} title="Đóng database" className="hidden sm:flex sm:order-last shrink-0 w-10 h-10 bg-rose-600 text-white hover:bg-rose-700 rounded-full shadow-lg items-center justify-center transition-colors">
               <X className="w-5 h-5" />
@@ -2890,7 +2935,7 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
             <button
               type="button"
               onClick={onOpenAttendance}
-              className="flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-lg border border-cyan-100 bg-cyan-50 px-3 text-sm font-normal text-cyan-700 hover:bg-cyan-100"
+              className="hidden h-9 shrink-0 items-center justify-center gap-1.5 rounded-lg border border-cyan-100 bg-cyan-50 px-3 text-sm font-normal text-cyan-700 hover:bg-cyan-100 sm:flex"
             >
               <CalendarDays className="h-4 w-4" /> Điểm danh
             </button>
@@ -2899,7 +2944,7 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
             <button
               type="button"
               onClick={() => setShowColumns(prev => !prev)}
-              className="flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-sm font-normal text-slate-700 hover:bg-slate-50"
+              className="flex h-7 shrink-0 items-center justify-center gap-1 rounded-md border border-slate-200 bg-white px-2 text-[11px] font-semibold text-slate-700 hover:bg-slate-50 sm:h-9 sm:rounded-lg sm:px-3 sm:text-sm sm:font-normal"
             >
               <Columns className="h-4 w-4" /> Cột
             </button>
@@ -2907,8 +2952,14 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
           {studentTab !== 'journey' && studentTab !== 'profileRequests' && (
             <button
               type="button"
-              onClick={() => setShowExportChoice(true)}
-              className="flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-lg border border-cyan-100 bg-cyan-50 px-3 text-sm font-normal text-cyan-700 hover:bg-cyan-100"
+              onClick={() => {
+                setExportFormat('');
+                setExcelExportAction('');
+                setSharedPdfLink('');
+                setSharedSheetLink('');
+                setShowExportChoice(true);
+              }}
+              className="flex h-7 shrink-0 items-center justify-center gap-1 rounded-md border border-cyan-100 bg-cyan-50 px-2 text-[11px] font-semibold text-cyan-700 hover:bg-cyan-100 sm:h-9 sm:rounded-lg sm:px-3 sm:text-sm sm:font-normal"
             >
               <FileSpreadsheet className="h-4 w-4" /> Xuất
             </button>
@@ -2918,7 +2969,7 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
               type="button"
               onClick={removeSelectedStudents}
               disabled={isSaving || selectedCount === 0}
-              className="flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-lg border border-rose-100 bg-rose-50 px-3 text-sm font-normal text-rose-600 hover:bg-rose-100 disabled:opacity-40"
+              className="flex h-7 shrink-0 items-center justify-center gap-1 rounded-md border border-rose-100 bg-rose-50 px-2 text-[11px] font-semibold text-rose-600 hover:bg-rose-100 disabled:opacity-40 sm:h-9 sm:rounded-lg sm:px-3 sm:text-sm sm:font-normal"
               title="Xóa các học sinh đang được tích chọn"
             >
               <Trash2 className="h-4 w-4" /> Xóa {selectedCount ? `(${selectedCount})` : ''}
@@ -2928,7 +2979,7 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
             <button
               type="button"
               onClick={() => setShowUtilitiesMenu(prev => !prev)}
-              className="flex h-9 items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-sm font-normal text-slate-700 shadow-sm hover:bg-slate-50"
+              className="flex h-7 items-center justify-center gap-1 rounded-md border border-slate-200 bg-white px-2 text-[11px] font-semibold text-slate-700 shadow-sm hover:bg-slate-50 sm:h-9 sm:rounded-lg sm:px-3 sm:text-sm sm:font-normal"
               aria-expanded={showUtilitiesMenu}
             >
               <FileText className="h-4 w-4 text-blue-600" />
@@ -2938,7 +2989,7 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
             {showUtilitiesMenu && (
               <>
                 <button type="button" className="fixed inset-0 z-[80] cursor-default bg-transparent" onClick={() => setShowUtilitiesMenu(false)} aria-label="Đóng tiện ích" />
-                <div className="absolute right-0 top-11 z-[90] w-72 overflow-hidden rounded-xl border border-slate-200 bg-white p-1.5 shadow-xl">
+                <div className="fixed left-3 right-3 top-[150px] z-[190] grid max-h-[calc(100dvh-165px)] grid-cols-2 gap-1 overflow-y-auto rounded-xl border border-slate-200 bg-white p-1.5 shadow-xl sm:absolute sm:left-auto sm:right-0 sm:top-11 sm:block sm:w-72 sm:max-h-none sm:overflow-hidden">
                   <button type="button" onClick={() => { setShowUtilitiesMenu(false); window.open(STUDENT_DATA_SHEET_URL, '_blank', 'noopener,noreferrer'); }} className={utilityButtonClass}>
                     <ExternalLink className="h-4 w-4 text-emerald-600" /> Mo du lieu Sheet
                   </button>
@@ -2992,8 +3043,8 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
             )}
           </div>
           {studentTab === 'current' && (
-            <button type="button" onClick={openCreate} className="flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-lg bg-indigo-600 px-3 text-sm font-normal text-white shadow-sm hover:bg-indigo-700">
-              <Plus className="w-4 h-4" /> Thêm
+            <button type="button" onClick={openCreate} className="flex h-7 shrink-0 items-center justify-center gap-1 rounded-md bg-indigo-600 px-2 text-[11px] font-semibold text-white shadow-sm hover:bg-indigo-700 sm:h-9 sm:rounded-lg sm:px-3 sm:text-sm sm:font-normal">
+              <Plus className="h-3.5 w-3.5 sm:h-4 sm:w-4" /> Thêm
             </button>
           )}
         </div>
@@ -3174,7 +3225,7 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
                     <td className="sticky left-0 bg-white px-4 py-3 align-middle">
                       <div className="flex items-center gap-3 min-w-0">
                         <div className="w-12 h-14 rounded-xl bg-indigo-50 border border-indigo-100 overflow-hidden flex items-center justify-center shrink-0">
-                          <DriveImage url={row.student.portraitUrl} alt={row.student.fullName || 'Học sinh'} className="w-full h-full object-cover" fallback={<UserRound className="w-5 h-5 text-indigo-300" />} />
+                          <DriveImage url={row.student.portraitUrl} alt={row.student.fullName || 'Học sinh'} className="w-full h-full object-contain" fallback={<UserRound className="w-5 h-5 text-indigo-300" />} />
                         </div>
                         <div className="min-w-0">
                           <div className="font-black text-slate-900 truncate">{row.student.fullName || 'Chưa có tên'}</div>
@@ -3221,33 +3272,104 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
       ) : (
       <div className="flex min-h-0 flex-1 flex-col bg-white">
       {showExportChoice && (
-        <div className="shrink-0 p-3 border-b border-cyan-100 bg-cyan-50/50">
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        <div className="shrink-0 border-b border-cyan-100 bg-cyan-50/50 p-2 sm:p-3">
+          <div className="flex flex-row items-start justify-between gap-2 sm:items-center">
             <div>
-              <div className="text-xs font-black text-cyan-900 uppercase">Xuất danh sách Excel</div>
-              <p className="text-[11px] text-cyan-700 font-bold">Nếu đã tích học sinh, chỉ xuất các dòng đã tích. Nếu chưa tích, xuất theo bộ lọc đang xem.</p>
+              <div className="flex items-center gap-1.5 text-[11px] font-black uppercase text-cyan-900 sm:text-xs">
+                {exportFormat && (
+                  <button type="button" onClick={() => {
+                    if (exportFormat === 'excel' && excelExportAction) {
+                      setExcelExportAction('');
+                      setSharedSheetLink('');
+                    } else {
+                      setExportFormat('');
+                      setExcelExportAction('');
+                      setSharedPdfLink('');
+                      setSharedSheetLink('');
+                    }
+                  }} className="flex h-6 w-6 items-center justify-center rounded-md bg-white text-cyan-700 shadow-sm" aria-label="Quay lại">
+                    <ChevronLeft className="h-3.5 w-3.5" />
+                  </button>
+                )}
+                {exportFormat === 'excel' && excelExportAction === 'sheet' ? 'Tạo Google Sheet' : exportFormat === 'excel' && excelExportAction === 'download' ? 'Tải file Excel' : exportFormat === 'excel' ? 'Chọn cách xuất Excel' : exportFormat === 'pdf' ? 'Tạo PDF và lấy liên kết' : 'Chọn định dạng xuất'}
+              </div>
+              <p className="hidden text-[11px] font-bold text-cyan-700 sm:block">{exportFormat ? 'Chọn phạm vi dữ liệu cần xuất.' : 'Chọn Excel để tải file hoặc PDF để tạo liên kết chia sẻ.'}</p>
             </div>
-            <button type="button" onClick={() => setShowExportChoice(false)} className="self-start sm:self-auto px-3 py-2 rounded-xl bg-white border border-cyan-100 text-[10px] font-black uppercase text-slate-600">Đóng</button>
+            <button type="button" onClick={() => { setShowExportChoice(false); setExportFormat(''); setExcelExportAction(''); setSharedPdfLink(''); setSharedSheetLink(''); }} className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-cyan-100 bg-white text-slate-600 sm:h-auto sm:w-auto sm:rounded-xl sm:px-3 sm:py-2" aria-label="Đóng"><X className="h-3.5 w-3.5" /></button>
           </div>
-          <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
-            <button type="button" onClick={() => sharePdfExportList('current')} disabled={isSharingPdf} className="px-3 py-3 rounded-xl bg-emerald-600 text-white text-xs font-black uppercase inline-flex items-center justify-center gap-2 disabled:opacity-60">
-              {isSharingPdf ? <Loader2 className="w-4 h-4 animate-spin" /> : <Share2 className="w-4 h-4" />} Chia sẻ PDF hiện tại
-            </button>
-            <button type="button" onClick={() => sharePdfExportList('all')} disabled={isSharingPdf} className="px-3 py-3 rounded-xl bg-white text-emerald-700 border border-emerald-100 text-xs font-black uppercase inline-flex items-center justify-center gap-2 disabled:opacity-60">
-              <FileText className="w-4 h-4" /> Chia sẻ PDF tất cả
-            </button>
-            <button type="button" onClick={() => downloadExportList('current')} className="px-3 py-3 rounded-xl bg-cyan-600 text-white text-xs font-black uppercase">Tải cấu hình hiện tại</button>
-            <button type="button" onClick={() => downloadExportList('all')} className="px-3 py-3 rounded-xl bg-white text-cyan-700 border border-cyan-100 text-xs font-black uppercase">Tải tất cả cột</button>
-          </div>
+          {!exportFormat && (
+            <div className="mt-2 grid grid-cols-2 gap-2 sm:mt-3">
+              <button type="button" onClick={() => setExportFormat('excel')} className="flex min-h-16 flex-col items-center justify-center gap-1 rounded-lg border border-emerald-100 bg-white p-2 text-emerald-700 hover:bg-emerald-50 sm:min-h-20 sm:rounded-xl">
+                <FileSpreadsheet className="h-5 w-5 sm:h-6 sm:w-6" />
+                <span className="text-[10px] font-black uppercase sm:text-xs">Excel (.xlsx)</span>
+                <span className="text-[9px] font-bold text-slate-400">Tải file về máy</span>
+              </button>
+              <button type="button" onClick={() => setExportFormat('pdf')} className="flex min-h-16 flex-col items-center justify-center gap-1 rounded-lg border border-blue-100 bg-white p-2 text-blue-700 hover:bg-blue-50 sm:min-h-20 sm:rounded-xl">
+                <FileText className="h-5 w-5 sm:h-6 sm:w-6" />
+                <span className="text-[10px] font-black uppercase sm:text-xs">PDF</span>
+                <span className="text-[9px] font-bold text-slate-400">Tạo liên kết chia sẻ</span>
+              </button>
+            </div>
+          )}
+          {exportFormat === 'excel' && !excelExportAction && (
+            <div className="mt-2 grid grid-cols-2 gap-2 sm:mt-3">
+              <button type="button" onClick={() => setExcelExportAction('download')} className="flex min-h-16 flex-col items-center justify-center gap-1 rounded-lg border border-emerald-100 bg-white p-2 text-emerald-700 hover:bg-emerald-50 sm:min-h-20 sm:rounded-xl">
+                <Download className="h-5 w-5 sm:h-6 sm:w-6" />
+                <span className="text-[10px] font-black uppercase sm:text-xs">Tải Excel</span>
+                <span className="text-[9px] font-bold text-slate-400">Lưu file .xlsx về máy</span>
+              </button>
+              <button type="button" onClick={() => setExcelExportAction('sheet')} className="flex min-h-16 flex-col items-center justify-center gap-1 rounded-lg border border-emerald-100 bg-white p-2 text-emerald-700 hover:bg-emerald-50 sm:min-h-20 sm:rounded-xl">
+                <Share2 className="h-5 w-5 sm:h-6 sm:w-6" />
+                <span className="text-[10px] font-black uppercase sm:text-xs">Google Sheet</span>
+                <span className="text-[9px] font-bold text-slate-400">Tạo liên kết chia sẻ</span>
+              </button>
+            </div>
+          )}
+          {exportFormat === 'excel' && excelExportAction === 'download' && (
+            <div className="mt-2 grid grid-cols-2 gap-1.5 sm:mt-3 sm:gap-2">
+              <button type="button" onClick={() => downloadExportList('current')} className="rounded-md bg-emerald-600 px-2 py-2.5 text-[9px] font-black uppercase text-white sm:rounded-lg sm:px-3 sm:text-[10px]">Dữ liệu đang xem</button>
+              <button type="button" onClick={() => downloadExportList('all')} className="rounded-md border border-emerald-100 bg-emerald-50 px-2 py-2.5 text-[9px] font-black uppercase text-emerald-700 sm:rounded-lg sm:px-3 sm:text-[10px]">Đầy đủ tất cả cột</button>
+            </div>
+          )}
+          {exportFormat === 'excel' && excelExportAction === 'sheet' && (
+            <div className="mt-2 grid grid-cols-2 gap-1.5 sm:mt-3 sm:gap-2">
+              <button type="button" onClick={() => shareGoogleSheetExportList('current')} disabled={isSharingSheet} className="inline-flex items-center justify-center gap-1 rounded-md bg-emerald-600 px-2 py-2.5 text-[9px] font-black uppercase text-white disabled:opacity-60 sm:rounded-lg sm:px-3 sm:text-[10px]">
+                {isSharingSheet ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Share2 className="h-3.5 w-3.5" />} Dữ liệu đang xem
+              </button>
+              <button type="button" onClick={() => shareGoogleSheetExportList('all')} disabled={isSharingSheet} className="inline-flex items-center justify-center gap-1 rounded-md border border-emerald-100 bg-emerald-50 px-2 py-2.5 text-[9px] font-black uppercase text-emerald-700 disabled:opacity-60 sm:rounded-lg sm:px-3 sm:text-[10px]">
+                <FileSpreadsheet className="h-3.5 w-3.5" /> Đầy đủ tất cả cột
+              </button>
+            </div>
+          )}
+          {exportFormat === 'pdf' && (
+            <div className="mt-2 grid grid-cols-2 gap-1.5 sm:mt-3 sm:gap-2">
+              <button type="button" onClick={() => sharePdfExportList('current')} disabled={isSharingPdf} className="inline-flex items-center justify-center gap-1 rounded-md bg-blue-600 px-2 py-2.5 text-[9px] font-black uppercase text-white disabled:opacity-60 sm:rounded-lg sm:px-3 sm:text-[10px]">
+                {isSharingPdf ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Share2 className="h-3.5 w-3.5" />} Dữ liệu đang xem
+              </button>
+              <button type="button" onClick={() => sharePdfExportList('all')} disabled={isSharingPdf} className="inline-flex items-center justify-center gap-1 rounded-md border border-blue-100 bg-blue-50 px-2 py-2.5 text-[9px] font-black uppercase text-blue-700 disabled:opacity-60 sm:rounded-lg sm:px-3 sm:text-[10px]">
+                <FileText className="h-3.5 w-3.5" /> Đầy đủ tất cả cột
+              </button>
+            </div>
+          )}
         </div>
       )}
 
-      {showExportChoice && sharedPdfLink && (
+      {showExportChoice && exportFormat === 'pdf' && sharedPdfLink && (
         <div className="shrink-0 px-3 pb-3 -mt-2 border-b border-cyan-100 bg-cyan-50/50">
           <div className="rounded-xl border border-emerald-100 bg-white p-2 flex flex-col sm:flex-row gap-2">
             <input value={sharedPdfLink} readOnly className="min-w-0 flex-1 rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-700" />
             <button type="button" onClick={() => copyTextToClipboard(sharedPdfLink).then(copied => showNotification?.(copied ? 'Da copy link PDF.' : 'Chua copy duoc link PDF.', copied ? 'success' : 'error'))} className="px-3 py-2 rounded-lg bg-emerald-600 text-white text-[10px] font-black uppercase">Copy link</button>
             <button type="button" onClick={() => window.open(sharedPdfLink, '_blank', 'noopener,noreferrer')} className="px-3 py-2 rounded-lg bg-white border border-emerald-100 text-emerald-700 text-[10px] font-black uppercase">Mo link</button>
+          </div>
+        </div>
+      )}
+
+      {showExportChoice && exportFormat === 'excel' && excelExportAction === 'sheet' && sharedSheetLink && (
+        <div className="shrink-0 px-3 pb-3 -mt-2 border-b border-emerald-100 bg-emerald-50/50">
+          <div className="rounded-xl border border-emerald-100 bg-white p-2 flex flex-col sm:flex-row gap-2">
+            <input value={sharedSheetLink} readOnly className="min-w-0 flex-1 rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-700" />
+            <button type="button" onClick={() => copyTextToClipboard(sharedSheetLink).then(copied => showNotification?.(copied ? 'Đã copy liên kết Google Sheet.' : 'Chưa copy được liên kết.', copied ? 'success' : 'error'))} className="px-3 py-2 rounded-lg bg-emerald-600 text-white text-[10px] font-black uppercase">Copy link</button>
+            <button type="button" onClick={() => window.open(sharedSheetLink, '_blank', 'noopener,noreferrer')} className="px-3 py-2 rounded-lg bg-white border border-emerald-100 text-emerald-700 text-[10px] font-black uppercase">Mở Sheet</button>
           </div>
         </div>
       )}
@@ -3281,23 +3403,23 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
       )}
 
       {showColumns && (
-        <div className="shrink-0 p-4 border-b border-slate-100 bg-white">
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-3">
+        <div className="shrink-0 border-b border-slate-100 bg-white p-2 sm:p-4">
+          <div className="mb-2 flex flex-col gap-1.5 sm:mb-3 sm:flex-row sm:items-center sm:justify-between sm:gap-2">
             <div>
-              <div className="text-xs font-black text-slate-900 uppercase">Cấu hình cột hiển thị</div>
-              <p className="text-[11px] text-slate-500 font-bold">Dữ liệu vẫn lưu đầy đủ, thầy cô chỉ chọn cột cần nhìn để bảng gọn hơn.</p>
+              <div className="text-[11px] font-black uppercase text-slate-900 sm:text-xs">Cột hiển thị</div>
+              <p className="hidden text-[11px] font-bold text-slate-500 sm:block">Dữ liệu vẫn lưu đầy đủ, thầy cô chỉ chọn cột cần nhìn để bảng gọn hơn.</p>
             </div>
-            <div className="flex gap-2">
-              <button type="button" onClick={() => setVisibleColumns(COMPACT_VISIBLE_COLUMNS)} className="px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-[10px] font-black uppercase text-slate-600">Gọn</button>
-              <button type="button" onClick={() => setVisibleColumns(IMAGE_ONLY_VISIBLE_COLUMNS)} className="px-3 py-2 rounded-xl bg-emerald-50 border border-emerald-100 text-[10px] font-black uppercase text-emerald-700">Chỉ ảnh</button>
-              <button type="button" onClick={toggleAllVisibleColumns} className="px-3 py-2 rounded-xl bg-indigo-50 border border-indigo-100 text-[10px] font-black uppercase text-indigo-700">Tất cả</button>
-              <button type="button" onClick={() => setVisibleColumns(typeof window !== 'undefined' && window.innerWidth < 640 ? MOBILE_VISIBLE_COLUMNS : DEFAULT_VISIBLE_COLUMNS)} className="px-3 py-2 rounded-xl bg-blue-50 border border-blue-100 text-[10px] font-black uppercase text-blue-700">Mặc định</button>
-              <button type="button" onClick={() => setShowColumns(false)} className="px-3 py-2 rounded-xl bg-white border border-slate-200 text-[10px] font-black uppercase text-slate-600 flex items-center gap-1.5"><X className="w-3.5 h-3.5" /> Đóng</button>
+            <div className="flex flex-wrap gap-1 sm:gap-2">
+              <button type="button" onClick={() => setVisibleColumns(COMPACT_VISIBLE_COLUMNS)} className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1.5 text-[9px] font-black uppercase text-slate-600 sm:rounded-xl sm:px-3 sm:py-2 sm:text-[10px]">Gọn</button>
+              <button type="button" onClick={() => setVisibleColumns(IMAGE_ONLY_VISIBLE_COLUMNS)} className="rounded-md border border-emerald-100 bg-emerald-50 px-2 py-1.5 text-[9px] font-black uppercase text-emerald-700 sm:rounded-xl sm:px-3 sm:py-2 sm:text-[10px]">Chỉ ảnh</button>
+              <button type="button" onClick={toggleAllVisibleColumns} className="rounded-md border border-indigo-100 bg-indigo-50 px-2 py-1.5 text-[9px] font-black uppercase text-indigo-700 sm:rounded-xl sm:px-3 sm:py-2 sm:text-[10px]">Tất cả</button>
+              <button type="button" onClick={() => setVisibleColumns(typeof window !== 'undefined' && window.innerWidth < 640 ? MOBILE_VISIBLE_COLUMNS : DEFAULT_VISIBLE_COLUMNS)} className="rounded-md border border-blue-100 bg-blue-50 px-2 py-1.5 text-[9px] font-black uppercase text-blue-700 sm:rounded-xl sm:px-3 sm:py-2 sm:text-[10px]">Mặc định</button>
+              <button type="button" onClick={() => setShowColumns(false)} className="flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1.5 text-[9px] font-black uppercase text-slate-600 sm:gap-1.5 sm:rounded-xl sm:px-3 sm:py-2 sm:text-[10px]"><X className="w-3.5 h-3.5" /> Đóng</button>
             </div>
           </div>
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-2">
+          <div className="grid max-h-[32dvh] grid-cols-2 gap-1 overflow-y-auto sm:max-h-none sm:grid-cols-3 sm:gap-2 lg:grid-cols-4 xl:grid-cols-6">
             {STUDENT_FIELDS.map(field => (
-              <label key={field.key} className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-[11px] font-black ${visibleColumns.includes(field.key) ? 'bg-indigo-50 border-indigo-100 text-indigo-800' : 'bg-white border-slate-200 text-slate-500'}`}>
+              <label key={field.key} className={`flex items-center gap-1.5 rounded-md border px-2 py-1.5 text-[9px] font-black sm:gap-2 sm:rounded-xl sm:px-3 sm:py-2 sm:text-[11px] ${visibleColumns.includes(field.key) ? 'bg-indigo-50 border-indigo-100 text-indigo-800' : 'bg-white border-slate-200 text-slate-500'}`}>
                 <input type="checkbox" checked={visibleColumns.includes(field.key)} disabled={field.key === 'fullName'} onChange={() => updateVisibleColumns(field.key)} className="accent-indigo-600" />
                 <span className="truncate">{field.label}</span>
               </label>
@@ -3321,12 +3443,12 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
       )}
 
       <>
-      <div className="shrink-0 p-2.5 sm:p-3 border-b border-slate-100 grid grid-cols-1 sm:grid-cols-[minmax(220px,1fr)_170px_160px_130px_42px_auto] gap-2">
-        <div className="relative">
-          <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Tìm tên, lớp, mã..." className="h-10 w-full rounded-xl border border-slate-200 pl-9 pr-3 text-sm font-bold focus:outline-none focus:border-indigo-400" />
+      <div className="shrink-0 grid grid-cols-2 gap-1.5 border-b border-slate-100 p-1.5 sm:grid-cols-[minmax(220px,1fr)_170px_160px_130px_42px_auto] sm:gap-2 sm:p-3">
+        <div className="relative col-span-2 sm:col-span-1">
+          <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400 sm:left-3 sm:h-4 sm:w-4" />
+          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Tìm tên, lớp, mã..." className="h-8 w-full rounded-lg border border-slate-200 pl-8 pr-2 text-xs font-bold focus:border-indigo-400 focus:outline-none sm:h-10 sm:rounded-xl sm:pl-9 sm:pr-3 sm:text-sm" />
         </div>
-        <select value={quickIssueFilter} onChange={(e) => setQuickIssueFilter(e.target.value)} className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-sm font-black">
+        <select value={quickIssueFilter} onChange={(e) => setQuickIssueFilter(e.target.value)} className="h-8 min-w-0 rounded-lg border border-slate-200 bg-white px-2 text-xs font-bold sm:h-10 sm:rounded-xl sm:px-3 sm:text-sm sm:font-black">
           {QUICK_ISSUE_FILTERS.map(item => (
             <option key={item.key} value={item.key}>{item.label} ({issueStats[item.key] ?? 0})</option>
           ))}
@@ -3335,31 +3457,65 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
           <button
             type="button"
             onClick={() => { setShowClassPicker(prev => !prev); setOpenFilterKey(null); }}
-            className={`h-10 w-full rounded-xl border px-3 text-sm font-black bg-white flex items-center justify-between gap-2 ${classFilter.length ? 'border-indigo-200 text-indigo-700 shadow-sm' : 'border-slate-200 text-slate-900'}`}
+            className={`h-8 w-full rounded-lg border bg-white px-2 text-xs font-bold flex items-center justify-between gap-1 sm:h-10 sm:rounded-xl sm:px-3 sm:text-sm sm:font-black ${classFilter.length ? 'border-indigo-200 text-indigo-700 shadow-sm' : 'border-slate-200 text-slate-900'}`}
           >
             <span className="truncate">{classFilterLabel}</span>
             <ChevronDown className={`w-4 h-4 shrink-0 transition-transform ${showClassPicker ? 'rotate-180' : ''}`} />
           </button>
           {showClassPicker && (
-            <div className="absolute right-0 top-full z-40 mt-2 w-64 rounded-2xl border border-slate-200 bg-white p-2 shadow-2xl">
-              <div className="flex items-center justify-between gap-2 border-b border-slate-100 pb-2">
-                <button type="button" onClick={() => setClassFilter([])} className="rounded-lg bg-slate-50 px-2 py-1.5 text-[10px] font-black uppercase text-slate-600">Tất cả</button>
-                <button type="button" onClick={() => setClassFilter(classOptions)} className="rounded-lg bg-indigo-50 px-2 py-1.5 text-[10px] font-black uppercase text-indigo-700">Chọn hết</button>
+            <>
+              {typeof document !== 'undefined' && createPortal((
+                <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-slate-950/45 p-3 backdrop-blur-[1px] sm:hidden" onClick={() => setShowClassPicker(false)}>
+                  <div className="flex max-h-[calc(100dvh-1.5rem)] w-full max-w-md min-h-0 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white p-3 shadow-2xl" onClick={(event) => event.stopPropagation()}>
+                    <div className="mb-2 flex items-center justify-between gap-2 border-b border-slate-100 pb-2">
+                      <div>
+                        <div className="text-sm font-black text-slate-900">Chọn lớp cần xem</div>
+                        <div className="mt-0.5 text-[10px] font-bold text-slate-400">{classFilterLabel}</div>
+                      </div>
+                      <button type="button" onClick={() => setShowClassPicker(false)} className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-600" aria-label="Đóng">
+                        <X className="h-4 w-4" />
+                      </button>
+                    </div>
+                    <div className="flex items-center justify-between gap-2 border-b border-slate-100 pb-2">
+                      <button type="button" onClick={() => setClassFilter([])} className="rounded-lg bg-slate-50 px-3 py-2 text-[10px] font-black uppercase text-slate-600">Tất cả</button>
+                      <button type="button" onClick={() => setClassFilter(classOptions)} className="rounded-lg bg-indigo-50 px-3 py-2 text-[10px] font-black uppercase text-indigo-700">Chọn hết</button>
+                    </div>
+                    <div className="mt-2 min-h-0 flex-1 overflow-y-auto overscroll-contain pr-1">
+                      {classOptions.length ? classOptions.map(className => (
+                        <label key={className} className={`mb-1 flex cursor-pointer items-center gap-2 rounded-xl border px-3 py-3 text-xs font-black ${selectedClassSet.has(className) ? 'border-indigo-100 bg-indigo-50 text-indigo-800' : 'border-slate-100 bg-white text-slate-600'}`}>
+                          <input type="checkbox" checked={selectedClassSet.has(className)} onChange={() => toggleClassFilter(className)} className="accent-indigo-600" />
+                          <span className="truncate">Lớp {className}</span>
+                        </label>
+                      )) : (
+                        <div className="px-3 py-6 text-center text-xs font-bold text-slate-400">Chưa có lớp</div>
+                      )}
+                    </div>
+                    <button type="button" onClick={() => setShowClassPicker(false)} className="mt-2 w-full shrink-0 rounded-xl bg-indigo-600 px-3 py-3 text-xs font-black uppercase text-white shadow-sm">
+                      Xong
+                    </button>
+                  </div>
+                </div>
+              ), document.body)}
+              <div className="absolute right-0 top-full z-40 mt-2 hidden w-64 rounded-2xl border border-slate-200 bg-white p-2 shadow-2xl sm:block">
+                <div className="flex items-center justify-between gap-2 border-b border-slate-100 pb-2">
+                  <button type="button" onClick={() => setClassFilter([])} className="rounded-lg bg-slate-50 px-2 py-1.5 text-[10px] font-black uppercase text-slate-600">Tất cả</button>
+                  <button type="button" onClick={() => setClassFilter(classOptions)} className="rounded-lg bg-indigo-50 px-2 py-1.5 text-[10px] font-black uppercase text-indigo-700">Chọn hết</button>
+                </div>
+                <div className="mt-2 max-h-64 overflow-y-auto pr-1">
+                  {classOptions.length ? classOptions.map(className => (
+                    <label key={className} className={`mb-1 flex cursor-pointer items-center gap-2 rounded-xl border px-3 py-2 text-xs font-black ${selectedClassSet.has(className) ? 'border-indigo-100 bg-indigo-50 text-indigo-800' : 'border-slate-100 bg-white text-slate-600 hover:bg-slate-50'}`}>
+                      <input type="checkbox" checked={selectedClassSet.has(className)} onChange={() => toggleClassFilter(className)} className="accent-indigo-600" />
+                      <span className="truncate">Lớp {className}</span>
+                    </label>
+                  )) : (
+                    <div className="px-3 py-6 text-center text-xs font-bold text-slate-400">Chưa có lớp</div>
+                  )}
+                </div>
+                <button type="button" onClick={() => setShowClassPicker(false)} className="mt-2 w-full rounded-xl bg-indigo-600 px-3 py-2 text-[10px] font-black uppercase text-white shadow-sm">
+                  Xong
+                </button>
               </div>
-              <div className="mt-2 max-h-64 overflow-auto pr-1">
-                {classOptions.length ? classOptions.map(className => (
-                  <label key={className} className={`mb-1 flex cursor-pointer items-center gap-2 rounded-xl border px-3 py-2 text-xs font-black ${selectedClassSet.has(className) ? 'border-indigo-100 bg-indigo-50 text-indigo-800' : 'border-slate-100 bg-white text-slate-600 hover:bg-slate-50'}`}>
-                    <input type="checkbox" checked={selectedClassSet.has(className)} onChange={() => toggleClassFilter(className)} className="accent-indigo-600" />
-                    <span className="truncate">Lớp {className}</span>
-                  </label>
-                )) : (
-                  <div className="px-3 py-6 text-center text-xs font-bold text-slate-400">Chưa có lớp</div>
-                )}
-              </div>
-              <button type="button" onClick={() => setShowClassPicker(false)} className="mt-2 w-full rounded-xl bg-indigo-600 px-3 py-2 text-[10px] font-black uppercase text-white shadow-sm">
-                Xong
-              </button>
-            </div>
+            </>
           )}
         </div>
         {studentTab === 'current' ? (
@@ -3385,7 +3541,7 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
               setColumnFilters({});
               setQuery('');
             }}
-            className="h-10 rounded-xl border border-rose-100 bg-rose-50 px-3 text-[10px] font-black uppercase text-rose-600"
+            className="col-span-2 h-8 rounded-lg border border-rose-100 bg-rose-50 px-2 text-[9px] font-black uppercase text-rose-600 sm:col-span-1 sm:h-10 sm:rounded-xl sm:px-3 sm:text-[10px]"
           >
             Xóa lọc
           </button>
@@ -3465,7 +3621,7 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
               ))}
               {!isImageOnlyView && (studentTab === 'current' ? (
                 <>
-                  <th className="px-4 py-3 text-right min-w-[130px]">Sửa</th>
+                  <th className="px-4 py-3 text-right min-w-[170px]">Thao tác</th>
                 </>
               ) : (
                 <>
@@ -3510,6 +3666,26 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
                   <>
                     <td className="px-4 py-3">
                       <div className="flex justify-end gap-1.5">
+                        {onSendTestResults && (
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              setSendingTestResultStudentId(student.id);
+                              try {
+                                await onSendTestResults(student);
+                              } catch (error) {
+                                showNotification?.(`Chưa gửi được kết quả kiểm tra: ${error.message}`, 'error');
+                              } finally {
+                                setSendingTestResultStudentId('');
+                              }
+                            }}
+                            disabled={sendingTestResultStudentId === student.id}
+                            title="Gửi kết quả kiểm tra vào hộp thư học sinh"
+                            className="p-2 rounded-lg bg-emerald-50 border border-emerald-100 text-emerald-700 hover:bg-emerald-100 disabled:opacity-50"
+                          >
+                            {sendingTestResultStudentId === student.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <Mail className="w-4 h-4" />}
+                          </button>
+                        )}
                         <button type="button" onClick={() => openEdit(student)} title="Sửa thông tin" className="p-2 rounded-lg bg-white border border-slate-200 text-blue-600 hover:bg-blue-50">
                           <Pencil className="w-4 h-4" />
                         </button>
@@ -3761,7 +3937,7 @@ function StudentCell({ student, field, onOpenEdit, onOpenDocument, isClassLeader
     return (
       <div className="flex items-center gap-3 min-w-[220px] cursor-pointer rounded-xl -m-1 p-1 hover:bg-indigo-50" onDoubleClick={() => onOpenEdit?.(student)} title="Nhấn đúp để sửa hồ sơ">
         <div className="w-11 h-11 rounded-2xl bg-indigo-50 border border-indigo-100 overflow-hidden flex items-center justify-center flex-shrink-0">
-          <DriveImage url={student.portraitUrl} alt={fullName || 'Học sinh'} className="w-full h-full object-cover" fallback={<UserRound className="w-5 h-5 text-indigo-300" />} />
+          <DriveImage url={student.portraitUrl} alt={fullName || 'Học sinh'} className="w-full h-full object-contain" fallback={<UserRound className="w-5 h-5 text-indigo-300" />} />
         </div>
         <div className="min-w-0">
           <div className="font-black text-slate-800 truncate flex items-center gap-1.5">
@@ -3777,7 +3953,7 @@ function StudentCell({ student, field, onOpenEdit, onOpenDocument, isClassLeader
   if (imagePreview) {
     const isPortraitPreview = field.key === 'portraitUrl';
     const previewSize = isPortraitPreview ? 'w-[84px] h-[104px]' : 'w-[128px] h-[92px]';
-    const previewFit = isPortraitPreview ? 'object-cover' : 'object-contain';
+    const previewFit = 'object-contain';
     return value ? (
       <button type="button" onClick={() => onOpenDocument?.(student, field, 0)} className={`mx-auto flex items-center justify-center ${previewSize} rounded-xl border border-slate-200 bg-white overflow-hidden shadow-sm`}>
         <DriveImage url={value} alt={fullName || 'Ảnh học sinh'} className={`w-full h-full ${previewFit}`} fallback={<UserRound className="w-8 h-8 text-slate-300" />} />
@@ -3796,7 +3972,7 @@ function StudentCell({ student, field, onOpenEdit, onOpenDocument, isClassLeader
     const previewSize = isPortraitPreview ? 'w-12 h-14' : 'w-16 h-12';
     return hasFile ? (
       <button type="button" onClick={() => onOpenDocument?.(student, field, 0)} className={`relative flex items-center justify-center ${previewSize} rounded-lg border border-slate-200 bg-white overflow-hidden shadow-sm`}>
-        <DriveImage url={urls[0]} alt={fullName || field.label || 'Ảnh học sinh'} className={`w-full h-full ${isPortraitPreview ? 'object-cover' : 'object-contain'}`} fallback={<ImageIcon className="w-5 h-5 text-slate-300" />} />
+        <DriveImage url={urls[0]} alt={fullName || field.label || 'Ảnh học sinh'} className="w-full h-full object-contain" fallback={<ImageIcon className="w-5 h-5 text-slate-300" />} />
         {urls.length > 1 && (
           <span className="absolute right-0.5 top-0.5 rounded-full bg-slate-900/70 px-1.5 py-0.5 text-[8px] font-black text-white">+{urls.length - 1}</span>
         )}
@@ -3857,7 +4033,7 @@ function DocumentManager({ docItem, value, uploading, onUpload, onRemove, onOpen
                   PDF
                 </div>
               ) : (
-                <img src={getPreviewImageUrl(activeUrl)} alt={`${docItem.label} ${activeIndex + 1}`} className="h-full w-full object-cover" loading="lazy" decoding="async" />
+                <img src={getPreviewImageUrl(activeUrl)} alt={`${docItem.label} ${activeIndex + 1}`} className="h-full w-full object-contain" loading="lazy" decoding="async" />
               )}
             </button>
           ) : (
@@ -3953,7 +4129,7 @@ function DocumentViewerModal({ viewer, onClose, onSelect, onPrevious, onNext }) 
                 {/\.pdf(\?|$)/i.test(url) ? (
                   <div className="flex h-full w-full items-center justify-center text-[10px] font-black text-rose-600">PDF {itemIndex + 1}</div>
                 ) : (
-                  <img src={getPreviewImageUrl(url)} alt={`${viewer.title} ${itemIndex + 1}`} className="h-full w-full object-cover" loading="lazy" decoding="async" />
+                  <img src={getPreviewImageUrl(url)} alt={`${viewer.title} ${itemIndex + 1}`} className="h-full w-full object-contain" loading="lazy" decoding="async" />
                 )}
               </button>
             ))}

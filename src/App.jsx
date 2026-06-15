@@ -7,9 +7,10 @@ import {
   Calendar, Clock, Sparkles, UploadCloud, RefreshCw, ListChecks, Maximize, 
   Minimize, ArrowUpAZ, ArrowDownAZ, Bold, Italic, Underline, Palette, 
   AlignLeft, AlignCenter, AlignRight, AlignJustify, Camera, ArrowUp,
-  ArrowDown, ChevronDown, ChevronUp, Pin, Briefcase, Pencil, Eye, BarChart3
+  ArrowDown, ChevronDown, ChevronUp, Pin, Briefcase, Pencil, Eye, BarChart3,
+  MoreVertical, Mail, Send
 } from 'lucide-react';
-import { collection, onSnapshot, addDoc, deleteDoc, doc, setDoc, updateDoc, getDoc, deleteField, increment } from 'firebase/firestore';
+import { collection, onSnapshot, addDoc, deleteDoc, doc, setDoc, updateDoc, getDoc, getDocs, deleteField, increment } from 'firebase/firestore';
 import { signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
 import { auth, db, appId } from './config/firebase';
 import { 
@@ -22,7 +23,8 @@ import {
   formatTextbookName, getSubjectShortName, getSubjectRank, 
   isYouTubeUrl, getEmbedUrl, getYouTubeWatchUrl, 
   getDefaultLinkTitle, extractDriveFileId, getDriveDisplayName, 
-  getDriveBaseName, cleanDriveTitle, normalizeServiceErrorMessage, postAppsScript 
+  getDriveBaseName, cleanDriveTitle, normalizeServiceErrorMessage, postAppsScript,
+  STAFF_SERVER_SESSION_STORAGE_KEY
 } from './utils/helpers';
 
 import {
@@ -39,14 +41,27 @@ import {
   rebalanceSelfQuizPoints,
   stripHtmlToText
 } from './utils/selfQuiz';
+import {
+  ADMIN_SERVER_SESSION_STORAGE_KEY,
+  ADMIN_SESSION_STORAGE_KEY,
+  clearStoredAdminSession,
+  readStoredAdminSession,
+  writeStoredAdminSession
+} from './utils/adminSession';
 import ClassOpsManager from './components/ClassOpsManager';
 import SimpleScheduleTable from './components/SimpleScheduleTable';
-import scorebookTemplate from './data/scorebookTemplate.json';
+
+const STUDENT_MAILBOX_DRIVE_URL = 'https://drive.google.com/drive/u/0/folders/1mdDD9kK_s_o2YytkUbqM0MH-T9HR9XXE';
+const STUDENT_MAILBOX_AUTO_READ_KEY = 'khohoclieu-student-mailbox-auto-read';
+const SCOREBOOK_SOURCE_FILE = 'so diem 9pc tmt 2025-2026 MAU.xlsx';
+const SYSTEM_BACKUP_COLLECTIONS = ['students', 'scorebooks', 'class_attendance', 'class_timetables', 'class_schedules', 'news', 'student_profile_requests'];
+const DAILY_BACKUP_STORAGE_KEY = 'khl-last-daily-backup-v1';
 
 const SelfQuizTeacherTools = lazy(() => import('./components/SelfQuizTeacherTools'));
 const HocSinhManager = lazy(() => import('./components/HocSinhManager'));
 const ScorebookWorkspace = lazy(() => import('./components/ScorebookWorkspace'));
 const AdminSettingsWorkspace = lazy(() => import('./components/AdminSettingsWorkspace'));
+const AdminDataSafetyWorkspace = lazy(() => import('./components/AdminDataSafetyWorkspace'));
 
 const THD_TEACHING_ASSIGNMENT_CHUNK_SIZE = 250000;
 
@@ -73,7 +88,7 @@ class WorkspaceErrorBoundary extends React.Component {
   render() {
     if (!this.state.error) return this.props.children;
     return (
-      <div className="fixed inset-x-0 top-[84px] bottom-0 z-[160] bg-white p-6 flex items-center justify-center">
+      <div className="fixed inset-x-0 top-[114px] sm:top-[84px] bottom-0 z-[160] bg-white p-6 flex items-center justify-center">
         <div className="max-w-xl rounded-2xl border border-rose-200 bg-rose-50 p-5 shadow-lg">
           <div className="text-lg font-black text-rose-800">{this.props.title || 'Màn hình đang lỗi'}</div>
           <div className="mt-2 text-sm font-bold text-rose-700">
@@ -103,8 +118,6 @@ const splitTextIntoChunks = (text = '', size = THD_TEACHING_ASSIGNMENT_CHUNK_SIZ
 
 const REGISTRATION_WEB_APP_URL = 'https://script.google.com/macros/s/AKfycby6e5ya2k105Oe7i65k9viysIZbHKOF-9CosueiNy1GvnHJbVw1lHB_0eezSxO91ls/exec';
 const ADDRESS_DIRECTORY_CACHE_KEY = 'khl-address-directory-v2';
-const ADMIN_SESSION_STORAGE_KEY = 'khl-admin-session-v1';
-const ADMIN_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const getCurrentTimestamp = () => Date.now();
 const SHOW_LEGACY_ADMIN_SETTINGS_PANEL = false;
 const SHOW_LEGACY_TEACHER_TABS = false;
@@ -222,432 +235,6 @@ const getStudentProfileEmbedUrl = (value = '') => {
 const revokePreviewUrls = (value) => {
   const urls = Array.isArray(value) ? value : [value];
   urls.filter(Boolean).forEach(url => URL.revokeObjectURL(url));
-};
-
-const clampNumber = (value, min, max) => Math.min(max, Math.max(min, value));
-
-const loadImageElementFromFile = (file) => new Promise((resolve, reject) => {
-  const url = URL.createObjectURL(file);
-  const image = new Image();
-  image.onload = () => resolve({ image, url });
-  image.onerror = () => {
-    URL.revokeObjectURL(url);
-    reject(new Error('Khong doc duoc anh.'));
-  };
-  image.src = url;
-});
-
-const distanceBetweenPoints = (a, b) => Math.hypot((a?.x || 0) - (b?.x || 0), (a?.y || 0) - (b?.y || 0));
-
-const getAdminSessionPassMarker = (value = '') => {
-  let hash = 2166136261;
-  const text = String(value || '');
-  for (let index = 0; index < text.length; index += 1) {
-    hash ^= text.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return String(hash >>> 0);
-};
-
-const readStoredAdminSession = () => {
-  if (typeof window === 'undefined') return null;
-  try {
-    const session = JSON.parse(window.localStorage.getItem(ADMIN_SESSION_STORAGE_KEY) || 'null');
-    if (!session || Number(session.expiresAt || 0) <= Date.now()) {
-      window.localStorage.removeItem(ADMIN_SESSION_STORAGE_KEY);
-      return null;
-    }
-    return session;
-  } catch {
-    window.localStorage.removeItem(ADMIN_SESSION_STORAGE_KEY);
-    return null;
-  }
-};
-
-const writeStoredAdminSession = (adminPass = '', adminModule = 'thcs', scope = 'full') => {
-  if (typeof window === 'undefined') return;
-  const session = {
-    passMarker: getAdminSessionPassMarker(adminPass),
-    module: adminModule || 'thcs',
-    scope: scope === 'thd' ? 'thd' : 'full',
-    expiresAt: Date.now() + ADMIN_SESSION_TTL_MS
-  };
-  window.localStorage.setItem(ADMIN_SESSION_STORAGE_KEY, JSON.stringify(session));
-};
-
-const clearStoredAdminSession = () => {
-  if (typeof window !== 'undefined') window.localStorage.removeItem(ADMIN_SESSION_STORAGE_KEY);
-};
-
-const solveLinearSystem = (matrix, values) => {
-  const size = values.length;
-  const rows = matrix.map((row, index) => [...row, values[index]]);
-  for (let col = 0; col < size; col += 1) {
-    let pivot = col;
-    for (let row = col + 1; row < size; row += 1) {
-      if (Math.abs(rows[row][col]) > Math.abs(rows[pivot][col])) pivot = row;
-    }
-    if (Math.abs(rows[pivot][col]) < 1e-8) return null;
-    [rows[col], rows[pivot]] = [rows[pivot], rows[col]];
-    const divisor = rows[col][col];
-    for (let item = col; item <= size; item += 1) rows[col][item] /= divisor;
-    for (let row = 0; row < size; row += 1) {
-      if (row === col) continue;
-      const factor = rows[row][col];
-      for (let item = col; item <= size; item += 1) rows[row][item] -= factor * rows[col][item];
-    }
-  }
-  return rows.map(row => row[size]);
-};
-
-const getProjectiveTransform = (from, to) => {
-  const matrix = [];
-  const values = [];
-  from.forEach((point, index) => {
-    const target = to[index];
-    const x = point.x;
-    const y = point.y;
-    const u = target.x;
-    const v = target.y;
-    matrix.push([x, y, 1, 0, 0, 0, -u * x, -u * y]);
-    values.push(u);
-    matrix.push([0, 0, 0, x, y, 1, -v * x, -v * y]);
-    values.push(v);
-  });
-  const h = solveLinearSystem(matrix, values);
-  return h ? [...h, 1] : null;
-};
-
-const findDocumentCorners = (imageData, width, height) => {
-  const source = imageData.data;
-  const gray = new Uint8ClampedArray(width * height);
-  for (let index = 0; index < gray.length; index += 1) {
-    const offset = index * 4;
-    gray[index] = (source[offset] * 0.299) + (source[offset + 1] * 0.587) + (source[offset + 2] * 0.114);
-  }
-
-  let count = 0;
-  let sum = 0;
-  let squareSum = 0;
-  let maxMagnitude = 0;
-  const marginX = Math.max(8, Math.floor(width * 0.025));
-  const marginY = Math.max(8, Math.floor(height * 0.025));
-  for (let y = marginY; y < height - marginY; y += 2) {
-    for (let x = marginX; x < width - marginX; x += 2) {
-      const i = y * width + x;
-      const gx = -gray[i - width - 1] - (2 * gray[i - 1]) - gray[i + width - 1] + gray[i - width + 1] + (2 * gray[i + 1]) + gray[i + width + 1];
-      const gy = -gray[i - width - 1] - (2 * gray[i - width]) - gray[i - width + 1] + gray[i + width - 1] + (2 * gray[i + width]) + gray[i + width + 1];
-      const magnitude = Math.hypot(gx, gy);
-      sum += magnitude;
-      squareSum += magnitude * magnitude;
-      maxMagnitude = Math.max(maxMagnitude, magnitude);
-      count += 1;
-    }
-  }
-  const mean = count ? sum / count : 0;
-  const deviation = Math.sqrt(Math.max(0, (squareSum / Math.max(count, 1)) - (mean * mean)));
-  const threshold = Math.max(36, mean + deviation * 1.15, maxMagnitude * 0.16);
-  const corners = {
-    tl: { score: Infinity, point: null },
-    tr: { score: -Infinity, point: null },
-    br: { score: -Infinity, point: null },
-    bl: { score: -Infinity, point: null }
-  };
-  let strongPoints = 0;
-  let minX = width;
-  let minY = height;
-  let maxX = 0;
-  let maxY = 0;
-  for (let y = marginY; y < height - marginY; y += 2) {
-    for (let x = marginX; x < width - marginX; x += 2) {
-      const i = y * width + x;
-      const gx = -gray[i - width - 1] - (2 * gray[i - 1]) - gray[i + width - 1] + gray[i - width + 1] + (2 * gray[i + 1]) + gray[i + width + 1];
-      const gy = -gray[i - width - 1] - (2 * gray[i - width]) - gray[i - width + 1] + gray[i + width - 1] + (2 * gray[i + width]) + gray[i + width + 1];
-      if (Math.hypot(gx, gy) < threshold) continue;
-      strongPoints += 1;
-      minX = Math.min(minX, x);
-      minY = Math.min(minY, y);
-      maxX = Math.max(maxX, x);
-      maxY = Math.max(maxY, y);
-      const tlScore = x + y;
-      const trScore = x - y;
-      const brScore = x + y;
-      const blScore = y - x;
-      if (tlScore < corners.tl.score) corners.tl = { score: tlScore, point: { x, y } };
-      if (trScore > corners.tr.score) corners.tr = { score: trScore, point: { x, y } };
-      if (brScore > corners.br.score) corners.br = { score: brScore, point: { x, y } };
-      if (blScore > corners.bl.score) corners.bl = { score: blScore, point: { x, y } };
-    }
-  }
-
-  if (strongPoints < 60 || !corners.tl.point || !corners.tr.point || !corners.br.point || !corners.bl.point) {
-    const padX = Math.floor(width * 0.04);
-    const padY = Math.floor(height * 0.04);
-    return [
-      { x: padX, y: padY },
-      { x: width - padX, y: padY },
-      { x: width - padX, y: height - padY },
-      { x: padX, y: height - padY }
-    ];
-  }
-
-  const areaWidth = Math.max(1, maxX - minX);
-  const areaHeight = Math.max(1, maxY - minY);
-  if (areaWidth * areaHeight < width * height * 0.18) {
-    const padX = Math.floor(width * 0.04);
-    const padY = Math.floor(height * 0.04);
-    return [
-      { x: padX, y: padY },
-      { x: width - padX, y: padY },
-      { x: width - padX, y: height - padY },
-      { x: padX, y: height - padY }
-    ];
-  }
-
-  return [corners.tl.point, corners.tr.point, corners.br.point, corners.bl.point];
-};
-
-const enhanceScannedImageData = (imageData, mode = 'document') => {
-  const data = imageData.data;
-  const preserveDocumentColor = mode === 'documentColor';
-  if (mode !== 'photo') normalizeDocumentLighting(imageData);
-  const histogram = new Array(256).fill(0);
-  for (let index = 0; index < data.length; index += 4) {
-    const lum = Math.round((data[index] * 0.299) + (data[index + 1] * 0.587) + (data[index + 2] * 0.114));
-    histogram[lum] += 1;
-  }
-  const total = imageData.width * imageData.height;
-  const percentile = (ratio) => {
-    const target = total * ratio;
-    let seen = 0;
-    for (let value = 0; value < 256; value += 1) {
-      seen += histogram[value];
-      if (seen >= target) return value;
-    }
-    return 255;
-  };
-  const low = percentile(mode === 'photo' ? 0.01 : 0.03);
-  const high = Math.max(low + 24, percentile(mode === 'photo' ? 0.985 : 0.965));
-  for (let index = 0; index < data.length; index += 4) {
-    if (mode === 'photo' || preserveDocumentColor) {
-      const contrast = mode === 'photo' ? 1.06 : 1.08;
-      const lift = mode === 'photo' ? 134 : 138;
-      for (let channel = 0; channel < 3; channel += 1) {
-        const normalized = ((data[index + channel] - low) / (high - low)) * 255;
-        data[index + channel] = clampNumber(((normalized - 128) * contrast) + lift, 0, 255);
-      }
-    } else {
-      const lum = (data[index] * 0.299) + (data[index + 1] * 0.587) + (data[index + 2] * 0.114);
-      const normalized = ((lum - low) / (high - low)) * 255;
-      const lifted = ((normalized - 128) * 1.18) + 144;
-      const value = clampNumber(lifted, 0, 255);
-      data[index] = value;
-      data[index + 1] = value;
-      data[index + 2] = value;
-    }
-  }
-  return imageData;
-};
-
-const normalizeDocumentLighting = (imageData) => {
-  const { width, height, data } = imageData;
-  const gray = new Uint8ClampedArray(width * height);
-  const integral = new Float64Array((width + 1) * (height + 1));
-  for (let y = 0; y < height; y += 1) {
-    let rowSum = 0;
-    for (let x = 0; x < width; x += 1) {
-      const index = y * width + x;
-      const offset = index * 4;
-      const lum = (data[offset] * 0.299) + (data[offset + 1] * 0.587) + (data[offset + 2] * 0.114);
-      gray[index] = lum;
-      rowSum += lum;
-      integral[(y + 1) * (width + 1) + x + 1] = integral[y * (width + 1) + x + 1] + rowSum;
-    }
-  }
-  const radius = Math.max(18, Math.round(Math.min(width, height) * 0.035));
-  for (let y = 0; y < height; y += 1) {
-    const y1 = Math.max(0, y - radius);
-    const y2 = Math.min(height - 1, y + radius);
-    for (let x = 0; x < width; x += 1) {
-      const x1 = Math.max(0, x - radius);
-      const x2 = Math.min(width - 1, x + radius);
-      const area = (x2 - x1 + 1) * (y2 - y1 + 1);
-      const sum = integral[(y2 + 1) * (width + 1) + x2 + 1]
-        - integral[y1 * (width + 1) + x2 + 1]
-        - integral[(y2 + 1) * (width + 1) + x1]
-        + integral[y1 * (width + 1) + x1];
-      const localBg = Math.max(70, sum / area);
-      const correction = 232 / localBg;
-      const index = (y * width + x) * 4;
-      const originalLum = Math.max(1, gray[y * width + x]);
-      const correctedLum = clampNumber(originalLum * correction, 0, 255);
-      const blend = clampNumber((localBg - originalLum) / 80, 0, 1);
-      const ratio = ((correctedLum * blend) + (originalLum * (1 - blend))) / originalLum;
-      data[index] = clampNumber(data[index] * ratio, 0, 255);
-      data[index + 1] = clampNumber(data[index + 1] * ratio, 0, 255);
-      data[index + 2] = clampNumber(data[index + 2] * ratio, 0, 255);
-    }
-  }
-  return imageData;
-};
-
-const rotateCanvasByDegrees = (canvas, degrees) => {
-  const radians = (degrees * Math.PI) / 180;
-  const sin = Math.abs(Math.sin(radians));
-  const cos = Math.abs(Math.cos(radians));
-  const nextWidth = Math.ceil((canvas.width * cos) + (canvas.height * sin));
-  const nextHeight = Math.ceil((canvas.width * sin) + (canvas.height * cos));
-  const rotated = document.createElement('canvas');
-  rotated.width = nextWidth;
-  rotated.height = nextHeight;
-  const ctx = rotated.getContext('2d');
-  ctx.fillStyle = '#fff';
-  ctx.fillRect(0, 0, nextWidth, nextHeight);
-  ctx.translate(nextWidth / 2, nextHeight / 2);
-  ctx.rotate(radians);
-  ctx.drawImage(canvas, -canvas.width / 2, -canvas.height / 2);
-  return rotated;
-};
-
-const estimateCanvasSkewAngle = (canvas) => {
-  const maxSampleWidth = 720;
-  const scale = Math.min(1, maxSampleWidth / Math.max(canvas.width, canvas.height));
-  const width = Math.max(1, Math.round(canvas.width * scale));
-  const height = Math.max(1, Math.round(canvas.height * scale));
-  const sampleCanvas = document.createElement('canvas');
-  sampleCanvas.width = width;
-  sampleCanvas.height = height;
-  const ctx = sampleCanvas.getContext('2d', { willReadFrequently: true });
-  ctx.drawImage(canvas, 0, 0, width, height);
-  const { data } = ctx.getImageData(0, 0, width, height);
-  const points = [];
-  const step = Math.max(1, Math.floor(Math.min(width, height) / 360));
-  for (let y = 0; y < height; y += step) {
-    for (let x = 0; x < width; x += step) {
-      const offset = (y * width + x) * 4;
-      const lum = (data[offset] * 0.299) + (data[offset + 1] * 0.587) + (data[offset + 2] * 0.114);
-      if (lum < 190) points.push({ x, y });
-    }
-  }
-  if (points.length < 120) return 0;
-  const centerX = width / 2;
-  const centerY = height / 2;
-  let bestAngle = 0;
-  let bestScore = -Infinity;
-  for (let angle = -8; angle <= 8; angle += 0.5) {
-    const radians = (angle * Math.PI) / 180;
-    const sin = Math.sin(radians);
-    const cos = Math.cos(radians);
-    const bins = new Uint16Array(height + width);
-    points.forEach(point => {
-      const projectedY = Math.round(((point.x - centerX) * sin) + ((point.y - centerY) * cos) + centerY);
-      if (projectedY >= 0 && projectedY < bins.length) bins[projectedY] += 1;
-    });
-    let score = 0;
-    for (let index = 1; index < bins.length; index += 1) {
-      const diff = bins[index] - bins[index - 1];
-      score += diff * diff;
-    }
-    if (score > bestScore) {
-      bestScore = score;
-      bestAngle = angle;
-    }
-  }
-  return Math.abs(bestAngle) >= 0.7 ? bestAngle : 0;
-};
-
-const orientScannedCanvas = (canvas, orientation = 'auto') => {
-  let nextCanvas = canvas;
-  if (orientation === 'portrait' && nextCanvas.width > nextCanvas.height) {
-    nextCanvas = rotateCanvasByDegrees(nextCanvas, 90);
-  }
-  if (orientation === 'landscape' && nextCanvas.height > nextCanvas.width) {
-    nextCanvas = rotateCanvasByDegrees(nextCanvas, 90);
-  }
-  return nextCanvas;
-};
-
-const scanDocumentImageFile = async (file, { mode = 'document', orientation = 'auto' } = {}) => {
-  const { image, url } = await loadImageElementFromFile(file);
-  try {
-    const maxDimension = 1800;
-    const scale = Math.min(1, maxDimension / Math.max(image.naturalWidth || image.width, image.naturalHeight || image.height));
-    const width = Math.max(1, Math.round((image.naturalWidth || image.width) * scale));
-    const height = Math.max(1, Math.round((image.naturalHeight || image.height) * scale));
-    const sourceCanvas = document.createElement('canvas');
-    sourceCanvas.width = width;
-    sourceCanvas.height = height;
-    const sourceCtx = sourceCanvas.getContext('2d', { willReadFrequently: true });
-    sourceCtx.drawImage(image, 0, 0, width, height);
-    const sourceImageData = sourceCtx.getImageData(0, 0, width, height);
-    const corners = findDocumentCorners(sourceImageData, width, height);
-    const topWidth = distanceBetweenPoints(corners[0], corners[1]);
-    const bottomWidth = distanceBetweenPoints(corners[3], corners[2]);
-    const leftHeight = distanceBetweenPoints(corners[0], corners[3]);
-    const rightHeight = distanceBetweenPoints(corners[1], corners[2]);
-    let outputWidth = Math.round(Math.max(topWidth, bottomWidth));
-    let outputHeight = Math.round(Math.max(leftHeight, rightHeight));
-    const outputScale = Math.min(1, maxDimension / Math.max(outputWidth, outputHeight));
-    outputWidth = Math.max(320, Math.round(outputWidth * outputScale));
-    outputHeight = Math.max(320, Math.round(outputHeight * outputScale));
-    const destCorners = [
-      { x: 0, y: 0 },
-      { x: outputWidth - 1, y: 0 },
-      { x: outputWidth - 1, y: outputHeight - 1 },
-      { x: 0, y: outputHeight - 1 }
-    ];
-    const transform = getProjectiveTransform(destCorners, corners);
-    if (!transform) throw new Error('Khong tinh duoc goc scan.');
-
-    const outputCanvas = document.createElement('canvas');
-    outputCanvas.width = outputWidth;
-    outputCanvas.height = outputHeight;
-    const outputCtx = outputCanvas.getContext('2d', { willReadFrequently: true });
-    const outputImageData = outputCtx.createImageData(outputWidth, outputHeight);
-    const sourceData = sourceImageData.data;
-    const destData = outputImageData.data;
-    for (let y = 0; y < outputHeight; y += 1) {
-      for (let x = 0; x < outputWidth; x += 1) {
-        const denominator = (transform[6] * x) + (transform[7] * y) + 1;
-        const sx = clampNumber(((transform[0] * x) + (transform[1] * y) + transform[2]) / denominator, 0, width - 1);
-        const sy = clampNumber(((transform[3] * x) + (transform[4] * y) + transform[5]) / denominator, 0, height - 1);
-        const ix = Math.floor(sx);
-        const iy = Math.floor(sy);
-        const fx = sx - ix;
-        const fy = sy - iy;
-        const ix2 = Math.min(ix + 1, width - 1);
-        const iy2 = Math.min(iy + 1, height - 1);
-        const p00 = (iy * width + ix) * 4;
-        const p10 = (iy * width + ix2) * 4;
-        const p01 = (iy2 * width + ix) * 4;
-        const p11 = (iy2 * width + ix2) * 4;
-        const target = (y * outputWidth + x) * 4;
-        for (let channel = 0; channel < 4; channel += 1) {
-          const top = sourceData[p00 + channel] * (1 - fx) + sourceData[p10 + channel] * fx;
-          const bottom = sourceData[p01 + channel] * (1 - fx) + sourceData[p11 + channel] * fx;
-          destData[target + channel] = top * (1 - fy) + bottom * fy;
-        }
-      }
-    }
-    enhanceScannedImageData(outputImageData, mode);
-    outputCtx.putImageData(outputImageData, 0, 0);
-    let finalCanvas = outputCanvas;
-    if (mode !== 'photo') {
-      const skewAngle = estimateCanvasSkewAngle(finalCanvas);
-      if (skewAngle) finalCanvas = rotateCanvasByDegrees(finalCanvas, -skewAngle);
-    }
-    finalCanvas = orientScannedCanvas(finalCanvas, orientation);
-    const blob = await new Promise(resolve => finalCanvas.toBlob(resolve, 'image/jpeg', 0.9));
-    if (!blob) throw new Error('Khong tao duoc anh scan.');
-    const cleanName = String(file.name || 'anh.jpg').replace(/\.[^.]+$/, '');
-    return {
-      file: new File([blob], `${cleanName}_scan.jpg`, { type: 'image/jpeg', lastModified: Date.now() }),
-      url: URL.createObjectURL(blob),
-      corners
-    };
-  } finally {
-    URL.revokeObjectURL(url);
-  }
 };
 
 const getStudentDisplayName = (fullName = '', compact = false) => {
@@ -905,13 +492,18 @@ function App() {
   const [role, setRole] = useState(() => initialAdminSession ? 'admin' : null);
   const [loginRole, setLoginRole] = useState(null); 
   const [isAdmin, setIsAdmin] = useState(() => Boolean(initialAdminSession));
+  const [adminSessionToken, setAdminSessionToken] = useState(() => (
+    typeof window !== 'undefined' ? window.sessionStorage.getItem(ADMIN_SERVER_SESSION_STORAGE_KEY) || '' : ''
+  ));
   const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
   const [confirmModal, setConfirmModal] = useState({ show: false, message: '', onConfirm: null });
   const [modalMode, setModalMode] = useState('teacher');
   const [passwordInput, setPasswordInput] = useState('');
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
-  const [adminPass, setAdminPass] = useState('123321');
+  const [newAdminPassword, setNewAdminPassword] = useState('');
+  const [isSavingAdminPassword, setIsSavingAdminPassword] = useState(false);
+  const [isSavingStaffPassword, setIsSavingStaffPassword] = useState('');
   const [thdAdminPass, setThdAdminPass] = useState('');
   const [adminSettingsLoaded, setAdminSettingsLoaded] = useState(false);
   const [isTeacherPassEnabled, setIsTeacherPassEnabled] = useState(false);
@@ -959,8 +551,13 @@ function App() {
   const [quickScorebookSavingKey, setQuickScorebookSavingKey] = useState('');
   const [quickPriorityStudentIds, setQuickPriorityStudentIds] = useState(new Set());
   const [activeQuickScoreRowKey, setActiveQuickScoreRowKey] = useState('');
+  const [quickScoreMailStudentIds, setQuickScoreMailStudentIds] = useState(new Set());
+  const [quickScoreMailSemester, setQuickScoreMailSemester] = useState('hki');
+  const [isSendingQuickScoreMail, setIsSendingQuickScoreMail] = useState(false);
   const [showAdminCheckWorkspace, setShowAdminCheckWorkspace] = useState(false);
   const [showPasswordWorkspace, setShowPasswordWorkspace] = useState(false);
+  const [showDataSafetyWorkspace, setShowDataSafetyWorkspace] = useState(false);
+  const [systemSnapshot, setSystemSnapshot] = useState({ collections: {}, settings: {} });
   const [showAdminSettingsWorkspace, setShowAdminSettingsWorkspace] = useState(() => initialAdminSession?.scope === 'thd');
   const [adminSettingsInitialPanel, setAdminSettingsInitialPanel] = useState(() => (initialAdminSession?.scope === 'thd' ? 'thdTeachingAssignments' : 'general'));
   const [adminModule, setAdminModule] = useState(() => (initialAdminSession?.scope === 'thd' ? 'thd' : (initialAdminSession?.module || 'thcs')));
@@ -972,6 +569,22 @@ function App() {
   const [mobileHomeTab, setMobileHomeTab] = useState('notifications'); 
   const [teacherTab, setTeacherTab] = useState('giang_day');
   const [newsList, setNewsList] = useState([]);
+  const [studentMailboxMessages, setStudentMailboxMessages] = useState([]);
+  const [mailboxAutoReadIds, setMailboxAutoReadIds] = useState([]);
+  const [showStudentMailbox, setShowStudentMailbox] = useState(false);
+  const [selectedStudentMailboxMessage, setSelectedStudentMailboxMessage] = useState(null);
+  const [isLoadingStudentMailbox, setIsLoadingStudentMailbox] = useState(false);
+  const [isSendingStudentMailbox, setIsSendingStudentMailbox] = useState(false);
+  const [mailboxRecipientType, setMailboxRecipientType] = useState('student');
+  const [mailboxRecipientValue, setMailboxRecipientValue] = useState('');
+  const [mailboxCategory, setMailboxCategory] = useState('general');
+  const [mailboxTitle, setMailboxTitle] = useState('');
+  const [mailboxBody, setMailboxBody] = useState('');
+  const [mailboxDeleteMode, setMailboxDeleteMode] = useState('filter');
+  const [mailboxDeleteCategory, setMailboxDeleteCategory] = useState('all');
+  const [mailboxDeleteFrom, setMailboxDeleteFrom] = useState('');
+  const [mailboxDeleteTo, setMailboxDeleteTo] = useState('');
+  const [isDeletingStudentMailbox, setIsDeletingStudentMailbox] = useState(false);
   const [viewingNews, setViewingNews] = useState(null);
   const [showAddNews, setShowAddNews] = useState(false);
   const [editingNews, setEditingNews] = useState(null);
@@ -1237,6 +850,15 @@ function App() {
     const nameKey = removeAccents(String(activeStudentProfile?.fullName || currentStudent?.fullName || '').toLowerCase()).replace(/[^a-z0-9]/g, '');
     return nameKey || 'guest';
   }, [activeStudentProfile, currentStudent]);
+  const mailboxAutoReadStorageKey = useMemo(() => `${STUDENT_MAILBOX_AUTO_READ_KEY}-${activeStudentIdentityKey}`, [activeStudentIdentityKey]);
+  useEffect(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(mailboxAutoReadStorageKey) || '[]');
+      setMailboxAutoReadIds(Array.isArray(saved) ? saved : []);
+    } catch {
+      setMailboxAutoReadIds([]);
+    }
+  }, [mailboxAutoReadStorageKey]);
   const currentLessonProgressDocId = useMemo(() => (
     selectedGrade && selectedSubject && selectedLesson && currentSchoolYear && activeStudentIdentityKey
       ? cleanDocId(`${currentSchoolYear}_g${selectedGrade}_${selectedSubject}_l${selectedLesson}_${activeStudentIdentityKey}`)
@@ -1264,6 +886,168 @@ function App() {
     setToast({ show: true, message, type });
     setTimeout(() => setToast({ show: false, message: '', type: 'success' }), 4000);
   }, []);
+
+  const mailboxStudents = useMemo(() => (
+    allStudents
+      .filter(student => !activeSchoolYear || !student.schoolYear || String(student.schoolYear) === String(activeSchoolYear))
+      .sort((a, b) => String(a.className || '').localeCompare(String(b.className || ''), 'vi', { numeric: true })
+        || String(a.fullName || '').localeCompare(String(b.fullName || ''), 'vi'))
+  ), [allStudents, activeSchoolYear]);
+  const mailboxClassOptions = useMemo(() => (
+    [...new Set(mailboxStudents.map(student => String(student.className || '').trim()).filter(Boolean))]
+      .sort((a, b) => a.localeCompare(b, 'vi', { numeric: true }))
+  ), [mailboxStudents]);
+  const fetchStudentMailbox = useCallback(async ({ silent = false } = {}) => {
+    const accessCode = String(activeStudentProfile?.accessCode || currentStudent?.accessCode || '').trim().toUpperCase();
+    if (!accessCode) return;
+    if (!silent) setIsLoadingStudentMailbox(true);
+    try {
+      const response = await postAppsScript({
+        action: 'getStudentMailboxMessages',
+        accessCode,
+        className: String(activeStudentProfile?.className || currentStudent?.className || '').trim(),
+        schoolYear: currentSchoolYear
+      });
+      if (response.status !== 'success') throw new Error(response.message || 'Chưa đọc được hộp thư.');
+      setStudentMailboxMessages(Array.isArray(response.messages) ? response.messages : []);
+    } catch (error) {
+      if (!silent) showNotification(`Chưa đọc được hộp thư: ${error.message}`, 'error');
+    } finally {
+      if (!silent) setIsLoadingStudentMailbox(false);
+    }
+  }, [activeStudentProfile, currentStudent, currentSchoolYear, showNotification]);
+  useEffect(() => {
+    if (role !== 'student' || !activeStudentProfile?.accessCode) {
+      setStudentMailboxMessages([]);
+      return undefined;
+    }
+    fetchStudentMailbox({ silent: true });
+    const timer = window.setInterval(() => fetchStudentMailbox({ silent: true }), 45000);
+    return () => window.clearInterval(timer);
+  }, [role, activeStudentProfile?.accessCode, fetchStudentMailbox]);
+  const sendStudentMailboxMessage = async () => {
+    if (!mailboxTitle.trim() || !mailboxBody.trim()) {
+      showNotification('Admin nhập tiêu đề và nội dung thư trước.', 'error');
+      return;
+    }
+    if (mailboxRecipientType !== 'all' && !mailboxRecipientValue) {
+      showNotification('Admin chưa chọn người nhận.', 'error');
+      return;
+    }
+    const selectedStudent = mailboxStudents.find(student => student.id === mailboxRecipientValue);
+    const recipientValue = mailboxRecipientType === 'student'
+      ? String(selectedStudent?.accessCode || '').trim().toUpperCase()
+      : mailboxRecipientValue;
+    if (mailboxRecipientType === 'student' && !recipientValue) {
+      showNotification('Học sinh này chưa có mã HS nên chưa gửi thư riêng được.', 'error');
+      return;
+    }
+    const recipientLabel = mailboxRecipientType === 'all'
+      ? 'Toàn trường'
+      : mailboxRecipientType === 'class'
+        ? `Lớp ${mailboxRecipientValue}`
+        : `${selectedStudent?.fullName || 'Học sinh'} - ${recipientValue}`;
+    setIsSendingStudentMailbox(true);
+    try {
+      const response = await postAppsScript({
+        action: 'sendStudentMailboxMessage',
+        schoolYear: activeSchoolYear,
+        recipientType: mailboxRecipientType,
+        recipientValue,
+        recipientLabel,
+        category: mailboxCategory,
+        title: mailboxTitle.trim(),
+        body: mailboxBody.trim(),
+        sender: 'Admin',
+        adminSessionToken
+      });
+      if (response.status !== 'success') throw new Error(response.message || 'Chưa gửi được thư.');
+      setMailboxTitle('');
+      setMailboxBody('');
+      showNotification(`Đã gửi thư đến ${recipientLabel}.`);
+    } catch (error) {
+      showNotification(`Chưa gửi được thư: ${error.message}`, 'error');
+    } finally {
+      setIsSendingStudentMailbox(false);
+    }
+  };
+  const sendGeneratedStudentMailboxMessage = useCallback(async ({ student, category = 'general', title, body }) => {
+    const accessCode = String(student?.accessCode || student?.studentAccessCode || '').trim().toUpperCase();
+    if (!accessCode) throw new Error('Học sinh chưa có mã HS nên chưa thể nhận thư riêng.');
+    const cleanTitle = String(title || '').trim();
+    const cleanBody = String(body || '').trim();
+    if (!cleanTitle || !cleanBody) throw new Error('Nội dung thư đang trống.');
+    const response = await postAppsScript({
+      action: 'sendStudentMailboxMessage',
+      schoolYear: activeSchoolYear,
+      recipientType: 'student',
+      recipientValue: accessCode,
+      recipientLabel: `${student?.fullName || 'Học sinh'} - ${accessCode}`,
+      category,
+      title: cleanTitle,
+      body: cleanBody,
+      sender: 'Admin',
+      adminSessionToken
+    });
+    if (response.status !== 'success') throw new Error(response.message || 'Chưa gửi được thư.');
+    return response;
+  }, [activeSchoolYear, adminSessionToken]);
+  const deleteStudentMailboxMessages = useCallback(() => {
+    const fromTime = mailboxDeleteFrom ? new Date(`${mailboxDeleteFrom}T00:00:00`).getTime() : 0;
+    const toTime = mailboxDeleteTo ? new Date(`${mailboxDeleteTo}T23:59:59.999`).getTime() : 0;
+    if (mailboxDeleteMode !== 'all' && mailboxDeleteCategory === 'all' && !fromTime && !toTime) {
+      showNotification('Chọn loại tin hoặc khoảng thời gian cần xóa.', 'error');
+      return;
+    }
+    if (fromTime && toTime && fromTime > toTime) {
+      showNotification('Ngày bắt đầu phải trước ngày kết thúc.', 'error');
+      return;
+    }
+    const categoryLabels = {
+      all: 'tất cả mục',
+      general: 'thông báo chung',
+      score: 'kết quả học tập',
+      profile: 'hồ sơ học sinh',
+      quiz: 'bài kiểm tra',
+      reminder: 'nhắc việc'
+    };
+    const filterDescription = mailboxDeleteMode === 'all'
+      ? 'TOÀN BỘ tin nhắn của tất cả học sinh'
+      : `${categoryLabels[mailboxDeleteCategory] || mailboxDeleteCategory}${mailboxDeleteFrom ? ` từ ${mailboxDeleteFrom.split('-').reverse().join('/')}` : ''}${mailboxDeleteTo ? ` đến ${mailboxDeleteTo.split('-').reverse().join('/')}` : ''}`;
+    setConfirmModal({
+      show: true,
+      message: `Xóa ${filterDescription}?\nDữ liệu đã xóa sẽ biến mất khỏi hộp thư học sinh và không thể hoàn tác.`,
+      onConfirm: async () => {
+        setIsDeletingStudentMailbox(true);
+        try {
+          const response = await postAppsScript({
+            action: 'deleteStudentMailboxMessages',
+            mode: mailboxDeleteMode,
+            category: mailboxDeleteCategory,
+            fromTime,
+            toTime,
+            adminSessionToken
+          });
+          if (response.status !== 'success') throw new Error(response.message || 'Chưa xóa được tin nhắn.');
+          showNotification(`Đã xóa ${Number(response.deletedCount || 0)} tin nhắn.`);
+        } catch (error) {
+          showNotification(`Chưa xóa được tin nhắn: ${error.message}`, 'error');
+        } finally {
+          setIsDeletingStudentMailbox(false);
+        }
+      }
+    });
+  }, [mailboxDeleteMode, mailboxDeleteCategory, mailboxDeleteFrom, mailboxDeleteTo, adminSessionToken, showNotification]);
+  const markManualMailboxMessageRead = useCallback(async (message) => {
+    const accessCode = String(activeStudentProfile?.accessCode || currentStudent?.accessCode || '').trim().toUpperCase();
+    if (!message?.id || !accessCode || message.isRead) return;
+    setStudentMailboxMessages(prev => prev.map(item => item.id === message.id ? { ...item, isRead: true } : item));
+    try {
+      await postAppsScript({ action: 'markStudentMailboxMessageRead', messageId: message.id, accessCode });
+    } catch {
+      fetchStudentMailbox({ silent: true });
+    }
+  }, [activeStudentProfile, currentStudent, fetchStudentMailbox]);
 
   const loadStudentProfileCommunes = useCallback(async (province) => {
     const provinceName = String(province || '').trim();
@@ -1370,6 +1154,7 @@ function App() {
     setShowAdminSettingsWorkspace(false);
     setShowAdminCheckWorkspace(false);
     setShowPasswordWorkspace(false);
+    setShowDataSafetyWorkspace(false);
     setScorebookGrade(null);
     if (typeof window !== 'undefined' && window.location.hash.toLowerCase().startsWith('#/admin')) {
       window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
@@ -1478,41 +1263,20 @@ function App() {
     setSubmissionStatus('');
   };
 
-  const scanUploadImageFile = async (file, options = {}) => {
-    if (!file || !String(file.type || '').toLowerCase().startsWith('image/')) return file || null;
-    try {
-      const scanned = await scanDocumentImageFile(file, options);
-      URL.revokeObjectURL(scanned.url);
-      return scanned.file;
-    } catch (error) {
-      showNotification(`Chưa tự quét được ảnh, sẽ dùng ảnh gốc: ${error.message}`, 'error');
-      return file;
-    }
-  };
-
   const handleStudentProfileImageChange = async (key, file) => {
     if (!file) {
       applyStudentProfileImageFile(key, null);
       return;
     }
-    const shouldScan = key !== 'portraitUrl' && String(file.type || '').toLowerCase().startsWith('image/');
-    const nextFile = shouldScan
-      ? await scanUploadImageFile(file, { mode: 'documentColor', orientation: key === 'identityCardUrl' ? 'landscape' : 'auto' })
-      : file;
-    applyStudentProfileImageFile(key, nextFile || file);
-    if (shouldScan) showNotification('Đã quét ảnh, nắn thẳng và giảm bóng trước khi gửi.');
+    applyStudentProfileImageFile(key, file);
   };
 
   const applyStudentProfileImageFiles = async (key, files = [], append = false) => {
     const nextFiles = Array.from(files || []).filter(Boolean);
     if (!nextFiles.length) return;
-    const shouldScan = key !== 'portraitUrl';
-    const processedFiles = shouldScan
-      ? await Promise.all(nextFiles.map(file => scanUploadImageFile(file, { mode: 'documentColor', orientation: 'auto' })))
-      : nextFiles;
     setStudentProfileImages(prev => ({
       ...prev,
-      [key]: append ? [...(Array.isArray(prev[key]) ? prev[key] : (prev[key] ? [prev[key]] : [])), ...processedFiles] : processedFiles
+      [key]: append ? [...(Array.isArray(prev[key]) ? prev[key] : (prev[key] ? [prev[key]] : [])), ...nextFiles] : nextFiles
     }));
     setStudentProfileImageAppendModes(prev => ({ ...prev, [key]: Boolean(append) }));
     if (!append) {
@@ -1525,9 +1289,8 @@ function App() {
     setStudentProfileImagePreviews(prev => {
       revokePreviewUrls(prev?.[key]);
       const previousFiles = append ? (Array.isArray(studentProfileImages[key]) ? studentProfileImages[key] : (studentProfileImages[key] ? [studentProfileImages[key]] : [])) : [];
-      return { ...prev, [key]: [...previousFiles, ...processedFiles].map(file => URL.createObjectURL(file)) };
+      return { ...prev, [key]: [...previousFiles, ...nextFiles].map(file => URL.createObjectURL(file)) };
     });
-    if (shouldScan) showNotification(`Đã quét ${processedFiles.length} ảnh, nắn thẳng và giảm bóng trước khi gửi.`);
   };
 
   const fileToBase64Payload = (file, field = {}) => new Promise((resolve, reject) => {
@@ -1729,6 +1492,14 @@ function App() {
   }, []);
 
   useEffect(() => {
+    postAppsScript({ action: 'getAccessConfig' })
+      .then(response => {
+        if (typeof response.teacherPasswordEnabled === 'boolean') setIsTeacherPassEnabled(response.teacherPasswordEnabled);
+      })
+      .catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
     if (!user) return;
     const unsubNews = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'news'), (snapshot) => { const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })); docs.sort(sortNewsForDisplay); setNewsList(docs); });
     const unsubMats = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'materials'), (snapshot) => { const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })); setAllMaterials(docs); });
@@ -1757,10 +1528,6 @@ function App() {
       }
       const data = docSnap.data();
       if (data.schoolYear) setCurrentSchoolYear(data.schoolYear);
-      if (typeof data.adminPass === 'string') setAdminPass(data.adminPass);
-      if (typeof data.thdAdminPass === 'string') setThdAdminPass(data.thdAdminPass);
-      if (typeof data.isTeacherPassEnabled === 'boolean') setIsTeacherPassEnabled(data.isTeacherPassEnabled);
-      if (typeof data.teacherPass === 'string') setTeacherPass(data.teacherPass);
       if (typeof data.isStudentCodeEnabled === 'boolean') setIsStudentCodeEnabled(data.isStudentCodeEnabled);
       if (typeof data.principalName === 'string') setPrincipalName(data.principalName);
       if (typeof data.pcResponsibleName === 'string') setPcResponsibleName(data.pcResponsibleName);
@@ -1828,8 +1595,7 @@ function App() {
     if (!user || !adminSettingsLoaded) return;
     const session = readStoredAdminSession();
     const sessionScope = session?.scope === 'thd' ? 'thd' : 'full';
-    const sessionPass = sessionScope === 'thd' ? thdAdminPass : adminPass;
-    const isValidSession = Boolean(sessionPass) && session?.passMarker === getAdminSessionPassMarker(sessionPass);
+    const isValidSession = Boolean(session && (sessionScope === 'thd' || adminSessionToken));
     if (!isValidSession) {
       if (isAdmin) {
         clearStoredAdminSession();
@@ -1851,14 +1617,31 @@ function App() {
         window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}#/admin/tran-hung-dao/assignments`);
       }
     }
-  }, [adminPass, adminSettingsLoaded, closeAdminSessionView, isAdmin, thdAdminPass, user]);
+  }, [adminSessionToken, adminSettingsLoaded, closeAdminSessionView, isAdmin, user]);
 
   useEffect(() => {
-    if (!isAdmin || !adminSettingsLoaded) return;
-    const sessionPass = adminAccessScope === 'thd' ? thdAdminPass : adminPass;
-    if (!sessionPass) return;
-    writeStoredAdminSession(sessionPass, adminModule, adminAccessScope);
-  }, [adminAccessScope, adminModule, adminPass, adminSettingsLoaded, isAdmin, thdAdminPass]);
+    if (!adminSessionToken) return undefined;
+    let active = true;
+    postAppsScript({ action: 'validateAdminSession', adminSessionToken })
+      .then((response) => {
+        if (!active || response.status === 'success') return;
+        clearStoredAdminSession();
+        setAdminSessionToken('');
+        closeAdminSessionView();
+      })
+      .catch(() => {
+        if (!active) return;
+        clearStoredAdminSession();
+        setAdminSessionToken('');
+        closeAdminSessionView();
+      });
+    return () => { active = false; };
+  }, [adminSessionToken, closeAdminSessionView]);
+
+  useEffect(() => {
+    if (!isAdmin || !adminSettingsLoaded || !adminSessionToken) return;
+    writeStoredAdminSession(adminModule, adminAccessScope);
+  }, [adminAccessScope, adminModule, adminSessionToken, adminSettingsLoaded, isAdmin]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return undefined;
@@ -1871,7 +1654,7 @@ function App() {
   }, [closeAdminSessionView]);
 
   const getScorebookDocIdForGrade = useCallback((grade) => (
-    cleanDocId(`${activeSchoolYear || 'nam-hoc'}_${scorebookTemplate.sourceFile || 'so-diem'}_khoi_${grade || 'tat-ca'}`)
+    cleanDocId(`${activeSchoolYear || 'nam-hoc'}_${SCOREBOOK_SOURCE_FILE}_khoi_${grade || 'tat-ca'}`)
   ), [activeSchoolYear]);
 
   const getScorebookStudentsForGrade = useCallback((grade) => {
@@ -1901,9 +1684,30 @@ function App() {
     });
   }, []);
 
+  const toggleQuickScoreMailStudent = useCallback((studentKey) => {
+    if (!studentKey) return;
+    setQuickScoreMailStudentIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(studentKey)) next.delete(studentKey);
+      else next.add(studentKey);
+      return next;
+    });
+  }, []);
+
+  const toggleAllQuickScoreMailStudents = useCallback(() => {
+    setQuickScoreMailStudentIds((prev) => {
+      const allKeys = quickScoreStudents.map((student, index) => getQuickScoreStudentKey(student, index));
+      return allKeys.length && allKeys.every(key => prev.has(key)) ? new Set() : new Set(allKeys);
+    });
+  }, [quickScoreStudents]);
+
   useEffect(() => {
     const validKeys = new Set(quickScoreStudents.map((student, index) => getQuickScoreStudentKey(student, index)));
     setQuickPriorityStudentIds((prev) => {
+      const next = new Set([...prev].filter(key => validKeys.has(key)));
+      return next.size === prev.size ? prev : next;
+    });
+    setQuickScoreMailStudentIds((prev) => {
       const next = new Set([...prev].filter(key => validKeys.has(key)));
       return next.size === prev.size ? prev : next;
     });
@@ -2052,6 +1856,134 @@ function App() {
     return 'Chưa đạt';
   }, [getQuickSemesterScoreResult]);
 
+  const sendQuickScoreReportToStudent = useCallback(async () => {
+    const selectedStudents = quickScoreStudents
+      .map((student, rowIndex) => ({ student, rowIndex, studentKey: getQuickScoreStudentKey(student, rowIndex) }))
+      .filter(item => quickScoreMailStudentIds.has(item.studentKey));
+    if (!selectedStudents.length) {
+      showNotification('Tích chọn học sinh cần gửi phiếu điểm.', 'error');
+      return;
+    }
+    const semesterLabel = quickScoreMailSemester === 'hkii' ? 'HK2' : 'HK1';
+    const missingCodes = selectedStudents.filter(({ student }) => !String(student.accessCode || student.studentAccessCode || '').trim());
+    const incompleteStudents = selectedStudents.filter(({ rowIndex }) => (
+      QUICK_SCORE_SUBJECTS.some(subject => !getQuickSemesterScoreResult(quickScoreMailSemester, subject.pageIndex, rowIndex, 6))
+    ));
+    const unsavedDraftCount = Object.keys(quickInputDrafts || {}).length;
+    const previewLines = [
+      `Xem trước gửi phiếu điểm ${semesterLabel}`,
+      `- Đã chọn: ${selectedStudents.length} học sinh`,
+      `- Chưa có mã HS: ${missingCodes.length}`,
+      `- Có môn chưa đủ điểm/ĐTB: ${incompleteStudents.length}`,
+      `- Ô điểm đang nhập chưa lưu: ${unsavedDraftCount}`,
+      '',
+      missingCodes.length ? `Không thể gửi cho: ${missingCodes.map(item => item.student.fullName || 'Học sinh').join(', ')}` : 'Tất cả học sinh đã có mã.',
+      '',
+      'Tiếp tục gửi cho các học sinh đủ mã?'
+    ];
+    if (!window.confirm(previewLines.join('\n'))) return;
+    if (missingCodes.length === selectedStudents.length) {
+      showNotification('Không có học sinh nào đủ mã HS để nhận phiếu điểm.', 'error');
+      return;
+    }
+
+    setIsSendingQuickScoreMail(true);
+    let sentCount = 0;
+    const failedNames = [];
+    try {
+      for (const { student, rowIndex } of selectedStudents.filter(({ student }) => String(student.accessCode || student.studentAccessCode || '').trim())) {
+        const subjectLines = QUICK_SCORE_SUBJECTS.map((subject) => {
+          const txScores = Array.from({ length: subject.txCount || 4 }, (_, index) => (
+            getQuickScoreInputValue(quickScoreMailSemester, subject.pageIndex, rowIndex, index) || '-'
+          ));
+          const midterm = getQuickScoreInputValue(quickScoreMailSemester, subject.pageIndex, rowIndex, 4) || '-';
+          const final = getQuickScoreInputValue(quickScoreMailSemester, subject.pageIndex, rowIndex, 5) || '-';
+          const average = getQuickSemesterScoreResult(quickScoreMailSemester, subject.pageIndex, rowIndex, 6) || '-';
+          const fullYear = quickScoreMailSemester === 'hkii'
+            ? (getQuickSemesterScoreResult('hkii', subject.pageIndex, rowIndex, 7) || '-')
+            : '';
+          return `${subject.label}: TX ${txScores.join(', ')} | GK ${midterm} | CK ${final} | ĐTB ${average}${fullYear ? ` | Cả năm ${fullYear}` : ''}`;
+        });
+        const academicResult = getQuickAcademicResult(rowIndex, quickScoreMailSemester) || 'Chưa đủ dữ liệu';
+        const studentCode = String(student.accessCode || student.studentAccessCode || '').trim().toUpperCase();
+        const studentNameKey = removeAccents(String(student.fullName || '').toLowerCase()).replace(/[^a-z0-9]/g, '');
+        const absenceRows = attendanceDocs
+          .filter(item => !item.schoolYear || String(item.schoolYear) === String(activeSchoolYear || ''))
+          .filter(item => {
+            const month = Number(String(item.date || '').split('-')[1] || 0);
+            return quickScoreMailSemester === 'hki' ? [9, 10, 11, 12, 1].includes(month) : [2, 3, 4, 5, 6, 7, 8].includes(month);
+          })
+          .map(item => {
+            const directRecord = item.records?.[student.id];
+            const matchedRecord = directRecord || Object.values(item.records || {}).find(record => {
+              const recordCode = String(record?.studentAccessCode || record?.accessCode || '').trim().toUpperCase();
+              const recordNameKey = removeAccents(String(record?.studentName || record?.fullName || '').toLowerCase()).replace(/[^a-z0-9]/g, '');
+              return (studentCode && recordCode && studentCode === recordCode)
+                || (studentNameKey && recordNameKey && studentNameKey === recordNameKey);
+            });
+            return { date: String(item.date || ''), status: matchedRecord?.status || '' };
+          })
+          .filter(item => item.status === 'CP' || item.status === 'KP')
+          .sort((a, b) => a.date.localeCompare(b.date));
+        const absenceCp = absenceRows.filter(item => item.status === 'CP').length;
+        const absenceKp = absenceRows.filter(item => item.status === 'KP').length;
+        const absenceLines = absenceRows.length
+          ? absenceRows.map(item => {
+            const [year, month, day] = item.date.split('-');
+            return `- ${day}/${month}/${year}: ${item.status === 'CP' ? 'Nghỉ có phép' : 'Nghỉ không phép'}`;
+          })
+          : ['- Không có ngày nghỉ được ghi nhận.'];
+        const body = [
+          `PHIẾU ĐIỂM ${semesterLabel}`,
+          `Học sinh: ${student.fullName || ''}`,
+          `Lớp: ${student.className || `Khối ${quickScoreGrade}`}`,
+          `Năm học: ${activeSchoolYear}`,
+          '',
+          ...subjectLines,
+          '',
+          `Kết quả học tập ${semesterLabel}: ${academicResult}`,
+          '',
+          `NGÀY NGHỈ HỌC ${semesterLabel}: ${absenceRows.length} ngày (có phép ${absenceCp}, không phép ${absenceKp})`,
+          ...absenceLines,
+          '',
+          'Phiếu được tạo từ điểm đang lưu trong hệ thống.'
+        ].join('\n');
+        try {
+          await sendGeneratedStudentMailboxMessage({
+            student,
+            category: 'score',
+            title: `Phiếu điểm ${semesterLabel} - ${student.fullName || 'Học sinh'}`,
+            body
+          });
+          sentCount += 1;
+        } catch {
+          failedNames.push(student.fullName || 'Học sinh');
+        }
+      }
+      if (sentCount) {
+        setQuickScoreMailStudentIds(new Set());
+        showNotification(`Đã gửi phiếu điểm ${semesterLabel} cho ${sentCount} học sinh${failedNames.length ? `; ${failedNames.length} em chưa gửi được` : ''}.`, failedNames.length ? 'error' : 'success');
+      } else {
+        showNotification('Chưa gửi được phiếu điểm. Kiểm tra mã HS và kết nối hộp thư.', 'error');
+      }
+    } finally {
+      setIsSendingQuickScoreMail(false);
+    }
+  }, [
+    quickScoreStudents,
+    quickScoreMailStudentIds,
+    quickScoreMailSemester,
+    quickScoreGrade,
+    quickInputDrafts,
+    activeSchoolYear,
+    getQuickScoreInputValue,
+    getQuickSemesterScoreResult,
+    getQuickAcademicResult,
+    attendanceDocs,
+    sendGeneratedStudentMailboxMessage,
+    showNotification
+  ]);
+
   const quickSelectedSubjects = useMemo(
     () => QUICK_SCORE_SUBJECTS.filter(subject => quickVisibleSubjects[subject.key]),
     [quickVisibleSubjects]
@@ -2188,6 +2120,7 @@ function App() {
     setQuickScoreLockedContext(null);
     setShowAdminCheckWorkspace(false);
     setShowPasswordWorkspace(false);
+    setShowDataSafetyWorkspace(false);
     setIsAdminTextbookExpanded(false);
     setScorebookInitialMode(nextMode);
     setScorebookGrade(String(gradeValue || '6'));
@@ -2203,6 +2136,7 @@ function App() {
     setScorebookGrade(null);
     setShowAdminCheckWorkspace(false);
     setShowPasswordWorkspace(false);
+    setShowDataSafetyWorkspace(false);
     setIsAdminTextbookExpanded(false);
     await Promise.resolve(action?.());
   }, []);
@@ -2289,6 +2223,7 @@ function App() {
       '/utilities/textbooks': () => setIsAdminTextbookExpanded(true),
       '/utilities/check': () => setShowAdminCheckWorkspace(true),
       '/utilities/passwords': () => setShowPasswordWorkspace(true),
+      '/utilities/data-safety': () => setShowDataSafetyWorkspace(true),
       '/utilities/count-stats': () => openStudentDatabaseTab('countStats')
     }[path];
     if (!routeAction) return false;
@@ -2453,16 +2388,16 @@ function App() {
       },
       {
         key: 'input-data',
-        label: 'Nhập liệu',
-        desc: 'Nhập điểm hoặc điểm danh.',
-        icon: Pencil,
+        label: 'Học vụ',
+        desc: 'Nhập điểm, điểm danh, sổ điểm và học bạ.',
+        icon: BookOpen,
         children: [
           { key: 'score', label: 'Nhập điểm', href: getAdminRouteHref(isPrimary ? '/primary/input/score' : '/thcs/input/score'), action: () => openAdminQuickScore(isPrimary ? 'primary' : 'thcs') },
-          { key: 'attendance', label: 'Nhập điểm danh', href: getAdminRouteHref(isPrimary ? '/primary/input/attendance' : '/thcs/input/attendance'), action: () => setShowAttendanceWorkspace(true) }
+          { key: 'attendance', label: 'Nhập điểm danh', href: getAdminRouteHref(isPrimary ? '/primary/input/attendance' : '/thcs/input/attendance'), action: () => setShowAttendanceWorkspace(true) },
+          { key: 'scorebook', label: 'Sổ điểm', pending: isPrimary, href: isPrimary ? '' : getAdminRouteHref('/scorebook'), action: isPrimary ? null : () => openScorebookWorkspace('scorebook', '6') },
+          { key: 'transcript', label: 'Học bạ', pending: isPrimary, href: isPrimary ? '' : getAdminRouteHref('/transcript'), action: isPrimary ? null : () => openScorebookWorkspace('transcript', '6') }
         ]
       },
-      { key: 'scorebook', label: 'Sổ điểm', desc: isPrimary ? 'Phần sổ điểm tiểu học sẽ tính sau.' : 'Mở sổ điểm theo lớp 6, 7, 8, 9.', icon: FileText, pending: isPrimary, href: isPrimary ? '' : getAdminRouteHref('/scorebook'), action: isPrimary ? null : () => openScorebookWorkspace('scorebook', '6') },
-      { key: 'transcript', label: 'Học bạ', desc: isPrimary ? 'Phần học bạ tiểu học sẽ tính sau.' : 'Mở học bạ theo lớp 6, 7, 8, 9.', icon: BookOpen, pending: isPrimary, href: isPrimary ? '' : getAdminRouteHref('/transcript'), action: isPrimary ? null : () => openScorebookWorkspace('transcript', '6') },
       {
         key: 'stats',
         label: 'Tiện ích',
@@ -2471,6 +2406,7 @@ function App() {
         children: [
           { key: 'textbook-drive', label: 'Kho sách giáo khoa', href: getAdminRouteHref('/utilities/textbooks'), action: () => setIsAdminTextbookExpanded(true) },
           { key: 'admin-check', label: 'Kiểm tra dữ liệu', href: getAdminRouteHref('/utilities/check'), action: () => setShowAdminCheckWorkspace(true) },
+          { key: 'data-safety', label: 'An toàn dữ liệu', href: getAdminRouteHref('/utilities/data-safety'), action: () => setShowDataSafetyWorkspace(true) },
           { key: 'count-stats', label: 'TK số lượng', href: getAdminRouteHref('/utilities/count-stats'), action: () => openStudentDatabaseTab('countStats') },
           { key: 'study-stats', label: 'TK học tập', action: () => showNotification('TK học tập sẽ được thiết kế ở bước sau.') }
         ]
@@ -2503,7 +2439,7 @@ function App() {
       const basePayload = {
         grade: String(quickScoreGrade || ''),
         schoolYear: activeSchoolYear || '',
-        sourceFile: scorebookTemplate.sourceFile || '',
+        sourceFile: SCOREBOOK_SOURCE_FILE,
         updatedAt: Date.now(),
         authorId: user.uid
       };
@@ -2520,6 +2456,12 @@ function App() {
           scoreSources: { [key]: nextSources[key] || deleteField() }
         }, { merge: true });
       }
+      postAppsScript({
+        action: 'writeAuditLog',
+        auditAction: 'sua_diem',
+        actor: user.uid,
+        details: { schoolYear: activeSchoolYear, grade: quickScoreGrade, key, before: previousEdits[key] || '', after: nextValue || '' }
+      }).catch(() => undefined);
       return true;
     } catch (error) {
       setQuickScorebookEdits(previousEdits);
@@ -2579,7 +2521,7 @@ function App() {
       await setDoc(scorebookRef, {
         grade: String(quickScoreGrade || ''),
         schoolYear: activeSchoolYear || '',
-        sourceFile: scorebookTemplate.sourceFile || '',
+        sourceFile: SCOREBOOK_SOURCE_FILE,
         updatedAt: Date.now(),
         authorId: user.uid,
         edits: fillEdits,
@@ -2666,7 +2608,7 @@ function App() {
       await setDoc(scorebookRef, {
         grade: String(quickScoreGrade || ''),
         schoolYear: activeSchoolYear || '',
-        sourceFile: scorebookTemplate.sourceFile || '',
+        sourceFile: SCOREBOOK_SOURCE_FILE,
         updatedAt: Date.now(),
         authorId: user.uid,
         edits: deleteEdits,
@@ -2938,10 +2880,7 @@ function App() {
       }
       return;
     }
-    if (key === 'adminPass') setAdminPass(value);
-    if (key === 'thdAdminPass') setThdAdminPass(value);
-    if (key === 'isTeacherPassEnabled') setIsTeacherPassEnabled(value);
-    if (key === 'teacherPass') setTeacherPass(value);
+    if (key === 'adminPass') return;
     if (key === 'isStudentCodeEnabled') setIsStudentCodeEnabled(value);
     if (key === 'schoolYear') setCurrentSchoolYear(value);
     if (key === 'principalName') setPrincipalName(value);
@@ -2985,10 +2924,141 @@ function App() {
         return;
       }
       await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'global'), { [key]: value }, { merge: true });
+      if (['inputYearLocks', 'schoolYear', 'isStudentCodeEnabled'].includes(key)) {
+        postAppsScript({ action: 'writeAuditLog', auditAction: 'doi_thiet_lap_quan_trong', actor: user?.uid || 'Admin', details: { key, after: value } }).catch(() => undefined);
+      }
       showNotification('Đã lưu thiết lập.');
     } catch (e) {
       console.error('Không lưu được thiết lập:', e);
       showNotification(`Chưa lưu được thiết lập: ${e?.message || 'lỗi không xác định'}`, 'error');
+    }
+  };
+
+  const buildSystemSnapshot = useCallback(async () => {
+    const collections = {};
+    for (const collectionName of SYSTEM_BACKUP_COLLECTIONS) {
+      const result = await getDocs(collection(db, 'artifacts', appId, 'public', 'data', collectionName));
+      collections[collectionName] = result.docs.map(item => ({ id: item.id, ...item.data() }));
+    }
+    const settingsResult = await getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'global'));
+    const safeSettings = settingsResult.exists() ? { ...settingsResult.data() } : {};
+    delete safeSettings.adminPass;
+    delete safeSettings.teacherPass;
+    delete safeSettings.thdAdminPass;
+    const nextSnapshot = {
+      version: 1,
+      schoolYear: currentSchoolYear,
+      createdAt: Date.now(),
+      collections,
+      settings: safeSettings
+    };
+    setSystemSnapshot(nextSnapshot);
+    return nextSnapshot;
+  }, [currentSchoolYear]);
+
+  const restoreSystemSnapshot = useCallback(async (backupSnapshot = {}) => {
+    const collections = backupSnapshot.collections && typeof backupSnapshot.collections === 'object' ? backupSnapshot.collections : {};
+    for (const collectionName of SYSTEM_BACKUP_COLLECTIONS) {
+      if (!Array.isArray(collections[collectionName])) continue;
+      const target = collection(db, 'artifacts', appId, 'public', 'data', collectionName);
+      const current = await getDocs(target);
+      await Promise.all(current.docs.map(item => deleteDoc(item.ref)));
+      const items = collections[collectionName];
+      for (let index = 0; index < items.length; index += 50) {
+        await Promise.all(items.slice(index, index + 50).map(item => {
+          const { id, ...data } = item;
+          return setDoc(doc(target, id), data);
+        }));
+      }
+    }
+    if (backupSnapshot.settings && typeof backupSnapshot.settings === 'object') {
+      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'global'), backupSnapshot.settings);
+    }
+    await buildSystemSnapshot();
+  }, [buildSystemSnapshot]);
+
+  const createSafetyBackup = useCallback(async (reason = 'truoc-thao-tac-nguy-hiem') => {
+    const snapshot = await buildSystemSnapshot();
+    await postAppsScript({ action: 'createSystemBackup', snapshot, reason, actor: user?.uid || 'Admin' });
+    return snapshot;
+  }, [buildSystemSnapshot, user]);
+
+  useEffect(() => {
+    if (!showDataSafetyWorkspace) return;
+    buildSystemSnapshot().catch(error => showNotification(`Chưa đọc đủ dữ liệu để sao lưu: ${error.message}`, 'error'));
+  }, [buildSystemSnapshot, showDataSafetyWorkspace, showNotification]);
+
+  useEffect(() => {
+    if (!isAdmin || !adminSessionToken || !user) return;
+    const today = new Date().toISOString().slice(0, 10);
+    if (localStorage.getItem(DAILY_BACKUP_STORAGE_KEY) === today) return;
+    let active = true;
+    buildSystemSnapshot()
+      .then(snapshot => postAppsScript({ action: 'createSystemBackup', snapshot, reason: 'hang-ngay', actor: user.uid || 'Admin' }))
+      .then(() => {
+        if (active) localStorage.setItem(DAILY_BACKUP_STORAGE_KEY, today);
+      })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, [adminSessionToken, buildSystemSnapshot, isAdmin, user]);
+
+  const saveAdminServerPassword = async () => {
+    if (newAdminPassword.length < 8) {
+      showNotification('Mật khẩu admin mới phải có ít nhất 8 ký tự.', 'error');
+      return;
+    }
+    setIsSavingAdminPassword(true);
+    try {
+      const response = await postAppsScript({
+        action: 'changeAdminPassword',
+        newPassword: newAdminPassword,
+        adminSessionToken
+      });
+      if (response.status !== 'success') throw new Error(response.message || 'Chưa đổi được mật khẩu admin.');
+      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'global'), { adminPass: deleteField() }, { merge: true });
+      setNewAdminPassword('');
+      showNotification('Đã đổi mật khẩu admin trên máy chủ.');
+    } catch (error) {
+      showNotification(`Chưa đổi được mật khẩu admin: ${error.message}`, 'error');
+    } finally {
+      setIsSavingAdminPassword(false);
+    }
+  };
+
+  const saveStaffAccessConfig = async (type) => {
+    const password = type === 'teacher' ? teacherPass : thdAdminPass;
+    if (password.length < 8) {
+      showNotification('Mật khẩu phải có ít nhất 8 ký tự.', 'error');
+      return;
+    }
+    setIsSavingStaffPassword(type);
+    try {
+      const payload = type === 'teacher'
+        ? { teacherPassword: password, teacherPasswordEnabled: isTeacherPassEnabled }
+        : { thdPassword: password };
+      await postAppsScript({ action: 'updateAccessConfig', ...payload, actor: user?.uid || 'Admin' });
+      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'global'), {
+        teacherPass: deleteField(),
+        thdAdminPass: deleteField()
+      }, { merge: true });
+      if (type === 'teacher') setTeacherPass('');
+      else setThdAdminPass('');
+      showNotification('Đã lưu mật khẩu trên máy chủ.');
+    } catch (error) {
+      showNotification(`Chưa lưu được mật khẩu: ${error.message}`, 'error');
+    } finally {
+      setIsSavingStaffPassword('');
+    }
+  };
+
+  const toggleTeacherPasswordOnServer = async () => {
+    const nextValue = !isTeacherPassEnabled;
+    try {
+      await postAppsScript({ action: 'updateAccessConfig', teacherPasswordEnabled: nextValue, actor: user?.uid || 'Admin' });
+      setIsTeacherPassEnabled(nextValue);
+      showNotification(nextValue ? 'Đã bật mật khẩu giáo viên.' : 'Đã tắt yêu cầu mật khẩu giáo viên.');
+    } catch (error) {
+      showNotification(`Chưa đổi được thiết lập: ${error.message}`, 'error');
     }
   };
 
@@ -3020,7 +3090,7 @@ function App() {
 
   useEffect(() => { fetchDriveData(); }, [fetchDriveData]);
 
-  const openTeacherLogin = () => {
+  const openTeacherLogin = async () => {
     clearStoredAdminSession();
     setIsAdmin(false);
     setShowAdminSettingsWorkspace(false);
@@ -3037,14 +3107,27 @@ function App() {
       setShowPasswordModal(true);
       return;
     }
-    setRole('teacher');
-    setLoginRole('teacher');
+    try {
+      const response = await postAppsScript({ action: 'createStaffSession', role: 'teacher', password: '' });
+      if (!response.staffSessionToken) throw new Error(response.message || 'Không tạo được phiên giáo viên.');
+      window.sessionStorage.setItem(STAFF_SERVER_SESSION_STORAGE_KEY, response.staffSessionToken);
+      setRole('teacher');
+      setLoginRole('teacher');
+    } catch (error) {
+      showNotification(`Chưa vào được khu Giáo viên: ${error.message}`, 'error');
+    }
   };
 
-  const handleLogin = () => {
+  const handleLogin = async () => {
     if (modalMode === 'admin') {
-      if (passwordInput === adminPass) {
-        writeStoredAdminSession(adminPass, 'notice', 'full');
+      try {
+        setErrorMsg('');
+        const response = await postAppsScript({ action: 'createAdminSession', password: passwordInput });
+        if (response.status !== 'success' || !response.adminSessionToken) throw new Error(response.message || 'Không tạo được phiên admin.');
+        window.sessionStorage.setItem(ADMIN_SERVER_SESSION_STORAGE_KEY, response.adminSessionToken);
+        setAdminSessionToken(response.adminSessionToken);
+        writeStoredAdminSession('notice', 'full');
+        setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'global'), { adminPass: deleteField() }, { merge: true }).catch(() => undefined);
         setAdminAccessScope('full');
         setAdminModule('notice');
         setIsAdmin(true);
@@ -3055,14 +3138,15 @@ function App() {
         openNoticeHome('list');
         setShowPasswordModal(false);
         showNotification("Đã vào Quản trị");
-      } else {
-        setErrorMsg('Mật khẩu không chính xác!');
+      } catch (error) {
+        setErrorMsg(error.message || 'Mật khẩu không chính xác!');
       }
     } else if (modalMode === 'thdAdmin') {
-      if (!thdAdminPass.trim()) {
-        setErrorMsg('Admin chưa cấp mật khẩu Trần Hưng Đạo.');
-      } else if (passwordInput === thdAdminPass) {
-        writeStoredAdminSession(thdAdminPass, 'thd', 'thd');
+      try {
+        const response = await postAppsScript({ action: 'createStaffSession', role: 'thd', password: passwordInput });
+        if (!response.staffSessionToken) throw new Error(response.message || 'Không tạo được phiên Trần Hưng Đạo.');
+        window.sessionStorage.setItem(STAFF_SERVER_SESSION_STORAGE_KEY, response.staffSessionToken);
+        writeStoredAdminSession('thd', 'thd');
         setAdminAccessScope('thd');
         setAdminModule('thd');
         setIsAdmin(true);
@@ -3073,19 +3157,20 @@ function App() {
         setShowAdminSettingsWorkspace(true);
         if (typeof window !== 'undefined') window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}#/admin/tran-hung-dao/assignments`);
         showNotification("Đã vào Trần Hưng Đạo");
-      } else {
-        setErrorMsg('Mật khẩu Trần Hưng Đạo không chính xác!');
+      } catch (error) {
+        setErrorMsg(error.message || 'Mật khẩu Trần Hưng Đạo không chính xác!');
       }
     } else if (modalMode === 'teacher') {
-      if (!teacherPass.trim()) {
-        setErrorMsg('Admin đã bật mật khẩu giáo viên nhưng chưa đặt mật khẩu.');
-      } else if (passwordInput === teacherPass) {
+      try {
+        const response = await postAppsScript({ action: 'createStaffSession', role: 'teacher', password: passwordInput });
+        if (!response.staffSessionToken) throw new Error(response.message || 'Không tạo được phiên giáo viên.');
+        window.sessionStorage.setItem(STAFF_SERVER_SESSION_STORAGE_KEY, response.staffSessionToken);
         setRole('teacher');
         setLoginRole('teacher');
         setShowPasswordModal(false);
         showNotification("Xin chào Giáo viên!");
-      } else {
-        setErrorMsg('Mật khẩu giáo viên không chính xác!');
+      } catch (error) {
+        setErrorMsg(error.message || 'Mật khẩu giáo viên không chính xác!');
       }
     }
     setPasswordInput('');
@@ -3093,6 +3178,7 @@ function App() {
 
   const handleExitAdmin = () => {
     clearStoredAdminSession();
+    setAdminSessionToken('');
     closeAdminSessionView();
     setAdminAccessScope('full');
     setAdminModule('thcs');
@@ -4486,7 +4572,7 @@ ${lessonBlocks}`;
       await setDoc(ref, {
         grade,
         schoolYear: activeSchoolYear || '',
-        sourceFile: scorebookTemplate.sourceFile || '',
+        sourceFile: SCOREBOOK_SOURCE_FILE,
         edits: nextEdits,
         scoreSources: { [scoreKey]: { source: 'quiz', updatedAt: Date.now() } },
         updatedAt: Date.now(),
@@ -4561,7 +4647,7 @@ ${lessonBlocks}`;
         await setDoc(ref, {
           grade: group.grade,
           schoolYear: activeSchoolYear || '',
-          sourceFile: scorebookTemplate.sourceFile || '',
+          sourceFile: SCOREBOOK_SOURCE_FILE,
           updatedAt: Date.now(),
           authorId: user.uid
         }, { merge: true });
@@ -4722,6 +4808,72 @@ ${lessonBlocks}`;
     return hasHandwrittenScore(submission);
   };
 
+  const sendStudentTestResults = useCallback(async (student) => {
+    const studentId = String(student?.id || '').trim();
+    const studentCode = String(student?.accessCode || student?.studentAccessCode || '').trim().toUpperCase();
+    const studentNameKey = normalizeNameKey(student?.fullName || student?.studentName || '');
+    const matchesStudent = (record = {}) => {
+      const recordId = String(record.studentId || '').trim();
+      const recordCode = String(record.studentAccessCode || record.accessCode || '').trim().toUpperCase();
+      const recordNameKey = normalizeNameKey(record.studentName || record.fullName || '');
+      return (studentId && recordId && studentId === recordId)
+        || (studentCode && recordCode && studentCode === recordCode)
+        || (studentNameKey && recordNameKey && studentNameKey === recordNameKey);
+    };
+    const matchesYear = (record = {}) => !record.schoolYear || String(record.schoolYear) === String(activeSchoolYear || '');
+    const getResultTime = (record = {}) => Number(record.reviewedAt || record.submittedAt || record.createdAt || record.updatedAt || 0);
+    const records = [
+      ...allQuizResults.filter(record => matchesYear(record) && matchesStudent(record)).map(record => ({ ...record, resultType: 'quiz' })),
+      ...allQuickQuizResults.filter(record => matchesYear(record) && matchesStudent(record)).map(record => ({ ...record, resultType: 'quick' })),
+      ...allHandwrittenSubmissions.filter(record => matchesYear(record) && matchesStudent(record)).map(record => ({ ...record, resultType: 'handwritten' }))
+    ].sort((a, b) => getResultTime(b) - getResultTime(a));
+
+    if (!records.length) {
+      showNotification(`${student?.fullName || 'Học sinh'} chưa có kết quả kiểm tra để gửi.`, 'error');
+      return;
+    }
+
+    const lines = records.slice(0, 30).map((record, index) => {
+      const subject = String(record.subject || 'Bài kiểm tra').trim();
+      const lesson = record.lesson ? getWeekDisplayName(record.lesson) : '';
+      const score = record.resultType === 'handwritten'
+        ? (record.teacherScore ?? record.aiScore)
+        : record.score;
+      const maxScore = record.resultType === 'handwritten'
+        ? (record.teacherMaxScore ?? record.aiMaxScore ?? 10)
+        : (record.total ?? 10);
+      const hasScore = score !== undefined && score !== null && String(score).trim() !== '';
+      const time = getResultTime(record);
+      const dateLabel = time ? new Date(time).toLocaleDateString('vi-VN') : 'Chưa rõ ngày';
+      const note = String(record.teacherComment || record.teacherNote || '').trim();
+      return `${index + 1}. ${subject}${lesson ? ` - ${lesson}` : ''}: ${hasScore ? `${formatScoreDisplayValue(score)}/${formatScoreDisplayValue(maxScore) || 10}` : 'Chờ giáo viên chấm'} (${dateLabel})${note ? `\n   Nhận xét: ${note}` : ''}`;
+    });
+    const body = [
+      'KẾT QUẢ CÁC BÀI KIỂM TRA',
+      `Học sinh: ${student?.fullName || ''}`,
+      `Lớp: ${student?.className || ''}`,
+      `Năm học: ${activeSchoolYear}`,
+      '',
+      ...lines,
+      ...(records.length > 30 ? ['', `Hệ thống đang hiển thị 30/${records.length} kết quả gần nhất.`] : [])
+    ].join('\n');
+
+    await sendGeneratedStudentMailboxMessage({
+      student,
+      category: 'quiz',
+      title: `Kết quả kiểm tra - ${student?.fullName || 'Học sinh'}`,
+      body
+    });
+    showNotification(`Đã gửi kết quả kiểm tra cho ${student?.fullName || 'học sinh'}.`);
+  }, [
+    activeSchoolYear,
+    allQuizResults,
+    allQuickQuizResults,
+    allHandwrittenSubmissions,
+    sendGeneratedStudentMailboxMessage,
+    showNotification
+  ]);
+
   const markSubmissionFilePickerActive = () => {
     if (studentEssaySubmitted) return;
     submissionFilePickerActiveRef.current = true;
@@ -4742,15 +4894,7 @@ ${lessonBlocks}`;
       applySubmissionFile(null);
       return;
     }
-    const shouldScan = String(file.type || '').toLowerCase().startsWith('image/');
-    if (!shouldScan) {
-      applySubmissionFile(file);
-      return;
-    }
-    setSubmissionStatus('Đang quét ảnh bài làm, nắn thẳng khung giấy và giảm bóng...');
-    const scannedFile = await scanUploadImageFile(file, { mode: 'document', orientation: 'auto' });
-    applySubmissionFile(scannedFile || file);
-    setSubmissionStatus('Đã quét ảnh bài làm. Em kiểm tra lại rồi bấm nộp.');
+    applySubmissionFile(file);
   };
 
   const clearSubmissionFile = () => {
@@ -5869,9 +6013,84 @@ ${lessonBlocks}`;
     const quizItems = [...allQuizzes].filter(q => q.grade && String(q.schoolYear || currentSchoolYear) === String(currentSchoolYear) && isQuizVisibleForStudents(q) && (role !== 'student' || !activeStudentGrade || String(q.grade) === String(activeStudentGrade))).sort((a, b) => (b.updatedAt || b.publishAt || 0) - (a.updatedAt || a.publishAt || 0)).slice(0, 4).map(q => ({ id: `q_${q.id}`, isAuto: true, iconType: 'quiz', targetGrade: q.grade, targetSubject: q.subject, targetLesson: q.lesson, title: `GV đã up bài kiểm tra: ${q.subject} ${q.grade} - ${getWeekDisplayName(q.lesson)}`, content: '<p>Bài kiểm tra đã sẵn sàng.</p>', timestamp: q.updatedAt || q.publishAt }));
     return [...materialItems, ...noteItems, ...quizItems].sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0)).slice(0, 4);
   }, [allMaterials, allNotes, allQuizzes, currentSchoolYear, isQuizVisibleForStudents, role, activeStudentGrade]);
+  const studentMailboxAutoMessages = useMemo(() => {
+    if (role !== 'student' || !activeStudentGrade) return [];
+    const materialItems = allMaterials
+      .filter(item => item.type !== 'quick_quiz' && String(item.grade || '') === String(activeStudentGrade))
+      .map(item => ({
+        id: `auto-material-${item.id}`,
+        source: 'auto',
+        category: 'lesson',
+        title: `Tài liệu mới: ${item.subject} - ${getWeekDisplayName(item.lesson)}`,
+        body: `Giáo viên vừa cập nhật tài liệu "${item.title || 'bài học'}".`,
+        createdAt: item.createdAt || 0,
+        targetGrade: item.grade,
+        targetSubject: item.subject,
+        targetLesson: item.lesson
+      }));
+    const noteItems = allNotes
+      .filter(item => String(item.grade || '') === String(activeStudentGrade))
+      .map(item => ({
+        id: `auto-note-${item.id}-${item.updatedAt || 0}`,
+        source: 'auto',
+        category: 'lesson',
+        title: `Bài học mới: ${item.subject} - ${getWeekDisplayName(item.lesson)}`,
+        body: 'Giáo viên vừa cập nhật nội dung bài học.',
+        createdAt: item.updatedAt || 0,
+        targetGrade: item.grade,
+        targetSubject: item.subject,
+        targetLesson: item.lesson
+      }));
+    const quizItems = allQuizzes
+      .filter(item => String(item.grade || '') === String(activeStudentGrade)
+        && String(item.schoolYear || currentSchoolYear) === String(currentSchoolYear)
+        && isQuizVisibleForStudents(item))
+      .map(item => ({
+        id: `auto-quiz-${item.id}-${item.updatedAt || item.publishAt || 0}`,
+        source: 'auto',
+        category: 'quiz',
+        title: `Có bài kiểm tra: ${item.subject} - ${getWeekDisplayName(item.lesson)}`,
+        body: 'Bài kiểm tra đã được giáo viên mở cho học sinh.',
+        createdAt: item.updatedAt || item.publishAt || 0,
+        targetGrade: item.grade,
+        targetSubject: item.subject,
+        targetLesson: item.lesson
+      }));
+    return [...materialItems, ...noteItems, ...quizItems]
+      .map(item => ({ ...item, isRead: mailboxAutoReadIds.includes(item.id) }))
+      .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+      .slice(0, 40);
+  }, [role, activeStudentGrade, allMaterials, allNotes, allQuizzes, currentSchoolYear, isQuizVisibleForStudents, mailboxAutoReadIds]);
+  const studentMailboxItems = useMemo(() => (
+    [
+      ...studentMailboxMessages.map(item => ({ ...item, source: 'admin' })),
+      ...studentMailboxAutoMessages
+    ].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+  ), [studentMailboxMessages, studentMailboxAutoMessages]);
+  const studentMailboxUnreadCount = useMemo(() => studentMailboxItems.filter(item => !item.isRead).length, [studentMailboxItems]);
+  const openStudentMailboxMessage = useCallback((message) => {
+    if (!message) return;
+    setSelectedStudentMailboxMessage(message);
+    if (message.source === 'admin') {
+      markManualMailboxMessageRead(message);
+      return;
+    }
+    setMailboxAutoReadIds(prev => {
+      if (prev.includes(message.id)) return prev;
+      const next = [...prev, message.id].slice(-300);
+      localStorage.setItem(mailboxAutoReadStorageKey, JSON.stringify(next));
+      return next;
+    });
+    if (message.targetGrade && message.targetSubject && message.targetLesson) {
+      setSelectedGrade(String(message.targetGrade));
+      setSelectedSubject(String(message.targetSubject));
+      setSelectedLesson(String(message.targetLesson));
+    }
+  }, [markManualMailboxMessageRead, mailboxAutoReadStorageKey]);
   const homepageNewsList = useMemo(() => [...newsList].sort(sortNewsForDisplay), [newsList]);
   const featuredHomepageNews = homepageNewsList[0] || null;
   const homepageSliderNews = homepageNewsList.slice(0, 5);
+  const mobileHomepageNews = homepageNewsList.slice(0, 6);
   const homepageNewsSlideKeyframes = useMemo(() => {
     const count = Math.max(1, homepageSliderNews.length);
     if (count <= 1) return '';
@@ -5887,6 +6106,21 @@ ${lessonBlocks}`;
       `;
     }).join('\n');
   }, [homepageSliderNews.length]);
+  const mobileHomepageNewsSlideKeyframes = useMemo(() => {
+    const count = Math.max(1, mobileHomepageNews.length);
+    if (count <= 1) return '';
+    const frame = 100 / count;
+    return Array.from({ length: count }, (_, index) => {
+      const start = index * frame;
+      const holdEnd = Math.min(100, start + frame * 0.72);
+      const offset = -(index * frame);
+      const nextOffset = -(((index + 1) % count) * frame);
+      return `
+        ${start.toFixed(2)}%, ${holdEnd.toFixed(2)}% { transform: translateX(${offset}%); }
+        ${Math.min(100, start + frame).toFixed(2)}% { transform: translateX(${index === count - 1 ? 0 : nextOffset}%); }
+      `;
+    }).join('\n');
+  }, [mobileHomepageNews.length]);
   const extractNewsDriveFileId = useCallback((html = '') => {
     const content = String(html || '');
     const fileIdMatch = content.match(/<img[^>]+data-drive-file-id=["']([^"']+)["']/i);
@@ -5897,12 +6131,14 @@ ${lessonBlocks}`;
   }, []);
   const extractNewsImageSrc = useCallback((html = '') => {
     const content = String(html || '');
+    const sourceMatch = content.match(/<img[^>]+src=["']([^"']+)["']/i);
+    const sourceUrl = sourceMatch ? sourceMatch[1] : '';
+    if (sourceUrl && !/(?:drive\.google\.com|lh3\.googleusercontent\.com)/i.test(sourceUrl)) return sourceUrl;
     const fileId = extractNewsDriveFileId(content);
     if (fileId) return `https://drive.google.com/thumbnail?id=${fileId}&sz=w1600`;
     const driveMatch = content.match(/<img[^>]+data-drive-src=["']([^"']+)["']/i);
     if (driveMatch) return driveMatch[1];
-    const match = content.match(/<img[^>]+src=["']([^"']+)["']/i);
-    return match ? match[1] : '';
+    return sourceUrl;
   }, [extractNewsDriveFileId]);
   const getNewsImageFallbackSrc = useCallback((html = '') => {
     const content = String(html || '');
@@ -5948,26 +6184,42 @@ ${lessonBlocks}`;
     const movableNewsList = newsList.filter(item => !item.isPinned);
     const newsIndex = n.isPinned ? -1 : movableNewsList.findIndex(item => item.id === n.id);
     const baseButton = 'transition-colors p-1.5 rounded-lg hover:bg-slate-100 disabled:opacity-25 disabled:hover:bg-transparent';
+    const mobileButton = 'flex h-9 w-9 items-center justify-center rounded-lg transition-colors hover:bg-slate-100 disabled:opacity-25';
     return isAdmin ? (
-      <div className="flex items-center gap-1 pl-2 border-l border-slate-200/60">
-        <button type="button" onClick={(e) => handleEditNews(e, n)} className={`${baseButton} text-slate-400 hover:text-blue-600`} title="Sửa bản tin">
-          <Pencil className="w-4 h-4" />
-        </button>
-        <button type="button" onClick={(e) => handleMoveNews(e, n, 'up')} disabled={n.isPinned || newsIndex <= 0} className={`${baseButton} text-slate-400 hover:text-emerald-600`} title={n.isPinned ? 'Tin ghim tự xếp theo ngày đăng' : 'Đưa tin lên'}>
-          <ArrowUp className="w-4 h-4" />
-        </button>
-        <button type="button" onClick={(e) => handleMoveNews(e, n, 'down')} disabled={n.isPinned || newsIndex < 0 || newsIndex >= movableNewsList.length - 1} className={`${baseButton} text-slate-400 hover:text-emerald-600`} title={n.isPinned ? 'Tin ghim tự xếp theo ngày đăng' : 'Đưa tin xuống'}>
-          <ArrowDown className="w-4 h-4" />
-        </button>
-        <button type="button" onClick={(e) => handleToggleHotNews(e, n)} className={`${baseButton} ${n.isHot ? 'text-rose-500' : 'text-slate-300'} hover:text-rose-600`} title="Tin nóng">
-          <Sparkles className="w-4 h-4" fill={n.isHot ? 'currentColor' : 'none'} />
-        </button>
-        <button type="button" onClick={(e) => handleTogglePinNews(e, n)} className={`${baseButton} ${n.isPinned ? 'text-blue-500' : 'text-slate-300'} hover:text-blue-600`} title="Ghim lên thông báo khẩn">
-          <Pin className="w-4 h-4" fill={n.isPinned ? 'currentColor' : 'none'} />
-        </button>
-        <button type="button" onClick={(e) => { e.stopPropagation(); handleDeleteNews(n.id); }} className={`${baseButton} text-slate-300 hover:text-rose-500`} title="Xóa tin">
-          <Trash2 className="w-4 h-4" />
-        </button>
+      <div className="relative shrink-0">
+        <details className="relative sm:hidden" onClick={(e) => e.stopPropagation()}>
+          <summary className="flex h-9 w-9 cursor-pointer list-none items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 shadow-sm transition-colors hover:bg-slate-50 [&::-webkit-details-marker]:hidden" aria-label="Mở các chức năng của bản tin">
+            <MoreVertical className="h-4 w-4" />
+          </summary>
+          <div className="absolute right-0 top-full z-40 mt-1 grid grid-cols-3 gap-1 rounded-xl border border-slate-200 bg-white p-1.5 shadow-xl">
+            <button type="button" onClick={(e) => handleEditNews(e, n)} className={`${mobileButton} text-blue-600`} title="Sửa bản tin"><Pencil className="h-4 w-4" /></button>
+            <button type="button" onClick={(e) => handleMoveNews(e, n, 'up')} disabled={n.isPinned || newsIndex <= 0} className={`${mobileButton} text-emerald-600`} title="Đưa tin lên"><ArrowUp className="h-4 w-4" /></button>
+            <button type="button" onClick={(e) => handleMoveNews(e, n, 'down')} disabled={n.isPinned || newsIndex < 0 || newsIndex >= movableNewsList.length - 1} className={`${mobileButton} text-emerald-600`} title="Đưa tin xuống"><ArrowDown className="h-4 w-4" /></button>
+            <button type="button" onClick={(e) => handleToggleHotNews(e, n)} className={`${mobileButton} ${n.isHot ? 'text-rose-500' : 'text-slate-400'}`} title="Tin nóng"><Sparkles className="h-4 w-4" fill={n.isHot ? 'currentColor' : 'none'} /></button>
+            <button type="button" onClick={(e) => handleTogglePinNews(e, n)} className={`${mobileButton} ${n.isPinned ? 'text-blue-500' : 'text-slate-400'}`} title="Ghim bản tin"><Pin className="h-4 w-4" fill={n.isPinned ? 'currentColor' : 'none'} /></button>
+            <button type="button" onClick={(e) => { e.stopPropagation(); handleDeleteNews(n.id); }} className={`${mobileButton} text-rose-500`} title="Xóa tin"><Trash2 className="h-4 w-4" /></button>
+          </div>
+        </details>
+        <div className="hidden items-center gap-1 border-l border-slate-200/60 pl-2 sm:flex">
+          <button type="button" onClick={(e) => handleEditNews(e, n)} className={`${baseButton} text-slate-400 hover:text-blue-600`} title="Sửa bản tin">
+            <Pencil className="w-4 h-4" />
+          </button>
+          <button type="button" onClick={(e) => handleMoveNews(e, n, 'up')} disabled={n.isPinned || newsIndex <= 0} className={`${baseButton} text-slate-400 hover:text-emerald-600`} title={n.isPinned ? 'Tin ghim tự xếp theo ngày đăng' : 'Đưa tin lên'}>
+            <ArrowUp className="w-4 h-4" />
+          </button>
+          <button type="button" onClick={(e) => handleMoveNews(e, n, 'down')} disabled={n.isPinned || newsIndex < 0 || newsIndex >= movableNewsList.length - 1} className={`${baseButton} text-slate-400 hover:text-emerald-600`} title={n.isPinned ? 'Tin ghim tự xếp theo ngày đăng' : 'Đưa tin xuống'}>
+            <ArrowDown className="w-4 h-4" />
+          </button>
+          <button type="button" onClick={(e) => handleToggleHotNews(e, n)} className={`${baseButton} ${n.isHot ? 'text-rose-500' : 'text-slate-300'} hover:text-rose-600`} title="Tin nóng">
+            <Sparkles className="w-4 h-4" fill={n.isHot ? 'currentColor' : 'none'} />
+          </button>
+          <button type="button" onClick={(e) => handleTogglePinNews(e, n)} className={`${baseButton} ${n.isPinned ? 'text-blue-500' : 'text-slate-300'} hover:text-blue-600`} title="Ghim lên thông báo khẩn">
+            <Pin className="w-4 h-4" fill={n.isPinned ? 'currentColor' : 'none'} />
+          </button>
+          <button type="button" onClick={(e) => { e.stopPropagation(); handleDeleteNews(n.id); }} className={`${baseButton} text-slate-300 hover:text-rose-500`} title="Xóa tin">
+            <Trash2 className="w-4 h-4" />
+          </button>
+        </div>
       </div>
     ) : null;
   };
@@ -6268,11 +6520,10 @@ ${lessonBlocks}`;
         )}
 
         <div className={`flex-1 flex flex-col items-center relative z-10 w-full mx-auto min-h-0 ${isAdmin ? 'max-w-none pt-0 px-0 pb-3' : 'max-w-7xl pt-3 px-4 pb-3 sm:pb-4'}`}>
-          {!isAdmin && <div className="text-center mt-3 sm:mt-5 mb-3 sm:mb-5 leading-tight shrink-0 w-full">
+          {!isAdmin && <div className="home-public-heading text-center mt-3 sm:mt-5 mb-3 sm:mb-5 leading-tight shrink-0 w-full">
             <h1 className="text-[15px] sm:text-2xl md:text-[32px] font-extrabold text-[#1238a8] uppercase leading-tight" style={{ textShadow: '0 1px 0 rgba(255,255,255,0.75)' }}>
-                <span className="block sm:inline">TT Học tập cộng đồng</span>
-                <span className="hidden sm:inline"> </span>
-                <span className="block sm:inline">phường Trung Mỹ Tây</span>
+                <span className="sm:hidden whitespace-nowrap">TTHTCĐ P. Trung Mỹ Tây</span>
+                <span className="hidden sm:inline">TT Học tập cộng đồng phường Trung Mỹ Tây</span>
             </h1>
             <h2 className="mt-1 text-[12px] sm:text-lg md:text-[22px] font-bold text-[#1238a8] uppercase leading-tight" style={{ textShadow: '0 1px 0 rgba(255,255,255,0.75)' }}>Trường THCS Nguyễn An Ninh</h2>
             <div className="mx-auto mt-2 hidden sm:flex w-full max-w-[520px] items-center justify-center gap-3 text-[#1d5ee6]/90">
@@ -6284,14 +6535,28 @@ ${lessonBlocks}`;
 
           {isAdmin && (
             <div className="fixed left-0 right-0 top-0 z-[210] w-full max-w-none border-b border-slate-200 bg-white shadow-lg">
-              <div className="min-h-[40px] bg-gradient-to-r from-blue-800 via-indigo-700 to-violet-700 text-white flex flex-wrap items-center gap-2 px-2.5 sm:px-3 py-1">
-                <div className="flex items-center gap-2 shrink-0">
+              <div className="min-h-[40px] bg-gradient-to-r from-blue-800 via-indigo-700 to-violet-700 text-white flex flex-wrap items-center gap-1.5 px-2 sm:px-3 py-1">
+                <div className="flex min-w-0 flex-1 items-center gap-1.5 sm:flex-none sm:gap-2">
                   <div className="h-8 w-8 rounded-md bg-white text-blue-700 flex items-center justify-center font-black">N</div>
-                  <div className="leading-tight">
-                    <div className="text-[11px] font-semibold uppercase tracking-wider text-white/85">TT HTCĐ Trung Mỹ Tây</div>
+                  <div className="min-w-0 leading-tight">
+                    <div className="truncate text-[10px] font-semibold uppercase text-white/90 sm:text-[11px] sm:tracking-wider">TTHTCĐ Trung Mỹ Tây</div>
                   </div>
                 </div>
-                <div className="relative w-full sm:w-[330px]">
+                <div className="ml-auto flex shrink-0 items-center gap-1 sm:hidden">
+                  <button type="button" onClick={() => moveAdminSchoolYear(-1)} disabled={schoolYearOptions.findIndex(year => String(year) === String(adminSelectedSchoolYear)) <= 0} className="flex h-7 w-7 items-center justify-center rounded-md border border-white/20 bg-white/10 disabled:opacity-35" title="Lùi năm">
+                    <ChevronLeft className="h-3.5 w-3.5" />
+                  </button>
+                  <select value={adminSelectedSchoolYear} onChange={(event) => { adminSchoolYearTouchedRef.current = true; setAdminSchoolYear(event.target.value); }} className="h-7 max-w-[100px] rounded-md border border-white/20 bg-white/15 px-1 text-[10px] font-bold text-yellow-100 outline-none">
+                    {schoolYearOptions.map(year => <option key={year} value={year} className="text-slate-900">{year}</option>)}
+                  </select>
+                  <button type="button" onClick={() => moveAdminSchoolYear(1)} disabled={schoolYearOptions.findIndex(year => String(year) === String(adminSelectedSchoolYear)) >= schoolYearOptions.length - 1} className="flex h-7 w-7 items-center justify-center rounded-md border border-white/20 bg-white/10 disabled:opacity-35" title="Tiến năm">
+                    <ChevronRight className="h-3.5 w-3.5" />
+                  </button>
+                  <button onClick={handleExitAdmin} className="flex h-7 w-7 items-center justify-center rounded-md bg-rose-500 text-white hover:bg-rose-600" title="Thoát quản trị" aria-label="Thoát quản trị">
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+                <div className="relative order-last w-full sm:order-none sm:w-[330px]">
                   <Home className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-emerald-600" />
                   <select
                     value={adminModule}
@@ -6309,7 +6574,7 @@ ${lessonBlocks}`;
                   </select>
                 </div>
                 <div className="hidden md:block text-sm font-semibold uppercase text-white">{adminModule === 'thd' ? 'THCS Trần Hưng Đạo' : 'THCS Nguyễn An Ninh'}</div>
-                <div className="ml-auto flex items-center gap-1.5 text-xs font-semibold">
+                <div className="ml-auto hidden items-center gap-1.5 text-xs font-semibold sm:flex">
                   <span className="hidden sm:inline text-white/80">Năm admin</span>
                   <button type="button" onClick={() => moveAdminSchoolYear(-1)} disabled={schoolYearOptions.findIndex(year => String(year) === String(adminSelectedSchoolYear)) <= 0} className="h-8 w-8 rounded-md border border-white/20 bg-white/10 text-white hover:bg-white/20 disabled:opacity-35" title="Lui nam admin dang xem">
                     <ChevronLeft className="mx-auto h-4 w-4" />
@@ -6336,14 +6601,14 @@ ${lessonBlocks}`;
                   <button onClick={handleExitAdmin} className="h-8 rounded-md bg-rose-500 px-3 text-white hover:bg-rose-600">Thoát</button>
                 </div>
               </div>
-              <div data-admin-menu-bar className="flex flex-wrap items-center gap-1.5 px-2.5 sm:px-3 py-1.5 bg-white">
+              <div data-admin-menu-bar className="flex flex-nowrap items-center gap-1 overflow-x-auto overflow-y-visible bg-white px-2 py-1 sm:flex-wrap sm:gap-1.5 sm:overflow-visible sm:px-3 sm:py-1.5">
                 {adminMenuItems.map(item => {
                   const ItemIcon = item.icon || FileText;
                   if (item.children?.length) {
                     return (
                       <details
                         key={item.key}
-                        className={`relative ${item.alignRight ? 'order-last ml-auto' : ''}`}
+                        className={`relative shrink-0 ${item.alignRight ? 'order-last sm:ml-auto' : ''}`}
                         onToggle={(event) => {
                           if (!event.currentTarget.open) return;
                           const menuBar = event.currentTarget.closest('[data-admin-menu-bar]');
@@ -6352,13 +6617,13 @@ ${lessonBlocks}`;
                           });
                         }}
                       >
-                        <summary className="list-none h-8 cursor-pointer rounded-md border border-blue-100 bg-white px-2.5 text-xs font-semibold text-slate-800 hover:border-blue-300 hover:bg-blue-50 inline-flex items-center gap-1.5">
+                        <summary className="list-none h-7 cursor-pointer rounded-md border border-blue-100 bg-white px-2 text-[11px] font-semibold text-slate-800 hover:border-blue-300 hover:bg-blue-50 inline-flex items-center gap-1 sm:h-8 sm:px-2.5 sm:text-xs sm:gap-1.5">
                           <ItemIcon className="h-4 w-4 text-blue-600" />
                           {item.label}
                           {item.badge && <span className="rounded-full bg-rose-100 px-1.5 py-0.5 text-[9px] text-rose-600">{item.badge}</span>}
                           <ChevronDown className="h-3.5 w-3.5 text-slate-500" />
                         </summary>
-                        <div className="absolute left-0 top-full z-40 mt-1 w-44 rounded-lg border border-slate-200 bg-white p-1.5 shadow-xl">
+                        <div className="fixed left-3 right-3 top-[114px] z-[300] grid grid-cols-2 gap-1 rounded-lg border border-slate-200 bg-white p-1.5 shadow-xl sm:absolute sm:left-0 sm:right-auto sm:top-full sm:block sm:w-44">
                           {item.children.map(child => {
                             const childClassName = "flex w-full items-center justify-between gap-2 rounded-md px-3 py-2 text-left text-xs font-semibold text-slate-700 no-underline hover:bg-blue-50 hover:text-blue-700";
                             const childContent = (
@@ -6391,7 +6656,7 @@ ${lessonBlocks}`;
                       </details>
                     );
                   }
-                  const itemClassName = `h-8 rounded-md border px-2.5 text-xs font-semibold inline-flex items-center gap-1.5 no-underline transition-all ${item.pending ? 'border-slate-200 bg-slate-50 text-slate-500 hover:bg-slate-100' : 'border-blue-100 bg-white text-slate-800 hover:border-blue-300 hover:bg-blue-50 hover:shadow-sm'}`;
+                  const itemClassName = `h-7 shrink-0 rounded-md border px-2 text-[11px] font-semibold inline-flex items-center gap-1 no-underline transition-all sm:h-8 sm:px-2.5 sm:text-xs sm:gap-1.5 ${item.pending ? 'border-slate-200 bg-slate-50 text-slate-500 hover:bg-slate-100' : 'border-blue-100 bg-white text-slate-800 hover:border-blue-300 hover:bg-blue-50 hover:shadow-sm'}`;
                   const itemContent = (
                     <>
                       <ItemIcon className={`h-4 w-4 ${item.pending ? 'text-slate-400' : 'text-blue-600'}`} />
@@ -6423,10 +6688,10 @@ ${lessonBlocks}`;
             </div>
           )}
 
-          {isAdmin && <div className="h-[84px] w-full shrink-0" />}
+          {isAdmin && <div className="h-[114px] w-full shrink-0 sm:h-[84px]" />}
 
           {isAdmin && adminModule === 'notice' && (
-            <div className="fixed inset-x-0 top-[84px] bottom-0 z-[85] overflow-y-auto bg-slate-100/95 p-3 sm:p-5 backdrop-blur-md">
+            <div className="fixed inset-x-0 top-[114px] sm:top-[84px] bottom-0 z-[85] overflow-y-auto bg-slate-100/95 p-3 sm:p-5 backdrop-blur-md">
               <div className="mx-auto max-w-6xl space-y-4">
                 <div className="rounded-2xl border border-blue-100 bg-white p-4 shadow-sm">
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -6444,6 +6709,86 @@ ${lessonBlocks}`;
                     >
                       {showAddNews ? <X className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
                       {showAddNews ? 'Đóng khung soạn' : 'Thêm tin'}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-emerald-100 bg-white p-4 shadow-sm">
+                  <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <h3 className="flex items-center gap-2 text-base font-semibold text-emerald-950">
+                        <Mail className="h-5 w-5 text-emerald-600" /> Hộp thư học sinh
+                      </h3>
+                      <p className="mt-1 text-xs font-medium text-slate-500">Gửi riêng cho học sinh, một lớp hoặc toàn trường. Thư được lưu trong Drive hộp thư.</p>
+                    </div>
+                    <a href={STUDENT_MAILBOX_DRIVE_URL} target="_blank" rel="noopener noreferrer" className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-emerald-100 bg-emerald-50 px-3 text-xs font-semibold text-emerald-700 hover:bg-emerald-100">
+                      <Folder className="h-4 w-4" /> Mở Drive hộp thư
+                    </a>
+                  </div>
+                  <div className="grid gap-2 sm:grid-cols-3">
+                    <select value={mailboxRecipientType} onChange={event => { setMailboxRecipientType(event.target.value); setMailboxRecipientValue(''); }} className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold outline-none focus:border-emerald-400">
+                      <option value="student">Một học sinh</option>
+                      <option value="class">Một lớp</option>
+                      <option value="all">Toàn trường</option>
+                    </select>
+                    {mailboxRecipientType === 'student' && (
+                      <select value={mailboxRecipientValue} onChange={event => setMailboxRecipientValue(event.target.value)} className="h-10 min-w-0 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold outline-none focus:border-emerald-400 sm:col-span-2">
+                        <option value="">Chọn học sinh nhận thư...</option>
+                        {mailboxStudents.map(student => <option key={student.id} value={student.id}>Lớp {student.className || '-'} - {student.fullName || 'Chưa có tên'} - {student.accessCode || 'chưa có mã'}</option>)}
+                      </select>
+                    )}
+                    {mailboxRecipientType === 'class' && (
+                      <select value={mailboxRecipientValue} onChange={event => setMailboxRecipientValue(event.target.value)} className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold outline-none focus:border-emerald-400 sm:col-span-2">
+                        <option value="">Chọn lớp nhận thư...</option>
+                        {mailboxClassOptions.map(className => <option key={className} value={className}>Lớp {className}</option>)}
+                      </select>
+                    )}
+                    {mailboxRecipientType === 'all' && (
+                      <div className="flex h-10 items-center rounded-xl border border-blue-100 bg-blue-50 px-3 text-sm font-semibold text-blue-700 sm:col-span-2">Gửi đến tất cả học sinh năm {activeSchoolYear}</div>
+                    )}
+                  </div>
+                  <div className="mt-2 grid gap-2 sm:grid-cols-[180px_1fr]">
+                    <select value={mailboxCategory} onChange={event => setMailboxCategory(event.target.value)} className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold outline-none focus:border-emerald-400">
+                      <option value="general">Thông báo chung</option>
+                      <option value="score">Điểm học tập</option>
+                      <option value="profile">Thiếu thông tin/hồ sơ</option>
+                      <option value="quiz">Bài kiểm tra/bài làm</option>
+                      <option value="reminder">Nhắc việc</option>
+                    </select>
+                    <input value={mailboxTitle} onChange={event => setMailboxTitle(event.target.value)} placeholder="Tiêu đề thư..." className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold outline-none focus:border-emerald-400" />
+                  </div>
+                  <textarea value={mailboxBody} onChange={event => setMailboxBody(event.target.value)} rows={4} placeholder="Nội dung admin gửi cho học sinh..." className="mt-2 w-full resize-y rounded-xl border border-slate-200 bg-white p-3 text-sm font-medium outline-none focus:border-emerald-400" />
+                  <button type="button" onClick={sendStudentMailboxMessage} disabled={isSendingStudentMailbox} className="mt-2 inline-flex h-10 w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 text-sm font-semibold text-white shadow-sm hover:bg-emerald-700 disabled:opacity-60 sm:w-auto">
+                    {isSendingStudentMailbox ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />} Gửi vào hộp thư
+                  </button>
+                  <div className="mt-4 border-t border-rose-100 pt-3">
+                    <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-rose-800">
+                      <Trash2 className="h-4 w-4" /> Xóa tin nhắn đã gửi
+                    </div>
+                    <div className="grid gap-2 sm:grid-cols-4">
+                      <select value={mailboxDeleteMode} onChange={event => setMailboxDeleteMode(event.target.value)} className="h-9 rounded-lg border border-rose-100 bg-white px-2 text-xs font-semibold text-slate-700 outline-none focus:border-rose-300">
+                        <option value="filter">Xóa theo điều kiện</option>
+                        <option value="all">Xóa toàn bộ tin nhắn</option>
+                      </select>
+                      <select value={mailboxDeleteCategory} onChange={event => setMailboxDeleteCategory(event.target.value)} disabled={mailboxDeleteMode === 'all'} className="h-9 rounded-lg border border-rose-100 bg-white px-2 text-xs font-semibold text-slate-700 outline-none disabled:bg-slate-100 disabled:text-slate-400">
+                        <option value="all">Tất cả mục</option>
+                        <option value="general">Thông báo chung</option>
+                        <option value="score">Kết quả học tập</option>
+                        <option value="profile">Hồ sơ học sinh</option>
+                        <option value="quiz">Bài kiểm tra</option>
+                        <option value="reminder">Nhắc việc</option>
+                      </select>
+                      <label className="flex h-9 items-center gap-1 rounded-lg border border-rose-100 bg-white px-2 text-[10px] font-semibold text-slate-500">
+                        Từ
+                        <input type="date" value={mailboxDeleteFrom} onChange={event => setMailboxDeleteFrom(event.target.value)} disabled={mailboxDeleteMode === 'all'} className="min-w-0 flex-1 bg-transparent text-xs font-semibold text-slate-700 outline-none disabled:text-slate-400" />
+                      </label>
+                      <label className="flex h-9 items-center gap-1 rounded-lg border border-rose-100 bg-white px-2 text-[10px] font-semibold text-slate-500">
+                        Đến
+                        <input type="date" value={mailboxDeleteTo} onChange={event => setMailboxDeleteTo(event.target.value)} disabled={mailboxDeleteMode === 'all'} className="min-w-0 flex-1 bg-transparent text-xs font-semibold text-slate-700 outline-none disabled:text-slate-400" />
+                      </label>
+                    </div>
+                    <button type="button" onClick={deleteStudentMailboxMessages} disabled={isDeletingStudentMailbox} className="mt-2 inline-flex h-9 w-full items-center justify-center gap-1.5 rounded-lg border border-rose-200 bg-rose-50 px-3 text-xs font-black uppercase text-rose-700 hover:bg-rose-100 disabled:opacity-50 sm:w-auto">
+                      {isDeletingStudentMailbox ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />} Xóa tin phù hợp
                     </button>
                   </div>
                 </div>
@@ -6529,12 +6874,12 @@ ${lessonBlocks}`;
                   ) : (
                     <div className="divide-y divide-slate-100">
                       {newsList.map(n => (
-                        <div key={n.id} className="group flex items-center gap-3 px-4 py-3 hover:bg-slate-50">
+                        <div key={n.id} className="group flex items-center gap-2 px-3 py-3 hover:bg-slate-50 sm:gap-3 sm:px-4">
                           <button type="button" onClick={() => setViewingNews(n)} className="min-w-0 flex-1 text-left">
                             <div className="flex flex-wrap items-center gap-2">
                               {n.isPinned && <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-semibold uppercase text-amber-700">Tin ghim</span>}
                               {n.isHot && <span className="rounded-full bg-rose-50 px-2 py-0.5 text-[10px] font-semibold uppercase text-rose-700">Tin nóng</span>}
-                              <h4 className="min-w-0 text-sm font-semibold text-slate-900 line-clamp-1">{n.title}</h4>
+                              <h4 className="min-w-0 text-sm font-semibold text-slate-900 line-clamp-2 sm:line-clamp-1">{n.title}</h4>
                             </div>
                             <div className="mt-1 text-xs font-medium text-slate-400">{new Date(n.createdAt).toLocaleString('vi-VN')}</div>
                           </button>
@@ -6549,7 +6894,7 @@ ${lessonBlocks}`;
           )}
 
           {isAdmin && isAdminTextbookExpanded && (
-            <div className="fixed inset-x-0 top-[84px] bottom-0 z-[90] overflow-y-auto bg-slate-100/95 p-2 sm:p-4 backdrop-blur-md">
+            <div className="fixed inset-x-0 top-[114px] sm:top-[84px] bottom-0 z-[90] overflow-y-auto bg-slate-100/95 p-2 sm:p-4 backdrop-blur-md">
               <div className="mx-auto max-w-5xl rounded-3xl border border-emerald-100 bg-white p-4 sm:p-6 shadow-xl">
                 <div className="mb-4 flex items-center justify-between gap-3">
                   <div>
@@ -6691,7 +7036,7 @@ ${lessonBlocks}`;
           )}
 
           {isAdmin && showAdminSettingsWorkspace && (
-            <Suspense fallback={<div className="fixed inset-x-0 top-[84px] bottom-0 z-[120] bg-white flex items-center justify-center text-sm font-black text-blue-700">Đang mở cài đặt...</div>}>
+            <Suspense fallback={<div className="fixed inset-x-0 top-[114px] sm:top-[84px] bottom-0 z-[120] bg-white flex items-center justify-center text-sm font-black text-blue-700">Đang mở cài đặt...</div>}>
               <AdminSettingsWorkspace
                 key={adminSettingsInitialPanel}
                 currentSchoolYear={currentSchoolYear}
@@ -6724,7 +7069,7 @@ ${lessonBlocks}`;
           )}
 
           {isAdmin && showStudentDatabase && (
-            <div className="fixed inset-x-0 top-[84px] bottom-0 z-[80] bg-slate-100/95 backdrop-blur-md overflow-hidden p-2 sm:p-3">
+            <div className="fixed inset-x-0 top-[114px] sm:top-[84px] bottom-0 z-[80] bg-slate-100/95 backdrop-blur-md overflow-hidden p-2 sm:p-3">
               <div className="w-full h-full min-h-0 max-w-none mx-auto">
                 <Suspense fallback={<div className="rounded-3xl border border-indigo-100 bg-indigo-50 p-4 text-xs font-black text-indigo-700">Đang mở database học sinh...</div>}>
                   <HocSinhManager
@@ -6734,6 +7079,8 @@ ${lessonBlocks}`;
                     initialTabKey={studentDatabaseOpenKey}
                     user={user}
                     showNotification={showNotification}
+                    onSendTestResults={sendStudentTestResults}
+                    onBeforeDangerousAction={createSafetyBackup}
                     onBack={() => setShowStudentDatabase(false)}
                     onOpenAttendance={() => {
                       setShowStudentDatabase(false);
@@ -6745,7 +7092,7 @@ ${lessonBlocks}`;
             </div>
           )}
           {(isAdmin || quickScoreLockedContext) && showLearningResultsWorkspace && (
-            <div className="fixed inset-x-0 top-[84px] bottom-0 z-[120] bg-slate-100/95 backdrop-blur-md overflow-y-auto p-2 sm:p-3">
+            <div className="fixed inset-x-0 top-[114px] sm:top-[84px] bottom-0 z-[120] bg-slate-100/95 backdrop-blur-md overflow-y-auto p-2 sm:p-3">
               <div className="w-full max-w-none mx-auto space-y-3">
                 <div className="sticky top-0 z-10 rounded-3xl border border-violet-100 bg-white/95 px-4 sm:px-6 py-4 shadow-lg backdrop-blur flex items-center justify-between gap-3">
                   <div className="min-w-0">
@@ -6886,6 +7233,31 @@ ${lessonBlocks}`;
                   </div>
                   </div>
                   </div>
+                  {isAdmin && (
+                    <div className="mb-3 flex flex-wrap items-center gap-2 rounded-xl border border-emerald-100 bg-emerald-50/60 p-2">
+                      <Mail className="h-4 w-4 shrink-0 text-emerald-700" />
+                      <span className="min-w-[180px] flex-1 text-xs font-black text-emerald-800">
+                        Đã chọn {quickScoreMailStudentIds.size} học sinh
+                      </span>
+                      <select
+                        value={quickScoreMailSemester}
+                        onChange={(event) => setQuickScoreMailSemester(event.target.value)}
+                        className="h-9 rounded-lg border border-emerald-200 bg-white px-3 text-xs font-black text-emerald-800 outline-none"
+                      >
+                        <option value="hki">HK1</option>
+                        <option value="hkii">HK2</option>
+                      </select>
+                      <button
+                        type="button"
+                        onClick={sendQuickScoreReportToStudent}
+                        disabled={isSendingQuickScoreMail || !quickScoreMailStudentIds.size}
+                        className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-emerald-600 px-3 text-xs font-black uppercase text-white disabled:opacity-50"
+                      >
+                        {isSendingQuickScoreMail ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+                        Gửi phiếu điểm
+                      </button>
+                    </div>
+                  )}
                   {!canWriteCurrentSchoolYear && (
                     <div className="mb-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-black uppercase text-rose-700">
                       Năm học {activeSchoolYear} đang khóa nhập điểm
@@ -6896,7 +7268,18 @@ ${lessonBlocks}`;
                     <table className="min-w-max w-full border-collapse text-[11px]">
                       <thead>
                         <tr className="bg-slate-100">
-                          <th rowSpan={3} className="sticky left-0 z-[70] min-w-[190px] max-w-[190px] border border-slate-400 bg-slate-100 px-2 py-1 text-left font-black shadow-[4px_0_0_#f8fafc]">ƯT · Họ và tên</th>
+                          <th rowSpan={3} className="sticky left-0 z-[70] min-w-[190px] max-w-[190px] border border-slate-400 bg-slate-100 px-2 py-1 text-left font-black shadow-[4px_0_0_#f8fafc]">
+                            <label className="flex items-center gap-2">
+                              <input
+                                type="checkbox"
+                                checked={quickScoreStudents.length > 0 && quickScoreStudents.every((student, index) => quickScoreMailStudentIds.has(getQuickScoreStudentKey(student, index)))}
+                                onChange={toggleAllQuickScoreMailStudents}
+                                className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                                title="Chọn tất cả học sinh để gửi phiếu điểm"
+                              />
+                              <span>Họ và tên</span>
+                            </label>
+                          </th>
                           {quickSelectedSubjects.map((subject) => (
                             <th key={`quick-subject-${subject.key}`} colSpan={quickSubjectColSpanBySubject[subject.key] || 0} className="border-x-4 border-y-2 border-slate-600 px-1 py-1 text-center font-black">
                               {subject.label}
@@ -6954,21 +7337,21 @@ ${lessonBlocks}`;
                       <tbody>
                         {quickScoreStudents.map((student, rowIndex) => {
                           const studentKey = getQuickScoreStudentKey(student, rowIndex);
-                          const isPriorityStudent = quickPriorityStudentIds.has(studentKey);
+                          const isMailSelected = quickScoreMailStudentIds.has(studentKey);
                           const isActiveRow = activeQuickScoreRowKey === studentKey;
-                          const rowToneClass = isActiveRow ? 'bg-indigo-50/95' : (isPriorityStudent ? 'bg-emerald-50/70' : (rowIndex % 2 ? 'bg-white' : 'bg-slate-50/30'));
-                          const nameToneClass = isActiveRow ? 'bg-indigo-50' : (isPriorityStudent ? 'bg-emerald-50' : 'bg-white');
+                          const rowToneClass = isActiveRow ? 'bg-indigo-50/95' : (isMailSelected ? 'bg-emerald-50/70' : (rowIndex % 2 ? 'bg-white' : 'bg-slate-50/30'));
+                          const nameToneClass = isActiveRow ? 'bg-indigo-50' : (isMailSelected ? 'bg-emerald-50' : 'bg-white');
                           return (
                           <tr key={`quick-row-${student.id || rowIndex}`} onClick={() => setActiveQuickScoreRowKey(studentKey)} className={`${rowToneClass} ${isActiveRow ? 'outline outline-2 outline-indigo-300 outline-offset-[-2px]' : ''}`}>
                             <td className={`sticky left-0 z-[60] min-w-[190px] max-w-[190px] border border-slate-300 px-2 py-1 font-bold whitespace-nowrap overflow-hidden text-ellipsis shadow-[4px_0_0_#ffffff] ${nameToneClass}`}>
                               <label className="flex min-w-0 items-center gap-2">
                                 <input
                                   type="checkbox"
-                                  checked={isPriorityStudent}
+                                  checked={isMailSelected}
                                   onClick={(event) => event.stopPropagation()}
-                                  onChange={() => toggleQuickPriorityStudent(studentKey)}
+                                  onChange={() => toggleQuickScoreMailStudent(studentKey)}
                                   className="h-4 w-4 shrink-0 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
-                                  title="Ưu tiên khi tự sinh điểm"
+                                  title="Chọn gửi phiếu điểm"
                                 />
                                 <span className="truncate">{student.fullName || ''}</span>
                               </label>
@@ -7075,7 +7458,7 @@ ${lessonBlocks}`;
             </div>
           )}
           {isAdmin && scorebookGrade && (
-            <Suspense fallback={<div className="fixed inset-x-0 top-[84px] bottom-0 z-[140] bg-white flex items-center justify-center text-sm font-black text-violet-700">Đang mở sổ điểm...</div>}>
+            <Suspense fallback={<div className="fixed inset-x-0 top-[114px] sm:top-[84px] bottom-0 z-[140] bg-white flex items-center justify-center text-sm font-black text-violet-700">Đang mở sổ điểm...</div>}>
               <WorkspaceErrorBoundary
                 resetKey={`${scorebookInitialMode}-${scorebookGrade}-${activeSchoolYear}`}
                 title={scorebookInitialMode === 'transcript' ? 'Màn Học bạ đang lỗi' : 'Màn Sổ điểm đang lỗi'}
@@ -7106,7 +7489,7 @@ ${lessonBlocks}`;
             </Suspense>
           )}
           {isAdmin && showAdminCheckWorkspace && (
-            <div className="fixed inset-x-0 top-[84px] bottom-0 z-[120] bg-slate-100/95 backdrop-blur-md overflow-y-auto p-2 sm:p-3">
+            <div className="fixed inset-x-0 top-[114px] sm:top-[84px] bottom-0 z-[120] bg-slate-100/95 backdrop-blur-md overflow-y-auto p-2 sm:p-3">
               <div className="w-full max-w-none mx-auto space-y-3">
                 <div className="sticky top-0 z-10 rounded-xl border border-slate-200 bg-white/95 p-1.5 shadow-md backdrop-blur">
                   <div className="flex gap-1.5">
@@ -7414,8 +7797,19 @@ ${lessonBlocks}`;
               </div>
             </div>
           )}
+          {isAdmin && showDataSafetyWorkspace && (
+            <Suspense fallback={<div className="fixed inset-0 z-[140] flex items-center justify-center bg-white text-sm font-black text-blue-700">Đang mở An toàn dữ liệu...</div>}>
+              <AdminDataSafetyWorkspace
+                snapshot={systemSnapshot}
+                students={allStudents}
+                onRestore={restoreSystemSnapshot}
+                onClose={() => setShowDataSafetyWorkspace(false)}
+                showNotification={showNotification}
+              />
+            </Suspense>
+          )}
           {isAdmin && showPasswordWorkspace && (
-            <div className="fixed inset-x-0 top-[84px] bottom-0 z-[120] bg-slate-100/95 backdrop-blur-md overflow-y-auto p-2 sm:p-3">
+            <div className="fixed inset-x-0 top-[114px] sm:top-[84px] bottom-0 z-[120] bg-slate-100/95 backdrop-blur-md overflow-y-auto p-2 sm:p-3">
               <div className="w-full max-w-none mx-auto space-y-3">
                 <div className="sticky top-0 z-10 rounded-3xl border border-slate-200 bg-white/95 px-4 sm:px-6 py-4 shadow-lg backdrop-blur flex items-center justify-between gap-3">
                   <div className="min-w-0">
@@ -7435,9 +7829,9 @@ ${lessonBlocks}`;
                         <div className="font-black text-emerald-900 uppercase">Mật khẩu giáo viên</div>
                         <div className="text-xs text-emerald-700/70 font-bold mt-1">Bật để yêu cầu giáo viên nhập mật khẩu</div>
                       </div>
-                      <button onClick={() => updateGlobalSetting('isTeacherPassEnabled', !isTeacherPassEnabled)} className={`w-12 h-6 rounded-full transition-colors relative shadow-inner flex-shrink-0 ${isTeacherPassEnabled ? 'bg-emerald-500' : 'bg-slate-300'}`}><div className={`w-4 h-4 bg-white rounded-full absolute top-1 transition-transform shadow-md ${isTeacherPassEnabled ? 'left-7' : 'left-1'}`}></div></button>
+                      <button onClick={toggleTeacherPasswordOnServer} className={`w-12 h-6 rounded-full transition-colors relative shadow-inner flex-shrink-0 ${isTeacherPassEnabled ? 'bg-emerald-500' : 'bg-slate-300'}`}><div className={`w-4 h-4 bg-white rounded-full absolute top-1 transition-transform shadow-md ${isTeacherPassEnabled ? 'left-7' : 'left-1'}`}></div></button>
                     </div>
-                    {isTeacherPassEnabled ? <input type="text" placeholder="Nhập mật khẩu cho giáo viên..." className="w-full bg-white border border-emerald-200 p-3 rounded-xl focus:outline-none focus:border-emerald-500 font-black text-sm shadow-sm" value={teacherPass} onChange={(e) => updateGlobalSetting('teacherPass', e.target.value)} /> : <div className="p-3 text-xs font-bold text-slate-400 bg-slate-50 border border-slate-100 rounded-xl text-center">Đang tắt tính năng hỏi mật khẩu</div>}
+                    {isTeacherPassEnabled ? <><input type="password" placeholder="Mật khẩu giáo viên mới, ít nhất 8 ký tự..." className="w-full bg-white border border-emerald-200 p-3 rounded-xl focus:outline-none focus:border-emerald-500 font-black text-sm shadow-sm" value={teacherPass} onChange={(e) => setTeacherPass(e.target.value)} /><button type="button" onClick={() => saveStaffAccessConfig('teacher')} disabled={isSavingStaffPassword === 'teacher' || teacherPass.length < 8} className="mt-2 h-9 w-full rounded-xl bg-emerald-600 text-xs font-black uppercase text-white disabled:opacity-40">Lưu mật khẩu giáo viên</button></> : <div className="p-3 text-xs font-bold text-slate-400 bg-slate-50 border border-slate-100 rounded-xl text-center">Đang tắt tính năng hỏi mật khẩu</div>}
                   </div>
                   <div className="rounded-3xl border border-rose-100 bg-white p-5 shadow-sm">
                     <div className="flex justify-between items-start gap-3 mb-4">
@@ -7447,7 +7841,10 @@ ${lessonBlocks}`;
                       </div>
                       <div className="px-3 py-1 rounded-full bg-rose-50 text-rose-700 text-[10px] font-black uppercase border border-rose-100">Đã khóa</div>
                     </div>
-                    <input type="password" placeholder="Nhập mật khẩu admin..." className="w-full bg-white border border-rose-200 p-3 rounded-xl focus:outline-none focus:border-rose-500 font-black text-sm shadow-sm" value={adminPass} onChange={(e) => updateGlobalSetting('adminPass', e.target.value)} />
+                    <input type="password" placeholder="Mật khẩu admin mới (ít nhất 8 ký tự)..." className="w-full bg-white border border-rose-200 p-3 rounded-xl focus:outline-none focus:border-rose-500 font-black text-sm shadow-sm" value={newAdminPassword} onChange={(e) => setNewAdminPassword(e.target.value)} />
+                    <button type="button" onClick={saveAdminServerPassword} disabled={isSavingAdminPassword || newAdminPassword.length < 8} className="mt-2 inline-flex h-9 w-full items-center justify-center gap-1.5 rounded-xl bg-rose-600 px-3 text-xs font-black uppercase text-white disabled:opacity-40">
+                      {isSavingAdminPassword ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />} Đổi mật khẩu máy chủ
+                    </button>
                   </div>
                   <div className="rounded-3xl border border-sky-100 bg-white p-5 shadow-sm">
                     <div className="flex justify-between items-start gap-3 mb-4">
@@ -7457,7 +7854,8 @@ ${lessonBlocks}`;
                       </div>
                       <div className="px-3 py-1 rounded-full bg-sky-50 text-sky-700 text-[10px] font-black uppercase border border-sky-100">Riêng</div>
                     </div>
-                    <input type="password" placeholder="Nhập mật khẩu Trần Hưng Đạo..." className="w-full bg-white border border-sky-200 p-3 rounded-xl focus:outline-none focus:border-sky-500 font-black text-sm shadow-sm" value={thdAdminPass} onChange={(e) => updateGlobalSetting('thdAdminPass', e.target.value)} />
+                    <input type="password" placeholder="Mật khẩu Trần Hưng Đạo mới, ít nhất 8 ký tự..." className="w-full bg-white border border-sky-200 p-3 rounded-xl focus:outline-none focus:border-sky-500 font-black text-sm shadow-sm" value={thdAdminPass} onChange={(e) => setThdAdminPass(e.target.value)} />
+                    <button type="button" onClick={() => saveStaffAccessConfig('thd')} disabled={isSavingStaffPassword === 'thd' || thdAdminPass.length < 8} className="mt-2 h-9 w-full rounded-xl bg-sky-600 text-xs font-black uppercase text-white disabled:opacity-40">Lưu mật khẩu Trần Hưng Đạo</button>
                   </div>
                   <div className="rounded-3xl border border-indigo-100 bg-white p-5 shadow-sm">
                     <div className="flex justify-between items-start gap-3 mb-4">
@@ -7474,7 +7872,7 @@ ${lessonBlocks}`;
             </div>
           )}
           {isAdmin && adminModule !== 'notice' && showScheduleWorkspace && (
-            <div className="fixed inset-x-0 top-[84px] bottom-0 z-[120] bg-slate-100/95 backdrop-blur-md overflow-y-auto p-0">
+            <div className="fixed inset-x-0 top-[114px] sm:top-[84px] bottom-0 z-[120] bg-slate-100/95 backdrop-blur-md overflow-y-auto p-0">
               <SimpleScheduleTable
                 currentSchoolYear={activeSchoolYear}
                 subjects={SUBJECTS}
@@ -7489,7 +7887,7 @@ ${lessonBlocks}`;
             </div>
           )}
           {isAdmin && adminModule !== 'notice' && showAttendanceWorkspace && (
-            <div className="fixed inset-x-0 top-[84px] bottom-0 z-[120] bg-slate-100/95 backdrop-blur-md overflow-y-auto p-0">
+            <div className="fixed inset-x-0 top-[114px] sm:top-[84px] bottom-0 z-[120] bg-slate-100/95 backdrop-blur-md overflow-y-auto p-0">
               <ClassOpsManager
                 mode="admin"
                 initialView="attendance"
@@ -7508,7 +7906,115 @@ ${lessonBlocks}`;
           )}
           {!(isAdmin && (adminAccessScope === 'thd' || adminModule === 'thd' || adminModule === 'notice')) && (
             <div className={`home-panels-wrap ${isAdmin ? 'admin-home-panels-wrap max-w-none' : 'max-w-6xl'} w-full mb-3 sm:mb-4 flex flex-col min-h-0`}>
-              <div className="lg:hidden flex flex-col items-center w-full min-h-0">
+              <div className="home-mobile-dashboard lg:hidden min-h-0 overflow-hidden rounded-2xl border border-white/45 bg-white/55 shadow-lg backdrop-blur-md">
+                <div className="home-mobile-updates flex h-9 shrink-0 items-center overflow-hidden border-b border-emerald-100 bg-white/75">
+                  <div className="flex h-full shrink-0 items-center gap-1.5 bg-emerald-600 px-2.5 text-[9px] font-black uppercase text-white">
+                    <BookOpen className="h-3.5 w-3.5" /> Mới cập nhật
+                  </div>
+                  {combinedFeedSorted.length > 0 ? (
+                    <marquee scrollamount="3" className="min-w-0 flex-1 text-[10px] font-bold text-slate-600">
+                      {combinedFeedSorted.map((item, index) => (
+                        <button key={`mobile-update-${item.id}`} type="button" onClick={() => openHomepageFeedItem(item)} className="mx-3 whitespace-nowrap hover:text-emerald-700">
+                          {item.title}{index < combinedFeedSorted.length - 1 ? '  |  ' : ''}
+                        </button>
+                      ))}
+                    </marquee>
+                  ) : <div className="px-3 text-[10px] font-bold text-slate-400">Đang cập nhật...</div>}
+                </div>
+
+                <div className="flex items-center justify-between border-b border-white/70 px-3 py-2">
+                  <h3 className="flex items-center gap-1.5 text-[11px] font-black uppercase text-blue-900">
+                    <Newspaper className="h-4 w-4 text-blue-600" /> Tin tức - sự kiện
+                  </h3>
+                  <span className="text-[9px] font-bold text-slate-400">6 tin mới nhất</span>
+                </div>
+
+                {mobileHomepageNews.length > 0 ? (() => {
+                  return (
+                    <div className="home-mobile-news-split grid min-h-0 flex-1 grid-cols-[minmax(0,2fr)_minmax(0,1fr)] overflow-hidden">
+                      <div className="min-w-0 overflow-hidden border-r border-blue-100 bg-white/45">
+                        {mobileHomepageNews.length > 1 && (
+                          <style>{`
+                            @keyframes mobileHomepageNewsSlide {
+                              ${mobileHomepageNewsSlideKeyframes}
+                            }
+                            .mobile-homepage-news-slider-track {
+                              animation: mobileHomepageNewsSlide ${Math.max(24, mobileHomepageNews.length * 7)}s ease-in-out infinite;
+                            }
+                          `}</style>
+                        )}
+                        <div
+                          className={`${mobileHomepageNews.length > 1 ? 'mobile-homepage-news-slider-track' : ''} flex h-full`}
+                          style={{ width: `${mobileHomepageNews.length * 100}%` }}
+                        >
+                          {mobileHomepageNews.map((mobileFeatured) => {
+                            const mobileFeaturedImage = getSharpNewsImageSrc(extractNewsImageSrc(mobileFeatured.content));
+                            const mobileFeaturedFallbackImage = getNewsImageFallbackSrc(mobileFeatured.content);
+                            const mobileFeaturedFileId = extractNewsDriveFileId(mobileFeatured.content);
+                            return (
+                              <button
+                                key={`mobile-featured-${mobileFeatured.id}`}
+                                type="button"
+                                onClick={() => setViewingNews(mobileFeatured)}
+                                className="h-full min-w-0 p-2 text-left"
+                                style={{ width: `${100 / mobileHomepageNews.length}%` }}
+                              >
+                                <div className="home-mobile-featured-media overflow-hidden rounded-lg border border-blue-100 bg-white/70">
+                                  {mobileFeaturedImage ? (
+                                    <img
+                                      src={mobileFeaturedImage}
+                                      alt={mobileFeatured.title}
+                                      data-news-image-attempt="0"
+                                      onError={(event) => {
+                                        const attempt = Number(event.currentTarget.dataset.newsImageAttempt || '0');
+                                        if (mobileFeaturedFileId && attempt === 0) {
+                                          event.currentTarget.dataset.newsImageAttempt = '1';
+                                          event.currentTarget.src = `https://lh3.googleusercontent.com/d/${mobileFeaturedFileId}=w1000`;
+                                          return;
+                                        }
+                                        if (mobileFeaturedFallbackImage && attempt < 2 && event.currentTarget.src !== mobileFeaturedFallbackImage) {
+                                          event.currentTarget.dataset.newsImageAttempt = '2';
+                                          event.currentTarget.src = mobileFeaturedFallbackImage;
+                                          return;
+                                        }
+                                        handleRichContentImageError(event);
+                                      }}
+                                      className="h-full w-full object-contain"
+                                    />
+                                  ) : (
+                                    <div className="flex h-full items-center justify-center bg-blue-50/70"><Newspaper className="h-8 w-8 text-blue-300" /></div>
+                                  )}
+                                </div>
+                                <div className="mt-2 flex items-center gap-1 text-[8px] font-black uppercase text-amber-600">
+                                  {mobileFeatured.isPinned ? <><Pin className="h-3 w-3" fill="currentColor" /> Tin ghim</> : mobileFeatured.isHot ? <><Sparkles className="h-3 w-3" /> Tin nóng</> : 'Tin mới'}
+                                </div>
+                                <h4 className={`mt-1 line-clamp-4 text-[11px] font-black leading-snug ${mobileFeatured.isHot ? 'text-rose-700' : 'text-blue-900'}`}>{mobileFeatured.title}</h4>
+                                <div className="mt-1.5 text-[8px] font-bold text-slate-400">{new Date(mobileFeatured.createdAt).toLocaleDateString('vi-VN')}</div>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      <div className="home-mobile-news-list min-h-0 min-w-0 divide-y divide-blue-100/80 overflow-y-auto overflow-x-hidden bg-white/35">
+                        {mobileHomepageNews.map((newsItem) => (
+                          <button key={`mobile-news-${newsItem.id}`} type="button" onClick={() => setViewingNews(newsItem)} className="flex w-full min-w-0 items-start gap-1 overflow-hidden px-1.5 py-2 text-left hover:bg-white/70">
+                            <CheckCircle2 className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${newsItem.isHot ? 'text-rose-600' : newsItem.isPinned ? 'text-amber-600' : 'text-sky-600'}`} />
+                            <div className="min-w-0 flex-1 overflow-hidden">
+                              <h4 className={`whitespace-normal break-words text-[9px] font-black leading-snug [overflow-wrap:anywhere] ${newsItem.isHot ? 'text-rose-700' : 'text-blue-800'}`}>{newsItem.title}</h4>
+                              <div className="mt-0.5 text-[8px] font-bold text-slate-400">{new Date(newsItem.createdAt).toLocaleDateString('vi-VN')}</div>
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })() : (
+                  <div className="flex flex-1 items-center justify-center text-xs font-bold text-slate-400">Đang cập nhật tin tức...</div>
+                )}
+              </div>
+
+              <div className="hidden">
                   <div className="bg-white/60 p-1.5 rounded-full mb-3 flex w-[280px] shadow-sm border border-white shrink-0">
                       <button onClick={() => setMobileHomeTab('notifications')} className={`flex-1 py-2 rounded-full text-xs font-black uppercase tracking-widest transition-all ${mobileHomeTab === 'notifications' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-500 hover:text-blue-600'}`}>Thông báo</button>
                       <button onClick={() => setMobileHomeTab('news')} className={`flex-1 py-2 rounded-full text-xs font-black uppercase tracking-widest transition-all ${mobileHomeTab === 'news' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-500 hover:text-blue-600'}`}>Bản tin</button>
@@ -7881,13 +8387,13 @@ ${lessonBlocks}`;
             {!isAdmin && (
               <div className="flex flex-col gap-2 sm:gap-3">
                   <div className="flex flex-row gap-2 sm:gap-4 justify-center">
-                    <button onClick={() => { clearStoredAdminSession(); setIsAdmin(false); setShowAdminSettingsWorkspace(false); setShowAdminCheckWorkspace(false); setShowPasswordWorkspace(false); setScorebookGrade(null); if (typeof window !== 'undefined' && window.location.hash.toLowerCase().startsWith('#/admin')) window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`); if (isStudentCodeEnabled) { setShowStudentAccessModal(true); setStudentForgotMode(false); setStudentFoundCode(''); } else { setRole('student'); setLoginRole('student'); } }} className="flex-1 flex items-center justify-center gap-1.5 sm:gap-2 bg-blue-600 text-white py-3 px-2 rounded-[1rem] sm:rounded-2xl font-black shadow-lg transition-all active:scale-95">
+                    <button onClick={() => { clearStoredAdminSession(); setIsAdmin(false); setShowAdminSettingsWorkspace(false); setShowAdminCheckWorkspace(false); setShowPasswordWorkspace(false); setScorebookGrade(null); if (typeof window !== 'undefined' && window.location.hash.toLowerCase().startsWith('#/admin')) window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`); if (isStudentCodeEnabled) { setShowStudentAccessModal(true); setStudentForgotMode(false); setStudentFoundCode(''); } else { setRole('student'); setLoginRole('student'); } }} className="min-w-0 flex-1 flex items-center justify-center gap-1.5 sm:gap-2 bg-blue-600 text-white py-3 px-2 rounded-[1rem] sm:rounded-2xl font-black shadow-lg transition-all active:scale-95">
                        <User className="w-4 h-4 sm:w-5 sm:h-5" />
-                       <span className="text-[11px] sm:text-sm uppercase tracking-wider whitespace-nowrap">Tôi là Học sinh</span>
+                       <span className="min-w-0 text-[9px] sm:text-sm uppercase tracking-normal sm:tracking-wider whitespace-nowrap">Tôi là Học sinh</span>
                     </button>
-                    <button onClick={openTeacherLogin} className="flex-1 flex items-center justify-center gap-1.5 sm:gap-2 bg-emerald-50 text-emerald-700 border border-emerald-200 py-3 px-2 rounded-[1rem] sm:rounded-2xl font-black shadow-md transition-all active:scale-95">
+                    <button onClick={openTeacherLogin} className="min-w-0 flex-1 flex items-center justify-center gap-1.5 sm:gap-2 bg-emerald-50 text-emerald-700 border border-emerald-200 py-3 px-2 rounded-[1rem] sm:rounded-2xl font-black shadow-md transition-all active:scale-95">
                        <GraduationCap className="w-4 h-4 sm:w-5 sm:h-5" />
-                       <span className="text-[11px] sm:text-sm uppercase tracking-wider whitespace-nowrap">Tôi là Giáo viên</span>
+                       <span className="min-w-0 text-[9px] sm:text-sm uppercase tracking-normal sm:tracking-wider whitespace-nowrap">Tôi là Giáo viên</span>
                     </button>
                   </div>
                   <div className="flex justify-center">
@@ -8145,7 +8651,7 @@ ${lessonBlocks}`;
                             {transcriptPages.length ? (
                               transcriptPages.map((page, pageIndex) => (
                                 <div key={page.key} className="relative min-w-full h-full snap-center flex items-center justify-center bg-slate-100">
-                                  <img src={page.imageUrl} alt={`${field.label} trang ${pageIndex + 1}`} className="w-full h-full object-cover" />
+                                  <img src={page.imageUrl} alt={`${field.label} trang ${pageIndex + 1}`} className="w-full h-full object-contain" />
                                   <div className="absolute left-2 top-2 rounded-full bg-slate-900/70 px-2 py-1 text-[10px] font-black text-white">
                                     {pageIndex + 1}/{transcriptPages.length}
                                   </div>
@@ -8179,7 +8685,7 @@ ${lessonBlocks}`;
                             {embedUrl ? (
                               <iframe title={field.label} src={embedUrl} className="w-full h-full border-0 bg-white" loading="lazy" />
                             ) : previewUrl ? (
-                              <img src={previewUrl} alt={field.label} className="w-full h-full object-cover" />
+                              <img src={previewUrl} alt={field.label} className="w-full h-full object-contain" />
                             ) : (
                               <div className="text-center px-3 text-[11px] font-bold text-slate-400">
                                 Chưa có ảnh
@@ -8386,23 +8892,94 @@ ${lessonBlocks}`;
                 <RefreshCw className="w-3 h-3 ml-1 opacity-50 hidden sm:block" />
               </button>
             ) : loginRole === 'student' ? (
-              <button type="button" onClick={() => activeStudentProfile?.id && setShowStudentProfileModal(true)} className="relative flex items-center space-x-1.5 sm:space-x-2.5 bg-blue-50 px-3 py-1.5 sm:px-4 sm:py-2 rounded-full border shadow-sm border-blue-100 hover:bg-blue-100 transition-colors">
-                <User className="w-4 h-4 sm:w-4.5 sm:h-4.5 text-blue-600" />
-                <span className="text-[11px] sm:text-sm font-black text-blue-800">
-                  <span className="sm:hidden">{getStudentDisplayName(activeStudentProfile?.fullName, true)}</span>
-                  <span className="hidden sm:inline">{getStudentDisplayName(activeStudentProfile?.fullName)}</span>
-                </span>
-                {activeStudentPendingProfileRequests.length > 0 && (
-                  <span className="absolute -right-1 -top-1 rounded-full bg-amber-500 px-1.5 py-0.5 text-[8px] font-black uppercase text-white shadow-sm">
-                    Chờ
+              <>
+                <button type="button" onClick={() => { setShowStudentMailbox(true); fetchStudentMailbox(); }} className="relative flex h-9 w-9 items-center justify-center rounded-full border border-blue-100 bg-blue-50 text-blue-700 shadow-sm transition-colors hover:bg-blue-100" title="Hộp thư của em">
+                  <Bell className="h-4.5 w-4.5" />
+                  {studentMailboxUnreadCount > 0 && (
+                    <span className="absolute -right-1 -top-1 flex min-h-4 min-w-4 items-center justify-center rounded-full bg-rose-500 px-1 text-[8px] font-black text-white shadow">
+                      {studentMailboxUnreadCount > 99 ? '99+' : studentMailboxUnreadCount}
+                    </span>
+                  )}
+                </button>
+                <button type="button" onClick={() => activeStudentProfile?.id && setShowStudentProfileModal(true)} className="relative flex items-center space-x-1.5 sm:space-x-2.5 bg-blue-50 px-3 py-1.5 sm:px-4 sm:py-2 rounded-full border shadow-sm border-blue-100 hover:bg-blue-100 transition-colors">
+                  <User className="w-4 h-4 sm:w-4.5 sm:h-4.5 text-blue-600" />
+                  <span className="text-[11px] sm:text-sm font-black text-blue-800">
+                    <span className="sm:hidden">{getStudentDisplayName(activeStudentProfile?.fullName, true)}</span>
+                    <span className="hidden sm:inline">{getStudentDisplayName(activeStudentProfile?.fullName)}</span>
                   </span>
-                )}
-              </button>
+                  {activeStudentPendingProfileRequests.length > 0 && (
+                    <span className="absolute -right-1 -top-1 rounded-full bg-amber-500 px-1.5 py-0.5 text-[8px] font-black uppercase text-white shadow-sm">
+                      Chờ
+                    </span>
+                  )}
+                </button>
+              </>
             ) : null}
             <button onClick={() => { clearStoredAdminSession(); setIsAdmin(false); setRole(null); setLoginRole(null); setCurrentStudent(null); setShowClassOps(false); setShowAdminSettingsWorkspace(false); setShowAdminCheckWorkspace(false); setShowPasswordWorkspace(false); setScorebookGrade(null); resetNavigationWithClean(); if (typeof window !== 'undefined' && window.location.hash.toLowerCase().startsWith('#/admin')) window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`); }} className="text-[10px] sm:text-xs font-black text-slate-400 hover:text-rose-500 transition-colors uppercase tracking-widest">Thoát</button>
           </div>
         </div>
       </header>}
+
+      {showStudentMailbox && role === 'student' && (
+        <div className="fixed inset-0 z-[220] flex items-center justify-center bg-slate-950/55 p-2 backdrop-blur-sm sm:p-5">
+          <div className="flex h-[min(760px,94dvh)] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-white/30 bg-white shadow-2xl sm:rounded-3xl">
+            <div className="flex items-center justify-between gap-3 border-b border-blue-100 bg-blue-50 px-4 py-3 sm:px-6 sm:py-4">
+              <div className="min-w-0">
+                <h3 className="flex items-center gap-2 text-base font-black uppercase text-blue-950 sm:text-xl"><Mail className="h-5 w-5 text-blue-600" /> Hộp thư của em</h3>
+                <p className="mt-0.5 truncate text-[10px] font-bold text-blue-600 sm:text-xs">{activeStudentProfile?.fullName || currentStudent?.fullName || 'Học sinh'} · {studentMailboxUnreadCount} thư chưa đọc</p>
+              </div>
+              <div className="flex shrink-0 gap-2">
+                <button type="button" onClick={() => fetchStudentMailbox()} className="flex h-9 w-9 items-center justify-center rounded-full border border-blue-100 bg-white text-blue-600" title="Tải lại"><RefreshCw className={`h-4 w-4 ${isLoadingStudentMailbox ? 'animate-spin' : ''}`} /></button>
+                <button type="button" onClick={() => { setShowStudentMailbox(false); setSelectedStudentMailboxMessage(null); }} className="flex h-9 w-9 items-center justify-center rounded-full bg-rose-500 text-white" title="Đóng"><X className="h-4 w-4" /></button>
+              </div>
+            </div>
+            <div className="grid min-h-0 flex-1 sm:grid-cols-[minmax(280px,38%)_1fr]">
+              <div className="min-h-0 overflow-y-auto border-b border-slate-100 bg-slate-50/70 p-2 sm:border-b-0 sm:border-r sm:p-3">
+                {isLoadingStudentMailbox && studentMailboxItems.length === 0 ? (
+                  <div className="flex h-full items-center justify-center gap-2 text-sm font-bold text-slate-400"><Loader2 className="h-5 w-5 animate-spin" /> Đang tải hộp thư...</div>
+                ) : studentMailboxItems.length === 0 ? (
+                  <div className="flex h-full items-center justify-center text-center text-sm font-bold text-slate-400">Hộp thư chưa có thông báo.</div>
+                ) : studentMailboxItems.map(message => (
+                  <button key={message.id} type="button" onClick={() => openStudentMailboxMessage(message)} className={`mb-2 w-full rounded-xl border p-3 text-left transition-colors ${selectedStudentMailboxMessage?.id === message.id ? 'border-blue-300 bg-blue-50' : message.isRead ? 'border-slate-100 bg-white hover:bg-slate-50' : 'border-rose-100 bg-rose-50/70 hover:bg-rose-50'}`}>
+                    <div className="flex items-start gap-2">
+                      <span className={`mt-1 h-2.5 w-2.5 shrink-0 rounded-full ${message.isRead ? 'bg-slate-200' : 'bg-rose-500'}`} />
+                      <div className="min-w-0 flex-1">
+                        <div className="line-clamp-2 text-xs font-black text-slate-900 sm:text-sm">{message.title}</div>
+                        <div className="mt-1 flex items-center justify-between gap-2 text-[9px] font-bold uppercase text-slate-400">
+                          <span>{message.source === 'admin' ? 'Admin' : message.category === 'quiz' ? 'Bài kiểm tra' : 'Bài học'}</span>
+                          <span>{message.createdAt ? new Date(message.createdAt).toLocaleDateString('vi-VN') : ''}</span>
+                        </div>
+                      </div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+              <div className="min-h-0 overflow-y-auto bg-white p-4 sm:p-6">
+                {selectedStudentMailboxMessage ? (
+                  <div>
+                    <div className="mb-4 border-b border-slate-100 pb-4">
+                      <div className="text-[10px] font-black uppercase text-blue-600">{selectedStudentMailboxMessage.source === 'admin' ? `Thư từ ${selectedStudentMailboxMessage.sender || 'Admin'}` : 'Thông báo tự động'}</div>
+                      <h4 className="mt-1 text-lg font-black text-slate-900 sm:text-2xl">{selectedStudentMailboxMessage.title}</h4>
+                      <div className="mt-2 text-[10px] font-bold text-slate-400">{selectedStudentMailboxMessage.createdAt ? new Date(selectedStudentMailboxMessage.createdAt).toLocaleString('vi-VN') : ''}</div>
+                    </div>
+                    <div className="whitespace-pre-wrap text-sm font-medium leading-7 text-slate-700 sm:text-base">{selectedStudentMailboxMessage.body}</div>
+                    {selectedStudentMailboxMessage.source === 'auto' && selectedStudentMailboxMessage.targetGrade && (
+                      <button type="button" onClick={() => { openStudentMailboxMessage(selectedStudentMailboxMessage); setShowStudentMailbox(false); }} className="mt-5 inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-3 text-xs font-black uppercase text-white shadow-sm">
+                        <BookOpen className="h-4 w-4" /> Mở nội dung
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  <div className="flex h-full flex-col items-center justify-center text-center text-slate-300">
+                    <Mail className="h-12 w-12" />
+                    <div className="mt-3 text-sm font-bold">Chọn một thư để xem nội dung</div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       
       <main className="max-w-6xl mx-auto px-4 py-4 sm:py-8 flex-1 w-full relative z-10 flex flex-col">
         <div className={`flex flex-nowrap items-center text-[clamp(9px,2.35vw,11px)] sm:text-xs font-black text-slate-400 ${selectedLesson && role === 'teacher' ? 'mb-2' : 'mb-2 sm:mb-8'} bg-white/80 backdrop-blur-md px-2.5 sm:px-6 py-2 sm:py-4 rounded-xl sm:rounded-2xl shadow-sm border border-white/60 uppercase tracking-wide sm:tracking-widest shrink-0 overflow-hidden`}>

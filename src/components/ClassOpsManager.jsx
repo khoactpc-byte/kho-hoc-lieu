@@ -186,7 +186,7 @@ function AttendanceAvatar({ student = {} }) {
     <img
       src={getPreviewImageUrl(mainUrl)}
       alt={student.fullName || 'Học sinh'}
-      className="w-full h-full object-cover"
+      className="w-full h-full object-contain"
       loading="lazy"
       decoding="async"
       onError={() => setFallbackMode(true)}

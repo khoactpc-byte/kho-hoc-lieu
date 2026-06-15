@@ -678,7 +678,7 @@ function TranscriptStudentPhoto({ url, alt = 'Ảnh học sinh' }) {
   const frameStyle = {
     width: '100%',
     height: '100%',
-    objectFit: 'cover',
+    objectFit: 'contain',
     objectPosition: 'center center',
     display: 'block',
     background: '#fff'
@@ -702,7 +702,7 @@ function TranscriptStudentPhoto({ url, alt = 'Ảnh học sinh' }) {
       alt={alt}
       onError={() => setFallbackMode(true)}
       referrerPolicy="no-referrer"
-      style={{ ...frameStyle, transform: 'scale(1.035)' }}
+      style={frameStyle}
     />
   );
 }

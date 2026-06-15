@@ -1,0 +1,43 @@
+rules_version = '2';
+
+// Mau quy tac cho giai doan da co Firebase Auth va custom claims.
+// KHONG deploy khi ung dung van chi dung anonymous authentication.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return signedIn() && request.auth.token.role == 'admin';
+    }
+
+    function isTeacher() {
+      return signedIn() && request.auth.token.role in ['admin', 'teacher'];
+    }
+
+    function ownsStudent(studentId) {
+      return signedIn() && request.auth.token.role == 'student'
+        && request.auth.token.studentId == studentId;
+    }
+
+    match /artifacts/{appId}/public/data/settings/{document=**} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+
+    match /artifacts/{appId}/public/data/students/{studentId} {
+      allow read: if isTeacher() || ownsStudent(studentId);
+      allow write: if isAdmin();
+    }
+
+    match /artifacts/{appId}/public/data/{collectionName}/{document=**} {
+      allow read: if signedIn() && !(collectionName in ['settings', 'students']);
+      allow write: if isTeacher() && !(collectionName in ['settings', 'students']);
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

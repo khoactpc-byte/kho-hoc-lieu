@@ -602,6 +602,12 @@ const normalizeTeachingAssignment = (row = {}, classOptions = ASSIGNMENT_CLASSES
   });
 };
 
+const normalizeTeachingAssignmentDraft = (row = {}, classOptions = ASSIGNMENT_CLASSES) => {
+  const normalized = normalizeTeachingAssignment(row, classOptions);
+  if (!Object.prototype.hasOwnProperty.call(row, 'teacherName')) return normalized;
+  return { ...normalized, teacherName: String(row.teacherName ?? '') };
+};
+
 const isTeachingNumberingArtifact = (row = {}) => {
   const teacherName = String(row.teacherName || '').trim();
   if (!/^\d+$/.test(teacherName)) return false;
@@ -2331,7 +2337,7 @@ export default function AdminSettingsWorkspace({
         ? activeTeachingBatch.rows
         : (activeTeachingAssignmentsDraft?.byYear?.[effectiveSchoolYearKey] || []);
       const normalizedRows = (Array.isArray(rows) ? rows : [])
-        .map(row => normalizeTeachingAssignment(row, activeAssignmentClasses))
+        .map(row => normalizeTeachingAssignmentDraft(row, activeAssignmentClasses))
         .filter(row => !isTeachingNumberingArtifact(row))
         .filter(row => !shouldDropCoreTeachingRowWithoutClass(row, activeAssignmentClasses));
       return normalizedRows.length ? normalizedRows : [normalizeTeachingAssignment({
@@ -2344,7 +2350,7 @@ export default function AdminSettingsWorkspace({
       : [];
     const rows = activeTeachingAssignmentsDraft?.byYear?.[effectiveSchoolYearKey] || legacyRows;
     const normalizedRows = (Array.isArray(rows) ? rows : [])
-      .map(row => normalizeTeachingAssignment(row, activeAssignmentClasses))
+      .map(row => normalizeTeachingAssignmentDraft(row, activeAssignmentClasses))
       .filter(row => !isTeachingNumberingArtifact(row))
       .filter(row => !isThdTeachingPanel || !shouldDropCoreTeachingRowWithoutClass(row, activeAssignmentClasses));
     if (!normalizedRows.length && isThdTeachingPanel) {
@@ -2621,6 +2627,9 @@ export default function AdminSettingsWorkspace({
     updateTeachingRowsForYear(rows => rows.map((row, rowIndex) => {
       if (rowIndex !== index) return row;
       const nextPatch = { ...patch };
+      const typedTeacherName = Object.prototype.hasOwnProperty.call(nextPatch, 'teacherName')
+        ? String(nextPatch.teacherName ?? '')
+        : null;
       if (Object.prototype.hasOwnProperty.call(nextPatch, 'teacherName')) {
         const teacher = teacherByName.get(normalizeTeacherNameKey(nextPatch.teacherName));
         if (teacher && !Object.prototype.hasOwnProperty.call(nextPatch, 'specialty')) {
@@ -2641,7 +2650,8 @@ export default function AdminSettingsWorkspace({
           nextPatch.note = mergeTeachingNote(getAssignmentNote({ ...row, ...nextPatch }), currentNote);
         }
       }
-      return applyConfiguredPeriodsToTeachingRow(normalizeTeachingAssignment({ ...row, ...nextPatch }, activeAssignmentClasses));
+      const normalizedRow = applyConfiguredPeriodsToTeachingRow(normalizeTeachingAssignmentDraft({ ...row, ...nextPatch }, activeAssignmentClasses));
+      return typedTeacherName === null ? normalizedRow : { ...normalizedRow, teacherName: typedTeacherName };
     }));
   };
 

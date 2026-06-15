@@ -12,6 +12,14 @@ node_modules
 dist
 dist-ssr
 *.local
+.env
+.env.*
+!.env.example
+
+# Local secrets/configuration
+mat_khau.txt
+src/mat_khau.txt
+cauhinh.json
 
 # Google Apps Script source lives in Apps Script, not GitHub/Netlify
 apps-script/

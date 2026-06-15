@@ -29,7 +29,10 @@ export const TEACHER_PLAN_FOLDER_ID = '13K9gbg-jpJ2RjsmZsc8pJwyPrkjgUznv';
 export const QUIZ_DRIVE_FOLDER_ID = '1IlstZlmh3uC_PIooSlMfHnZ--HlomM0d';
 
 export const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbx1cWQpyyoT2adUZIJja40d5rXtlNwaa1PqYiUJndB79SX0Rq2Mt8CBEs53EiBC8HhhRg/exec";
-export const APPS_SCRIPT_SECRET_TOKEN = "NGUYENANNINH_KHOA_2026";
+// This identifies the web client but is not a secret because browser code is public.
+export const APPS_SCRIPT_CLIENT_TOKEN = "NGUYENANNINH_KHOA_2026";
+export const ADMIN_SERVER_SESSION_STORAGE_KEY = 'khl-admin-server-session-v1';
+export const STAFF_SERVER_SESSION_STORAGE_KEY = 'khl-staff-server-session-v1';
 export const BACKGROUND_URL = '/hinh-nen.jpg';
 export const IS_LOCAL_PREVIEW = window.location.protocol === 'file:';
 
@@ -155,8 +158,14 @@ export const cleanDriveTitle = (name) => getDriveBaseName(name).toLowerCase();
 export const normalizeServiceErrorMessage = (message) => {
   const raw = String(message || '').replace(/\s+/g, ' ').trim();
   if (!raw) return 'May chu bao loi khong xac dinh.';
-  if (/createStudentListPdf|khong dung action hoac thieu base64/i.test(raw)) {
+  if (/createStudentListSheet/i.test(raw)) {
+    return 'Máy chủ Apps Script chưa có chức năng tạo Google Sheet. Cần cập nhật Apps Script chính và Deploy bản mới.';
+  }
+  if (/createStudentListPdf/i.test(raw)) {
     return 'May chu Apps Script chua cap nhat phan tao PDF. Hay dan lai file code_hoclieu.gs vao Apps Script chinh roi Deploy ban moi.';
+  }
+  if (/khong dung action hoac thieu base64/i.test(raw)) {
+    return 'Máy chủ Apps Script chưa hỗ trợ thao tác xuất này. Cần cập nhật Apps Script chính và Deploy bản mới.';
   }
   if (/Authorization is required|permission|SpreadsheetApp|UrlFetchApp|DriveApp/i.test(raw) && /PDF|Spreadsheet|UrlFetch|Drive/i.test(raw)) {
     return 'Apps Script chua duoc cap quyen tao PDF/luu Drive. Hay mo Apps Script, chay/deploy lai va bam Cho phep quyen.';
@@ -172,10 +181,14 @@ export const normalizeServiceErrorMessage = (message) => {
 };
 
 export const postAppsScript = async (payload) => {
+  const sessionPayload = typeof window === 'undefined' ? {} : {
+    adminSessionToken: window.sessionStorage.getItem(ADMIN_SERVER_SESSION_STORAGE_KEY) || undefined,
+    staffSessionToken: window.sessionStorage.getItem(STAFF_SERVER_SESSION_STORAGE_KEY) || undefined
+  };
   const resp = await fetch(APPS_SCRIPT_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify({ secretToken: APPS_SCRIPT_SECRET_TOKEN, ...payload })
+    body: JSON.stringify({ clientToken: APPS_SCRIPT_CLIENT_TOKEN, ...sessionPayload, ...payload })
   });
   const text = await resp.text();
   let data;

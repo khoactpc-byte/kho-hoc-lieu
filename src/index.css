@@ -56,6 +56,33 @@
   min-height: 300px !important;
 }
 
+.home-mobile-dashboard {
+  display: flex;
+  width: min(100%, calc(100vw - 1rem));
+  max-width: calc(100vw - 1rem);
+  margin-inline: auto;
+  height: clamp(330px, calc(100svh - 225px), 470px);
+  max-height: 470px;
+  flex-direction: column;
+}
+
+.home-mobile-featured-media {
+  height: clamp(105px, 18svh, 160px);
+}
+
+.home-mobile-news-list {
+  scrollbar-width: thin;
+  overscroll-behavior: contain;
+}
+
+.home-mobile-news-list button,
+.home-mobile-news-list h4 {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 .home-desktop-panels {
   height: clamp(460px, calc(100svh - 300px), 700px) !important;
   max-height: 700px !important;
@@ -265,6 +292,69 @@ body:has(.quiz-work-page) {
 }
 
 @media (max-width: 639px) {
+  html,
+  body,
+  #root {
+    max-width: 100%;
+    overflow-x: hidden;
+  }
+
+  .home-public-heading {
+    margin-top: 0.2rem !important;
+    margin-bottom: 0.45rem !important;
+  }
+
+  .home-public-heading h1 {
+    font-size: 14px !important;
+    line-height: 1.1 !important;
+  }
+
+  .home-public-heading h2 {
+    margin-top: 0.2rem !important;
+    font-size: 10px !important;
+    line-height: 1.1 !important;
+  }
+
+  .home-panels-wrap {
+    width: min(100%, calc(100vw - 0.5rem)) !important;
+    max-width: calc(100vw - 0.5rem) !important;
+    margin-inline: auto !important;
+    margin-bottom: 0.25rem !important;
+  }
+
+  .home-mobile-dashboard {
+    width: 100%;
+    max-width: 100%;
+    height: clamp(330px, calc(100svh - 205px), 455px);
+    max-height: 455px;
+  }
+
+  .home-mobile-featured-media {
+    height: clamp(100px, 17svh, 145px);
+  }
+
+  .home-mobile-news-list button {
+    min-height: 3.8rem;
+    padding-top: 0.45rem !important;
+    padding-bottom: 0.45rem !important;
+  }
+
+  .home-role-actions {
+    width: min(100%, calc(100vw - 0.75rem)) !important;
+    max-width: calc(100vw - 0.75rem) !important;
+    margin-top: 0.35rem !important;
+    padding-bottom: 0 !important;
+  }
+
+  .home-role-actions > div {
+    gap: 0.35rem !important;
+  }
+
+  .home-role-actions > div > div:first-child button {
+    padding-top: 0.65rem !important;
+    padding-bottom: 0.65rem !important;
+  }
+
   .lesson-readable-content {
     max-height: calc(100svh - 148px);
     min-height: 260px !important;
