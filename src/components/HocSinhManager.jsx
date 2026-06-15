@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { addDoc, collection, deleteDoc, doc, onSnapshot, setDoc } from 'firebase/firestore';
 import {
@@ -1299,7 +1299,7 @@ const fileToBase64Payload = (file, documentItem = {}, student = {}) => new Promi
   reader.readAsDataURL(file);
 });
 
-export default function HocSinhManager({ students = [], currentSchoolYear, initialTab = 'current', initialTabKey = 0, user, showNotification, onBack, onOpenAttendance, onSendTestResults, onBeforeDangerousAction }) {
+export default function HocSinhManager({ students = [], currentSchoolYear, initialTab = 'current', initialTabKey = 0, user, showNotification, onBack, onOpenAttendance, onSendTestResults, onSendMailboxMessages, learningProgressRows = [], onBeforeDangerousAction }) {
   const [query, setQuery] = useState('');
   const [studentTab, setStudentTab] = useState(initialTab === 'countStats' ? 'current' : (initialTab || 'current'));
   const [classFilter, setClassFilter] = useState(() => {
@@ -1334,6 +1334,13 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
   const [exportFormat, setExportFormat] = useState('');
   const [excelExportAction, setExcelExportAction] = useState('');
   const [showUtilitiesMenu, setShowUtilitiesMenu] = useState(false);
+  const [utilitiesMenuPosition, setUtilitiesMenuPosition] = useState({ top: 0, left: 12, width: 288, maxHeight: 420 });
+  const utilitiesButtonRef = useRef(null);
+  const [mailComposerStudents, setMailComposerStudents] = useState([]);
+  const [mailCategory, setMailCategory] = useState('general');
+  const [mailTitle, setMailTitle] = useState('');
+  const [mailBody, setMailBody] = useState('');
+  const [isSendingMailboxMessages, setIsSendingMailboxMessages] = useState(false);
   const [isSharingPdf, setIsSharingPdf] = useState(false);
   const [isSharingSheet, setIsSharingSheet] = useState(false);
   const [sharedPdfLink, setSharedPdfLink] = useState('');
@@ -1432,6 +1439,29 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
     () => safeStudents.filter(student => String(student.schoolYear || currentSchoolYear) === String(currentSchoolYear)),
     [safeStudents, currentSchoolYear]
   );
+  const learningProgressByStudent = useMemo(() => {
+    const map = new Map();
+    (Array.isArray(learningProgressRows) ? learningProgressRows : []).forEach(row => {
+      const student = row?.student || {};
+      const keys = [
+        student.id,
+        student.accessCode,
+        student.studentAccessCode,
+        normalizeSearch(student.fullName || student.studentName || '')
+      ].map(value => String(value || '').trim().toUpperCase()).filter(Boolean);
+      keys.forEach(key => map.set(key, row));
+    });
+    return map;
+  }, [learningProgressRows]);
+  const getStudentLearningProgress = (student = {}) => {
+    const keys = [
+      student.id,
+      student.accessCode,
+      student.studentAccessCode,
+      normalizeSearch(student.fullName || student.studentName || '')
+    ].map(value => String(value || '').trim().toUpperCase()).filter(Boolean);
+    return keys.map(key => learningProgressByStudent.get(key)).find(Boolean) || null;
+  };
   const previousYearStudents = useMemo(
     () => previousSchoolYear
       ? safeStudents.filter(student => String(student.schoolYear || '') === String(previousSchoolYear))
@@ -1803,6 +1833,85 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
       }).map(item => item.label),
       ...getMissingAcademicResults(student)
     ];
+  };
+
+  const openMailboxComposer = (targetStudents = [], category = 'general') => {
+    const uniqueStudents = [...new Map((Array.isArray(targetStudents) ? targetStudents : [])
+      .filter(Boolean)
+      .map(student => [student.id || student.accessCode || student.fullName, student])).values()];
+    if (!uniqueStudents.length) {
+      showNotification?.('Tích chọn ít nhất một học sinh trước khi gửi thư.', 'error');
+      return;
+    }
+    const presets = {
+      general: { title: 'Thông báo từ nhà trường', body: '' },
+      score: { title: 'Thông báo kết quả học tập', body: '' },
+      profile: { title: 'Thông báo bổ sung hồ sơ', body: '' },
+      reminder: { title: 'Nhắc việc', body: '' },
+      progress: { title: 'Thông báo tiến độ học', body: '' }
+    };
+    setMailComposerStudents(uniqueStudents);
+    setMailCategory(category);
+    setMailTitle(presets[category]?.title || presets.general.title);
+    setMailBody(presets[category]?.body || '');
+  };
+
+  const closeMailboxComposer = () => {
+    if (isSendingMailboxMessages) return;
+    setMailComposerStudents([]);
+    setMailTitle('');
+    setMailBody('');
+  };
+
+  const sendMailboxComposerMessages = async () => {
+    if (!onSendMailboxMessages || !mailComposerStudents.length) return;
+    const cleanTitle = mailTitle.trim();
+    if (!cleanTitle) {
+      showNotification?.('Nhập tiêu đề thư trước khi gửi.', 'error');
+      return;
+    }
+    if (mailCategory === 'score' && !mailBody.trim() && onSendTestResults) {
+      setIsSendingMailboxMessages(true);
+      try {
+        for (const student of mailComposerStudents) await onSendTestResults(student);
+        setMailComposerStudents([]);
+        setMailTitle('');
+        setMailBody('');
+      } catch (error) {
+        showNotification?.(`Chưa gửi đủ kết quả học tập: ${error.message}`, 'error');
+      } finally {
+        setIsSendingMailboxMessages(false);
+      }
+      return;
+    }
+    const messages = mailComposerStudents.map(student => {
+      let body = mailBody.trim();
+      if (!body && mailCategory === 'profile') {
+        const missing = getMissingStudentInfo(student);
+        body = missing.length
+          ? `Hồ sơ của em còn thiếu hoặc cần bổ sung: ${missing.join(', ')}. Em vui lòng cập nhật hoặc liên hệ nhà trường.`
+          : 'Nhà trường cần em kiểm tra và xác nhận lại thông tin hồ sơ học sinh.';
+      }
+      if (!body && mailCategory === 'progress') {
+        const progress = getStudentLearningProgress(student);
+        body = progress?.targetCount
+          ? `Tiến độ học hiện tại của em là ${progress.percent}%. Em đã hoàn thành phần lý thuyết của ${progress.theoryDoneCount}/${progress.targetCount} bài và đạt yêu cầu ${progress.quickDoneCount}/${progress.quickTargetCount} bài kiểm tra nhanh.`
+          : 'Hiện hệ thống chưa ghi nhận đủ dữ liệu tiến độ học của em. Em vui lòng vào bài học và hoàn thành các nội dung được giao.';
+      }
+      if (!body) body = 'Nhà trường gửi thông báo đến em. Em vui lòng kiểm tra và thực hiện theo hướng dẫn.';
+      return { student, category: mailCategory, title: cleanTitle, body };
+    });
+    setIsSendingMailboxMessages(true);
+    try {
+      await onSendMailboxMessages(messages);
+      setMailComposerStudents([]);
+      setMailTitle('');
+      setMailBody('');
+    } catch (error) {
+      showNotification?.(`Chưa gửi được thư: ${error.message}`, 'error');
+    } finally {
+      setIsSendingMailboxMessages(false);
+    }
   };
 
   const getStudentIssueFlags = (student = {}) => {
@@ -2910,6 +3019,21 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
 
   const editingProfileRequests = editing?.id ? (profileRequestsByStudent.get(editing.id) || []) : [];
   const utilityButtonClass = 'flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-[11px] font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-45 sm:gap-2 sm:rounded-lg sm:px-3 sm:py-2 sm:text-sm sm:font-normal';
+  const toggleUtilitiesMenu = () => {
+    if (showUtilitiesMenu) {
+      setShowUtilitiesMenu(false);
+      return;
+    }
+    const rect = utilitiesButtonRef.current?.getBoundingClientRect();
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
+    const mobile = viewportWidth < 640;
+    const width = mobile ? Math.max(280, viewportWidth - 24) : 288;
+    const left = mobile ? 12 : Math.max(12, Math.min(viewportWidth - width - 12, (rect?.right || viewportWidth - 12) - width));
+    const top = Math.min((rect?.bottom || 80) + 8, viewportHeight - 180);
+    setUtilitiesMenuPosition({ top, left, width, maxHeight: Math.max(160, viewportHeight - top - 12) });
+    setShowUtilitiesMenu(true);
+  };
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-white/95 rounded-2xl border border-indigo-100 shadow-xl overflow-hidden">
@@ -2977,8 +3101,9 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
           )}
           <div className="relative shrink-0">
             <button
+              ref={utilitiesButtonRef}
               type="button"
-              onClick={() => setShowUtilitiesMenu(prev => !prev)}
+              onClick={toggleUtilitiesMenu}
               className="flex h-7 items-center justify-center gap-1 rounded-md border border-slate-200 bg-white px-2 text-[11px] font-semibold text-slate-700 shadow-sm hover:bg-slate-50 sm:h-9 sm:rounded-lg sm:px-3 sm:text-sm sm:font-normal"
               aria-expanded={showUtilitiesMenu}
             >
@@ -2986,10 +3111,31 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
               Tiện ích
               <ChevronDown className={`h-3.5 w-3.5 transition-transform ${showUtilitiesMenu ? 'rotate-180' : ''}`} />
             </button>
-            {showUtilitiesMenu && (
+            {showUtilitiesMenu && typeof document !== 'undefined' && createPortal((
               <>
-                <button type="button" className="fixed inset-0 z-[80] cursor-default bg-transparent" onClick={() => setShowUtilitiesMenu(false)} aria-label="Đóng tiện ích" />
-                <div className="fixed left-3 right-3 top-[150px] z-[190] grid max-h-[calc(100dvh-165px)] grid-cols-2 gap-1 overflow-y-auto rounded-xl border border-slate-200 bg-white p-1.5 shadow-xl sm:absolute sm:left-auto sm:right-0 sm:top-11 sm:block sm:w-72 sm:max-h-none sm:overflow-hidden">
+                <button type="button" className="fixed inset-0 z-[1000] cursor-default bg-transparent" onClick={() => setShowUtilitiesMenu(false)} aria-label="Đóng tiện ích" />
+                <div
+                  className="fixed z-[1010] grid grid-cols-1 gap-1 overflow-y-auto rounded-xl border border-slate-200 bg-white p-1.5 shadow-2xl"
+                  style={{
+                    top: `${utilitiesMenuPosition.top}px`,
+                    left: `${utilitiesMenuPosition.left}px`,
+                    width: `${utilitiesMenuPosition.width}px`,
+                    maxHeight: `${utilitiesMenuPosition.maxHeight}px`
+                  }}
+                >
+                  {studentTab === 'current' && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowUtilitiesMenu(false);
+                        openMailboxComposer(yearStudents.filter(student => selectedIds.has(student.id)));
+                      }}
+                      disabled={!onSendMailboxMessages || selectedIds.size === 0}
+                      className={utilityButtonClass}
+                    >
+                      <Mail className="h-4 w-4 text-emerald-600" /> Gửi thư đã chọn ({selectedIds.size})
+                    </button>
+                  )}
                   <button type="button" onClick={() => { setShowUtilitiesMenu(false); window.open(STUDENT_DATA_SHEET_URL, '_blank', 'noopener,noreferrer'); }} className={utilityButtonClass}>
                     <ExternalLink className="h-4 w-4 text-emerald-600" /> Mo du lieu Sheet
                   </button>
@@ -3040,7 +3186,7 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
                   )}
                 </div>
               </>
-            )}
+            ), document.body)}
           </div>
           {studentTab === 'current' && (
             <button type="button" onClick={openCreate} className="flex h-7 shrink-0 items-center justify-center gap-1 rounded-md bg-indigo-600 px-2 text-[11px] font-semibold text-white shadow-sm hover:bg-indigo-700 sm:h-9 sm:rounded-lg sm:px-3 sm:text-sm sm:font-normal">
@@ -3208,6 +3354,7 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
                 <tr className="text-slate-500 uppercase font-black">
                   <th className="sticky left-0 z-20 bg-white px-4 py-3 min-w-[300px]">Học sinh</th>
                   <th className="px-4 py-3 min-w-[130px]">Bắt đầu học</th>
+                  <th className="px-4 py-3 min-w-[190px]">Tiến độ học</th>
                   {journeyYearOptions.map(year => (
                     <th key={year} className={`px-4 py-3 min-w-[190px] ${year === journeyYearFilter ? 'bg-blue-50 text-blue-700' : ''}`}>{year}</th>
                   ))}
@@ -3216,7 +3363,7 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
               <tbody>
                 {journeyRows.length === 0 ? (
                   <tr>
-                    <td colSpan={journeyYearOptions.length + 2} className="px-4 py-10 text-center text-slate-400 font-bold">
+                    <td colSpan={journeyYearOptions.length + 3} className="px-4 py-10 text-center text-slate-400 font-bold">
                       Chưa có học sinh đúng bộ lọc quá trình học này.
                     </td>
                   </tr>
@@ -3235,6 +3382,40 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
                       </div>
                     </td>
                     <td className="px-4 py-3 align-middle font-black text-slate-700 whitespace-nowrap">{row.entryYear || '-'}</td>
+                    <td className="px-4 py-3 align-middle">
+                      {(() => {
+                        const progress = getStudentLearningProgress(row.student);
+                        const percent = progress?.targetCount ? progress.percent : 0;
+                        return (
+                          <div className="space-y-2">
+                            <div className="flex items-center justify-between gap-2 text-[11px] font-black">
+                              <span className={progress?.targetCount ? 'text-indigo-700' : 'text-slate-400'}>
+                                {progress?.targetCount ? `${percent}%` : 'Chưa có dữ liệu'}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  openMailboxComposer([row.student], 'progress');
+                                }}
+                                disabled={!onSendMailboxMessages}
+                                className="rounded-lg border border-emerald-100 bg-emerald-50 px-2 py-1 text-[10px] font-black text-emerald-700 disabled:opacity-40"
+                              >
+                                Gửi nhắc
+                              </button>
+                            </div>
+                            <div className="h-2 overflow-hidden rounded-full bg-slate-100">
+                              <div className="h-full rounded-full bg-indigo-500" style={{ width: `${Math.max(0, Math.min(100, percent))}%` }} />
+                            </div>
+                            {progress?.targetCount > 0 && (
+                              <div className="text-[10px] font-bold text-slate-500">
+                                Lý thuyết {progress.theoryDoneCount}/{progress.targetCount} · Kiểm tra {progress.quickDoneCount}/{progress.quickTargetCount}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })()}
+                    </td>
                     {journeyYearOptions.map(year => {
                       const record = row.byYear.get(year);
                       const cell = getJourneyYearCell(record || {});
@@ -3741,6 +3922,63 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
       </>
       </div>
       )}
+
+      {mailComposerStudents.length > 0 && typeof document !== 'undefined' && createPortal((
+        <div className="fixed inset-0 z-[1200] flex items-center justify-center bg-slate-950/60 p-3 backdrop-blur-sm">
+          <div className="flex max-h-[92vh] w-full max-w-xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
+            <div className="flex items-center justify-between gap-3 border-b border-slate-100 bg-slate-50 px-4 py-3">
+              <div className="min-w-0">
+                <h4 className="flex items-center gap-2 font-black uppercase text-slate-900"><Mail className="h-5 w-5 text-emerald-600" /> Gửi thư học sinh</h4>
+                <p className="truncate text-xs font-bold text-slate-500">Đã chọn {mailComposerStudents.length} học sinh</p>
+              </div>
+              <button type="button" onClick={closeMailboxComposer} disabled={isSendingMailboxMessages} className="flex h-9 w-9 items-center justify-center rounded-full bg-white text-slate-500 shadow-sm disabled:opacity-40">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="space-y-3 overflow-y-auto p-4">
+              <label className="block">
+                <span className="mb-1 block text-[10px] font-black uppercase text-slate-500">Mục thư</span>
+                <select value={mailCategory} onChange={(event) => setMailCategory(event.target.value)} className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm font-bold">
+                  <option value="general">Thông báo</option>
+                  <option value="score">Kết quả học tập</option>
+                  <option value="profile">Thiếu thông tin hồ sơ</option>
+                  <option value="reminder">Nhắc việc</option>
+                  <option value="progress">Tiến độ học</option>
+                </select>
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-[10px] font-black uppercase text-slate-500">Tiêu đề</span>
+                <input value={mailTitle} onChange={(event) => setMailTitle(event.target.value)} className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-bold focus:border-emerald-400 focus:outline-none" />
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-[10px] font-black uppercase text-slate-500">Nội dung</span>
+                <textarea
+                  value={mailBody}
+                  onChange={(event) => setMailBody(event.target.value)}
+                  rows={6}
+                  placeholder={mailCategory === 'score'
+                    ? 'Để trống để hệ thống tự gửi kết quả kiểm tra của từng học sinh.'
+                    : mailCategory === 'profile' || mailCategory === 'progress'
+                      ? 'Để trống để hệ thống tự điền nội dung riêng cho từng học sinh.'
+                      : 'Nhập nội dung gửi chung cho các học sinh đã chọn.'}
+                  className="w-full resize-y rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-medium focus:border-emerald-400 focus:outline-none"
+                />
+              </label>
+              <div className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2 text-[11px] font-bold text-slate-600">
+                Người nhận: {mailComposerStudents.slice(0, 5).map(student => student.fullName || student.accessCode).join(', ')}
+                {mailComposerStudents.length > 5 ? ` và ${mailComposerStudents.length - 5} học sinh khác` : ''}
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 border-t border-slate-100 bg-slate-50 px-4 py-3">
+              <button type="button" onClick={closeMailboxComposer} disabled={isSendingMailboxMessages} className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-black text-slate-600 disabled:opacity-40">Hủy</button>
+              <button type="button" onClick={sendMailboxComposerMessages} disabled={isSendingMailboxMessages} className="flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-xs font-black text-white shadow-sm disabled:opacity-50">
+                {isSendingMailboxMessages ? <Loader2 className="h-4 w-4 animate-spin" /> : <Mail className="h-4 w-4" />}
+                Gửi {mailComposerStudents.length} thư
+              </button>
+            </div>
+          </div>
+        </div>
+      ), document.body)}
 
       {editing && (
         <div className="fixed inset-0 z-[90] bg-slate-900/60 backdrop-blur-sm p-3 sm:p-6 flex items-center justify-center">

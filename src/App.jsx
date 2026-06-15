@@ -992,6 +992,26 @@ function App() {
     if (response.status !== 'success') throw new Error(response.message || 'Chưa gửi được thư.');
     return response;
   }, [activeSchoolYear, adminSessionToken]);
+  const sendGeneratedStudentMailboxMessages = useCallback(async (messages = []) => {
+    const validMessages = (Array.isArray(messages) ? messages : []).filter(message => message?.student && message?.title && message?.body);
+    if (!validMessages.length) throw new Error('Chưa có học sinh hoặc nội dung thư để gửi.');
+    let sentCount = 0;
+    const failedNames = [];
+    for (const message of validMessages) {
+      try {
+        await sendGeneratedStudentMailboxMessage(message);
+        sentCount += 1;
+      } catch {
+        failedNames.push(message.student?.fullName || message.student?.accessCode || 'Học sinh');
+      }
+    }
+    if (failedNames.length) {
+      showNotification(`Đã gửi ${sentCount}/${validMessages.length} thư. Chưa gửi được: ${failedNames.slice(0, 5).join(', ')}${failedNames.length > 5 ? '...' : ''}`, 'error');
+    } else {
+      showNotification(`Đã gửi thư cho ${sentCount} học sinh.`);
+    }
+    return { sentCount, failedNames };
+  }, [sendGeneratedStudentMailboxMessage, showNotification]);
   const deleteStudentMailboxMessages = useCallback(() => {
     const fromTime = mailboxDeleteFrom ? new Date(`${mailboxDeleteFrom}T00:00:00`).getTime() : 0;
     const toTime = mailboxDeleteTo ? new Date(`${mailboxDeleteTo}T23:59:59.999`).getTime() : 0;
@@ -2394,6 +2414,7 @@ function App() {
         children: [
           { key: 'score', label: 'Nhập điểm', href: getAdminRouteHref(isPrimary ? '/primary/input/score' : '/thcs/input/score'), action: () => openAdminQuickScore(isPrimary ? 'primary' : 'thcs') },
           { key: 'attendance', label: 'Nhập điểm danh', href: getAdminRouteHref(isPrimary ? '/primary/input/attendance' : '/thcs/input/attendance'), action: () => setShowAttendanceWorkspace(true) },
+          { key: 'learning-progress', label: 'Tiến độ học', href: getAdminRouteHref('/students/journey'), action: () => openStudentDatabaseTab('journey') },
           { key: 'scorebook', label: 'Sổ điểm', pending: isPrimary, href: isPrimary ? '' : getAdminRouteHref('/scorebook'), action: isPrimary ? null : () => openScorebookWorkspace('scorebook', '6') },
           { key: 'transcript', label: 'Học bạ', pending: isPrimary, href: isPrimary ? '' : getAdminRouteHref('/transcript'), action: isPrimary ? null : () => openScorebookWorkspace('transcript', '6') }
         ]
@@ -6056,11 +6077,39 @@ ${lessonBlocks}`;
         targetSubject: item.subject,
         targetLesson: item.lesson
       }));
-    return [...materialItems, ...noteItems, ...quizItems]
+    const studentId = String(activeStudentProfile?.id || currentStudent?.id || '').trim();
+    const studentNameKey = normalizeNameKey(activeStudentProfile?.fullName || currentStudent?.fullName || '');
+    const studentClassName = String(activeStudentProfile?.className || currentStudent?.className || '').trim();
+    const attendanceItems = attendanceDocs.flatMap(attendance => {
+      if (attendance.schoolYear && String(attendance.schoolYear) !== String(currentSchoolYear || '')) return [];
+      if (studentClassName && attendance.className && String(attendance.className) !== studentClassName) return [];
+      return Object.entries(attendance.records || {}).flatMap(([recordKey, record]) => {
+        if (!['CP', 'KP'].includes(record?.status)) return [];
+        const recordId = String(record?.studentId || recordKey || '').trim();
+        const recordNameKey = normalizeNameKey(record?.studentName || '');
+        const matchesStudent = (studentId && recordId === studentId)
+          || (studentNameKey && recordNameKey === studentNameKey);
+        if (!matchesStudent) return [];
+        const dateValue = String(attendance.date || '').trim();
+        const dateLabel = /^\d{4}-\d{2}-\d{2}$/.test(dateValue)
+          ? dateValue.split('-').reverse().join('/')
+          : (dateValue || 'chưa rõ ngày');
+        const statusLabel = record.status === 'CP' ? 'nghỉ có phép' : 'nghỉ không phép';
+        return [{
+          id: `auto-attendance-${attendance.id}-${recordId}-${record.status}-${record.updatedAt || attendance.updatedAt || 0}`,
+          source: 'auto',
+          category: 'attendance',
+          title: `Điểm danh: ${statusLabel} ngày ${dateLabel}`,
+          body: `Hệ thống ghi nhận em ${statusLabel} vào ngày ${dateLabel}${attendance.className ? `, lớp ${attendance.className}` : ''}. Nếu thông tin chưa đúng, em báo lại giáo viên hoặc nhà trường.`,
+          createdAt: record.updatedAt || attendance.updatedAt || 0
+        }];
+      });
+    });
+    return [...materialItems, ...noteItems, ...quizItems, ...attendanceItems]
       .map(item => ({ ...item, isRead: mailboxAutoReadIds.includes(item.id) }))
       .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
       .slice(0, 40);
-  }, [role, activeStudentGrade, allMaterials, allNotes, allQuizzes, currentSchoolYear, isQuizVisibleForStudents, mailboxAutoReadIds]);
+  }, [role, activeStudentGrade, activeStudentProfile, currentStudent, allMaterials, allNotes, allQuizzes, attendanceDocs, currentSchoolYear, isQuizVisibleForStudents, mailboxAutoReadIds]);
   const studentMailboxItems = useMemo(() => (
     [
       ...studentMailboxMessages.map(item => ({ ...item, source: 'admin' })),
@@ -7080,6 +7129,8 @@ ${lessonBlocks}`;
                     user={user}
                     showNotification={showNotification}
                     onSendTestResults={sendStudentTestResults}
+                    onSendMailboxMessages={sendGeneratedStudentMailboxMessages}
+                    learningProgressRows={adminCheckLearningRows}
                     onBeforeDangerousAction={createSafetyBackup}
                     onBack={() => setShowStudentDatabase(false)}
                     onOpenAttendance={() => {
@@ -8946,7 +8997,7 @@ ${lessonBlocks}`;
                       <div className="min-w-0 flex-1">
                         <div className="line-clamp-2 text-xs font-black text-slate-900 sm:text-sm">{message.title}</div>
                         <div className="mt-1 flex items-center justify-between gap-2 text-[9px] font-bold uppercase text-slate-400">
-                          <span>{message.source === 'admin' ? 'Admin' : message.category === 'quiz' ? 'Bài kiểm tra' : 'Bài học'}</span>
+                          <span>{message.source === 'admin' ? 'Admin' : message.category === 'quiz' ? 'Bài kiểm tra' : message.category === 'attendance' ? 'Điểm danh' : 'Bài học'}</span>
                           <span>{message.createdAt ? new Date(message.createdAt).toLocaleDateString('vi-VN') : ''}</span>
                         </div>
                       </div>
