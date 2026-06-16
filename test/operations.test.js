@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { filterMailboxRowsForDeletion, findScheduleTeacherConflicts, normalizeAccessCode, normalizeScoreValue, toExportRows, validateBackupSnapshot, validateMessageRecipients } from '../src/utils/operations.js';
+import { filterMailboxRowsForDeletion, findScheduleTeacherConflicts, normalizeAccessCode, normalizeScoreValue, toExportRows, validateBackupSnapshot, validateMessageRecipients, extractSchoolYearFromText } from '../src/utils/operations.js';
 
 test('normalizeAccessCode standardizes student codes', () => {
   assert.equal(normalizeAccessCode(' hs 26 001 '), 'HS26001');
@@ -43,3 +43,14 @@ test('validateBackupSnapshot requires a collections object', () => {
 test('toExportRows creates rows usable by PDF and Excel exporters', () => {
   assert.deepEqual(toExportRows([{ name: 'A', className: '6A' }], [{ key: 'name', label: 'Tên' }, { key: 'className', label: 'Lớp' }]), [['Tên', 'Lớp'], ['A', '6A']]);
 });
+
+test('extractSchoolYearFromText parses school years from notice titles', () => {
+  const fallback = '2025-2026';
+  assert.equal(extractSchoolYearFromText('Thông báo tuyển sinh 2026-2027', fallback), '2026-2027');
+  assert.equal(extractSchoolYearFromText('Tuyển sinh lớp 6 năm học 2026 - 2027', fallback), '2026-2027');
+  assert.equal(extractSchoolYearFromText('Tuyển sinh 2026/2027', fallback), '2026-2027');
+  assert.equal(extractSchoolYearFromText('Thông báo tuyển sinh năm học 2026-27', fallback), '2026-2027');
+  assert.equal(extractSchoolYearFromText('Tuyển sinh năm học 2026', fallback), '2026-2027');
+  assert.equal(extractSchoolYearFromText('Tuyển sinh lớp 6', fallback), '2025-2026');
+});
+

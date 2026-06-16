@@ -52,3 +52,25 @@ export const toExportRows = (items = [], columns = []) => [
   columns.map(column => column.label),
   ...items.map(item => columns.map(column => item?.[column.key] ?? ''))
 ];
+
+export const extractSchoolYearFromText = (text, fallback) => {
+  if (!text) return fallback;
+  const doubleYearMatch = text.match(/(20\d{2})\s*[-/]\s*(20\d{2})/);
+  if (doubleYearMatch) {
+    return `${doubleYearMatch[1]}-${doubleYearMatch[2]}`;
+  }
+  const shortYearMatch = text.match(/(20\d{2})\s*[-/]\s*(\d{2})\b/);
+  if (shortYearMatch) {
+    const start = shortYearMatch[1];
+    const endShort = shortYearMatch[2];
+    const end = start.slice(0, 2) + endShort;
+    return `${start}-${end}`;
+  }
+  const singleYearMatch = text.match(/\b(20\d{2})\b/);
+  if (singleYearMatch) {
+    const startYear = parseInt(singleYearMatch[1], 10);
+    return `${startYear}-${startYear + 1}`;
+  }
+  return fallback;
+};
+
