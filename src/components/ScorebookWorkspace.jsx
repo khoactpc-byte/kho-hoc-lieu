@@ -3485,13 +3485,13 @@ export default function ScorebookWorkspace({
       { key: `learning-${student?.id || 'student'}-${yearEntry.startYear}`, label: `ĐKQHT ${yearEntry.schoolYear}`, student, yearEntry, render: (pageNumber) => renderTranscriptLearningPage(yearEntry, student, pageNumber) },
       { key: `assessment-${student?.id || 'student'}-${yearEntry.startYear}`, label: `ĐGKQGD ${yearEntry.schoolYear}`, student, yearEntry, render: (pageNumber) => renderTranscriptAssessmentPage(yearEntry, student, pageNumber) }
     ]));
-    if (!selection) return attachTranscriptPageNumbers([...coverPages, ...resultPages]);
-    return attachTranscriptPageNumbers([
-      ...(selection.includeCover ? coverPages : []),
-      ...(selection.mode === 'year'
-        ? resultPages.filter(page => String(page.yearEntry?.schoolYear) === String(selection.year))
-        : resultPages)
-    ]);
+    const allPages = attachTranscriptPageNumbers([...coverPages, ...resultPages]);
+    if (!selection) return allPages;
+    return allPages.filter(page => {
+      if (!page.yearEntry) return selection.includeCover;
+      if (selection.mode === 'year') return String(page.yearEntry.schoolYear) === String(selection.year);
+      return true;
+    });
   };
   const getTranscriptVisiblePages = (selection = transcriptPrintSelection) => {
     if (!selection) return selectedTranscriptStudent ? getTranscriptPagesForStudent(selectedTranscriptStudent) : [];
