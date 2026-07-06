@@ -392,7 +392,7 @@ const makeScheduleExportHtml = ({ name, schoolYear, semesterLabel, rows, visible
       </td>
       <td class="period-right">
         <div class="sign-date">${escapeHtml(signingDateText)}</div>
-        <div class="sign-title">HIỆU TRƯỞNG</div>
+        <div class="sign-title">GIÁM ĐỐC</div>
         <div class="sign-name principal-name">${escapeHtml(principalName || '')}</div>
       </td>
     </tr>

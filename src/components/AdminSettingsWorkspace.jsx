@@ -287,6 +287,12 @@ const ASSIGNMENT_SUBJECT_OPTIONS = [
   { label: 'Toán', value: 'Toán', aliases: ['Toán'] },
   { label: 'Văn', value: 'Văn', aliases: ['Ngữ Văn', 'Ngữ văn', 'Văn'] },
   { label: 'C nghệ', value: 'C nghệ', aliases: ['Công nghệ', 'CNGHỆ', 'CNghệ', 'CN nghệ'] },
+  { label: 'HĐTN,HN (SHL+SHCĐ)', value: 'HĐTN,HN (SHL+SHCĐ)', aliases: ['HĐTN,HN (SHL+CĐ)', 'HĐTN,HN (SHL, CĐ)', 'HĐTN (SHL, CĐ)'] },
+  { label: 'HĐTN,HN (DC)', value: 'HĐTN,HN (DC)', aliases: ['HĐTN (DC)'] },
+  { label: 'Toán (TS 10)', value: 'Toán (TS 10)', aliases: ['Toán (TS 10)', 'Toán TS10'] },
+  { label: 'Văn (TS 10)', value: 'Văn (TS 10)', aliases: ['Văn (TS 10)', 'Văn TS10', 'Ngữ văn (TS 10)', 'Ngữ văn TS10'] },
+  { label: 'Anh (TS 10)', value: 'Anh (TS 10)', aliases: ['Anh (TS 10)', 'Anh TS10', 'Tiếng Anh (TS 10)'] },
+  { label: 'GDQP,AN', value: 'GDQP,AN', aliases: ['GDQP, AN', 'GDQP AN', 'Giáo dục quốc phòng', 'Giáo dục quốc phòng, an ninh'] },
   { label: 'Chủ nhiệm', value: 'Chủ nhiệm', aliases: ['Chủ nhiệm', 'CN', 'GVCN', 'GV chủ nhiệm', 'Giáo viên chủ nhiệm'] }
 ];
 
@@ -387,6 +393,13 @@ const compactAssignmentClassLabel = (classes = [], classOptions = ASSIGNMENT_CLA
 const normalizeAssignmentSubject = (value = '') => {
   const raw = String(value || '').trim();
   const rawKey = normalizeTeacherNameKey(raw);
+
+  if (rawKey.includes('ts10') || rawKey.includes('ts 10')) {
+    if (rawKey.includes('van') || rawKey.includes('ngu van')) return 'Văn (TS 10)';
+    if (rawKey.includes('toan')) return 'Toán (TS 10)';
+    if (rawKey.includes('anh') || rawKey.includes('tieng anh')) return 'Anh (TS 10)';
+  }
+
   return [...ASSIGNMENT_SUBJECT_OPTIONS, ...THD_CHECK_SUBJECT_OPTIONS].find(option => (
     normalizeTeacherNameKey(option.value) === rawKey
     || normalizeTeacherNameKey(option.label) === rawKey
@@ -429,6 +442,7 @@ const abbreviateTeachingSpecialty = (value = '') => {
     { value: 'GDCD', keys: ['giao duc cong dan'] },
     { value: 'GDĐP', keys: ['giao duc dia phuong', 'noi dung giao duc dia phuong'] },
     { value: 'HĐTT', keys: ['hoat dong tap the', 'hoat dong trai nghiem'] },
+    { value: 'Văn (TS 10)', keys: ['van ts 10', 'van ts10', 'ngu van ts 10', 'ngu van ts10'] },
     { value: 'Văn', keys: ['ngu van', 'van'] },
     { value: 'T.Anh', keys: ['tieng anh', 'anh van'] },
     { value: 'Tin', keys: ['tin hoc'] },
@@ -589,6 +603,7 @@ const normalizeTeachingAssignment = (row = {}, classOptions = ASSIGNMENT_CLASSES
   note: [...new Set(noteParts)].join('\n'),
   pastedNote: normalizeTeachingPastedNote(row.pastedNote ?? row.sourceNote ?? row.aiNote ?? ''),
   sourceTotalPeriodsPerWeek: normalizePeriods(row.sourceTotalPeriodsPerWeek ?? row.sourceTotalWeeklyPeriods ?? ''),
+  sourceYearSurplus: normalizePeriods(row.sourceYearSurplus ?? ''),
   sourceWeeklyCheckId: String(row.sourceWeeklyCheckId ?? ''),
   acceptedCheckOriginalPastedNote: normalizeTeachingPastedNote(row.acceptedCheckOriginalPastedNote ?? ''),
   acceptedCheckOriginalSourceTotalPeriodsPerWeek: normalizePeriods(row.acceptedCheckOriginalSourceTotalPeriodsPerWeek ?? ''),
@@ -657,7 +672,9 @@ const getTeachingPasteHeaderMap = (headers = []) => {
     extraAssignment: ['cong tac kiem nhiem', 'kiem nhiem'],
     extraTotalPeriodsPerWeek: ['so tiet kiem nhiem tuan', 'tiet kiem nhiem tuan', 'so tiet kiem nhiem'],
     pasteCheck: ['doi chieu du lieu', 'kiem tra dung sai', 'kiem tra cheo', 'kiem tra', 'trang thai'],
-    pastedNote: ['ghi chu dan', 'ghi chu code', 'ghi chu ai', 'ghi chu']
+    note: ['ghi chu', 'note'],
+    pastedNote: ['ghi chu dan', 'ghi chu code', 'ghi chu ai'],
+    sourceYearSurplus: ['so tiet du gio', 'tiet du gio', 'so tiet du', 'du gio', 'so tiet thua thieu', 'thua thieu']
   };
   const map = {};
   headers.map(teachingPasteHeaderKey).forEach((header, index) => {
@@ -691,23 +708,15 @@ const getTeachingSourceTotalPerWeekValue = (columns = [], headers = [], headerMa
 };
 
 const isIgnoredTeachingPasteNote = (value = '') => {
-  const key = normalizeTeacherNameKey(value);
-  return key.includes('kns')
-    || key.includes('stem')
-    || key.includes('ki nang song')
-    || key.includes('chuyen lop')
-    || key.includes('chuyen cn')
-    || key.includes('chuyen 8')
-    || key.includes('chuyen 9')
-    || key.includes('nhom truong');
+  return false;
 };
 
 const buildTeachingPastedNote = (checkValue = '', noteValue = '') => {
   const check = stripPasteCell(checkValue);
   const note = stripPasteCell(noteValue);
-  if (check) return check;
-  if (isIgnoredTeachingPasteNote(note)) return '';
-  return getTeachingStatusNote(note);
+  if (isIgnoredTeachingPasteNote(note)) return check;
+  if (check && note) return `${check}\n${note}`;
+  return check || note;
 };
 
 const TEACHING_SPECIAL_DUTIES = [
@@ -1157,12 +1166,15 @@ const summarizeTeachingBatches = (batches = [], classOptions = ASSIGNMENT_CLASSE
             weeks: '0',
             noteRanges: [],
             extraNotes: [],
-            pastedNote: '',
+            pastedNote: item.pastedNote || '',
             sourceTotalPeriodsPerWeek: '',
             sourceWeeklyCheckId: ''
           });
         }
         const current = summaries.get(key);
+        if (key !== orderedKeys[orderedKeys.length - 1] && item.pastedNote && !current.pastedNote.includes(item.pastedNote)) {
+          current.pastedNote = [current.pastedNote, item.pastedNote].filter(Boolean).join('\\n');
+        }
         const range = applyTeachingSpecialDutyExpiryToRange(item, getTeachingRowPeriodRange(item));
         const weeks = Number(range.weeks) || 0;
         current.weeks = String(Math.round(((Number(current.weeks) || 0) + weeks) * 10) / 10);
@@ -1244,38 +1256,52 @@ const loadXlsxLibrary = () => {
   });
 };
 
-const splitTeachingCellLines = (value = '') => String(value || '')
+const sanitizeAssignmentNewlines = (raw = '') => {
+  return String(raw)
+    .replace(/(Phòng)\s*(KHTN(?:\s*[123])?)/gi, '$1 $2')
+    .replace(/(Phụ\s*trách)\s*(CNTT)/gi, '$1 $2')
+    .replace(/(CNTT)\s*-\s*(Phòng\s*Tin\s*học)/gi, '$1 - $2');
+};
+
+const splitTeachingCellLines = (value = '') => String(sanitizeAssignmentNewlines(value) || '')
   .split(new RegExp(`\\s*${TEACHING_CELL_BREAK}\\s*|\\r?\\n`, 'g'))
   .map(stripPasteCell)
   .filter(Boolean);
 
 const escapeRegExp = (value = '') => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-const getThdAssignmentTokens = () => DEFAULT_THD_SUBJECTS
-  .flatMap(subject => {
-    const base = [subject.shortName, subject.name];
-    return normalizeTeacherNameKey(subject.name) === 'chu nhiem' ? [...base, 'CN'] : base;
-  })
-  .map(stripPasteCell)
-  .filter(Boolean)
-  .sort((a, b) => b.length - a.length);
+const getThdAssignmentTokens = () => {
+  const ts10 = ['Toán (TS 10)', 'Toán (TS10)', 'Văn (TS 10)', 'Văn (TS10)', 'Ngữ Văn (TS 10)', 'Ngữ Văn (TS10)', 'Anh (TS 10)', 'Anh (TS10)', 'Tiếng Anh (TS 10)', 'Tiếng Anh (TS10)'];
+  const baseTokens = DEFAULT_THD_SUBJECTS
+    .flatMap(subject => {
+      const base = [subject.shortName, subject.name];
+      return normalizeTeacherNameKey(subject.name) === 'chu nhiem' ? [...base, 'CN'] : base;
+    });
+  return [...baseTokens, ...ts10]
+    .map(stripPasteCell)
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length);
+};
 
 const splitTeachingListSegments = (value = '') => {
+  let protectedValue = String(value || '');
+  protectedValue = protectedValue.replace(/hđtn\s*,\s*hn/gi, 'HĐTN\x01HN');
+  protectedValue = protectedValue.replace(/gdqp\s*,\s*an/gi, 'GDQP\x01AN');
   const segments = [];
   let current = '';
   let depth = 0;
-  String(value || '').split('').forEach(char => {
+  protectedValue.split('').forEach(char => {
     if (char === '(') depth += 1;
     if (char === ')') depth = Math.max(0, depth - 1);
     if ((char === ',' || char === ';' || char === '\n') && depth === 0) {
-      const segment = stripPasteCell(current);
+      const segment = stripPasteCell(current.replace(/\x01/g, ','));
       if (segment) segments.push(segment);
       current = '';
       return;
     }
     current += char;
   });
-  const lastSegment = stripPasteCell(current);
+  const lastSegment = stripPasteCell(current.replace(/\x01/g, ','));
   if (lastSegment) segments.push(lastSegment);
   return segments;
 };
@@ -1343,12 +1369,23 @@ const splitEmbeddedTeachingAssignments = (row = {}, classOptions = ASSIGNMENT_CL
     .flatMap(splitTeachingListSegments)
     .map(stripPasteCell)
     .filter(Boolean);
+
+  const resolveAssignment = (parsed, current) => {
+    if (!parsed) return current;
+    const isParsedHomeroom = isHomeroomAssignment(parsed);
+    const isCurrentHomeroom = isHomeroomAssignment(current);
+    if (isParsedHomeroom && current && !isCurrentHomeroom) {
+      return current;
+    }
+    return parsed || current;
+  };
+
   if (segments.length < 2) {
     const parsedSubject = parseClassSegmentSubject(segments[0] || '');
     if (parsedSubject) {
       return [withTeachingClassCount({
         ...row,
-        assignment: parsedSubject.assignment,
+        assignment: resolveAssignment(parsedSubject.assignment, row.assignment),
         className: parsedSubject.className
       }, classOptions)];
     }
@@ -1367,7 +1404,7 @@ const splitEmbeddedTeachingAssignments = (row = {}, classOptions = ASSIGNMENT_CL
           className: currentClasses.join(', ')
         }, classOptions));
       }
-      currentAssignment = parsedSubject.assignment;
+      currentAssignment = resolveAssignment(parsedSubject.assignment, row.assignment);
       currentClasses = parsedSubject.className ? [parsedSubject.className] : [];
       return;
     }
@@ -1500,7 +1537,7 @@ const parseTeachingAssignmentJsonPaste = (text = '', classOptions = ASSIGNMENT_C
         position: teacherPosition,
         specialty: teacherSpecialty,
         assignment: assignmentInfo.text,
-        weeks: context.weeks || assignment.so_tuan || teacher.so_tuan || '35',
+        weeks: context.weeks || assignment.so_tuan || teacher.so_tuan || '',
         className,
         classCount: classCount || '',
         periodsPerClassWeek: periodsPerClass,
@@ -1550,6 +1587,41 @@ const parseTeachingAssignmentTablePaste = (text = '', classOptions = ASSIGNMENT_
     if (teachingPasteHeaderKey(columns[0]) === 'stt' || Object.keys(rowHeaderMap).length >= 3) continue;
     if (isTeachingAssignmentIndexRow(columns, headerMap)) continue;
     const rawTeacherName = getTeachingPasteValue(columns, headerMap, 'teacherName', 1);
+    if (teachingPasteHeaderKey(rawTeacherName).includes('so tiet')) {
+      if (currentTeacher && teachingPasteHeaderKey(rawTeacherName).includes('du gio')) {
+        const val10 = stripPasteCell(columns[10]);
+        const val9 = stripPasteCell(columns[9]);
+        let surplusValue = '';
+        if (val10 !== '' && !isNaN(Number(val10))) {
+          surplusValue = val10;
+        } else if (val9 !== '' && !isNaN(Number(val9))) {
+          surplusValue = val9;
+        }
+        if (surplusValue !== '') {
+          currentTeacher.rows.forEach(r => { r.sourceYearSurplus = surplusValue; });
+          if (currentTeacher.extraRows) {
+            currentTeacher.extraRows.forEach(r => { r.sourceYearSurplus = surplusValue; });
+          }
+        }
+      }
+      if (currentTeacher && teachingPasteHeaderKey(rawTeacherName).includes('nghia vu')) {
+        const val10 = stripPasteCell(columns[10]);
+        const val9 = stripPasteCell(columns[9]);
+        const val8 = stripPasteCell(columns[8]);
+        let obligValue = '';
+        if (val10 !== '' && !isNaN(Number(val10))) obligValue = val10;
+        else if (val9 !== '' && !isNaN(Number(val9))) obligValue = val9;
+        else if (val8 !== '' && !isNaN(Number(val8))) obligValue = val8;
+
+        if (obligValue !== '') {
+          currentTeacher.rows.forEach(r => { r.sourceYearObligation = obligValue; });
+          if (currentTeacher.extraRows) {
+            currentTeacher.extraRows.forEach(r => { r.sourceYearObligation = obligValue; });
+          }
+        }
+      }
+      continue;
+    }
     const teacherInfo = extractTeacherNameNote(rawTeacherName);
     if (teacherInfo.name) {
       flushCurrentTeacher();
@@ -1573,7 +1645,15 @@ const parseTeachingAssignmentTablePaste = (text = '', classOptions = ASSIGNMENT_
       currentTeacher.note = appendTeachingNote(currentTeacher.note, assignmentInfo.note);
     }
     let teacherNote = [currentTeacher.note, context.periodNote].filter(Boolean).join('\n');
-    const assignment = assignmentInfo.text;
+    let assignmentText = assignmentInfo.text;
+    if (assignmentText) {
+      assignmentText = assignmentText
+        .replace(/Phòng\s*[\n\r]+\s*KHTN/gi, 'Phòng KHTN')
+        .replace(/Phụ\s*trách\s*[\n\r]+\s*CNTT/gi, 'Phụ trách CNTT')
+        .replace(/CNTT\s*-\s*Phòng\s*[\n\r]+\s*Tin\s*học/gi, 'CNTT - Phòng Tin học')
+        .replace(/CNTT\s*[\n\r]+\s*-\s*Phòng/gi, 'CNTT - Phòng');
+    }
+    const assignment = assignmentText;
     const specialDuty = extractTeachingSpecialDuty(columns);
     const assignmentSpecialDuty = extractTeachingSpecialDuty([assignment]);
     const className = getTeachingPasteValue(columns, headerMap, 'className', 6);
@@ -1589,23 +1669,50 @@ const parseTeachingAssignmentTablePaste = (text = '', classOptions = ASSIGNMENT_
     currentTeacher.position = position;
     if (specialty) currentTeacher.specialty = specialty;
     const selectedClasses = getAssignmentClassList(className, classOptions);
-    const checkNote = getTeachingPasteValue(columns, headerMap, 'pasteCheck', 10);
-    const pastedSourceNote = getTeachingPasteValue(columns, headerMap, 'pastedNote', 11);
+    
+    let checkNote = getTeachingPasteValue(columns, headerMap, 'pasteCheck', -1);
+    let sourceYearSurplus = getTeachingPasteValue(columns, headerMap, 'sourceYearSurplus', -1);
+    const noteFallback = headerMap.note !== undefined ? headerMap.note : 11;
+    const pastedSourceNote = getTeachingPasteValue(columns, headerMap, 'pastedNote', noteFallback);
+
+    if (!headerMap.sourceYearSurplus && !headerMap.pasteCheck && !headerMap.totalPeriods) {
+      const val10 = stripPasteCell(columns[10]);
+      if (val10) {
+        if (!isNaN(Number(val10)) && Number(val10) > 0 && Number(val10) % 1 === 0 && Number(val10) !== Number(columns[9]) * Number(columns[5] || context.weeks || 31)) {
+          sourceYearSurplus = val10;
+        } else if (isNaN(Number(val10))) {
+          checkNote = val10;
+        }
+      }
+    } else {
+      if (!checkNote) checkNote = getTeachingPasteValue(columns, headerMap, 'pasteCheck', 10);
+    }
+
+    if (sourceYearSurplus && !isNaN(Number(sourceYearSurplus))) {
+      sourceYearSurplus = Math.min(Number(sourceYearSurplus), 200).toString();
+    }
+
     const pastedStatusNote = getTeachingStatusNote(removeTeachingWeeksFromNote(pastedSourceNote));
     if (pastedStatusNote) {
       currentTeacher.note = appendTeachingNote(currentTeacher.note, pastedStatusNote);
       teacherNote = [currentTeacher.note, context.periodNote].filter(Boolean).join('\n');
     }
-    const weeks = context.weeks || getTeachingPasteValue(columns, headerMap, 'weeks', -1) || getTeachingWeeksFromNote(pastedSourceNote) || '35';
-    const pastedNote = buildTeachingPastedNote(checkNote, removeTeachingWeeksFromNote(pastedSourceNote));
-    const sourceTotalPeriodsPerWeek = getTeachingSourceTotalPerWeekValue(columns, firstColumns, headerMap);
+    const weeks = context.weeks || getTeachingPasteValue(columns, headerMap, 'weeks', -1) || getTeachingWeeksFromNote(pastedSourceNote) || '';
+    const pastedNote = buildTeachingPastedNote(checkNote, pastedSourceNote);
+    let sourceTotalPeriodsPerWeek = getTeachingSourceTotalPerWeekValue(columns, firstColumns, headerMap);
+    let totalPeriodsOverride = '';
+    const bgkKey = normalizeTeacherNameKey(primaryAssignment || '');
+    if ((bgkKey.includes('bgk') || bgkKey.includes('giao vien day gioi') || bgkKey.includes('gv day gioi')) && sourceYearSurplus) {
+      totalPeriodsOverride = sourceYearSurplus;
+      sourceYearSurplus = '';
+    }
     const sourceWeeklyCheckId = `table-${sourceRowIndex}`;
     const specialDutyBelongsToPrimary = Boolean(primarySpecialDuty);
-    const primaryNote = [teacherNote, primarySpecialDuty?.note || ''].filter(Boolean).join('\n');
+    const primaryNote = [teacherNote, primarySpecialDuty?.note || '', pastedNote].filter(Boolean).join('\n');
     const primaryClassName = primarySpecialDuty ? '' : className;
     const primarySelectedClasses = primarySpecialDuty ? [] : selectedClasses;
     sourceRowIndex += 1;
-    if (primaryAssignment || className || sourceTotalPeriodsPerWeek) {
+    if (primaryAssignment || className || sourceTotalPeriodsPerWeek || totalPeriodsOverride) {
       currentTeacher.rows.push(...normalizeSplitTeachingAssignmentRows({
         teacherName,
         position,
@@ -1618,9 +1725,11 @@ const parseTeachingAssignmentTablePaste = (text = '', classOptions = ASSIGNMENT_
         totalPeriodsPerWeek: sourceTotalPeriodsPerWeek,
         note: primaryNote,
         pastedNote,
+        totalPeriodsOverride,
         sourceTotalPeriodsPerWeek,
+        sourceYearSurplus,
         sourceWeeklyCheckId,
-        sourcePeriodNote: context.periodNote || '',
+        sourcePeriodNote: context.isPcCmUpload ? '__SKIP__' : (context.periodNote || ''),
         sourcePeriodStartDate: context.startDate || '',
         sourcePeriodEndDate: context.endDate || ''
       }, classOptions));
@@ -1639,8 +1748,9 @@ const parseTeachingAssignmentTablePaste = (text = '', classOptions = ASSIGNMENT_
         note: [teacherNote, specialDuty.note].filter(Boolean).join('\n'),
         pastedNote,
         sourceTotalPeriodsPerWeek: '',
+        sourceYearSurplus,
         sourceWeeklyCheckId: `special-${sourceRowIndex}-${normalizeTeacherNameKey(specialDuty.assignment)}`,
-        sourcePeriodNote: context.periodNote || '',
+        sourcePeriodNote: context.isPcCmUpload ? '__SKIP__' : (context.periodNote || ''),
         sourcePeriodStartDate: context.startDate || '',
         sourcePeriodEndDate: context.endDate || ''
       }, classOptions));
@@ -1667,6 +1777,7 @@ const parseTeachingAssignmentTablePaste = (text = '', classOptions = ASSIGNMENT_
         note: teacherNote,
         pastedNote,
         sourceTotalPeriodsPerWeek: shouldUseExtraTotalForCheck ? extraTotalPeriods : '',
+        sourceYearSurplus,
         sourceWeeklyCheckId: `extra-${sourceRowIndex}-${extraKey}`,
         sourcePeriodNote: context.periodNote || '',
         sourcePeriodStartDate: context.startDate || '',
@@ -1732,6 +1843,8 @@ const defaultTeachingSemesterDates = (schoolYear = '') => {
     hk1End: `${endYear}-01-18`,
     hk2Start: `${endYear}-01-19`,
     hk2End: `${endYear}-05-26`,
+    tech8Hk2Start: '',
+    tech9Hk2Start: '',
     tetStart: '',
     tetEnd: '',
     break1Start: '',
@@ -1809,6 +1922,8 @@ const normalizeTeachingSemesterDates = (dates = {}, schoolYear = '') => {
     hk1End: normalizeTeachingSemesterDateForSchoolYear(dates.hk1End, schoolYear, defaults.hk1End),
     hk2Start: normalizeTeachingSemesterDateForSchoolYear(dates.hk2Start, schoolYear, defaults.hk2Start),
     hk2End: normalizeTeachingSemesterDateForSchoolYear(dates.hk2End, schoolYear, defaults.hk2End),
+    tech8Hk2Start: normalizeTeachingSemesterDateForSchoolYear(dates.tech8Hk2Start, schoolYear, defaults.tech8Hk2Start),
+    tech9Hk2Start: normalizeTeachingSemesterDateForSchoolYear(dates.tech9Hk2Start, schoolYear, defaults.tech9Hk2Start),
     tetStart: normalizeTeachingSemesterDateForSchoolYear(dates.tetStart, schoolYear, defaults.tetStart),
     tetEnd: normalizeTeachingSemesterDateForSchoolYear(dates.tetEnd, schoolYear, defaults.tetEnd),
     break1Start: normalizeTeachingSemesterDateForSchoolYear(dates.break1Start || dates.tetStart, schoolYear, defaults.break1Start),
@@ -2038,6 +2153,8 @@ export default function AdminSettingsWorkspace({
   const [thdTeachingAssignmentsDraft, setThdTeachingAssignmentsDraft] = useState({});
   const [teachingAssignmentsDirty, setTeachingAssignmentsDirty] = useState(false);
   const [thdTeachingAssignmentsDirty, setThdTeachingAssignmentsDirty] = useState(false);
+  const [activeTeachingVersionId, setActiveTeachingVersionId] = useState("main");
+  const [hasInitializedDefaultVersion, setHasInitializedDefaultVersion] = useState(false);
   const [pasteText, setPasteText] = useState('');
   const [showTeacherPaste, setShowTeacherPaste] = useState(false);
   const [thdPasteText, setThdPasteText] = useState('');
@@ -2060,7 +2177,7 @@ export default function AdminSettingsWorkspace({
   const [showTeachingTimeSettings, setShowTeachingTimeSettings] = useState(false);
   const [teachingSettingsTab, setTeachingSettingsTab] = useState('time');
   const [showTeachingMoneyColumns, setShowTeachingMoneyColumns] = useState(true);
-  const [teachingFilter, setTeachingFilter] = useState('all');
+  const [teachingFilter, setTeachingFilter] = useState([]);
   const [showTeachingFilterMenu, setShowTeachingFilterMenu] = useState(false);
   const [savingInputLockKey, setSavingInputLockKey] = useState('');
   const [teachingImportStartDate, setTeachingImportStartDate] = useState('');
@@ -2245,6 +2362,7 @@ export default function AdminSettingsWorkspace({
   const selectedSchoolYearKey = compactSchoolYearLabel(selectedSchoolYear);
   const effectiveSchoolYearKey = selectedSchoolYearKey || compactSchoolYearLabel(currentSchoolYear || '') || 'default';
   const systemSchoolYearKey = compactSchoolYearLabel(yearDraft || currentSchoolYear || '') || 'default';
+  const activeTeachingDataKey = activeTeachingVersionId === 'main' ? effectiveSchoolYearKey : `${effectiveSchoolYearKey}_${activeTeachingVersionId}`;
   const isSystemYearLocked = Boolean(inputLocksDraft?.[systemSchoolYearKey]);
 
   const assignmentsBySelectedYear = useMemo(() => {
@@ -2298,10 +2416,191 @@ export default function AdminSettingsWorkspace({
       : teachersDraft
   ), [isThdTeachingPanel, teachersDraft, thdTeachersDraft]);
 
-  const teachingBatchesForSelectedYear = useMemo(() => {
-    const rows = activeTeachingAssignmentsDraft?.batchesByYear?.[effectiveSchoolYearKey];
-    return Array.isArray(rows) ? rows : [];
+  const teachingVersionsForSelectedYear = useMemo(() => {
+    const versionsKey = `${effectiveSchoolYearKey}_versions`;
+    const versions = activeTeachingAssignmentsDraft?.[versionsKey] || [];
+    if (!versions.some(v => v.id === "main")) {
+      return [{ id: "main", name: "Bản hiện tại" }, ...versions];
+    }
+    return versions;
   }, [activeTeachingAssignmentsDraft, effectiveSchoolYearKey]);
+
+  const handleCreateEmptyTeachingVersion = useCallback(() => {
+    const newId = `v${Date.now()}`;
+    
+    setActiveTeachingAssignmentsDraft(prev => {
+      const prevObj = (prev && typeof prev === 'object') ? prev : {};
+      const versionsKey = `${effectiveSchoolYearKey}_versions`;
+      const existingVersions = prevObj[versionsKey] || [];
+      
+      const baseName = `Bản mới - ${new Date().toLocaleDateString('vi-VN')}`;
+      let newName = baseName;
+      let counter = 1;
+      const versionNames = new Set(existingVersions.map(v => v.name));
+      while (versionNames.has(newName)) {
+        counter++;
+        newName = `${baseName} (${counter})`;
+      }
+
+      const newVersions = existingVersions.some(v => v.id === "main")
+        ? [...existingVersions, { id: newId, name: newName }]
+        : [{ id: "main", name: "Bản hiện tại" }, ...existingVersions, { id: newId, name: newName }];
+      
+      return {
+        ...prevObj,
+        [versionsKey]: newVersions
+      };
+    });
+    setActiveTeachingVersionId(newId);
+    if (isThdTeachingPanel) setThdTeachingAssignmentsDirty(true);
+    else setTeachingAssignmentsDirty(true);
+  }, [effectiveSchoolYearKey, setActiveTeachingAssignmentsDraft, isThdTeachingPanel]);
+
+  const handleDuplicateTeachingVersion = useCallback(() => {
+    const newId = `v${Date.now()}`;
+    const newName = `Bản sao - ${new Date().toLocaleDateString('vi-VN')}`;
+    const newDataKey = `${effectiveSchoolYearKey}_${newId}`;
+
+    setActiveTeachingAssignmentsDraft(prev => {
+      const prevObj = (prev && typeof prev === 'object') ? prev : {};
+      const versionsKey = `${effectiveSchoolYearKey}_versions`;
+      const existingVersions = prevObj[versionsKey] || [];
+      const newVersions = existingVersions.some(v => v.id === "main")
+        ? [...existingVersions, { id: newId, name: newName }]
+        : [{ id: "main", name: "Bản hiện tại" }, ...existingVersions, { id: newId, name: newName }];
+      
+      const byYear = prevObj.byYear || {};
+      const batchesByYear = prevObj.batchesByYear || {};
+
+      const currentRows = byYear[activeTeachingDataKey] || [];
+      const currentBatches = batchesByYear[activeTeachingDataKey] || [];
+
+      return {
+        ...prevObj,
+        [versionsKey]: newVersions,
+        byYear: {
+          ...byYear,
+          [newDataKey]: JSON.parse(JSON.stringify(currentRows))
+        },
+        batchesByYear: {
+          ...batchesByYear,
+          [newDataKey]: JSON.parse(JSON.stringify(currentBatches))
+        }
+      };
+    });
+    setActiveTeachingVersionId(newId);
+    if (isThdTeachingPanel) setThdTeachingAssignmentsDirty(true);
+    else setTeachingAssignmentsDirty(true);
+  }, [effectiveSchoolYearKey, activeTeachingDataKey, setActiveTeachingAssignmentsDraft, isThdTeachingPanel]);
+
+  const handleDeleteTeachingVersion = useCallback((versionIdToDelete) => {
+    if (versionIdToDelete === "main") return; // cannot delete main
+    setActiveTeachingAssignmentsDraft(prev => {
+      const prevObj = (prev && typeof prev === 'object') ? prev : {};
+      const versionsKey = `${effectiveSchoolYearKey}_versions`;
+      const existingVersions = prevObj[versionsKey] || [];
+      const newVersions = existingVersions.filter(v => v.id !== versionIdToDelete);
+      
+      return {
+        ...prevObj,
+        [versionsKey]: newVersions
+      };
+    });
+    if (activeTeachingVersionId === versionIdToDelete) {
+      setActiveTeachingVersionId("main");
+    }
+    if (isThdTeachingPanel) setThdTeachingAssignmentsDirty(true);
+    else setTeachingAssignmentsDirty(true);
+  }, [effectiveSchoolYearKey, setActiveTeachingAssignmentsDraft, activeTeachingVersionId, isThdTeachingPanel]);
+
+  const updateTeachingVersionName = useCallback((id, name) => {
+    if (!name.trim()) return;
+    setActiveTeachingAssignmentsDraft(prev => {
+      const prevObj = (prev && typeof prev === 'object') ? prev : {};
+      const versionsKey = `${effectiveSchoolYearKey}_versions`;
+      const versions = prevObj[versionsKey] || [];
+      let newVersions;
+      if (!versions.some(v => v.id === id)) {
+        if (id === "main") {
+          newVersions = [{ id: "main", name: name.trim() }, ...versions];
+        } else {
+          return prevObj;
+        }
+      } else {
+        newVersions = versions.map(v => v.id === id ? { ...v, name: name.trim() } : v);
+      }
+      return {
+        ...prevObj,
+        [versionsKey]: newVersions
+      };
+    });
+    if (isThdTeachingPanel) setThdTeachingAssignmentsDirty(true);
+    else setTeachingAssignmentsDirty(true);
+  }, [effectiveSchoolYearKey, setActiveTeachingAssignmentsDraft, isThdTeachingPanel]);
+
+  const defaultTeachingVersionId = useMemo(() => {
+    return activeTeachingAssignmentsDraft?.[`${effectiveSchoolYearKey}_defaultVersionId`] || null;
+  }, [activeTeachingAssignmentsDraft, effectiveSchoolYearKey]);
+
+  const handleToggleDefaultTeachingVersion = useCallback((versionId) => {
+    setActiveTeachingAssignmentsDraft(prev => {
+      const prevObj = (prev && typeof prev === 'object') ? prev : {};
+      const key = `${effectiveSchoolYearKey}_defaultVersionId`;
+      const current = prevObj[key];
+      return {
+        ...prevObj,
+        [key]: current === versionId ? null : versionId
+      };
+    });
+    if (isThdTeachingPanel) setThdTeachingAssignmentsDirty(true);
+    else setTeachingAssignmentsDirty(true);
+  }, [effectiveSchoolYearKey, setActiveTeachingAssignmentsDraft, isThdTeachingPanel]);
+
+  useEffect(() => {
+    setHasInitializedDefaultVersion(false);
+  }, [effectiveSchoolYearKey]);
+
+  useEffect(() => {
+    if (!hasInitializedDefaultVersion && activeTeachingAssignmentsDraft) {
+      const defaultId = activeTeachingAssignmentsDraft[`${effectiveSchoolYearKey}_defaultVersionId`];
+      if (defaultId) {
+        setActiveTeachingVersionId(defaultId);
+      } else {
+        setActiveTeachingVersionId("main");
+      }
+      setHasInitializedDefaultVersion(true);
+    }
+  }, [activeTeachingAssignmentsDraft, effectiveSchoolYearKey, hasInitializedDefaultVersion]);
+
+  const handleCreateNewTeachingBatch = useCallback(() => {
+    const newBatchId = `batch_${Date.now()}`;
+    const newBatchLabel = `Đợt mới (${new Date().toLocaleDateString('vi-VN')})`;
+    setActiveTeachingAssignmentsDraft(prev => {
+      const prevObj = (prev && typeof prev === 'object') ? prev : {};
+      const batchesByYear = prevObj.batchesByYear || {};
+      const currentBatches = Array.isArray(batchesByYear[activeTeachingDataKey]) ? batchesByYear[activeTeachingDataKey] : [];
+      const newBatches = [...currentBatches, { id: newBatchId, label: newBatchLabel, startDate: '', endDate: '', rows: [] }];
+      return {
+        ...prevObj,
+        batchesByYear: {
+          ...batchesByYear,
+          [activeTeachingDataKey]: newBatches
+        }
+      };
+    });
+    setSelectedTeachingBatchId(newBatchId);
+    setEditingTeachingBatchId(newBatchId);
+    if (isThdTeachingPanel) setThdTeachingAssignmentsDirty(true);
+    else setTeachingAssignmentsDirty(true);
+  }, [activeTeachingDataKey, isThdTeachingPanel, setActiveTeachingAssignmentsDraft]);
+
+  const teachingBatchesForSelectedYear = useMemo(() => {
+    let rows = activeTeachingAssignmentsDraft?.batchesByYear?.[activeTeachingDataKey];
+    if (rows && typeof rows === 'object' && !Array.isArray(rows)) {
+      rows = Object.values(rows);
+    }
+    return Array.isArray(rows) ? rows : [];
+  }, [activeTeachingAssignmentsDraft, effectiveSchoolYearKey, activeTeachingDataKey]);
 
   const hasTeachingBatches = isThdTeachingPanel && teachingBatchesForSelectedYear.length > 0;
   const activeTeachingBatch = hasTeachingBatches && selectedTeachingBatchId !== 'summary'
@@ -2333,9 +2632,12 @@ export default function AdminSettingsWorkspace({
   }, [activeAssignmentClasses, activeTeachingBatch, previousTeachingBatch]);
   const teachingRowsForSelectedYear = useMemo(() => {
     if (isThdTeachingPanel && teachingBatchesForSelectedYear.length) {
-      const rows = activeTeachingBatch
+      let rows = activeTeachingBatch
         ? activeTeachingBatch.rows
-        : (activeTeachingAssignmentsDraft?.byYear?.[effectiveSchoolYearKey] || []);
+        : (activeTeachingAssignmentsDraft?.byYear?.[activeTeachingDataKey] || []);
+      if (rows && typeof rows === 'object' && !Array.isArray(rows)) {
+        rows = Object.values(rows);
+      }
       const normalizedRows = (Array.isArray(rows) ? rows : [])
         .map(row => normalizeTeachingAssignmentDraft(row, activeAssignmentClasses))
         .filter(row => !isTeachingNumberingArtifact(row))
@@ -2348,7 +2650,7 @@ export default function AdminSettingsWorkspace({
     const legacyRows = effectiveSchoolYearKey === LEGACY_ASSIGNMENT_YEAR_KEY && Array.isArray(activeTeachingAssignmentsDraft?.rows)
       ? activeTeachingAssignmentsDraft.rows
       : [];
-    const rows = activeTeachingAssignmentsDraft?.byYear?.[effectiveSchoolYearKey] || legacyRows;
+    const rows = activeTeachingAssignmentsDraft?.byYear?.[activeTeachingDataKey] || legacyRows;
     const normalizedRows = (Array.isArray(rows) ? rows : [])
       .map(row => normalizeTeachingAssignmentDraft(row, activeAssignmentClasses))
       .filter(row => !isTeachingNumberingArtifact(row))
@@ -2373,7 +2675,7 @@ export default function AdminSettingsWorkspace({
           ...emptyTeachingAssignment(),
           className: isThdTeachingPanel ? (activeAssignmentClasses[0] || '6/1') : '6PC'
         }, activeAssignmentClasses)];
-  }, [activeAssignmentClasses, activeTeachingAssignmentsDraft, activeTeachingBatch, activeTeachingTeachersDraft, effectiveSchoolYearKey, isThdTeachingPanel, teachingBatchesForSelectedYear]);
+  }, [activeAssignmentClasses, activeTeachingAssignmentsDraft, activeTeachingBatch, activeTeachingTeachersDraft, effectiveSchoolYearKey, isThdTeachingPanel, teachingBatchesForSelectedYear, activeTeachingDataKey]);
   const teachingRowTeacherKeys = useMemo(
     () => teachingRowsForSelectedYear.map(row => normalizeTeacherNameKey(row.teacherName)),
     [teachingRowsForSelectedYear]
@@ -2486,6 +2788,36 @@ export default function AdminSettingsWorkspace({
     });
   };
 
+  const toggleTeachingClassGrade = (index, grade) => {
+    const row = teachingRowsForSelectedYear[index] || {};
+    const selected = getAssignmentClassList(row.className, activeAssignmentClasses);
+    const gradeClasses = activeAssignmentClasses.filter(c => String(c).match(/^\d+/)?.[0] === String(grade));
+    const allGradeClassesSelected = gradeClasses.length > 0 && gradeClasses.every(c => selected.includes(c));
+    let nextClasses;
+    if (allGradeClassesSelected) {
+      nextClasses = selected.filter(c => !gradeClasses.includes(c));
+    } else {
+      nextClasses = [...new Set([...selected, ...gradeClasses])].sort(compareManagedClasses);
+    }
+    const nextLabel = compactAssignmentClassLabel(nextClasses, activeAssignmentClasses);
+    updateTeachingAssignmentRow(index, {
+      className: nextLabel,
+      classCount: nextClasses.length ? String(nextClasses.length) : ''
+    });
+  };
+
+  const toggleTeachingClassAll = (index) => {
+    const row = teachingRowsForSelectedYear[index] || {};
+    const selected = getAssignmentClassList(row.className, activeAssignmentClasses);
+    const allClassesSelected = activeAssignmentClasses.length > 0 && activeAssignmentClasses.every(c => selected.includes(c));
+    const nextClasses = allClassesSelected ? [] : [...activeAssignmentClasses];
+    const nextLabel = compactAssignmentClassLabel(nextClasses, activeAssignmentClasses);
+    updateTeachingAssignmentRow(index, {
+      className: nextLabel,
+      classCount: nextClasses.length ? String(nextClasses.length) : ''
+    });
+  };
+
   const teachingSemesterDatesForYear = useMemo(() => (
     normalizeTeachingSemesterDates(activeTeachingAssignmentsDraft?.semestersByYear?.[effectiveSchoolYearKey], selectedSchoolYear)
   ), [activeTeachingAssignmentsDraft, effectiveSchoolYearKey, selectedSchoolYear]);
@@ -2553,7 +2885,8 @@ export default function AdminSettingsWorkspace({
     const text = normalizeTeachingNoteText(note);
     const generated = normalizeTeachingNoteText(generatedNote);
     if (!text) return '';
-    if (generated && text.startsWith(generated)) {
+    if (!generated) return text;
+    if (text.startsWith(generated)) {
       return text.slice(generated.length).replace(/^[\s:;.,-]+/, '').trim();
     }
     if (!isGeneratedTeachingNote(text)) return text;
@@ -2586,18 +2919,18 @@ export default function AdminSettingsWorkspace({
       if (isThdTeachingPanel && teachingBatchesForSelectedYear.length) {
         if (!activeTeachingBatch) {
           const byYear = { ...(prevObj.byYear || {}) };
-          const savedRows = Array.isArray(byYear[effectiveSchoolYearKey]) ? byYear[effectiveSchoolYearKey] : teachingRowsForSelectedYear;
+          const savedRows = Array.isArray(byYear[activeTeachingDataKey]) ? byYear[activeTeachingDataKey] : teachingRowsForSelectedYear;
           const currentRows = Array.isArray(savedRows) ? savedRows : [];
           const nextRows = typeof updater === 'function' ? updater(currentRows) : updater;
-          byYear[effectiveSchoolYearKey] = Array.isArray(nextRows) ? nextRows : [];
+          byYear[activeTeachingDataKey] = Array.isArray(nextRows) ? nextRows : [];
           return {
             ...prevObj,
             byYear
           };
         }
         const batchesByYear = { ...(prevObj.batchesByYear || {}) };
-        const batches = (Array.isArray(batchesByYear[effectiveSchoolYearKey]) ? batchesByYear[effectiveSchoolYearKey] : teachingBatchesForSelectedYear);
-        batchesByYear[effectiveSchoolYearKey] = batches.map(batch => {
+        const batches = (Array.isArray(batchesByYear[activeTeachingDataKey]) ? batchesByYear[activeTeachingDataKey] : teachingBatchesForSelectedYear);
+        batchesByYear[activeTeachingDataKey] = batches.map(batch => {
           if (batch.id !== activeTeachingBatch.id) return batch;
           const currentRows = Array.isArray(batch.rows) ? batch.rows : [];
           const nextRows = typeof updater === 'function' ? updater(currentRows) : updater;
@@ -2612,10 +2945,10 @@ export default function AdminSettingsWorkspace({
         };
       }
       const byYear = { ...(prevObj.byYear || {}) };
-      const savedRows = Array.isArray(byYear[effectiveSchoolYearKey]) ? byYear[effectiveSchoolYearKey] : null;
+      const savedRows = Array.isArray(byYear[activeTeachingDataKey]) ? byYear[activeTeachingDataKey] : null;
       const currentRows = (savedRows && savedRows.length) ? savedRows : teachingRowsForSelectedYear;
       const nextRows = typeof updater === 'function' ? updater(currentRows) : updater;
-      byYear[effectiveSchoolYearKey] = Array.isArray(nextRows) ? nextRows : [];
+      byYear[activeTeachingDataKey] = Array.isArray(nextRows) ? nextRows : [];
       return {
         ...prevObj,
         byYear
@@ -2788,19 +3121,19 @@ export default function AdminSettingsWorkspace({
     if (!window.confirm(`Xóa ${batchName}?`)) return;
     setActiveTeachingAssignmentsDraft(prev => {
       const prevObj = (prev && typeof prev === 'object') ? prev : {};
-      const nextBatches = (Array.isArray(prevObj.batchesByYear?.[effectiveSchoolYearKey])
-        ? prevObj.batchesByYear[effectiveSchoolYearKey]
+      const nextBatches = (Array.isArray(prevObj.batchesByYear?.[activeTeachingDataKey])
+        ? prevObj.batchesByYear[activeTeachingDataKey]
         : teachingBatchesForSelectedYear
       ).filter(batch => batch.id !== activeTeachingBatch.id);
       return {
         ...prevObj,
         batchesByYear: {
           ...(prevObj.batchesByYear || {}),
-          [effectiveSchoolYearKey]: nextBatches
+          [activeTeachingDataKey]: nextBatches
         },
         byYear: {
           ...(prevObj.byYear || {}),
-          [effectiveSchoolYearKey]: nextBatches.length ? (prevObj.byYear?.[effectiveSchoolYearKey] || []) : []
+          [activeTeachingDataKey]: nextBatches.length ? (prevObj.byYear?.[activeTeachingDataKey] || []) : []
         }
       };
     });
@@ -2819,7 +3152,7 @@ export default function AdminSettingsWorkspace({
         ...prevObj,
         byYear: {
           ...(prevObj.byYear || {}),
-          [effectiveSchoolYearKey]: summaryRows
+          [activeTeachingDataKey]: summaryRows
         }
       };
     });
@@ -2877,8 +3210,8 @@ export default function AdminSettingsWorkspace({
     let nextBatches = [];
     setActiveTeachingAssignmentsDraft(prev => {
       const prevObj = (prev && typeof prev === 'object') ? prev : {};
-      const currentBatches = Array.isArray(prevObj.batchesByYear?.[effectiveSchoolYearKey])
-        ? prevObj.batchesByYear[effectiveSchoolYearKey]
+      const currentBatches = Array.isArray(prevObj.batchesByYear?.[activeTeachingDataKey])
+        ? prevObj.batchesByYear[activeTeachingDataKey]
         : teachingBatchesForSelectedYear;
       nextBatches = currentBatches.map(batch => {
         const draftWeeks = normalizePeriods(teachingBatchWeeksDraft[batch.id]);
@@ -2889,11 +3222,11 @@ export default function AdminSettingsWorkspace({
         ...prevObj,
         batchesByYear: {
           ...(prevObj.batchesByYear || {}),
-          [effectiveSchoolYearKey]: nextBatches
+          [activeTeachingDataKey]: nextBatches
         },
         byYear: {
           ...(prevObj.byYear || {}),
-          [effectiveSchoolYearKey]: summaryRows
+          [activeTeachingDataKey]: summaryRows
         }
       };
     });
@@ -3051,8 +3384,8 @@ export default function AdminSettingsWorkspace({
       if (activeTeachingBatch) {
         setActiveTeachingAssignmentsDraft(prev => {
           const prevObj = (prev && typeof prev === 'object') ? prev : {};
-          const existingBatches = Array.isArray(prevObj.batchesByYear?.[effectiveSchoolYearKey])
-            ? prevObj.batchesByYear[effectiveSchoolYearKey]
+          const existingBatches = Array.isArray(prevObj.batchesByYear?.[activeTeachingDataKey])
+            ? prevObj.batchesByYear[activeTeachingDataKey]
             : teachingBatchesForSelectedYear;
           const nextBatches = existingBatches.map(batch => (
             batch.id === activeTeachingBatch.id
@@ -3071,7 +3404,7 @@ export default function AdminSettingsWorkspace({
             ...prevObj,
             batchesByYear: {
               ...(prevObj.batchesByYear || {}),
-              [effectiveSchoolYearKey]: nextBatches
+              [activeTeachingDataKey]: nextBatches
             },
           };
         });
@@ -3081,11 +3414,11 @@ export default function AdminSettingsWorkspace({
       }
       setActiveTeachingAssignmentsDraft(prev => {
         const prevObj = (prev && typeof prev === 'object') ? prev : {};
-        const existingBatches = Array.isArray(prevObj.batchesByYear?.[effectiveSchoolYearKey])
-          ? prevObj.batchesByYear[effectiveSchoolYearKey]
+        const existingBatches = Array.isArray(prevObj.batchesByYear?.[activeTeachingDataKey])
+          ? prevObj.batchesByYear[activeTeachingDataKey]
           : [];
-        const legacyRows = (!existingBatches.length && Array.isArray(prevObj.byYear?.[effectiveSchoolYearKey]))
-          ? prevObj.byYear[effectiveSchoolYearKey]
+        const legacyRows = (!existingBatches.length && Array.isArray(prevObj.byYear?.[activeTeachingDataKey]))
+          ? prevObj.byYear[activeTeachingDataKey]
               .map(row => normalizeTeachingAssignment(row, activeAssignmentClasses))
               .filter(row => row.teacherName || row.assignment || row.specialty)
           : [];
@@ -3101,7 +3434,7 @@ export default function AdminSettingsWorkspace({
           ...prevObj,
           batchesByYear: {
             ...(prevObj.batchesByYear || {}),
-            [effectiveSchoolYearKey]: nextBatches
+            [activeTeachingDataKey]: nextBatches
           },
         };
       });
@@ -3149,16 +3482,94 @@ export default function AdminSettingsWorkspace({
     const buffer = await file.arrayBuffer();
     const workbook = xlsx.read(buffer, { type: 'array' });
     const importPeriodContext = getTeachingImportPeriodContext();
-    const sheetMeta = workbook.Workbook?.Sheets || [];
-    return workbook.SheetNames.flatMap((sheetName, sheetIndex) => {
-      if (sheetMeta[sheetIndex]?.Hidden) return [];
-      if (isIgnoredTeachingWorkbookSheet(sheetName)) return [];
-      const rows = xlsx.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, raw: false, defval: '' });
-      return parseTeachingAssignmentPaste(worksheetRowsToTabText(rows), activeAssignmentClasses, {
-        ...(importPeriodContext || {}),
-        schoolYear: selectedSchoolYear
-      });
+    const sheetName = workbook.SheetNames.find(name => name === 'PC (TH)');
+    if (!sheetName) {
+      showNotification?.('Không tìm thấy sheet tên PC (TH) trong file.', 'error');
+      return [];
+    }
+    const rows = xlsx.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, raw: false, defval: '' });
+    return parseTeachingAssignmentPaste(worksheetRowsToTabText(rows), activeAssignmentClasses, {
+      ...(importPeriodContext || {}),
+      schoolYear: selectedSchoolYear
     });
+  };
+
+  const handleImportFullPCSheet = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    try {
+      showNotification?.('Đang đọc file Excel, vui lòng đợi trong giây lát...', 'info');
+      await new Promise(resolve => setTimeout(resolve, 100));
+      const xlsx = await loadXlsxLibrary();
+      const buffer = await file.arrayBuffer();
+      const workbook = xlsx.read(buffer, { type: 'array' });
+      const sheetName = workbook.SheetNames.find(name => name === 'PC (TH)' || name.includes('PC (TH)'));
+      if (!sheetName) {
+        showNotification?.('Không tìm thấy sheet tên PC (TH) trong file.', 'error');
+        return;
+      }
+      
+      const rows = xlsx.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, raw: false, defval: '' });
+      
+      if (rows.length <= 10) {
+        showNotification?.('File không đủ dữ liệu (ít nhất 11 dòng).', 'error');
+        return;
+      }
+      
+      const headerRow = [
+        'STT', 'Họ và tên', 'Chức vụ', 'Chuyên môn', 'Phân công', 
+        'Số tuần', 'Lớp', 'Số lớp', 'Tiết/lớp tuần', 'Tiết/tuần', 
+        'Tổng tiết', 'Ghi chú'
+      ];
+      const validRows = [headerRow];
+      
+      for (let i = 10; i < rows.length; i++) {
+        const row = rows[i];
+        const colL = String(row[11] || '').toLowerCase();
+        if (colL.includes('người lập bảng') || colL.includes('hiệu trưởng') || colL.includes('nguoi lap bang') || colL.includes('hieu truong')) {
+          break;
+        }
+        validRows.push(row);
+      }
+      
+      const tsvText = worksheetRowsToTabText(validRows);
+      const parsedRows = parseTeachingAssignmentPaste(tsvText, activeAssignmentClasses, {
+        schoolYear: selectedSchoolYear,
+        isPcCmUpload: true
+      });
+      
+      if (!parsedRows.length) {
+        showNotification?.('Không đọc được dòng phân công nào hợp lệ từ file.', 'error');
+        return;
+      }
+      
+      setActiveTeachingAssignmentsDraft(prev => {
+        const prevObj = (prev && typeof prev === 'object') ? prev : {};
+        return {
+          ...prevObj,
+          byYear: {
+            ...(prevObj.byYear || {}),
+            [activeTeachingDataKey]: parsedRows
+          },
+          batchesByYear: {
+            ...(prevObj.batchesByYear || {}),
+            [activeTeachingDataKey]: null
+          }
+        };
+      });
+      
+      setSelectedTeachingBatchId('summary');
+      setEditingTeachingBatchId('');
+      setTeachingImportStartDate('');
+      setTeachingImportEndDate('');
+      
+      setTeachingSummaryDirty(true);
+      showNotification?.(`Đã nạp dữ liệu phân công mới từ ${parsedRows.length} dòng.`);
+    } catch (error) {
+      console.error(error);
+      showNotification?.('Lỗi khi đọc file Excel.', 'error');
+    }
   };
 
   const handleTeachingImportFile = async (event) => {
@@ -3315,11 +3726,30 @@ export default function AdminSettingsWorkspace({
   }, [cleanThdSubjectsDraft]);
 
   const getTeachingRowSemesterKey = (row = {}) => {
-    const note = String(row.sourcePeriodNote || row.note || getAssignmentNote(row) || '');
-    const dateMatch = note.match(/\d{1,2}\D+\d{1,2}\D+\d{4}/);
-    const date = dateMatch ? parseDateValue(dateMatch[0]) : null;
-    const hk2Start = parseDateValue(teachingSemesterDatesForYear.hk2Start);
-    if (date && hk2Start && date >= hk2Start) return 'periodsSemester2';
+    const rawSourcePeriodNote = row.sourcePeriodNote === '__SKIP__' ? '' : row.sourcePeriodNote;
+    const note = String(rawSourcePeriodNote || row.note || getAssignmentNote(row) || '');
+    const dateMatches = [...note.matchAll(/\d{1,2}\D+\d{1,2}\D+\d{4}/g)];
+    const dateMatch = dateMatches.length > 0 ? dateMatches[dateMatches.length - 1][0] : null;
+    const date = dateMatch ? parseDateValue(dateMatch) : null;
+    let hk2StartStr = teachingSemesterDatesForYear.hk2Start;
+
+    if (isTechnologyAssignment(row.assignment)) {
+      const classes = getAssignmentClassList(row.className, activeAssignmentClasses);
+      const isGrade8 = classes.some(c => getGradeFromManagedClassName(c) === '8');
+      const isGrade9 = classes.some(c => getGradeFromManagedClassName(c) === '9');
+      if (isGrade8 && teachingSemesterDatesForYear.tech8Hk2Start) {
+        hk2StartStr = teachingSemesterDatesForYear.tech8Hk2Start;
+      } else if (isGrade9 && teachingSemesterDatesForYear.tech9Hk2Start) {
+        hk2StartStr = teachingSemesterDatesForYear.tech9Hk2Start;
+      }
+    }
+
+    const hk2Start = parseDateValue(hk2StartStr);
+    
+    if (date && hk2Start) {
+      return date >= hk2Start ? 'periodsSemester2' : 'periodsSemester1';
+    }
+    
     const weekNumber = Number(String(row.weeks || '').replace(',', '.'));
     return weekNumber === 17 ? 'periodsSemester2' : 'periodsSemester1';
   };
@@ -3443,7 +3873,7 @@ export default function AdminSettingsWorkspace({
 
   useEffect(() => {
     if (!isThdTeachingPanel || !isTeachingSummaryView) return;
-    const rows = activeTeachingAssignmentsDraft?.byYear?.[effectiveSchoolYearKey];
+    const rows = activeTeachingAssignmentsDraft?.byYear?.[activeTeachingDataKey];
     if (!Array.isArray(rows) || !rows.length) return;
     const currentRows = rows.map(row => normalizeTeachingAssignment(row, activeAssignmentClasses));
     const nextRows = splitAndCompactTechnologySummaryRows(currentRows);
@@ -3454,7 +3884,7 @@ export default function AdminSettingsWorkspace({
         ...prevObj,
         byYear: {
           ...(prevObj.byYear || {}),
-          [effectiveSchoolYearKey]: nextRows
+          [activeTeachingDataKey]: nextRows
         }
       };
     });
@@ -3492,8 +3922,8 @@ export default function AdminSettingsWorkspace({
 
   const buildTeachingAssignmentsForSave = () => {
     const assignmentObj = (activeTeachingAssignmentsDraft && typeof activeTeachingAssignmentsDraft === 'object') ? { ...activeTeachingAssignmentsDraft } : {};
-    const draftBatches = Array.isArray(assignmentObj.batchesByYear?.[effectiveSchoolYearKey])
-      ? assignmentObj.batchesByYear[effectiveSchoolYearKey]
+    const draftBatches = Array.isArray(assignmentObj.batchesByYear?.[activeTeachingDataKey])
+      ? assignmentObj.batchesByYear[activeTeachingDataKey]
       : teachingBatchesForSelectedYear;
     const batchesForSave = isThdTeachingPanel && teachingBatchesForSelectedYear.length
       ? draftBatches.map(batch => ({
@@ -3502,39 +3932,35 @@ export default function AdminSettingsWorkspace({
             .map(row => normalizeTeachingAssignment(row, activeAssignmentClasses))
             .filter(row => !shouldDropCoreTeachingRowWithoutClass(row, activeAssignmentClasses))
         }))
-      : [];
-    const storedSummaryRows = Array.isArray(assignmentObj.byYear?.[effectiveSchoolYearKey])
-      ? assignmentObj.byYear[effectiveSchoolYearKey]
+      : null;
+    const storedSummaryRows = Array.isArray(assignmentObj.byYear?.[activeTeachingDataKey])
+      ? assignmentObj.byYear[activeTeachingDataKey]
           .map(row => normalizeTeachingAssignment(row, activeAssignmentClasses))
           .filter(row => !isTeachingNumberingArtifact(row))
           .filter(row => !isThdTeachingPanel || !shouldDropCoreTeachingRowWithoutClass(row, activeAssignmentClasses))
       : [];
-    const summaryRowsForSave = batchesForSave.length
+    const summaryRowsForSave = batchesForSave?.length
       ? splitAndCompactTechnologySummaryRows(storedSummaryRows)
       : getCleanTeachingAssignmentRows();
-    const existingRows = assignmentObj.byYear?.[effectiveSchoolYearKey] || assignmentObj.rows || [];
-    const existingSemesterDates = assignmentObj.semestersByYear?.[effectiveSchoolYearKey];
+    const existingRows = assignmentObj.byYear?.[activeTeachingDataKey] || assignmentObj.rows || [];
+    const existingSemesterDates = assignmentObj.semestersByYear?.[activeTeachingDataKey];
     const shouldSaveSemesterDates = Boolean(existingSemesterDates) || !sameJson(teachingSemesterDatesForYear, defaultTeachingSemesterDates(selectedSchoolYear));
-    if (!batchesForSave.length && !summaryRowsForSave.length && !existingRows.length && !shouldSaveSemesterDates) return assignmentObj;
+    if (!batchesForSave && !summaryRowsForSave.length && !existingRows.length && !shouldSaveSemesterDates) return assignmentObj;
     return {
       ...assignmentObj,
       byYear: {
         ...(assignmentObj.byYear || {}),
-        [effectiveSchoolYearKey]: summaryRowsForSave
+        [activeTeachingDataKey]: summaryRowsForSave
       },
-      ...(batchesForSave.length
-        ? {
-            batchesByYear: {
-              ...(assignmentObj.batchesByYear || {}),
-              [effectiveSchoolYearKey]: batchesForSave
-            }
-          }
-        : {}),
+      batchesByYear: {
+        ...(assignmentObj.batchesByYear || {}),
+        [activeTeachingDataKey]: batchesForSave
+      },
       ...(shouldSaveSemesterDates
         ? {
             semestersByYear: {
               ...(assignmentObj.semestersByYear || {}),
-              [effectiveSchoolYearKey]: teachingSemesterDatesForYear
+              [activeTeachingDataKey]: teachingSemesterDatesForYear
             }
           }
         : {})
@@ -3582,17 +4008,46 @@ export default function AdminSettingsWorkspace({
     return total || '';
   };
 
+  const isHdtnHnDcAssignment = (value = '') => {
+    const key = normalizeTeacherNameKey(value);
+    return key.includes('hdtn,hn (dc)') || key.includes('hn (dc)') || key.includes('hdtn hn dc') || key.includes('hn dc') || key.includes('hdtn, hn (dc)') || key.includes('hđtn,hn (dc)') || key.includes('hđtn hn dc');
+  };
+
+  const getHdtnHnDcFactor = (position = 'GV') => {
+    const pos = normalizeTeachingPosition(position);
+    if (pos === 'HT') return 0.105;
+    if (pos === 'PHT') return 0.20;
+    if (pos === 'TPT') return 0.085;
+    return 0.60; // Default GV
+  };
+
   const getTotalPeriods = (row = {}) => {
     const totalOverride = normalizePeriods(row.totalPeriodsOverride || '');
     if (totalOverride) return Number(totalOverride);
-    const customTotal = normalizePeriods(row.totalPeriodsPerWeek || row.totalWeeklyPeriods || row.weeklyPeriods || '');
-    const periods = getPeriodsPerClassWeek(row);
+
     const classCount = getAssignmentClassList(row.className, activeAssignmentClasses).length
       || Number(String(row.classCount || '1').replace(',', '.'))
       || 0;
     const weeks = Number(String(row.weeks || '').replace(',', '.')) || 0;
-    const configuredPeriods = isThdTeachingPanel ? normalizePeriods(getConfiguredAssignmentPeriods(row.assignment, row)) : '';
     const adjustment = (Number(normalizeSignedPeriods(row.totalPeriodsAdjustment || '')) || 0) * classCount;
+
+    if (isHdtnHnDcAssignment(row.assignment)) {
+      const factor = getHdtnHnDcFactor(row.position);
+      return Math.round(weeks * factor * classCount) + adjustment;
+    }
+
+    const isBgkAssignment = (value = '') => {
+      const key = normalizeTeacherNameKey(value);
+      return key.includes('bgk') || key.includes('giao vien day gioi') || key.includes('gv day gioi');
+    };
+
+    const customTotal = normalizePeriods(row.totalPeriodsPerWeek || row.totalWeeklyPeriods || row.weeklyPeriods || '');
+    if (isBgkAssignment(row.assignment)) {
+      if (customTotal) return Number(customTotal) + adjustment;
+    }
+
+    const periods = getPeriodsPerClassWeek(row);
+    const configuredPeriods = isThdTeachingPanel ? normalizePeriods(getConfiguredAssignmentPeriods(row.assignment, row)) : '';
     if (configuredPeriods && !getAssignmentClassList(row.className, activeAssignmentClasses).length) return (Number(configuredPeriods) * weeks) + adjustment;
     if (customTotal && !normalizePeriods(row.periodsPerClassWeek || row.periodsPerClass || row.lessonPerClass || '')) return (Number(customTotal) * weeks) + adjustment;
     if (typeof periods === 'number') return (periods * classCount * weeks) + adjustment;
@@ -3606,9 +4061,17 @@ export default function AdminSettingsWorkspace({
     return 19;
   };
 
-  const getTeachingRequiredYearTotal = (position = 'GV') => getTeachingRequiredPeriodsPerWeek(position) * 35;
+  const getTeachingRequiredYearTotal = (rowOrPosition) => {
+    const position = typeof rowOrPosition === 'object' ? (rowOrPosition?.position || 'GV') : (rowOrPosition || 'GV');
+    if (typeof rowOrPosition === 'object' && rowOrPosition?.sourceYearObligation) {
+      const parsedObligation = Number(normalizePeriods(rowOrPosition.sourceYearObligation));
+      if (!isNaN(parsedObligation) && parsedObligation >= 0) return parsedObligation;
+    }
+    return getTeachingRequiredPeriodsPerWeek(position) * 35;
+  };
 
   const getAssignmentNote = (row = {}, semesterDates = teachingSemesterDatesForYear) => {
+    if (row.sourcePeriodNote === '__SKIP__') return '';
     if (row.sourcePeriodNote) return row.sourcePeriodNote;
     return getTeachingWeekNote(row.weeks, semesterDates);
   };
@@ -3731,12 +4194,32 @@ export default function AdminSettingsWorkspace({
 
   const getTeacherPeriodDiff = (row = {}) => {
     const teacherYearTotal = Number(getTeacherTeachingYearTotal(row.teacherName)) || 0;
-    return teacherYearTotal - getTeachingRequiredYearTotal(row.position);
+    return teacherYearTotal - getTeachingRequiredYearTotal(row);
   };
 
   const getTeacherCheckStatus = (rows = []) => {
     if (rows.some(row => normalizeTeacherNameKey(row.pastedNote).includes('khong khop'))) return 'error';
     if (rows.some(row => normalizeTeacherNameKey(row.pastedNote) === 'khop')) return 'ok';
+
+    const sourceSurpluses = rows
+      .map(row => {
+        const parsed = Number(normalizePeriods(row.sourceYearSurplus || ''));
+        return isNaN(parsed) ? null : parsed;
+      })
+      .filter(val => val !== null);
+    
+    if (sourceSurpluses.length > 0) {
+      const sourceSurplus = sourceSurpluses[0];
+      const teacherKey = normalizeTeacherNameKey(rows[0].teacherName);
+      const teacherYearTotal = teachingTeacherTotalsByKey.yearTotals.get(teacherKey) || 0;
+      const teacherSchoolPeriods = teachingTeacherDetailsByKey.get(teacherKey)?.schoolPeriods || 0;
+      const teacherGrandTotal = teacherYearTotal + teacherSchoolPeriods;
+      const teacherRequiredYearTotal = getTeachingRequiredYearTotal(rows[0]);
+      const rawGeneratedSurplus = Math.round((teacherGrandTotal - teacherRequiredYearTotal) * 10) / 10;
+      const generatedSurplus = Math.min(rawGeneratedSurplus, 200);
+      return Math.abs(sourceSurplus - generatedSurplus) >= 0.05 ? 'error' : 'ok';
+    }
+
     const sourceTotals = rows
       .map(getTeachingSourceWeeklyCheckTotal)
       .filter(value => value > 0);
@@ -3748,11 +4231,76 @@ export default function AdminSettingsWorkspace({
     return Math.abs(sourceTotal - generatedTotal) >= 0.05 ? 'error' : 'ok';
   };
 
+  const formatSubjectLabel = (subject) => {
+    const s = subject.trim();
+    if (s === 'C nghệ') return 'Công nghệ';
+    if (s === 'AN') return 'Âm nhạc';
+    if (s === 'MT') return 'Mĩ thuật';
+    if (s === 'Văn' || s === 'Văn') return 'Ngữ văn';
+    return s;
+  };
+
+  const getSubjectSortPriority = (subject) => {
+    const s = subject.trim();
+    const order = [
+      'Toán', 'Toán (TS 10)', 
+      'Ngữ văn', 'Văn', 'Văn (TS 10)', 
+      'Tiếng Anh', 'Anh (TS 10)',
+      'Khoa học tự nhiên', 'KHTN', 
+      'Lịch sử và Địa lí', 'Lịch sử và Địa lý', 'LS&ĐL', 
+      'Công nghệ', 'C nghệ', 
+      'Tin học', 'Tin', 
+      'Giáo dục thể chất', 'GDTC', 
+      'Giáo dục công dân', 'GDCD', 
+      'Mĩ thuật', 'Mỹ thuật', 'MT', 
+      'Âm nhạc', 'AN', 
+      'Giáo dục địa phương', 'GDĐP', 
+      'Hoạt động trải nghiệm', 'HĐTN',
+      'Nghệ thuật',
+      'Chủ nhiệm', 'CN'
+    ];
+    
+    const index = order.indexOf(s);
+    if (index !== -1) return index;
+
+    return 1000;
+  };
+
+  const uniqueAssignmentSubjects = useMemo(() => {
+    const subjects = new Set();
+    teachingRowsForSelectedYear.forEach(row => {
+      if (row.assignment) subjects.add(row.assignment);
+    });
+    return Array.from(subjects).sort((a, b) => getSubjectSortPriority(a) - getSubjectSortPriority(b));
+  }, [teachingRowsForSelectedYear]);
+
+  const dynamicSubjectFilterOptions = useMemo(() => {
+    const options = uniqueAssignmentSubjects.map(subject => ({
+      value: `dynamic-subject-${subject}`,
+      label: formatSubjectLabel(subject),
+      priority: getSubjectSortPriority(subject),
+    }));
+    options.sort((a, b) => {
+      if (a.priority !== b.priority) return a.priority - b.priority;
+      return a.label.localeCompare(b.label, 'vi');
+    });
+    return options.map((option, index) => ({
+      ...option,
+      label: `${index + 1}. ${option.label}`
+    }));
+  }, [uniqueAssignmentSubjects]);
+
   const filteredTeachingTeacherKeys = useMemo(() => {
-    if (!isThdTeachingPanel || teachingFilter === 'all') return null;
+    if (!isThdTeachingPanel || !Array.isArray(teachingFilter) || !teachingFilter.length || teachingFilter.includes('all')) return null;
     const keys = new Set();
-    if (teachingFilter === 'check-error') {
-      const rowsByTeacher = new Map();
+    const hasCheckError = teachingFilter.includes('check-error');
+    const hasSurplus = teachingFilter.includes('surplus');
+    const hasDeficit = teachingFilter.includes('deficit');
+    const teamFilters = teachingFilter.filter(f => f.startsWith('team-'));
+    const subjectFilters = teachingFilter.filter(f => f.startsWith('dynamic-subject-')).map(f => f.replace('dynamic-subject-', ''));
+
+    const rowsByTeacher = new Map();
+    if (hasCheckError) {
       teachingRowsForSelectedYear.forEach((row, index) => {
         const teacherKey = teachingRowTeacherKeys[index];
         if (!teacherKey) return;
@@ -3760,23 +4308,29 @@ export default function AdminSettingsWorkspace({
         rows.push(row);
         rowsByTeacher.set(teacherKey, rows);
       });
-      rowsByTeacher.forEach((rows, teacherKey) => {
-        if (getTeacherCheckStatus(rows) === 'error') keys.add(teacherKey);
-      });
-      return keys;
     }
+
     teachingRowsForSelectedYear.forEach((row, index) => {
       const teacherKey = teachingRowTeacherKeys[index];
       if (!teacherKey) return;
-      if (teachingFilter.startsWith('team-') && matchesTeachingTeamFilter(row, teachingFilter)) {
-        keys.add(teacherKey);
+      
+      let matched = false;
+
+      if (teamFilters.length > 0) {
+        if (teamFilters.some(f => matchesTeachingTeamFilter(row, f))) matched = true;
       }
-      if (teachingFilter === 'surplus' && getTeacherPeriodDiff(row) > 0) {
-        keys.add(teacherKey);
+      if (subjectFilters.length > 0) {
+        if (subjectFilters.includes(row.assignment)) matched = true;
       }
-      if (teachingFilter === 'deficit' && getTeacherPeriodDiff(row) < 0) {
-        keys.add(teacherKey);
+      if (hasSurplus && getTeacherPeriodDiff(row) > 0) matched = true;
+      if (hasDeficit && getTeacherPeriodDiff(row) < 0) matched = true;
+      
+      if (hasCheckError) {
+        const teacherRows = rowsByTeacher.get(teacherKey) || [];
+        if (getTeacherCheckStatus(teacherRows) === 'error') matched = true;
       }
+
+      if (matched) keys.add(teacherKey);
     });
     return keys;
   }, [activeAssignmentClasses, isThdTeachingPanel, teachingFilter, teachingRowTeacherKeys, teachingRowsForSelectedYear]);
@@ -3791,7 +4345,7 @@ export default function AdminSettingsWorkspace({
     return rows;
   }, [filteredTeachingTeacherKeys, teachingRowTeacherKeys, teachingRowsForSelectedYear]);
 
-  const teachingRenderChunk = isThdTeachingPanel ? 90 : 180;
+  const teachingRenderChunk = isThdTeachingPanel ? 30 : 90;
 
   useEffect(() => {
     setTeachingRenderLimit(teachingRenderChunk);
@@ -3843,6 +4397,15 @@ export default function AdminSettingsWorkspace({
   }, [teachingRowTeacherKeys, teachingRowsForSelectedYear.length]);
 
   const visibleTeachingRowMeta = useMemo(() => {
+    const originalSequenceNumbers = new Map();
+    let seq = 1;
+    for (const key of teachingRowTeacherKeys) {
+      if (key && !originalSequenceNumbers.has(key)) {
+        originalSequenceNumbers.set(key, seq);
+        seq += 1;
+      }
+    }
+
     const rows = visibleTeachingRowValues;
     const meta = rows.map(() => ({
       isContinuation: false,
@@ -3853,7 +4416,6 @@ export default function AdminSettingsWorkspace({
       checkRowSpan: 1,
       sequenceNumber: ''
     }));
-    const seenKeys = new Map();
     let index = 0;
     while (index < rows.length) {
       const teacherKey = visibleTeachingRowTeacherKeys[index];
@@ -3865,8 +4427,7 @@ export default function AdminSettingsWorkspace({
       const start = index;
       let end = index;
       while (end + 1 < rows.length && visibleTeachingRowTeacherKeys[end + 1] === teacherKey) end += 1;
-      if (!seenKeys.has(teacherKey)) seenKeys.set(teacherKey, seenKeys.size + 1);
-      meta[start].sequenceNumber = seenKeys.get(teacherKey);
+      meta[start].sequenceNumber = originalSequenceNumbers.get(teacherKey) || '';
       meta[end].isGroupEnd = true;
       for (let rowIndex = start + 1; rowIndex <= end; rowIndex += 1) {
         meta[rowIndex].isContinuation = true;
@@ -3885,23 +4446,48 @@ export default function AdminSettingsWorkspace({
           meta[start].checkAccepted = true;
           meta[end].checkAccepted = true;
         }
-        const sourceTotals = groupRows
-          .map(getTeachingSourceWeeklyCheckTotal)
-          .filter(value => value > 0);
-        if (sourceTotals.length) {
-          const sourceTotal = Math.max(...sourceTotals);
-          const generatedTotal = Math.round(groupRows.reduce((sum, item) => (
-            sum + (Number(getTeachingGeneratedWeeklyCheckTotal(item, activeAssignmentClasses)) || 0)
-          ), 0) * 10) / 10;
-          const checkMismatch = Math.abs(sourceTotal - generatedTotal) >= 0.05;
+
+        const sourceSurpluses = groupRows
+          .map(row => {
+            const parsed = Number(normalizePeriods(row.sourceYearSurplus || ''));
+            return isNaN(parsed) ? null : parsed;
+          })
+          .filter(val => val !== null);
+
+        if (sourceSurpluses.length > 0) {
+          const sourceSurplus = sourceSurpluses[0];
+          const teacherYearTotal = teachingTeacherTotalsByKey.yearTotals.get(teacherKey) || 0;
+          const teacherSchoolPeriods = teachingTeacherDetailsByKey.get(teacherKey)?.schoolPeriods || 0;
+          const teacherGrandTotal = teacherYearTotal + teacherSchoolPeriods;
+          const teacherRequiredYearTotal = getTeachingRequiredYearTotal(groupRows[0]);
+          const rawGeneratedSurplus = Math.round((teacherGrandTotal - teacherRequiredYearTotal) * 10) / 10;
+          const generatedSurplus = Math.min(rawGeneratedSurplus, 200);
+          
+          const checkMismatch = Math.abs(sourceSurplus - generatedSurplus) >= 0.05;
           meta[start].checkMismatch = checkMismatch;
           meta[end].checkMismatch = checkMismatch;
           meta[start].liveCheckNote = checkMismatch
-            ? `Không khớp (file: ${sourceTotal}, bảng: ${generatedTotal})`
+            ? `Không khớp dư giờ (file: ${sourceSurplus}, bảng: ${generatedSurplus})`
             : 'Khớp';
-        } else if (hasStoredMismatch) {
-          meta[start].checkMismatch = true;
-          meta[end].checkMismatch = true;
+        } else {
+          const sourceTotals = groupRows
+            .map(getTeachingSourceWeeklyCheckTotal)
+            .filter(value => value > 0);
+          if (sourceTotals.length) {
+            const sourceTotal = Math.max(...sourceTotals);
+            const generatedTotal = Math.round(groupRows.reduce((sum, item) => (
+              sum + (Number(getTeachingGeneratedWeeklyCheckTotal(item, activeAssignmentClasses)) || 0)
+            ), 0) * 10) / 10;
+            const checkMismatch = Math.abs(sourceTotal - generatedTotal) >= 0.05;
+            meta[start].checkMismatch = checkMismatch;
+            meta[end].checkMismatch = checkMismatch;
+            meta[start].liveCheckNote = checkMismatch
+              ? `Không khớp (file: ${sourceTotal}, bảng: ${generatedTotal})`
+              : 'Khớp';
+          } else if (hasStoredMismatch) {
+            meta[start].checkMismatch = true;
+            meta[end].checkMismatch = true;
+          }
         }
       }
       index = end + 1;
@@ -3909,7 +4495,12 @@ export default function AdminSettingsWorkspace({
     return meta;
   }, [activeAssignmentClasses, isTeachingSummaryView, isThdTeachingPanel, visibleTeachingRowTeacherKeys, visibleTeachingRowValues]);
 
-  const teachingFilterLabel = TEACHING_FILTER_OPTIONS.find(option => option.value === teachingFilter)?.label || 'Tất cả';
+  const combinedFilterOptions = useMemo(() => [...TEACHING_FILTER_OPTIONS, ...dynamicSubjectFilterOptions], [dynamicSubjectFilterOptions]);
+  const teachingFilterLabel = useMemo(() => {
+    if (!Array.isArray(teachingFilter) || teachingFilter.length === 0 || teachingFilter.includes('all')) return 'Tất cả';
+    if (teachingFilter.length === 1) return combinedFilterOptions.find(o => o.value === teachingFilter[0])?.label || 'Tất cả';
+    return `Đã chọn (${teachingFilter.length})`;
+  }, [teachingFilter, combinedFilterOptions]);
   const teachingCheckSubjectOptions = isThdTeachingPanel ? THD_CHECK_SUBJECT_OPTIONS : ASSIGNMENT_SUBJECT_OPTIONS;
   const teachingCheckAutoWeeks = useMemo(() => {
     if (!showTeachingCheckModal) return 35;
@@ -4809,6 +5400,8 @@ export default function AdminSettingsWorkspace({
     showNotification?.(`Đã xóa phân công khối ${gradeKey} của năm ${selectedSchoolYear}.`);
   };
 
+  const [isSaving, setIsSaving] = useState(false);
+
   const saveAll = async () => {
     const saveTasks = [];
     if (changedSettings.schoolYear) saveTasks.push(onSaveSetting('schoolYear', yearDraft));
@@ -4834,10 +5427,19 @@ export default function AdminSettingsWorkspace({
     }
     const savedTeachingAssignments = changedSettings.teachingAssignments;
     const savedThdTeachingAssignments = changedSettings.thdTeachingAssignments;
-    await Promise.all(saveTasks);
-    if (savedTeachingAssignments) setTeachingAssignmentsDirty(false);
-    if (savedThdTeachingAssignments) setThdTeachingAssignmentsDirty(false);
-    showNotification?.('Đã lưu cài đặt.');
+    
+    setIsSaving(true);
+    showNotification?.('Đang lưu cài đặt...', 'info');
+    try {
+      await Promise.all(saveTasks);
+      if (savedTeachingAssignments) setTeachingAssignmentsDirty(false);
+      if (savedThdTeachingAssignments) setThdTeachingAssignmentsDirty(false);
+      showNotification?.('Đã lưu cài đặt.');
+    } catch (err) {
+      showNotification?.('Lỗi khi lưu cài đặt.', 'error');
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   return (
@@ -4877,8 +5479,8 @@ export default function AdminSettingsWorkspace({
                     </div>
                   </label>
                   <label className="block">
-                    <div className="text-xs font-black uppercase text-blue-900 mb-2">Họ tên hiệu trưởng</div>
-                    <input value={principalDraft} onChange={(event) => setPrincipalDraft(event.target.value)} placeholder="Nhập họ tên hiệu trưởng..." className="w-full bg-white border border-blue-200 p-3 rounded-xl focus:outline-none focus:border-blue-500 font-black text-sm shadow-sm" />
+                    <div className="text-xs font-black uppercase text-blue-900 mb-2">Họ tên giám đốc</div>
+                    <input value={principalDraft} onChange={(event) => setPrincipalDraft(event.target.value)} placeholder="Nhập họ tên giám đốc..." className="w-full bg-white border border-blue-200 p-3 rounded-xl focus:outline-none focus:border-blue-500 font-black text-sm shadow-sm" />
                   </label>
                   <label className={`md:col-span-2 flex items-start gap-3 rounded-2xl border p-4 cursor-pointer ${isSystemYearLocked ? 'border-rose-200 bg-rose-50' : 'border-emerald-200 bg-emerald-50'}`}>
                     <input
@@ -5004,7 +5606,7 @@ export default function AdminSettingsWorkspace({
                       </table>
                     </div>
                     <div className="mt-2 text-xs font-bold text-amber-800">
-                      Mặc định: đầu năm là thứ 3 tuần thứ 2 tháng 9; cuối năm là thứ 5 tuần cuối tháng 5 năm sau; lớp 9 sớm hơn 5 ngày. Khi nhập người ký ở một năm, các năm phía sau tự nhận cùng người ký để đổi hiệu trưởng theo mốc thời gian.
+                      Mặc định: đầu năm là thứ 3 tuần thứ 2 tháng 9; cuối năm là thứ 5 tuần cuối tháng 5 năm sau; lớp 9 sớm hơn 5 ngày. Khi nhập người ký ở một năm, các năm phía sau tự nhận cùng người ký để đổi giám đốc theo mốc thời gian.
                     </div>
                   </div>
                 </div>
@@ -5152,6 +5754,16 @@ export default function AdminSettingsWorkspace({
 
             {isTeachingPanel && (
               <ThdTeachingAssignmentsPanel
+                activeTeachingVersionId={activeTeachingVersionId}
+                setActiveTeachingVersionId={setActiveTeachingVersionId}
+                teachingVersionsForSelectedYear={teachingVersionsForSelectedYear}
+                handleCreateEmptyTeachingVersion={handleCreateEmptyTeachingVersion}
+                handleDuplicateTeachingVersion={handleDuplicateTeachingVersion}
+                handleDeleteTeachingVersion={handleDeleteTeachingVersion}
+                updateTeachingVersionName={updateTeachingVersionName}
+                defaultTeachingVersionId={defaultTeachingVersionId}
+                onToggleDefaultVersion={handleToggleDefaultTeachingVersion}
+                handleCreateNewTeachingBatch={handleCreateNewTeachingBatch}
                 activeAssignmentClasses={activeAssignmentClasses}
                 activeClassPickerIndex={activeClassPickerIndex}
                 activeTeacherPickerIndex={activeTeacherPickerIndex}
@@ -5161,6 +5773,7 @@ export default function AdminSettingsWorkspace({
                 canUseTeachingImport={canUseTeachingImport}
                 classPickerPosition={classPickerPosition}
                 formatMoney={formatMoney}
+                handleImportFullPCSheet={handleImportFullPCSheet}
                 hasChanges={hasChanges}
                 hasTeachingBatches={hasTeachingBatches}
                 isEditingActiveTeachingBatch={isEditingActiveTeachingBatch}
@@ -5183,7 +5796,7 @@ export default function AdminSettingsWorkspace({
                 teachingBatchesForSelectedYear={teachingBatchesForSelectedYear}
                 teachingFilter={teachingFilter}
                 teachingFilterLabel={teachingFilterLabel}
-                teachingFilterOptions={TEACHING_FILTER_OPTIONS}
+                teachingFilterOptions={combinedFilterOptions}
                 teachingGroupBoundsBySourceIndex={teachingGroupBoundsBySourceIndex}
                 teachingImportEndDate={teachingImportEndDate}
                 teachingImportFileRef={teachingImportFileRef}
@@ -5245,6 +5858,8 @@ export default function AdminSettingsWorkspace({
                 setTeachingImportEndDate={setTeachingImportEndDate}
                 setTeachingImportStartDate={setTeachingImportStartDate}
                 toggleTeachingClass={toggleTeachingClass}
+                toggleTeachingClassGrade={toggleTeachingClassGrade}
+                toggleTeachingClassAll={toggleTeachingClassAll}
                 updateTeachingAssignmentRow={updateTeachingAssignmentRow}
                 updateTeachingSummaryFromBatches={updateTeachingSummaryFromBatches}
               />
@@ -5378,6 +5993,12 @@ export default function AdminSettingsWorkspace({
                 selectedSchoolYear={selectedSchoolYear}
                 summary={teachingCheckSummary}
                 weeks={teachingCheckWeeks}
+                allAssignments={teachingRowsForSelectedYear}
+                activeClasses={activeAssignmentClasses}
+                getTotalPeriods={getTotalPeriods}
+                normalizeTeacherNameKey={normalizeTeacherNameKey}
+                thdSubjectsDraft={thdSubjectsDraft}
+                onAddMissingSubject={(newSubject) => setThdSubjectsDraft(prev => [...prev, newSubject])}
               />
             ), document.body)}
           </div>

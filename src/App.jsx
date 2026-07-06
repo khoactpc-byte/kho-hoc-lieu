@@ -1690,9 +1690,14 @@ function App() {
       if (!docSnap.exists()) return;
       const data = docSnap.data();
       if (data.chunked) {
+        const newUpdatedAt = data.updatedAt;
+        if (thdTeachingChunkMeta.updatedAt !== newUpdatedAt) {
+          thdTeachingChunks.clear();
+        }
         thdTeachingChunkMeta = {
           chunked: true,
-          chunkCount: Number(data.chunkCount) || 0
+          chunkCount: Number(data.chunkCount) || 0,
+          updatedAt: newUpdatedAt
         };
         loadThdTeachingAssignmentsFromChunks();
         return;
@@ -7485,7 +7490,7 @@ ${lessonBlocks}`;
                       >
                           <div className="mb-3">
                               <div className="font-black text-sm text-blue-900">Mở Cài đặt</div>
-                              <div className="text-xs text-blue-700/70 font-bold mt-0.5 leading-snug">Năm học, hiệu trưởng và giáo viên theo lớp</div>
+                              <div className="text-xs text-blue-700/70 font-bold mt-0.5 leading-snug">Năm học, giám đốc và giáo viên theo lớp</div>
                           </div>
                       </button>
                       <button

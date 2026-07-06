@@ -101,34 +101,34 @@ const TRANSCRIPT_TEXT = {
 
 const TRANSCRIPT_GUIDE_SECTIONS = [
   {
-    title: '1. Quy \u0111\u1ecbnh chung',
+    title: '1. Quy định chung',
     lines: [
-      'H\u1ecdc b\u1ea1 h\u1ecdc sinh \u0111\u01b0\u1ee3c nh\u00e0 tr\u01b0\u1eddng qu\u1ea3n l\u00fd v\u00e0 b\u1ea3o qu\u1ea3n trong tr\u01b0\u1eddng; \u0111\u1ea7u n\u0103m h\u1ecdc, cu\u1ed1i h\u1ecdc k\u1ef3, cu\u1ed1i n\u0103m h\u1ecdc, \u0111\u01b0\u1ee3c b\u00e0n giao cho gi\u00e1o vi\u00ean ch\u1ee7 nhi\u1ec7m l\u1edbp \u0111\u1ec3 th\u1ef1c hi\u1ec7n vi\u1ec7c ghi v\u00e0o H\u1ecdc b\u1ea1 v\u00e0 thu l\u1ea1i sau khi \u0111\u00e3 ho\u00e0n th\u00e0nh.',
-      'N\u1ed9i dung trang 1 ph\u1ea3i \u0111\u01b0\u1ee3c ghi \u0111\u1ea7y \u0111\u1ee7 khi x\u00e1c l\u1eadp H\u1ecdc b\u1ea1; Hi\u1ec7u tr\u01b0\u1edfng k\u00fd, \u0111\u00f3ng d\u1ea5u x\u00e1c nh\u1eadn qu\u00e1 tr\u00ecnh h\u1ecdc t\u1eadp t\u1eeb l\u1edbp 6 \u0111\u1ebfn l\u1edbp 9.'
+      'Học bạ học viên được trung tâm quản lý và bảo quản trong trung tâm; đầu năm học, cuối học kỳ, cuối năm học, được bàn giao cho giáo viên chủ nhiệm lớp để thực hiện việc ghi vào Học bạ và thu lại sau khi đã hoàn thành.',
+      'Nội dung trang 1 phải được ghi đầy đủ khi xác lập Học bạ; Giám đốc ký, đóng dấu xác nhận quá trình học tập từ lớp 6 đến lớp 9.'
     ]
   },
   {
-    title: '2. Gi\u00e1o vi\u00ean m\u00f4n h\u1ecdc',
+    title: '2. Giáo viên môn học',
     lines: [
-      'Ghi \u0111i\u1ec3m trung b\u00ecnh m\u00f4n h\u1ecdc ho\u1eb7c m\u1ee9c \u0111\u00e1nh gi\u00e1 k\u1ebft qu\u1ea3 h\u1ecdc t\u1eadp theo m\u00f4n h\u1ecdc t\u1eebng h\u1ecdc k\u00ec, c\u1ea3 n\u0103m h\u1ecdc; nh\u1eadn x\u00e9t s\u1ef1 ti\u1ebfn b\u1ed9, \u01b0u \u0111i\u1ec3m n\u1ed5i b\u1eadt, h\u1ea1n ch\u1ebf ch\u1ee7 y\u1ebfu (n\u1ebfu c\u00f3) c\u1ee7a h\u1ecdc sinh.',
-      'Khi s\u1eeda ch\u1eefa (n\u1ebfu c\u00f3), d\u00f9ng b\u00fat m\u1ef1c \u0111\u1ecf g\u1ea1ch ngang n\u1ed9i dung c\u0169, ghi n\u1ed9i dung m\u1edbi v\u00e0o ph\u00eda tr\u00ean b\u00ean ph\u1ea3i v\u1ecb tr\u00ed ghi n\u1ed9i dung c\u0169, k\u00fd x\u00e1c nh\u1eadn v\u1ec1 vi\u1ec7c s\u1eeda ch\u1eefa b\u00ean c\u1ea1nh n\u1ed9i dung \u0111\u00e3 s\u1eeda.'
+      'Ghi điểm trung bình môn học hoặc mức đánh giá kết quả học tập theo môn học từng học kì, cả năm học; nhận xét sự tiến bộ, ưu điểm nổi bật, hạn chế chủ yếu (nếu có) của học viên.',
+      'Khi sửa chữa (nếu có), dùng bút mực đỏ gạch ngang nội dung cũ, ghi nội dung mới vào phía trên bên phải vị trí ghi nội dung cũ, ký xác nhận về việc sửa chữa bên cạnh nội dung đã sửa.'
     ]
   },
   {
-    title: '3. Gi\u00e1o vi\u00ean ch\u1ee7 nhi\u1ec7m',
+    title: '3. Giáo viên chủ nhiệm',
     lines: [
-      'Ti\u1ebfp nh\u1eadn v\u00e0 b\u00e0n giao l\u1ea1i H\u1ecdc b\u1ea1 h\u1ecdc sinh v\u1edbi v\u0103n ph\u00f2ng nh\u00e0 tr\u01b0\u1eddng.',
-      '\u0110\u00f4n \u0111\u1ed1c vi\u1ec7c ghi v\u00e0o H\u1ecdc b\u1ea1 \u0111i\u1ec3m trung b\u00ecnh m\u00f4n h\u1ecdc ho\u1eb7c m\u1ee9c \u0111\u00e1nh gi\u00e1 k\u1ebft qu\u1ea3 h\u1ecdc t\u1eadp c\u1ee7a h\u1ecdc sinh c\u1ee7a gi\u00e1o vi\u00ean m\u00f4n h\u1ecdc.',
-      'Ghi \u0111\u1ea7y \u0111\u1ee7 c\u00e1c n\u1ed9i dung tr\u00ean trang 1, n\u1ed9i dung \u1edf ph\u1ea7n \u0111\u1ea7u c\u00e1c trang ti\u1ebfp theo, nh\u1eadn x\u00e9t k\u1ebft qu\u1ea3 r\u00e8n luy\u1ec7n v\u00e0 h\u1ecdc t\u1eadp c\u1ee7a h\u1ecdc sinh theo t\u1eebng n\u0103m h\u1ecdc.',
-      'Ghi r\u00f5 \u0111\u01b0\u1ee3c l\u00ean l\u1edbp ho\u1eb7c kh\u00f4ng \u0111\u01b0\u1ee3c l\u00ean l\u1edbp; ho\u00e0n th\u00e0nh ho\u1eb7c ch\u01b0a ho\u00e0n th\u00e0nh ch\u01b0\u01a1ng tr\u00ecnh trung h\u1ecdc c\u01a1 s\u1edf; ch\u1ee9ng ch\u1ec9, k\u1ebft qu\u1ea3 tham gia c\u00e1c cu\u1ed9c thi, khen th\u01b0\u1edfng (n\u1ebfu c\u00f3).',
-      'Ghi nh\u1eadn x\u00e9t s\u1ef1 ti\u1ebfn b\u1ed9, \u01b0u \u0111i\u1ec3m n\u1ed5i b\u1eadt, h\u1ea1n ch\u1ebf ch\u1ee7 y\u1ebfu v\u00e0 nh\u1eefng bi\u1ec3u hi\u1ec7n n\u1ed5i b\u1eadt c\u1ee7a h\u1ecdc sinh trong qu\u00e1 tr\u00ecnh r\u00e8n luy\u1ec7n v\u00e0 h\u1ecdc t\u1eadp.'
+      'Tiếp nhận và bàn giao lại Học bạ học viên với văn phòng trung tâm.',
+      'Đôn đốc việc ghi vào Học bạ điểm trung bình môn học hoặc mức đánh giá kết quả học tập của học viên của giáo viên môn học.',
+      'Ghi đầy đủ các nội dung trên trang 1, nội dung ở phần đầu các trang tiếp theo, nhận xét kết quả rèn luyện và học tập của học viên theo từng năm học.',
+      'Ghi rõ được lên lớp hoặc không được lên lớp; hoàn thành hoặc chưa hoàn thành chương trình trung học cơ sở; chứng chỉ, kết quả tham gia các cuộc thi, khen thưởng (nếu có).',
+      'Ghi nhận xét sự tiến bộ, ưu điểm nổi bật, hạn chế chủ yếu và những biểu hiện nổi bật của học viên trong quá trình rèn luyện và học tập.'
     ]
   },
   {
-    title: '4. Hi\u1ec7u tr\u01b0\u1edfng',
+    title: '4. Giám đốc',
     lines: [
-      'Ph\u00ea duy\u1ec7t H\u1ecdc b\u1ea1 c\u1ee7a h\u1ecdc sinh khi k\u1ebft th\u00fac n\u0103m h\u1ecdc.',
-      'Ki\u1ec3m tra vi\u1ec7c qu\u1ea3n l\u00fd, b\u1ea3o qu\u1ea3n, ghi H\u1ecdc b\u1ea1.'
+      'Phê duyệt Học bạ của học viên khi kết thúc năm học.',
+      'Kiểm tra việc quản lý, bảo quản, ghi Học bạ.'
     ]
   }
 ];
@@ -1749,7 +1749,7 @@ export default function ScorebookWorkspace({
       </div>
       <div style={{ position: 'absolute', top: 615, left: 0, right: 0, textAlign: 'center', fontSize: 23, fontWeight: 700, lineHeight: 1.55 }}>
         <EditableText value={customText('innerCover:schoolType', 'TRƯỜNG TRUNG HỌC CƠ SỞ')} onCommit={(next) => commitCustomText('innerCover:schoolType', 'TRƯỜNG TRUNG HỌC CƠ SỞ', next)} />
-        <EditableText value={customText('innerCover:schoolName', 'TRƯỜNG THCS NGUYỄN AN NINH')} onCommit={(next) => commitCustomText('innerCover:schoolName', 'TRƯỜNG THCS NGUYỄN AN NINH', next)} />
+        <EditableText value={customText('innerCover:schoolName', 'TTHTCĐ PHƯỜNG TRUNG MỸ TÂY')} onCommit={(next) => commitCustomText('innerCover:schoolName', 'TTHTCĐ PHƯỜNG TRUNG MỸ TÂY', next)} />
       </div>
       <div style={{ position: 'absolute', top: 790, left: 0, right: 0, textAlign: 'center', fontSize: 15, fontWeight: 700 }}>
         Xã <span style={{ fontStyle: 'italic', fontWeight: 400 }}>(Phường, thị trấn)</span>: Phường Trung Mỹ Tây
@@ -1768,7 +1768,7 @@ export default function ScorebookWorkspace({
         {getTranscriptEndDateText(currentSchoolYear, grade)}
       </div>
       <div style={{ position: 'absolute', top: 1030, right: 110, width: 260, textAlign: 'center' }}>
-        <div style={{ fontSize: 18, fontWeight: 700 }}>HIỆU TRƯỞNG</div>
+        <div style={{ fontSize: 18, fontWeight: 700 }}>GIÁM ĐỐC</div>
         <div style={{ fontSize: 15, fontStyle: 'italic', marginTop: 6 }}>(Ký, ghi rõ họ tên, đóng dấu)</div>
       </div>
       <div style={{ position: 'absolute', top: 1120, left: 105, width: 260, height: 82, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -2661,7 +2661,7 @@ export default function ScorebookWorkspace({
                         />
                       </div>
                       <div style={{ marginTop: 90, textAlign: 'center', fontWeight: 700, fontSize: 15.5 }}>
-                        <div>HIỆU TRƯỞNG</div>
+                        <div>GIÁM ĐỐC</div>
                         <div style={{ fontStyle: 'italic', fontWeight: 400 }}>(Ký và ghi rõ họ tên)</div>
                         <EditableText
                           value={customTextOrFallback('classification:principal', principalName)}
@@ -2706,7 +2706,7 @@ export default function ScorebookWorkspace({
     return (
       <div className="scorebook-principal-comment-page bg-white text-black" style={{ width: pageInnerWidth, height: pageHeight - pageMargin * 2, fontFamily: '"Times New Roman", Times, serif', position: 'relative', boxSizing: 'border-box' }}>
         <div style={{ height: 72, textAlign: 'center', fontWeight: 700, lineHeight: 1.18 }}>
-          <div style={{ fontSize: 24 }}>NHẬN XÉT CỦA HIỆU TRƯỞNG</div>
+          <div style={{ fontSize: 24 }}>NHẬN XÉT CỦA GIÁM ĐỐC</div>
           <div style={{ fontSize: 22, marginTop: 4 }}>VỀ SỬ DỤNG SỔ THEO DÕI VÀ ĐÁNH GIÁ HỌC SINH</div>
         </div>
         <table style={{ width: tableWidth, borderCollapse: 'collapse', tableLayout: 'fixed', fontFamily: '"Times New Roman", Times, serif', margin: '0 auto' }}>
@@ -3088,17 +3088,17 @@ export default function ScorebookWorkspace({
           <div style={{ fontSize: 76, fontWeight: 700, lineHeight: 1 }}>{TRANSCRIPT_TEXT.title}</div>
           <div style={{ marginTop: 18, fontSize: 21, fontWeight: 700 }}>{TRANSCRIPT_TEXT.subtitle}</div>
         </div>
-        <div style={{ position: 'absolute', top: 760, left: coverLeft + 70, right: coverRight + 70, display: 'grid', gridTemplateColumns: '235px 1fr', columnGap: 18 }}>
+        <div style={{ position: 'absolute', top: 760, left: coverLeft + 40, right: coverRight + 40, display: 'grid', gridTemplateColumns: '170px 1fr', columnGap: 18 }}>
           <div style={infoLabel}>
             <div>Họ tên học viên:</div>
             <div>Trung tâm:</div>
-            <div>Huyện/Quận/Thị xã/Thành phố:</div>
+            <div>Phường/Xã:</div>
             <div>Tỉnh/Thành phố:</div>
           </div>
           <div style={infoValue}>
             <EditableText value={customText('transcriptCover:studentName', transcriptStudentName(student))} onCommit={(next) => commitCustomText('transcriptCover:studentName', transcriptStudentName(student), next)} />
-            <EditableText value={customText('transcriptCover:center', 'TRƯỜNG THCS NGUYỄN AN NINH')} onCommit={(next) => commitCustomText('transcriptCover:center', 'TRƯỜNG THCS NGUYỄN AN NINH', next)} />
-            <EditableText value={customText('transcriptCover:district', 'Phường Trung Mỹ Tây').replace(/^\((.*)\)$/, '$1')} onCommit={(next) => commitCustomText('transcriptCover:district', 'Phường Trung Mỹ Tây', next)} />
+            <EditableText value={customText('transcriptCover:center', 'TT Học tập Cộng đồng Phường Trung Mỹ Tây')} onCommit={(next) => commitCustomText('transcriptCover:center', 'TT Học tập Cộng đồng Phường Trung Mỹ Tây', next)} />
+            <EditableText value={customText('transcriptCover:district', 'Trung Mỹ Tây').replace(/^\((.*)\)$/, '$1')} onCommit={(next) => commitCustomText('transcriptCover:district', 'Trung Mỹ Tây', next)} />
             <EditableText value={customText('transcriptCover:province', 'HỒ CHÍ MINH')} onCommit={(next) => commitCustomText('transcriptCover:province', 'HỒ CHÍ MINH', next)} />
           </div>
         </div>
@@ -3203,9 +3203,9 @@ export default function ScorebookWorkspace({
         </div>
         <div style={{ position: 'absolute', right: 58 + pageInsets.right, top: 558, width: 330, textAlign: 'center', fontSize: 17.5, lineHeight: 1.28 }}>
           <EditableText value={entryDateText} onCommit={(next) => commitCustomText(`transcript:date:start:${entrySchoolYearKey}`, entryDateFallback, next)} style={{ fontStyle: 'italic' }} />
-          <div style={{ fontWeight: 700, fontSize: 22 }}>HIỆU TRƯỞNG</div>
+          <div style={{ fontWeight: 700, fontSize: 18 }}>GIÁM ĐỐC</div>
           <div style={{ fontStyle: 'italic' }}>(Ký, ghi rõ họ tên và đóng dấu)</div>
-          <div style={{ marginTop: 104, fontWeight: 700, fontSize: 20 }}>{entrySignerText}</div>
+          <div style={{ marginTop: 104, fontWeight: 700, fontSize: 18 }}>{entrySignerText}</div>
         </div>
         <div style={{ position: 'absolute', left: absoluteLeft, right: absoluteRight, bottom: 305, textAlign: 'center', fontSize: 25, fontWeight: 700 }}>
           QUÁ TRÌNH HỌC TẬP
@@ -3228,7 +3228,7 @@ export default function ScorebookWorkspace({
               <tr key={`transcript-process-${index}`} style={{ height: 43 }}>
                 <td style={{ border: '1.2px solid #111', textAlign: 'center' }}>{row ? row.compactSchoolYear : '20.. - 20..'}</td>
                 <td style={{ border: '1.2px solid #111', textAlign: 'center' }}>{row ? getPcClassName(row.gradeNumber, grade) : ''}</td>
-                <td style={{ border: '1.2px solid #111', paddingLeft: 8 }}>{row ? 'THCS Nguyễn An Ninh, Thành phố Hồ Chí Minh' : ''}</td>
+                <td style={{ border: '1.2px solid #111', paddingLeft: 8 }}>{row ? 'TTHTCĐ Phường Trung Mỹ Tây, TPHCM' : ''}</td>
               </tr>
             ))}
           </tbody>
@@ -3329,7 +3329,7 @@ export default function ScorebookWorkspace({
             <div style={{ position: 'absolute', left: 0, right: 0, bottom: 8 }}>{homeroomTeacherName}</div>
           </div>
           <div style={{ textAlign: 'center', paddingTop: 18, fontSize: 17, fontWeight: 700, position: 'relative' }}>
-            <div>Xác nhận của Hiệu trưởng</div>
+            <div>Xác nhận của Giám đốc</div>
             <div style={{ fontStyle: 'italic', fontWeight: 400 }}>(Ký, ghi rõ họ tên và đóng dấu)</div>
             <div style={{ position: 'absolute', left: 0, right: 0, bottom: 8 }}>{finalSignerText}</div>
           </div>
@@ -3458,9 +3458,9 @@ export default function ScorebookWorkspace({
                 onCommit={(next) => commitCustomText(assessmentDateKey, assessmentDateFallback, next)}
                 style={{ fontStyle: 'italic', fontSize: 17 }}
               />
-              <div style={{ fontWeight: 700, fontSize: 20 }}>HIỆU TRƯỞNG</div>
+              <div style={{ fontWeight: 700, fontSize: 18 }}>GIÁM ĐỐC</div>
               <div style={{ fontStyle: 'italic', fontSize: 17 }}>(Ký, ghi rõ họ tên và đóng dấu)</div>
-              <div style={{ marginTop: 108, fontWeight: 700, fontSize: 21 }}>{assessmentSignerText}</div>
+              <div style={{ marginTop: 108, fontWeight: 700, fontSize: 18 }}>{assessmentSignerText}</div>
             </div>
           </div>
         </div>
@@ -3533,14 +3533,14 @@ export default function ScorebookWorkspace({
     .sort((a, b) => a.localeCompare(b, 'vi'));
   const activeSheetDescription = (() => {
     if (isCoverSheet) return 'Trang bìa tự lấy năm học hệ thống và lớp theo khối đang mở.';
-    if (isInnerCoverSheet) return 'Bìa lót tự lấy giáo viên chủ nhiệm và hiệu trưởng từ Cài đặt.';
+    if (isInnerCoverSheet) return 'Bìa lót tự lấy giáo viên chủ nhiệm và giám đốc từ Cài đặt.';
     if (isProfileSheet) return 'Sơ yếu lý lịch tự lấy dữ liệu học sinh trong database, 40 dòng theo cụm 5 em.';
     if (isAttendanceSheet) return 'Điểm danh chủ nhiệm tự lấy học sinh, tháng 9 đến tháng 5 theo năm học đã cài.';
     if (isSemesterOneSummarySheet) return 'Tổng kết HKI tự lấy điểm từ các trang HKI, tính kết quả học tập và rèn luyện.';
     if (isSemesterTwoSummarySheet) return 'Tổng kết HKII tự lấy điểm từ các trang HKII, tính kết quả học tập và rèn luyện.';
     if (isFullYearSummarySheet) return 'Tổng hợp cả năm tự lấy đánh giá cả năm và ĐTB mcn từ các trang HKII.';
     if (isClassificationSheet) return 'Đánh giá xếp loại tự tính từ Tổng hợp cả năm và điểm danh cả năm.';
-    if (isPrincipalCommentSheet) return 'Nhận xét của hiệu trưởng tự lấy sĩ số, nam nữ theo lớp đang mở.';
+    if (isPrincipalCommentSheet) return 'Nhận xét của giám đốc tự lấy sĩ số, nam nữ theo lớp đang mở.';
     if (isGradeSectionCoverSheet) return 'Bìa phần ghi điểm A3 dọc, chữ canh giữa trang.';
     if (isGuideSheet) return 'Trang hướng dẫn đã dàn A3 dọc, bấm vào chữ để sửa nếu cần.';
     return 'Bấm vào ô để sửa trực tiếp.';
