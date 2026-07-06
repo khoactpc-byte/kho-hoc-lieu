@@ -59,6 +59,8 @@ export default function TeachingAssignmentRow({
   setActiveClassPickerIndex,
   setActiveTeacherPickerIndex,
   toggleTeachingClass,
+  toggleTeachingClassGrade,
+  toggleTeachingClassAll,
   updateTeachingAssignmentRow
 }) {
   return (
@@ -199,6 +201,29 @@ export default function TeachingAssignmentRow({
                 >
                   <X className="h-3.5 w-3.5" />
                 </button>
+              </div>
+              <div className="flex flex-wrap gap-1 border-b border-slate-100 p-2 bg-slate-50/50">
+                <button
+                  type="button"
+                  onClick={() => toggleTeachingClassAll(sourceIndex)}
+                  className={`rounded-md border px-2 py-1 text-xs font-medium transition-colors ${(activeAssignmentClasses.length > 0 && activeAssignmentClasses.every(c => getAssignmentClassList(row.className, activeAssignmentClasses).includes(c))) ? 'bg-cyan-100 border-cyan-300 text-cyan-800' : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'}`}
+                >
+                  Tất cả
+                </button>
+                {[6, 7, 8, 9].map(grade => {
+                  const gradeClasses = activeAssignmentClasses.filter(c => String(c).match(/^\d+/)?.[0] === String(grade));
+                  const isGradeSelected = gradeClasses.length > 0 && gradeClasses.every(c => getAssignmentClassList(row.className, activeAssignmentClasses).includes(c));
+                  return (
+                    <button
+                      key={`quick-grade-${grade}`}
+                      type="button"
+                      onClick={() => toggleTeachingClassGrade(sourceIndex, grade)}
+                      className={`rounded-md border px-2 py-1 text-xs font-medium transition-colors ${isGradeSelected ? 'bg-cyan-100 border-cyan-300 text-cyan-800' : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'}`}
+                    >
+                      Khối {grade}
+                    </button>
+                  );
+                })}
               </div>
               <div data-teaching-own-scroll="true" className="max-h-[310px] overflow-y-auto p-1 overscroll-contain">
                 {activeAssignmentClasses.map(className => {
@@ -351,7 +376,16 @@ export default function TeachingAssignmentRow({
               Số tiết nghĩa vụ/năm học
             </td>
             <td className="border border-amber-300 px-1 py-0.5 text-center text-[13px] font-normal italic text-amber-950">
-              {teacherRequiredYearTotal}
+              {canEditTeachingRows ? (
+                <input
+                  value={row.sourceYearObligation ?? ''}
+                  onChange={(event) => updateTeachingAssignmentRow(sourceIndex, { sourceYearObligation: event.target.value })}
+                  placeholder={String(teacherRequiredYearTotal || '')}
+                  className="h-6 w-full min-w-[2rem] rounded border border-amber-400 bg-white/60 px-1 text-center font-bold text-amber-950 outline-none focus:border-amber-600 focus:bg-white"
+                />
+              ) : (
+                teacherRequiredYearTotal
+              )}
             </td>
             <td className="border border-amber-300 px-1 py-0.5" />
             <td className="border border-amber-300 px-1 py-0.5 text-center text-[13px] font-normal italic text-amber-950">
@@ -364,7 +398,7 @@ export default function TeachingAssignmentRow({
               Số tiết dư giờ/năm học
             </td>
             <td className="border border-amber-300 px-1 py-0.5 text-center text-[13px] font-black italic text-red-600">
-              {(Number(teacherYearTotal) || 0) - teacherRequiredYearTotal}
+              {Math.min((Number(teacherYearTotal) || 0) - teacherRequiredYearTotal, 200)}
             </td>
             <td className="border border-amber-300 px-1 py-0.5" />
             <td className="border border-amber-300 px-1 py-0.5" />

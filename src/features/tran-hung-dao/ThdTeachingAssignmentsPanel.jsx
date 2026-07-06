@@ -4,6 +4,15 @@ import { TeachingAssignmentsEmptyRow, TeachingAssignmentsLoadMoreRow } from './T
 import ThdTeachingAssignmentsToolbar from './ThdTeachingAssignmentsToolbar';
 
 export default function ThdTeachingAssignmentsPanel({
+  activeTeachingVersionId = "main",
+  setActiveTeachingVersionId,
+  teachingVersionsForSelectedYear = [],
+  handleCreateEmptyTeachingVersion,
+  handleDuplicateTeachingVersion,
+  handleDeleteTeachingVersion,
+  updateTeachingVersionName,
+  handleCreateNewTeachingBatch,
+  handleImportFullPCSheet,
   activeAssignmentClasses = [],
   activeClassPickerIndex,
   activeTeacherPickerIndex,
@@ -93,6 +102,8 @@ export default function ThdTeachingAssignmentsPanel({
   setTeachingImportEndDate,
   setTeachingImportStartDate,
   toggleTeachingClass,
+  toggleTeachingClassGrade,
+  toggleTeachingClassAll,
   updateTeachingAssignmentRow,
   updateTeachingSummaryFromBatches
 }) {
@@ -103,7 +114,16 @@ export default function ThdTeachingAssignmentsPanel({
   return (
     <div ref={teachingAssignmentPanelRef} className="teaching-assignment-panel grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)] overflow-hidden px-0 pb-0 pt-0">
       <ThdTeachingAssignmentsToolbar
+        activeTeachingVersionId={activeTeachingVersionId}
+        setActiveTeachingVersionId={setActiveTeachingVersionId}
+        teachingVersionsForSelectedYear={teachingVersionsForSelectedYear}
+        handleCreateEmptyTeachingVersion={handleCreateEmptyTeachingVersion}
+        handleDuplicateTeachingVersion={handleDuplicateTeachingVersion}
+        handleDeleteTeachingVersion={handleDeleteTeachingVersion}
+        updateTeachingVersionName={updateTeachingVersionName}
+        handleCreateNewTeachingBatch={handleCreateNewTeachingBatch}
         activeTeachingBatch={activeTeachingBatch}
+        handleImportFullPCSheet={handleImportFullPCSheet}
         canEditTeachingRows={canEditTeachingRows}
         canUseTeachingImport={canUseTeachingImport}
         clearTeachingAssignmentsForYear={clearTeachingAssignmentsForYear}
@@ -251,6 +271,8 @@ export default function ThdTeachingAssignmentsPanel({
                   setActiveClassPickerIndex={setActiveClassPickerIndex}
                   setActiveTeacherPickerIndex={setActiveTeacherPickerIndex}
                   toggleTeachingClass={toggleTeachingClass}
+                  toggleTeachingClassGrade={toggleTeachingClassGrade}
+                  toggleTeachingClassAll={toggleTeachingClassAll}
                   updateTeachingAssignmentRow={updateTeachingAssignmentRow}
                 />
               );

@@ -3478,7 +3478,8 @@ export default function ScorebookWorkspace({
     const coverPages = [
       { key: `cover-${student?.id || 'student'}`, label: 'Bìa', student, render: () => renderTranscriptCoverPage(student) },
       { key: `guide-${student?.id || 'student'}`, label: 'Hướng dẫn', student, render: (pageNumber) => renderTranscriptGuidePage(pageNumber) },
-      { key: `info-${student?.id || 'student'}`, label: 'Thông tin', student, render: (pageNumber) => renderTranscriptInfoPage(student, yearEntries, pageNumber) }
+      { key: `info-${student?.id || 'student'}`, label: 'Thông tin', student, render: (pageNumber) => renderTranscriptInfoPage(student, yearEntries, pageNumber) },
+      { key: `blank-info-${student?.id || 'student'}`, label: 'Trang trắng', student, blank: true, render: renderTranscriptBlankPage }
     ];
     const resultPages = yearEntries.flatMap((yearEntry) => ([
       { key: `learning-${student?.id || 'student'}-${yearEntry.startYear}`, label: `ĐKQHT ${yearEntry.schoolYear}`, student, yearEntry, render: (pageNumber) => renderTranscriptLearningPage(yearEntry, student, pageNumber) },
@@ -3502,12 +3503,6 @@ export default function ScorebookWorkspace({
       .filter(Boolean);
     return selectedStudents.flatMap((student) => {
       const pages = getTranscriptPagesForStudent(student, selection);
-      if (selection.duplexBlank && pages.length % 2 === 1) {
-        return [
-          ...pages,
-          { key: `blank-${student.id || student.fullName || pages.length}`, label: 'Trang trắng', student, blank: true, render: renderTranscriptBlankPage }
-        ];
-      }
       return pages;
     });
   };
@@ -3823,15 +3818,7 @@ export default function ScorebookWorkspace({
                   />
                   In 3 trang đầu: bìa, hướng dẫn, thông tin học sinh
                 </label>
-                <label className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3 font-bold text-slate-700">
-                  <input
-                    type="checkbox"
-                    checked={transcriptPrintDraft.duplexBlank}
-                    onChange={(event) => setTranscriptPrintDraft(prev => ({ ...prev, duplexBlank: event.target.checked }))}
-                    className="h-5 w-5 accent-emerald-600"
-                  />
-                  Chèn trang trắng sau mỗi học sinh nếu số trang bị lẻ để in hai mặt không lẫn bìa
-                </label>
+
                 <label className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white p-3 font-bold text-slate-700">
                   <input
                     type="radio"

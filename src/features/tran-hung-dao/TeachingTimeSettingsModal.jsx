@@ -5,6 +5,8 @@ const SEMESTER_DATE_FIELDS = [
   ['hk1End', 'HK1 kết thúc'],
   ['hk2Start', 'HK2 bắt đầu'],
   ['hk2End', 'HK2 kết thúc'],
+  ['tech8Hk2Start', 'Công nghệ 8 HK2 Bắt đầu'],
+  ['tech9Hk2Start', 'Công nghệ 9 HK2 Bắt đầu'],
   ['break1Start', 'Nghỉ 1 bắt đầu'],
   ['break1End', 'Nghỉ 1 kết thúc'],
   ['break2Start', 'Nghỉ 2 bắt đầu'],
