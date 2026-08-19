@@ -1,0 +1,43 @@
+Created At: 2026-06-20T03:03:24Z
+Completed At: 2026-06-20T03:03:24Z
+
+				The command completed successfully.
+				Output:
+				
+  src\components\AdminSettingsWorkspace.jsx:3264:          ...(prevObj.versionsByYear || {}),
+  src\components\AdminSettingsWorkspace.jsx:3265:          [year]: [...versions, newVersion]
+  src\components\AdminSettingsWorkspace.jsx:3266:        },
+  src\components\AdminSettingsWorkspace.jsx:3267:        activeVersionIdByYear: {
+  src\components\AdminSettingsWorkspace.jsx:3268:          ...(prevObj.activeVersionIdByYear || {}),
+  src\components\AdminSettingsWorkspace.jsx:3269:          [year]: newVersion.id
+  src\components\AdminSettingsWorkspace.jsx:3270:        }
+  src\components\AdminSettingsWorkspace.jsx:3271:      };
+  src\components\AdminSettingsWorkspace.jsx:3272:    });
+  src\components\AdminSettingsWorkspace.jsx:3273:    
+  src\components\AdminSettingsWorkspace.jsx:3274:    setSelectedTeachingBatchId('summary');
+  src\components\AdminSettingsWorkspace.jsx:3275:    setEditingTeachingBatchId('');
+  src\components\AdminSettingsWorkspace.jsx:3276:    setTeachingSummaryDirty(true);
+  src\components\AdminSettingsWorkspace.jsx:3277:  };
+  src\components\AdminSettingsWorkspace.jsx:3278:
+> src\components\AdminSettingsWorkspace.jsx:3279:  const handleImportFullPCSheet = async (event) => {
+  src\components\AdminSettingsWorkspace.jsx:3280:    const file = event.target.files?.[0];
+  src\components\AdminSettingsWorkspace.jsx:3281:    event.target.value = '';
+  src\components\AdminSettingsWorkspace.jsx:3282:    if (!file) return;
+  src\components\AdminSettingsWorkspace.jsx:3283:    try {
+  src\components\AdminSettingsWorkspace.jsx:3284:      const xlsx = await loadXlsxLibrary();
+  src\components\AdminSettingsWorkspace.jsx:3285:      const buffer = await file.arrayBuffer();
+  src\components\AdminSettingsWorkspace.jsx:3286:      const workbook = xlsx.read(buffer, { type: 'array' });
+  src\components\AdminSettingsWorkspace.jsx:3287:      const sheetName = workbook.SheetNames.find(name => name === 
+'PC_CM' || name.includes('PC_CM'));
+  src\components\AdminSettingsWorkspace.jsx:3288:      if (!sheetName) {
+  src\components\AdminSettingsWorkspace.jsx:3289:        showNotification?.('Kh�ng t�m th?y sheet t�n PC_CM trong 
+file.', 'error');
+  src\components\AdminSettingsWorkspace.jsx:3290:        return;
+  src\components\AdminSettingsWorkspace.jsx:3291:      }
+  src\components\AdminSettingsWorkspace.jsx:3292:      
+  src\components\AdminSettingsWorkspace.jsx:3293:      const rows = 
+xlsx.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, raw: false, defval: '' });
+  src\components\AdminSettingsWorkspace.jsx:3294:      
+
+
+

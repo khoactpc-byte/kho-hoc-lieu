@@ -1,0 +1,1 @@
+"  const handleCreateNewTeachingVersion = () => {\n    const newVersion = {\n      id: `v-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,\n      name: `Bản phân công mới - ${new Date().toLocaleDateString('vi-VN')}`,\n      batches: [],\n      summaryRows: [],\n      createdAt: new Date().toISOString()\n    };"

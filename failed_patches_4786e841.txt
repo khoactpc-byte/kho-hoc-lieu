@@ -1,0 +1,102 @@
+--- STEP 234 ---
+{
+  "AllowMultiple": "false",
+  "Description": "\"Cap UI surplus calculation to 200\"",
+  "EndLine": "409",
+  "Instruction": "\"Cap the calculated surplus to a maximum of 200 in the UI render\"",
+  "ReplacementContent": "\"            <td className=\\\"border border-amber-300 px-1 py-0.5 text-center text-[13px] font-black italic text-red-600\\\">\\n              {Math.min((Number(teacherYearTotal) || 0) - teacherRequiredYearTotal, 200)}\\n            </td>\"",
+  "StartLine": "407",
+  "TargetContent": "\"            <td className=\\\"border border-amber-300 px-1 py-0.5 text-center text-[13px] font-black italic text-red-600\\\">\\n              {(Number(teacherYearTotal) || 0) - teacherRequiredYearTotal}\\n            </td>\"",
+  "TargetFile": "\"c:\\\\Users\\\\khoac\\\\kho-hoc-lieu\\\\src\\\\features\\\\tran-hung-dao\\\\TeachingAssignmentRow.jsx\"",
+  "toolAction": "\"Editing file\"",
+  "toolSummary": "\"File edit\""
+}
+
+--- STEP 261 ---
+{
+  "AllowMultiple": "false",
+  "Description": "\"Skip summary rows during parsing\"",
+  "EndLine": "1543",
+  "Instruction": "\"Skip rows where teacher name contains 'so tiet' to avoid parsing summary rows as teachers\"",
+  "ReplacementContent": "\"    const rawTeacherName = getTeachingPasteValue(columns, headerMap, 'teacherName', 1);\\n    if (teachingPasteHeaderKey(rawTeacherName).includes('so tiet')) continue;\\n    const teacherInfo = extractTeacherNameNote(rawTeacherName);\"",
+  "StartLine": "1542",
+  "TargetContent": "\"    const rawTeacherName = getTeachingPasteValue(columns, headerMap, 'teacherName', 1);\\n    const teacherInfo = extractTeacherNameNote(rawTeacherName);\"",
+  "TargetFile": "\"c:\\\\Users\\\\khoac\\\\kho-hoc-lieu\\\\src\\\\components\\\\AdminSettingsWorkspace.jsx\"",
+  "toolAction": "\"Editing file\"",
+  "toolSummary": "\"File edit\""
+}
+
+--- STEP 382 ---
+{
+  "AllowMultiple": "false",
+  "Description": "\"Add TS 10 subjects to DEFAULT_THD_SUBJECTS\"",
+  "EndLine": "71",
+  "Instruction": "\"Add Toán (TS 10), Văn (TS 10) and Anh (TS 10) into the default subjects list so they can be extracted correctly.\"",
+  "ReplacementContent": "\"  { name: 'Toán', shortName: 'Toán', periods: '4' },\\n  { name: 'Toán (TS 10)', shortName: 'Toán (TS 10)', periods: '2' },\\n  { name: 'Toán (TS10)', shortName: 'Toán (TS 10)', periods: '2' },\\n  { name: 'Ngữ văn', shortName: 'Văn', periods: '4' },\\n  { name: 'Ngữ văn (TS 10)', shortName: 'Văn (TS 10)', periods: '2' },\\n  { name: 'Ngữ văn (TS10)', shortName: 'Văn (TS 10)', periods: '2' },\\n  { name: 'Tiếng Anh', shortName: 'Tiếng Anh', periods: '3' },\\n  { name: 'Tiếng Anh (TS 10)', shortName: 'Anh (TS 10)', periods: '2' },\\n  { name: 'Tiếng Anh (TS10)', shortName: 'Anh (TS 10)', periods: '2' },\"",
+  "StartLine": "69",
+  "TargetContent": "\"  { name: 'Toán', shortName: 'Toán', periods: '4' },\\n  { name: 'Ngữ văn', shortName: 'Văn', periods: '4' },\\n  { name: 'Tiếng Anh', shortName: 'Tiếng Anh', periods: '3' },\"",
+  "TargetFile": "\"c:\\\\Users\\\\khoac\\\\kho-hoc-lieu\\\\src\\\\features\\\\tran-hung-dao\\\\thdDefaults.js\"",
+  "toolAction": "\"Editing file\"",
+  "toolSummary": "\"File edit\""
+}
+
+--- STEP 697 ---
+{
+  "Description": "\"Change thdTeachingAssignments chunks to be stored as direct children of settings collection to bypass potential Firebase security rule limitations on subcollections.\"",
+  "Instruction": "\"Update chunking logic in App.jsx to save chunks as direct documents in settings collection rather than a subcollection.\"",
+  "ReplacementChunks": "[{\"AllowMultiple\":false,\"EndLine\":1710,\"ReplacementContent\":\"    const unsubThdTeachingAssignmentChunks = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'settings'), (snapshot) => {\\n      let chunksChanged = false;\\n      snapshot.docs.forEach((chunkDoc) => {\\n        if (!chunkDoc.id.startsWith('thdTeachingAssignments_chunk_')) return;\\n        const data = chunkDoc.data();\\n        const indexStr = chunkDoc.id.replace('thdTeachingAssignments_chunk_', '');\\n        const index = Number.isFinite(Number(data.index)) ? String(Number(data.index)) : indexStr;\\n        if (typeof data.text === 'string') {\\n          thdTeachingChunks.set(index, data.text);\\n          chunksChanged = true;\\n        }\\n      });\\n      if (chunksChanged) loadThdTeachingAssignmentsFromChunks();\\n    });\",\"StartLine\":1704,\"TargetContent\":\"    const unsubThdTeachingAssignmentChunks = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'settings', 'thdTeachingAssignments', 'chunks'), (snapshot) => {\\n      snapshot.docs.forEach((chunkDoc) => {\\n        const data = chunkDoc.data();\\n        const index = Number.isFinite(Number(data.index)) ? String(Number(data.index)) : chunkDoc.id;\\n        if (typeof data.text === 'string') thdTeachingChunks.set(index, data.text);\\n      });\\n      loadThdTeachingAssignmentsFromChunks();\\n    });\"},{\"AllowMultiple\":false,\"EndLine\":3041,\"ReplacementContent\":\"        await Promise.all(chunks.map((text, index) => (\\n          setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'settings', `thdTeachingAssignments_chunk_${index}`), {\\n            index,\\n            text,\\n            updatedAt: Date.now()\\n          })\\n        )));\",\"StartLine\":3035,\"TargetContent\":\"        await Promise.all(chunks.map((text, index) => (\\n          setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'thdTeachingAssignments', 'chunks', String(index)), {\\n            index,\\n            text,\\n            updatedAt: Date.now()\\n          })\\n        )));\"}]",
+  "TargetFile": "\"c:\\\\Users\\\\khoac\\\\kho-hoc-lieu\\\\src\\\\App.jsx\"",
+  "toolAction": "\"Updating App.jsx\"",
+  "toolSummary": "\"Update App.jsx\""
+}
+
+--- STEP 762 ---
+{
+  "Description": "\"Add subject filters to TEACHING_FILTER_OPTIONS in thdDefaults.js.\"",
+  "Instruction": "\"Add 'subject-*' options to TEACHING_FILTER_OPTIONS for all major subjects.\"",
+  "ReplacementChunks": "[{\"AllowMultiple\":false,\"EndLine\":50,\"ReplacementContent\":\"  { value: 'team-cam', label: 'Tổ CAM (Công nghệ; MT; AN)' },\\n  { value: 'team-tin-gdtc', label: 'Tổ Tin-GDTC (Tin; GDTC)' },\\n  { value: 'subject-toan', label: 'Môn Toán' },\\n  { value: 'subject-van', label: 'Môn Văn' },\\n  { value: 'subject-anh', label: 'Môn Tiếng Anh' },\\n  { value: 'subject-khtn', label: 'Môn KHTN' },\\n  { value: 'subject-lsdl', label: 'Môn LS&DL' },\\n  { value: 'subject-gdcd', label: 'Môn GDCD' },\\n  { value: 'subject-gddp', label: 'Môn GDDP' },\\n  { value: 'subject-cn', label: 'Môn Công nghệ' },\\n  { value: 'subject-tin', label: 'Môn Tin học' },\\n  { value: 'subject-mt', label: 'Môn Mỹ thuật' },\\n  { value: 'subject-an', label: 'Môn Âm nhạc' },\\n  { value: 'subject-gdtc', label: 'Môn GDTC' },\\n  { value: 'subject-hdtn', label: 'Môn HĐTN,HN' },\\n  { value: 'subject-ts10', label: 'Môn ôn thi TS10' },\\n  { value: 'check-error', label: 'Kiểm tra sai' },\\n  { value: 'surplus', label: 'GV dư tiết > 0' },\\n  { value: 'deficit', label: 'GV thiếu tiết < 0' }\",\"StartLine\":46,\"TargetContent\":\"  { value: 'team-cam', label: 'Tổ CAM (Công nghệ; MT; AN)' },\\n  { value: 'team-tin-gdtc', label: 'Tổ Tin-GDTC (Tin; GDTC)' },\\n  { value: 'check-error', label: 'Kiểm tra sai' },\\n  { value: 'surplus', label: 'GV dư tiết > 0' },\\n  { value: 'deficit', label: 'GV thiếu tiết < 0' }\"}]",
+  "TargetFile": "\"c:\\\\Users\\\\khoac\\\\kho-hoc-lieu\\\\src\\\\features\\\\tran-hung-dao\\\\thdDefaults.js\"",
+  "toolAction": "\"Updating thdDefaults.js\"",
+  "toolSummary": "\"Update thdDefaults.js\""
+}
+
+--- STEP 871 ---
+{
+  "Description": "\"Update dynamicSubjectFilterOptions to sort and rename subjects.\"",
+  "Instruction": "\"Implement formatSubjectLabel and getSubjectSortPriority to order core subjects first and spell out abbreviations.\"",
+  "ReplacementChunks": "[{\"AllowMultiple\":false,\"EndLine\":3946,\"ReplacementContent\":\"  const formatSubjectLabel = (subject) => {\\n    const s = subject.trim();\\n    if (s === 'C nghệ') return 'Công nghệ';\\n    if (s === 'AN') return 'Âm nhạc';\\n    if (s === 'MT') return 'Mỹ thuật';\\n    if (s === 'Van') return 'Văn';\\n    return s;\\n  };\\n\\n  const getSubjectSortPriority = (subject) => {\\n    const s = subject.trim();\\n    const order = [\\n      'Toán', 'Toán (TS 10)', 'Van', 'Văn', 'Văn (TS 10)', 'Tiếng Anh', 'Anh (TS 10)',\\n      'KHTN', 'LS&DL', 'GDCD', 'GDDP', 'Tin học', 'C nghệ', 'Công nghệ',\\n      'MT', 'Mỹ thuật', 'AN', 'Âm nhạc', 'GDTC', 'HĐTN', 'BDHSG'\\n    ];\\n    const index = order.indexOf(s);\\n    return index !== -1 ? index : 1000;\\n  };\\n\\n  const dynamicSubjectFilterOptions = useMemo(() => {\\n    const options = uniqueAssignmentSubjects.map(subject => ({\\n      value: `dynamic-subject-${subject}`,\\n      label: formatSubjectLabel(subject),\\n      priority: getSubjectSortPriority(subject),\\n    }));\\n    options.sort((a, b) => {\\n      if (a.priority !== b.priority) return a.priority - b.priority;\\n      return a.label.localeCompare(b.label, 'vi');\\n    });\\n    return options;\\n  }, [uniqueAssignmentSubjects]);\",\"StartLine\":3941,\"TargetContent\":\"  const dynamicSubjectFilterOptions = useMemo(() => {\\n    return uniqueAssignmentSubjects.map(subject => ({\\n      value: `dynamic-subject-${subject}`,\\n      label: subject,\\n    }));\\n  }, [uniqueAssignmentSubjects]);\"}]",
+  "TargetFile": "\"c:\\\\Users\\\\khoac\\\\kho-hoc-lieu\\\\src\\\\components\\\\AdminSettingsWorkspace.jsx\"",
+  "toolAction": "\"Updating AdminSettingsWorkspace.jsx\"",
+  "toolSummary": "\"Update AdminSettingsWorkspace.jsx\""
+}
+
+--- STEP 897 ---
+{
+  "Description": "\"Add an X close button to the filter panel modal.\"",
+  "Instruction": "\"Import the X icon from lucide-react and add a close button at the top right of the modal in ThdTeachingAssignmentsToolbar.jsx.\"",
+  "ReplacementChunks": "[{\"AllowMultiple\":false,\"EndLine\":11,\"ReplacementContent\":\"  Save,\\n  Trash2,\\n  X\\n} from 'lucide-react';\",\"StartLine\":9,\"TargetContent\":\"  Save,\\n  Trash2\\n} from 'lucide-react';\"},{\"AllowMultiple\":false,\"EndLine\":319,\"ReplacementContent\":\"                {showTeachingFilterMenu && (\\n                  <div className=\\\"fixed top-24 left-1/2 -translate-x-1/2 z-[300] w-[1000px] max-w-[95vw] rounded-xl border border-slate-200 bg-white p-6 shadow-2xl overflow-y-auto max-h-[80vh]\\\">\\n                    <button\\n                      type=\\\"button\\\"\\n                      onClick={() => setShowTeachingFilterMenu(false)}\\n                      className=\\\"absolute top-4 right-4 p-1.5 rounded-full text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors\\\"\\n                    >\\n                      <X className=\\\"w-5 h-5\\\" />\\n                    </button>\\n                    <div className=\\\"flex gap-8\\\">\",\"StartLine\":317,\"TargetContent\":\"                {showTeachingFilterMenu && (\\n                  <div className=\\\"fixed top-24 left-1/2 -translate-x-1/2 z-[300] w-[1000px] max-w-[95vw] rounded-xl border border-slate-200 bg-white p-5 shadow-2xl overflow-y-auto max-h-[80vh]\\\">\\n                    <div className=\\\"flex gap-8\\\">\"}]",
+  "TargetFile": "\"c:\\\\Users\\\\khoac\\\\kho-hoc-lieu\\\\src\\\\features\\\\tran-hung-dao\\\\ThdTeachingAssignmentsToolbar.jsx\"",
+  "toolAction": "\"Updating ThdTeachingAssignmentsToolbar.jsx\"",
+  "toolSummary": "\"Update ThdTeachingAssignmentsToolbar.jsx\""
+}
+
+--- STEP 986 ---
+{
+  "Description": "\"Add flexible subject mapping for TS 10 subjects.\"",
+  "Instruction": "\"Add hardcoded fallbacks to normalizeAssignmentSubject for TS10 subjects to catch missing aliases in predefined arrays.\"",
+  "ReplacementChunks": "[{\"AllowMultiple\":false,\"EndLine\":396,\"ReplacementContent\":\"  const raw = String(value || '').trim();\\n  const rawKey = normalizeTeacherNameKey(raw);\\n\\n  if (['van ts 10', 'van ts10', 'ngu van ts 10', 'ngu van ts10'].includes(rawKey)) return 'Văn (TS 10)';\\n  if (['toan ts 10', 'toan ts10'].includes(rawKey)) return 'Toán (TS 10)';\\n  if (['anh ts 10', 'anh ts10', 'tieng anh ts 10', 'tieng anh ts10', 't anh ts 10', 't anh ts10'].includes(rawKey)) return 'Anh (TS 10)';\\n\\n  return [...ASSIGNMENT_SUBJECT_OPTIONS, ...THD_CHECK_SUBJECT_OPTIONS].find(option => (\\n    normalizeTeacherNameKey(option.value) === rawKey\\n    || normalizeTeacherNameKey(option.label) === rawKey\\n    || option.aliases.some(alias => normalizeTeacherNameKey(alias) === rawKey)\",\"StartLine\":391,\"TargetContent\":\"  const raw = String(value || '').trim();\\n  const rawKey = normalizeTeacherNameKey(raw);\\n  return [...ASSIGNMENT_SUBJECT_OPTIONS, ...THD_CHECK_SUBJECT_OPTIONS].find(option => (\\n    normalizeTeacherNameKey(option.value) === rawKey\\n    || normalizeTeacherNameKey(option.label) === rawKey\\n    || option.aliases.some(alias => normalizeTeacherNameKey(alias) === rawKey)\"}]",
+  "TargetFile": "\"c:\\\\Users\\\\khoac\\\\kho-hoc-lieu\\\\src\\\\components\\\\AdminSettingsWorkspace.jsx\"",
+  "toolAction": "\"Updating AdminSettingsWorkspace.jsx\"",
+  "toolSummary": "\"Update AdminSettingsWorkspace.jsx\""
+}
+
+--- STEP 1011 ---
+{
+  "Description": "\"Update subject sort priority and formatting according to user's specified list.\"",
+  "Instruction": "\"Update getSubjectSortPriority to match the exact order and formatSubjectLabel to map MT to Mĩ thuật.\"",
+  "ReplacementChunks": "[{\"AllowMultiple\":false,\"EndLine\":3948,\"ReplacementContent\":\"  const formatSubjectLabel = (subject) => {\\n    const s = subject.trim();\\n    if (s === 'C nghệ') return 'Công nghệ';\\n    if (s === 'AN') return 'Âm nhạc';\\n    if (s === 'MT') return 'Mĩ thuật';\\n    if (s === 'Van' || s === 'Văn') return 'Ngữ văn';\\n    return s;\\n  };\\n\\n  const getSubjectSortPriority = (subject) => {\\n    const s = subject.trim();\\n    const order = [\\n      'Toán', 'Toán (TS 10)', \\n      'Ngữ văn', 'Van', 'Văn', 'Văn (TS 10)', \\n      'Tiếng Anh', 'Anh (TS 10)',\\n      'Khoa học tự nhiên', 'KHTN', \\n      'Lịch sử và Địa lí', 'Lịch sử và Địa lý', 'LS&DL', \\n      'Công nghệ', 'C nghệ', \\n      'Tin học', 'Tin', \\n      'Giáo dục thể chất', 'GDTC', \\n      'Giáo dục công dân', 'GDCD', \\n      'Mĩ thuật', 'Mỹ thuật', 'MT', \\n      'Âm nhạc', 'AN', \\n      'Giáo dục địa phương', 'GDĐP', \\n      'Chủ nhiệm', 'CN'\\n    ];\\n    const index = order.indexOf(s);\\n    return index !== -1 ? index : 1000;\\n  };\",\"StartLine\":3942,\"TargetContent\":\"  const formatSubjectLabel = (subject) => {\\n    const s = subject.trim();\\n    if (s === 'C nghệ') return 'Công nghệ';\\n    if (s === 'AN') return 'Âm nhạc';\\n    if (s === 'MT') return 'Mỹ thuật';\\n    if (s === 'Van') return 'Văn';\\n    return s;\\n  };\\n\\n  const getSubjectSortPriority = (subject) => {\\n    const s = subject.trim();\\n    const order = [\\n      'Toán', 'Toán (TS 10)', 'Van', 'Văn', 'Văn (TS 10)', 'Tiếng Anh', 'Anh (TS 10)',\\n      'KHTN', 'LS&DL', 'GDCD', 'GDDP', 'Tin học', 'C nghệ', 'Công nghệ',\\n      'MT', 'Mỹ thuật', 'AN', 'Âm nhạc', 'GDTC', 'HDTN', 'BDHSG'\\n    ];\\n    const index = order.indexOf(s);\\n    return index !== -1 ? index : 1000;\\n  };\"}]",
+  "TargetFile": "\"c:\\\\Users\\\\khoac\\\\kho-hoc-lieu\\\\src\\\\components\\\\AdminSettingsWorkspace.jsx\"",
+  "toolAction": "\"Updating AdminSettingsWorkspace.jsx\"",
+  "toolSummary": "\"Update AdminSettingsWorkspace.jsx\""
+}
+

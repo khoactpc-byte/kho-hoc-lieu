@@ -1,0 +1,70 @@
+Created At: 2026-06-20T03:03:29Z
+Completed At: 2026-06-20T03:03:29Z
+File Path: `file:///c:/Users/khoac/kho-hoc-lieu/src/components/AdminSettingsWorkspace.jsx`
+Total Lines: 5625
+Total Bytes: 278999
+Showing lines 3279 to 3340
+The following code has been modified to include a line number before every line, in the format: <line_number>: <original_line>. Please note that any changes targeting the original code should remove the line number, colon, and leading space.
+3279:   const handleImportFullPCSheet = async (event) => {
+3280:     const file = event.target.files?.[0];
+3281:     event.target.value = '';
+3282:     if (!file) return;
+3283:     try {
+3284:       const xlsx = await loadXlsxLibrary();
+3285:       const buffer = await file.arrayBuffer();
+3286:       const workbook = xlsx.read(buffer, { type: 'array' });
+3287:       const sheetName = workbook.SheetNames.find(name => name === 'PC_CM' || name.includes('PC_CM'));
+3288:       if (!sheetName) {
+3289:         showNotification?.('Không tìm thấy sheet tên PC_CM trong file.', 'error');
+3290:         return;
+3291:       }
+3292:       
+3293:       const rows = xlsx.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, raw: false, defval: '' });
+3294:       
+3295:       if (rows.length <= 10) {
+3296:         showNotification?.('File không đủ dữ liệu (ít nhất 11 dòng).', 'error');
+3297:         return;
+3298:       }
+3299:       
+3300:       const headerRow = [
+3301:         'STT', 'Họ và tên', 'Chức vụ', 'Chuyên môn', 'Phân công', 
+3302:         'Số tuần', 'Lớp', 'Số lớp', 'Tiết/lớp tuần', 'Tiết/tuần', 
+3303:         'Tổng tiết', 'Ghi chú'
+3304:       ];
+3305:       const validRows = [headerRow];
+3306:       
+3307:       for (let i = 10; i < rows.length; i++) {
+3308:         const row = rows[i];
+3309:         const colL = String(row[11] || '').toLowerCase();
+3310:         if (colL.includes('người lập bảng') || colL.includes('hiệu trưởng') || colL.includes('nguoi lap bang') || colL.includes('hieu truong')) {
+3311:           break;
+3312:         }
+3313:         validRows.push(row);
+3314:       }
+3315:       
+3316:       const tsvText = worksheetRowsToTabText(validRows);
+3317:       const parsedRows = parseTeachingAssignmentPaste(tsvText, activeAssignmentClasses, {
+3318:         schoolYear: selectedSchoolYear
+3319:       });
+3320:       
+3321:       if (!parsedRows.length) {
+3322:         showNotification?.('Không đọc được dòng phân công nào hợp lệ từ file.', 'error');
+3323:         return;
+3324:       }
+3325:       
+3326:       if (activeTeachingBatch) {
+3327:         updateActiveTeachingBatches(batches => 
+3328:           batches.map(batch => batch.id === activeTeachingBatch.id ? { ...batch, rows: parsedRows } : batch)
+3329:         );
+3330:       } else {
+3331:         updateActiveTeachingVersion(version => ({
+3332:           ...version,
+3333:           summaryRows: parsedRows
+3334:         }));
+3335:       }
+3336:       
+3337:       setTeachingSummaryDirty(true);
+3338:       showNotification?.(`Đã nạp dữ liệu phân công mới từ ${parsedRows.length} dòng.`);
+3339:     } catch (error) {
+3340:       console.error(error);
+The above content does NOT show the entire file contents. If you need to view any lines of the file which were not shown to complete your task, call this tool again to view those lines.

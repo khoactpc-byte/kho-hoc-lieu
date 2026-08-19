@@ -48,6 +48,9 @@ import {
   readStoredAdminSession,
   writeStoredAdminSession
 } from './utils/adminSession';
+import ClassOpsManager from './components/ClassOpsManager';
+import SimpleScheduleTable from './components/SimpleScheduleTable';
+
 const STUDENT_MAILBOX_DRIVE_URL = 'https://drive.google.com/drive/u/0/folders/1mdDD9kK_s_o2YytkUbqM0MH-T9HR9XXE';
 const STUDENT_MAILBOX_AUTO_READ_KEY = 'khohoclieu-student-mailbox-auto-read';
 const SCOREBOOK_SOURCE_FILE = 'so diem 9pc tmt 2025-2026 MAU.xlsx';
@@ -115,12 +118,6 @@ const HocSinhManager = lazy(() => import('./components/HocSinhManager'));
 const ScorebookWorkspace = lazy(() => import('./components/ScorebookWorkspace'));
 const AdminSettingsWorkspace = lazy(() => import('./components/AdminSettingsWorkspace'));
 const AdminDataSafetyWorkspace = lazy(() => import('./components/AdminDataSafetyWorkspace'));
-const ClassOpsManager = lazy(() => import('./components/ClassOpsManager'));
-const SimpleScheduleTable = lazy(() => import('./components/SimpleScheduleTable'));
-const AdmissionWorkspace = lazy(() => import('./components/AdmissionWorkspace'));
-const AdmissionFormModal = lazy(() => import('./components/AdmissionFormModal'));
-const NewsViewerModal = lazy(() => import('./components/NewsViewerModal'));
-const AdminMailboxPanel = lazy(() => import('./components/AdminMailboxPanel'));
 
 const THD_TEACHING_ASSIGNMENT_CHUNK_SIZE = 250000;
 
@@ -1693,14 +1690,9 @@ function App() {
       if (!docSnap.exists()) return;
       const data = docSnap.data();
       if (data.chunked) {
-        const newUpdatedAt = data.updatedAt;
-        if (thdTeachingChunkMeta.updatedAt !== newUpdatedAt) {
-          thdTeachingChunks.clear();
-        }
         thdTeachingChunkMeta = {
           chunked: true,
-          chunkCount: Number(data.chunkCount) || 0,
-          updatedAt: newUpdatedAt
+          chunkCount: Number(data.chunkCount) || 0
         };
         loadThdTeachingAssignmentsFromChunks();
         return;
@@ -3375,9 +3367,6 @@ function App() {
   const updateAdmissionApplicationDocument = async (applicationId, documentKey, value) => {
     if (!applicationId || !ADMISSION_DOCUMENTS.some(item => item.key === documentKey)) return;
     const checked = Boolean(value);
-    const previousChecked = Boolean(
-      admissionApplications.find(item => item.id === applicationId)?.documents?.[documentKey]
-    );
     setAdmissionApplications(prev => prev.map(item => (
       item.id === applicationId
         ? { ...item, documents: { ...(item.documents || {}), [documentKey]: checked } }
@@ -3390,11 +3379,6 @@ function App() {
         updatedBy: user?.uid || 'admin'
       });
     } catch (error) {
-      setAdmissionApplications(prev => prev.map(item => (
-        item.id === applicationId
-          ? { ...item, documents: { ...(item.documents || {}), [documentKey]: previousChecked } }
-          : item
-      )));
       showNotification(`Chưa cập nhật được hồ sơ: ${error.message}`, 'error');
     }
   };
@@ -7216,37 +7200,87 @@ ${lessonBlocks}`;
                 </div>
 
                 {showMailboxPanel && (
-                  <Suspense fallback={<div className="rounded-2xl border border-emerald-100 bg-white p-4 text-sm font-bold text-emerald-700">Đang mở hộp thư...</div>}>
-                    <AdminMailboxPanel
-                      driveUrl={STUDENT_MAILBOX_DRIVE_URL}
-                      schoolYear={activeSchoolYear}
-                      students={mailboxStudents}
-                      classOptions={mailboxClassOptions}
-                      recipientType={mailboxRecipientType}
-                      recipientValue={mailboxRecipientValue}
-                      category={mailboxCategory}
-                      title={mailboxTitle}
-                      body={mailboxBody}
-                      deleteMode={mailboxDeleteMode}
-                      deleteCategory={mailboxDeleteCategory}
-                      deleteFrom={mailboxDeleteFrom}
-                      deleteTo={mailboxDeleteTo}
-                      isSending={isSendingStudentMailbox}
-                      isDeleting={isDeletingStudentMailbox}
-                      onRecipientTypeChange={value => { setMailboxRecipientType(value); setMailboxRecipientValue(''); }}
-                      onRecipientValueChange={setMailboxRecipientValue}
-                      onCategoryChange={setMailboxCategory}
-                      onTitleChange={setMailboxTitle}
-                      onBodyChange={setMailboxBody}
-                      onSend={sendStudentMailboxMessage}
-                      onDeleteModeChange={setMailboxDeleteMode}
-                      onDeleteCategoryChange={setMailboxDeleteCategory}
-                      onDeleteFromChange={setMailboxDeleteFrom}
-                      onDeleteToChange={setMailboxDeleteTo}
-                      onDelete={deleteStudentMailboxMessages}
-                    />
-                  </Suspense>
+                  <div className="rounded-2xl border border-emerald-100 bg-white p-4 shadow-sm animate-in fade-in slide-in-from-top-3 duration-200">
+                    <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <h3 className="flex items-center gap-2 text-base font-semibold text-emerald-950">
+                          <Mail className="h-5 w-5 text-emerald-600" /> Hộp thư học sinh
+                        </h3>
+                        <p className="mt-1 text-xs font-medium text-slate-500">Gửi riêng cho học sinh, một lớp hoặc toàn trường. Thư được lưu trong Drive hộp thư.</p>
+                      </div>
+                      <a href={STUDENT_MAILBOX_DRIVE_URL} target="_blank" rel="noopener noreferrer" className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-emerald-100 bg-emerald-50 px-3 text-xs font-semibold text-emerald-700 hover:bg-emerald-100">
+                        <Folder className="h-4 w-4" /> Mở Drive hộp thư
+                      </a>
+                    </div>
+                    <div className="grid gap-2 sm:grid-cols-3">
+                      <select value={mailboxRecipientType} onChange={event => { setMailboxRecipientType(event.target.value); setMailboxRecipientValue(''); }} className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold outline-none focus:border-emerald-400">
+                        <option value="student">Một học sinh</option>
+                        <option value="class">Một lớp</option>
+                        <option value="all">Toàn trường</option>
+                      </select>
+                      {mailboxRecipientType === 'student' && (
+                        <select value={mailboxRecipientValue} onChange={event => setMailboxRecipientValue(event.target.value)} className="h-10 min-w-0 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold outline-none focus:border-emerald-400 sm:col-span-2">
+                          <option value="">Chọn học sinh nhận thư...</option>
+                          {mailboxStudents.map(student => <option key={student.id} value={student.id}>Lớp {student.className || '-'} - {student.fullName || 'Chưa có tên'} - {student.accessCode || 'chưa có mã'}</option>)}
+                        </select>
+                      )}
+                      {mailboxRecipientType === 'class' && (
+                        <select value={mailboxRecipientValue} onChange={event => setMailboxRecipientValue(event.target.value)} className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold outline-none focus:border-emerald-400 sm:col-span-2">
+                          <option value="">Chọn lớp nhận thư...</option>
+                          {mailboxClassOptions.map(className => <option key={className} value={className}>Lớp {className}</option>)}
+                        </select>
+                      )}
+                      {mailboxRecipientType === 'all' && (
+                        <div className="flex h-10 items-center rounded-xl border border-blue-100 bg-blue-50 px-3 text-sm font-semibold text-blue-700 sm:col-span-2">Gửi đến tất cả học sinh năm {activeSchoolYear}</div>
+                      )}
+                    </div>
+                    <div className="mt-2 grid gap-2 sm:grid-cols-[180px_1fr]">
+                      <select value={mailboxCategory} onChange={event => setMailboxCategory(event.target.value)} className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold outline-none focus:border-emerald-400">
+                        <option value="general">Thông báo chung</option>
+                        <option value="score">Điểm học tập</option>
+                        <option value="profile">Thiếu thông tin/hồ sơ</option>
+                        <option value="quiz">Bài kiểm tra/bài làm</option>
+                        <option value="reminder">Nhắc việc</option>
+                      </select>
+                      <input value={mailboxTitle} onChange={event => setMailboxTitle(event.target.value)} placeholder="Tiêu đề thư..." className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold outline-none focus:border-emerald-400" />
+                    </div>
+                    <textarea value={mailboxBody} onChange={event => setMailboxBody(event.target.value)} rows={4} placeholder="Nội dung admin gửi cho học sinh..." className="mt-2 w-full resize-y rounded-xl border border-slate-200 bg-white p-3 text-sm font-medium outline-none focus:border-emerald-400" />
+                    <button type="button" onClick={sendStudentMailboxMessage} disabled={isSendingStudentMailbox} className="mt-2 inline-flex h-10 w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 text-sm font-semibold text-white shadow-sm hover:bg-emerald-700 disabled:opacity-60 sm:w-auto">
+                      {isSendingStudentMailbox ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />} Gửi vào hộp thư
+                    </button>
+                    <div className="mt-4 border-t border-rose-100 pt-3">
+                      <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-rose-800">
+                        <Trash2 className="h-4 w-4" /> Xóa tin nhắn đã gửi
+                      </div>
+                      <div className="grid gap-2 sm:grid-cols-4">
+                        <select value={mailboxDeleteMode} onChange={event => setMailboxDeleteMode(event.target.value)} className="h-9 rounded-lg border border-rose-100 bg-white px-2 text-xs font-semibold text-slate-700 outline-none focus:border-rose-300">
+                          <option value="filter">Xóa theo điều kiện</option>
+                          <option value="all">Xóa toàn bộ tin nhắn</option>
+                        </select>
+                        <select value={mailboxDeleteCategory} onChange={event => setMailboxDeleteCategory(event.target.value)} disabled={mailboxDeleteMode === 'all'} className="h-9 rounded-lg border border-rose-100 bg-white px-2 text-xs font-semibold text-slate-700 outline-none disabled:bg-slate-100 disabled:text-slate-400">
+                          <option value="all">Tất cả mục</option>
+                          <option value="general">Thông báo chung</option>
+                          <option value="score">Kết quả học tập</option>
+                          <option value="profile">Hồ sơ học sinh</option>
+                          <option value="quiz">Bài kiểm tra</option>
+                          <option value="reminder">Nhắc việc</option>
+                        </select>
+                        <label className="flex h-9 items-center gap-1 rounded-lg border border-rose-100 bg-white px-2 text-[10px] font-semibold text-slate-500">
+                          Từ
+                          <input type="date" value={mailboxDeleteFrom} onChange={event => setMailboxDeleteFrom(event.target.value)} disabled={mailboxDeleteMode === 'all'} className="min-w-0 flex-1 bg-transparent text-xs font-semibold text-slate-700 outline-none disabled:text-slate-400" />
+                        </label>
+                        <label className="flex h-9 items-center gap-1 rounded-lg border border-rose-100 bg-white px-2 text-[10px] font-semibold text-slate-500">
+                          Đến
+                          <input type="date" value={mailboxDeleteTo} onChange={event => setMailboxDeleteTo(event.target.value)} disabled={mailboxDeleteMode === 'all'} className="min-w-0 flex-1 bg-transparent text-xs font-semibold text-slate-700 outline-none disabled:text-slate-400" />
+                        </label>
+                      </div>
+                      <button type="button" onClick={deleteStudentMailboxMessages} disabled={isDeletingStudentMailbox} className="mt-2 inline-flex h-9 w-full items-center justify-center gap-1.5 rounded-lg border border-rose-200 bg-rose-50 px-3 text-xs font-black uppercase text-rose-700 hover:bg-rose-100 disabled:opacity-50 sm:w-auto">
+                        {isDeletingStudentMailbox ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />} Xóa tin phù hợp
+                      </button>
+                    </div>
+                  </div>
                 )}
+
                 {showAddNews && (
                   <div className="rounded-2xl border border-blue-100 bg-white p-4 shadow-sm">
                     <div className="mb-3 flex items-center justify-between gap-3">
@@ -7451,7 +7485,7 @@ ${lessonBlocks}`;
                       >
                           <div className="mb-3">
                               <div className="font-black text-sm text-blue-900">Mở Cài đặt</div>
-                              <div className="text-xs text-blue-700/70 font-bold mt-0.5 leading-snug">Năm học, giám đốc và giáo viên theo lớp</div>
+                              <div className="text-xs text-blue-700/70 font-bold mt-0.5 leading-snug">Năm học, hiệu trưởng và giáo viên theo lớp</div>
                           </div>
                       </button>
                       <button
@@ -8266,20 +8300,97 @@ ${lessonBlocks}`;
             </Suspense>
           )}
           {isAdmin && showAdmissionWorkspace && (
-            <Suspense fallback={<div className="fixed inset-x-0 top-[114px] sm:top-[84px] bottom-0 z-[120] flex items-center justify-center bg-white text-sm font-black text-sky-700">Đang mở hồ sơ tuyển sinh...</div>}>
-              <AdmissionWorkspace
-                applications={currentAdmissionApplications}
-                schoolYear={activeSchoolYear}
-                documents={ADMISSION_DOCUMENTS}
-                isResetting={isResettingAdmissions}
-                formatDate={formatDateToDMY}
-                parseAddress={parseStoredAddress}
-                onReset={resetAdmissionApplications}
-                onClose={() => setShowAdmissionWorkspace(false)}
-                onToggleDocument={updateAdmissionApplicationDocument}
-                onDelete={deleteAdmissionApplication}
-              />
-            </Suspense>
+            <div className="fixed inset-x-0 top-[114px] sm:top-[84px] bottom-0 z-[120] bg-slate-100 overflow-y-auto p-2 sm:p-3">
+              <div className="w-full max-w-none px-2 sm:px-6 space-y-3">
+                <div className="sticky top-0 z-10 rounded-3xl border border-sky-100 bg-white/95 px-4 sm:px-6 py-4 shadow-lg backdrop-blur flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <h3 className="font-black text-sky-950 text-base sm:text-xl uppercase tracking-tight flex items-center gap-2">
+                      <ClipboardCheck className="w-5 h-5 text-sky-600" /> Tuyển sinh {activeSchoolYear}
+                    </h3>
+                    <div className="text-[10px] sm:text-xs font-bold text-sky-700/70 truncate">{currentAdmissionApplications.length} hồ sơ đăng ký tuyển sinh đã gửi từ bản tin</div>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <button type="button" onClick={resetAdmissionApplications} disabled={isResettingAdmissions || currentAdmissionApplications.length === 0} className="h-10 rounded-xl bg-rose-50 px-3 text-[10px] font-black uppercase text-rose-600 border border-rose-100 disabled:opacity-40">
+                      {isResettingAdmissions ? 'Đang xóa...' : 'Reset danh sách'}
+                    </button>
+                    <button type="button" onClick={() => setShowAdmissionWorkspace(false)} className="flex h-10 w-10 items-center justify-center rounded-full bg-rose-600 text-white shadow-lg">
+                      <X className="w-5 h-5" />
+                    </button>
+                  </div>
+                </div>
+                <div className="overflow-hidden rounded-3xl border border-sky-100 bg-white shadow-sm">
+                  <div className="overflow-auto">
+                    <table className="min-w-[1400px] w-full text-left text-sm">
+                      <thead className="bg-sky-50 text-[11px] uppercase text-sky-900">
+                        <tr>
+                          <th className="px-4 py-3 font-black">Thời gian</th>
+                          <th className="px-4 py-3 font-black">Họ và tên</th>
+                          <th className="px-4 py-3 font-black">Ngày sinh</th>
+                          <th className="px-4 py-3 font-black">Nơi sinh</th>
+                          <th className="px-4 py-3 font-black">SĐT</th>
+                          <th className="px-4 py-3 font-black text-center">Lớp đăng ký</th>
+                          <th className="px-4 py-3 font-black">Tỉnh/TP</th>
+                          <th className="px-4 py-3 font-black">Xã/Phường</th>
+                          <th className="px-4 py-3 font-black">Số nhà, đường</th>
+                          <th className="px-4 py-3 font-black text-center">Học bạ</th>
+                          <th className="px-4 py-3 font-black text-center">Khai sinh</th>
+                          <th className="px-4 py-3 font-black text-center">CCCD</th>
+                          <th className="px-4 py-3 font-black text-center">HTTH</th>
+                          <th className="px-4 py-3 font-black text-center">Hành động</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {currentAdmissionApplications.length === 0 ? (
+                          <tr><td colSpan={14} className="px-4 py-10 text-center text-sm font-bold text-slate-400">Chưa có hồ sơ tuyển sinh.</td></tr>
+                        ) : currentAdmissionApplications.map(item => (
+                          <tr key={item.id} className="hover:bg-sky-50/40">
+                            <td className="px-4 py-3 text-xs font-bold text-slate-500">{item.createdAt ? new Date(item.createdAt).toLocaleString('vi-VN') : '-'}</td>
+                            <td className="px-4 py-3 font-black text-slate-900">{item.fullName || '-'}</td>
+                            <td className="px-4 py-3 font-bold text-slate-700">{formatDateToDMY(item.birthDate)}</td>
+                            <td className="px-4 py-3 font-bold text-slate-700">{item.birthPlace || '-'}</td>
+                            <td className="px-4 py-3 font-bold text-slate-700">{item.phone || '-'}</td>
+                            <td className="px-4 py-3 font-black text-sky-700 text-center">{item.targetClass || '-'}</td>
+                            {(() => {
+                              const addr = parseStoredAddress(item.address);
+                              return (
+                                <>
+                                  <td className="px-4 py-3 font-bold text-slate-700">{addr.province}</td>
+                                  <td className="px-4 py-3 font-bold text-slate-700">{addr.commune}</td>
+                                  <td className="px-4 py-3 font-bold text-slate-700">{addr.detailed}</td>
+                                </>
+                              );
+                            })()}
+                            {ADMISSION_DOCUMENTS.map(docItem => {
+                              const checked = Boolean(item.documents?.[docItem.key]);
+                              return (
+                                <td key={`${item.id}-${docItem.key}`} className="px-4 py-3 text-center">
+                                  <input
+                                    type="checkbox"
+                                    checked={checked}
+                                    onChange={(e) => updateAdmissionApplicationDocument(item.id, docItem.key, e.target.checked)}
+                                    className="w-5 h-5 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 cursor-pointer accent-emerald-600"
+                                  />
+                                </td>
+                              );
+                            })}
+                            <td className="px-4 py-3 text-center">
+                              <button
+                                type="button"
+                                onClick={() => deleteAdmissionApplication(item.id)}
+                                className="inline-flex items-center justify-center p-1.5 rounded-lg bg-rose-50 text-rose-600 border border-rose-100 hover:bg-rose-600 hover:text-white hover:border-rose-600 transition-colors"
+                                title="Xóa hồ sơ"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            </div>
           )}
           {isAdmin && showPasswordWorkspace && (
             <div className="fixed inset-x-0 top-[114px] sm:top-[84px] bottom-0 z-[120] bg-slate-100/95 backdrop-blur-md overflow-y-auto p-2 sm:p-3">
@@ -8346,39 +8457,35 @@ ${lessonBlocks}`;
           )}
           {isAdmin && adminModule !== 'notice' && showScheduleWorkspace && (
             <div className="fixed inset-x-0 top-[114px] sm:top-[84px] bottom-0 z-[120] bg-slate-100/95 backdrop-blur-md overflow-y-auto p-0">
-              <Suspense fallback={<div className="flex min-h-full items-center justify-center text-sm font-black text-blue-700">Đang mở thời khóa biểu...</div>}>
-                <SimpleScheduleTable
-                  currentSchoolYear={activeSchoolYear}
-                  subjects={SUBJECTS}
-                  classTeacherAssignments={classTeacherAssignments}
-                  teachers={nanTeachers}
-                  principalName={principalName}
-                  pcResponsibleName={activePcResponsibleName}
-                  user={user}
-                  onClose={() => setShowScheduleWorkspace(false)}
-                  showNotification={showNotification}
-                />
-              </Suspense>
+              <SimpleScheduleTable
+                currentSchoolYear={activeSchoolYear}
+                subjects={SUBJECTS}
+                classTeacherAssignments={classTeacherAssignments}
+                teachers={nanTeachers}
+                principalName={principalName}
+                pcResponsibleName={activePcResponsibleName}
+                user={user}
+                onClose={() => setShowScheduleWorkspace(false)}
+                showNotification={showNotification}
+              />
             </div>
           )}
           {isAdmin && adminModule !== 'notice' && showAttendanceWorkspace && (
             <div className="fixed inset-x-0 top-[114px] sm:top-[84px] bottom-0 z-[120] bg-slate-100/95 backdrop-blur-md overflow-y-auto p-0">
-              <Suspense fallback={<div className="flex min-h-full items-center justify-center text-sm font-black text-emerald-700">Đang mở điểm danh...</div>}>
-                <ClassOpsManager
-                  mode="admin"
-                  initialView="attendance"
-                  currentSchoolYear={activeSchoolYear}
-                  user={user}
-                  students={allStudents}
-                  subjects={SUBJECTS}
-                  onClose={() => setShowAttendanceWorkspace(false)}
-                  onOpenDatabase={() => {
-                    setShowAttendanceWorkspace(false);
-                    openStudentDatabaseTab('current');
-                  }}
-                  showNotification={showNotification}
-                />
-              </Suspense>
+              <ClassOpsManager
+                mode="admin"
+                initialView="attendance"
+                currentSchoolYear={activeSchoolYear}
+                user={user}
+                students={allStudents}
+                subjects={SUBJECTS}
+                onClose={() => setShowAttendanceWorkspace(false)}
+                onOpenDatabase={() => {
+                  setShowAttendanceWorkspace(false);
+                  openStudentDatabaseTab('current');
+                }}
+                showNotification={showNotification}
+              />
             </div>
           )}
           {!(isAdmin && (adminAccessScope === 'thd' || adminModule === 'thd' || adminModule === 'notice' || showAdmissionWorkspace)) && (
@@ -8937,40 +9044,366 @@ ${lessonBlocks}`;
           </div>
         )}
         {viewingNews && (
-          <Suspense fallback={<div className="fixed inset-0 z-50 flex items-center justify-center bg-white text-sm font-black text-blue-700">Đang mở bản tin...</div>}>
-            <NewsViewerModal
-              news={viewingNews}
-              isAdmin={isAdmin}
-              isAdmissionNews={isAdmissionNewsItem(viewingNews)}
-              admissionSchoolYear={admissionSchoolYear}
-              onEdit={handleEditNews}
-              onClose={() => setViewingNews(null)}
-              onOpenAdmission={() => setShowAdmissionForm(true)}
-              onContentError={handleRichContentImageError}
-            />
-          </Suspense>
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/80 p-2 animate-in zoom-in-95 duration-200 sm:p-5">
+            <div className="flex max-h-[94vh] w-full max-w-[1200px] flex-col overflow-hidden rounded-[1.75rem] border border-white/20 bg-white shadow-2xl sm:rounded-[3rem]">
+              <div className="flex items-center justify-between border-b bg-slate-50/50 px-5 py-4 sm:px-8 sm:py-6">
+                <div className="min-w-0 pr-4">
+                  <div className="mb-1 flex flex-wrap items-center gap-2">
+                    {viewingNews.isHot && (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-rose-100 px-2.5 py-1 text-[9px] font-black uppercase tracking-widest text-rose-600">
+                        <Sparkles className="h-3.5 w-3.5" fill="currentColor" /> Tin nóng
+                      </span>
+                    )}
+                    <h3 className="text-xl font-black leading-tight text-slate-800 sm:text-2xl">{viewingNews.title}</h3>
+                  </div>
+                  <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-slate-400">
+                    <Calendar className="h-3.5 w-3.5" /> {new Date(viewingNews.createdAt).toLocaleString('vi-VN')}
+                  </div>
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  {isAdmin && (
+                    <button onClick={(e) => handleEditNews(e, viewingNews)} className="rounded-full border bg-white p-3 text-blue-600 shadow-md transition-all hover:bg-blue-600 hover:text-white" title="Sửa bản tin">
+                      <Pencil className="h-5 w-5" />
+                    </button>
+                  )}
+                  <button onClick={() => setViewingNews(null)} className="rounded-full border bg-white p-3 shadow-md transition-all hover:bg-rose-500 hover:text-white">
+                    <X className="h-5 w-5" />
+                  </button>
+                </div>
+              </div>
+              <div className="flex-1 overflow-y-auto bg-white p-4 student-content sm:p-8 md:p-10" onErrorCapture={handleRichContentImageError}>
+                <div dangerouslySetInnerHTML={{ __html: viewingNews.content }} />
+                {isAdmissionNewsItem(viewingNews) && (
+                  <div className="mt-6 rounded-2xl border border-sky-100 bg-sky-50 p-4 text-center">
+                    <div className="mb-3 text-xs font-black uppercase text-sky-800">Đăng ký tuyển sinh năm học {admissionSchoolYear}</div>
+                    <button type="button" onClick={() => setShowAdmissionForm(true)} className="inline-flex items-center justify-center gap-2 rounded-2xl bg-sky-600 px-5 py-3 text-sm font-black uppercase text-white shadow-lg hover:bg-sky-700">
+                      <ClipboardCheck className="h-5 w-5" /> Đăng ký tuyển sinh
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
         )}
         {showAdmissionForm && (
-          <Suspense fallback={<div className="fixed inset-0 z-[70] flex items-center justify-center bg-white text-sm font-black text-sky-700">Đang mở form tuyển sinh...</div>}>
-            <AdmissionFormModal
-              schoolYear={admissionSchoolYear}
-              form={admissionForm}
-              grades={ADMISSION_GRADES}
-              documents={ADMISSION_DOCUMENTS}
-              uniqueProvinces={uniqueProvinces}
-              filteredCommunes={filteredCommunes}
-              isLoadingCommunes={isLoadingCommunes}
-              isSubmitting={isSubmittingAdmission}
-              onClose={() => setShowAdmissionForm(false)}
-              onFieldChange={updateAdmissionField}
-              onDocumentChange={updateAdmissionDocument}
-              onProvinceChange={handleProvinceChange}
-              onCommuneChange={handleCommuneChange}
-              onDetailedAddressChange={handleDetailedAddressChange}
-              onReset={resetAdmissionForm}
-              onSubmit={submitAdmissionApplication}
-            />
-          </Suspense>
+          <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/60 p-2 sm:p-4 backdrop-blur-sm">
+            <div className="flex max-h-[92vh] w-full max-w-2xl flex-col overflow-hidden rounded-[32px] bg-slate-50 shadow-2xl border border-white/20">
+              
+              {/* Header: Indigo Gradient style */}
+              <div className="bg-gradient-to-r from-sky-800 via-indigo-900 to-slate-950 text-white px-5 py-5 sm:px-7 sm:py-6 relative overflow-hidden shrink-0 shadow-md">
+                <div className="absolute -right-6 -top-6 w-28 h-28 rounded-full bg-sky-500/20 blur-xl"></div>
+                <div className="absolute left-1/3 -bottom-10 w-36 h-36 rounded-full bg-indigo-500/15 blur-2xl"></div>
+                <div className="relative z-10 flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-[9px] tracking-[0.2em] font-black uppercase text-sky-300/90 mb-0.5">THCS Nguyễn An Ninh</div>
+                    <h3 className="text-base font-black uppercase tracking-tight text-white sm:text-xl">Đăng ký tuyển sinh {admissionSchoolYear}</h3>
+                    <p className="text-[11px] font-bold text-slate-300/80 mt-0.5">Hệ thống nộp hồ sơ nhập học trực tuyến</p>
+                  </div>
+                  <button type="button" onClick={() => setShowAdmissionForm(false)} className="h-9 w-9 rounded-full bg-white/10 text-white hover:bg-white/20 hover:scale-105 transition-all flex items-center justify-center border border-white/10 shadow-inner">
+                    <X className="h-5 w-5" />
+                  </button>
+                </div>
+              </div>
+
+              {/* Scrollable Form Body */}
+              <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-5">
+                
+                {/* Section 1: Thông tin học sinh */}
+                <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/60 shadow-sm space-y-4">
+                  <div className="flex items-center gap-1.5 pb-2 border-b border-slate-100">
+                    <div className="w-1.5 h-4 rounded-full bg-sky-600"></div>
+                    <span className="text-xs font-black uppercase tracking-wider text-slate-700">1. Thông tin cá nhân học sinh</span>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    {/* Họ và tên */}
+                    <label className="flex flex-col gap-1.5 sm:col-span-2">
+                      <span className="text-[10px] font-black uppercase tracking-wide text-slate-500">Họ và tên học sinh *</span>
+                      <div className="relative">
+                        <span className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
+                          <User className="h-4.5 w-4.5" />
+                        </span>
+                        <input
+                          id="admission-fullName"
+                          type="text"
+                          placeholder="Nhập đầy đủ họ và tên tiếng Việt..."
+                          value={admissionForm.fullName}
+                          onChange={(e) => updateAdmissionField('fullName', e.target.value)}
+                          className="w-full pl-10 pr-4 py-2.5 bg-slate-50/70 border border-slate-200 rounded-xl text-sm font-bold outline-none focus:border-sky-500 focus:bg-white focus:ring-4 focus:ring-sky-100 transition-all placeholder:text-slate-400"
+                        />
+                      </div>
+                    </label>
+
+                    {/* Ngày sinh */}
+                    <label className="flex flex-col gap-1.5">
+                      <span className="text-[10px] font-black uppercase tracking-wide text-slate-500">Ngày tháng năm sinh *</span>
+                      <div className="relative">
+                        <span className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
+                          <Calendar className="h-4.5 w-4.5" />
+                        </span>
+                        <input
+                          id="admission-birthDate"
+                          type="date"
+                          value={admissionForm.birthDate}
+                          onChange={(e) => updateAdmissionField('birthDate', e.target.value)}
+                          className="w-full pl-10 pr-4 py-2.5 bg-slate-50/70 border border-slate-200 rounded-xl text-sm font-bold outline-none focus:border-sky-500 focus:bg-white focus:ring-4 focus:ring-sky-100 transition-all"
+                        />
+                      </div>
+                    </label>
+
+                    {/* Nơi sinh */}
+                    <label className="flex flex-col gap-1.5">
+                      <span className="text-[10px] font-black uppercase tracking-wide text-slate-500">Nơi sinh (Tỉnh/Thành phố) *</span>
+                      <div className="relative">
+                        <span className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
+                          <MapPin className="h-4.5 w-4.5" />
+                        </span>
+                        {uniqueProvinces.length === 0 && !isLoadingCommunes ? (
+                          <input
+                            id="admission-birthPlace"
+                            type="text"
+                            placeholder="Nhập tỉnh/thành phố nơi sinh..."
+                            value={admissionForm.birthPlace}
+                            onChange={(e) => updateAdmissionField('birthPlace', e.target.value)}
+                            className="w-full pl-10 pr-4 py-2.5 bg-slate-50/70 border border-slate-200 rounded-xl text-sm font-bold outline-none focus:border-sky-500 focus:bg-white focus:ring-4 focus:ring-sky-100 transition-all placeholder:text-slate-400"
+                          />
+                        ) : (
+                          <select
+                            id="admission-birthPlace"
+                            value={admissionForm.birthPlace}
+                            onChange={(e) => updateAdmissionField('birthPlace', e.target.value)}
+                            disabled={isLoadingCommunes}
+                            className="w-full pl-10 pr-4 py-2.5 bg-slate-50/70 border border-slate-200 rounded-xl text-sm font-bold outline-none focus:border-sky-500 focus:bg-white focus:ring-4 focus:ring-sky-100 transition-all disabled:opacity-50 appearance-none cursor-pointer"
+                          >
+                            <option value="">Chọn Tỉnh/Thành phố</option>
+                            {uniqueProvinces.map(p => (
+                              <option key={`birthplace-${p}`} value={p}>{p}</option>
+                            ))}
+                          </select>
+                        )}
+                        <span className="absolute inset-y-0 right-0 pr-3.5 flex items-center pointer-events-none text-slate-400">
+                          <ChevronDown className="h-4 w-4" />
+                        </span>
+                      </div>
+                    </label>
+
+                    {/* SĐT */}
+                    <label className="flex flex-col gap-1.5">
+                      <span className="text-[10px] font-black uppercase tracking-wide text-slate-500">Số điện thoại liên hệ *</span>
+                      <div className="relative">
+                        <span className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
+                          <Phone className="h-4.5 w-4.5" />
+                        </span>
+                        <input
+                          id="admission-phone"
+                          type="tel"
+                          inputMode="tel"
+                          placeholder="Số điện thoại phụ huynh..."
+                          value={admissionForm.phone}
+                          onChange={(e) => updateAdmissionField('phone', e.target.value)}
+                          className="w-full pl-10 pr-4 py-2.5 bg-slate-50/70 border border-slate-200 rounded-xl text-sm font-bold outline-none focus:border-sky-500 focus:bg-white focus:ring-4 focus:ring-sky-100 transition-all placeholder:text-slate-400"
+                        />
+                      </div>
+                    </label>
+
+                    {/* Đăng ký lớp */}
+                    <label className="flex flex-col gap-1.5">
+                      <span className="text-[10px] font-black uppercase tracking-wide text-slate-500">Đăng ký học lớp *</span>
+                      <div className="relative">
+                        <span className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
+                          <GraduationCap className="h-4.5 w-4.5" />
+                        </span>
+                        <select
+                          id="admission-targetClass"
+                          value={admissionForm.targetClass}
+                          onChange={(e) => updateAdmissionField('targetClass', e.target.value)}
+                          className="w-full pl-10 pr-4 py-2.5 bg-slate-50/70 border border-slate-200 rounded-xl text-sm font-bold outline-none focus:border-sky-500 focus:bg-white focus:ring-4 focus:ring-sky-100 transition-all appearance-none cursor-pointer"
+                        >
+                          <option value="">Chọn lớp học đăng ký</option>
+                          {ADMISSION_GRADES.map(grade => <option key={`admission-grade-${grade}`} value={`Lớp ${grade}`}>Lớp {grade}</option>)}
+                        </select>
+                        <span className="absolute inset-y-0 right-0 pr-3.5 flex items-center pointer-events-none text-slate-400">
+                          <ChevronDown className="h-4 w-4" />
+                        </span>
+                      </div>
+                    </label>
+                  </div>
+                </div>
+
+                {/* Section 2: Hộ khẩu thường trú */}
+                <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/60 shadow-sm space-y-4">
+                  <div className="flex items-center gap-1.5 pb-2 border-b border-slate-100">
+                    <div className="w-1.5 h-4 rounded-full bg-sky-600"></div>
+                    <span className="text-xs font-black uppercase tracking-wider text-slate-700">2. Nơi cư trú / Địa chỉ đang ở</span>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    {uniqueProvinces.length === 0 && !isLoadingCommunes ? (
+                      <label className="flex flex-col gap-1.5 sm:col-span-2">
+                        <span className="text-[10px] font-black uppercase tracking-wide text-slate-500">Địa chỉ đang ở *</span>
+                        <div className="relative">
+                          <span className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
+                            <MapPin className="h-4.5 w-4.5" />
+                          </span>
+                          <input
+                            id="admission-address"
+                            type="text"
+                            placeholder="Nhập địa chỉ đầy đủ (Ví dụ: 123 Lê Lợi, TP Vũng Tàu)..."
+                            value={admissionForm.address}
+                            onChange={(e) => updateAdmissionField('address', e.target.value)}
+                            className="w-full pl-10 pr-4 py-2.5 bg-slate-50/70 border border-slate-200 rounded-xl text-sm font-bold outline-none focus:border-sky-500 focus:bg-white focus:ring-4 focus:ring-sky-100 transition-all placeholder:text-slate-400"
+                          />
+                        </div>
+                      </label>
+                    ) : (
+                      <>
+                        {/* Tỉnh / Thành phố */}
+                        <label className="flex flex-col gap-1.5">
+                          <span className="text-[10px] font-black uppercase tracking-wide text-slate-500">Tỉnh / Thành phố *</span>
+                          <div className="relative">
+                            <span className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
+                              <MapPin className="h-4.5 w-4.5" />
+                            </span>
+                            <select
+                              id="admission-province"
+                              value={admissionForm.province || ''}
+                              onChange={(e) => handleProvinceChange(e.target.value)}
+                              disabled={isLoadingCommunes}
+                              className="w-full pl-10 pr-4 py-2.5 bg-slate-50/70 border border-slate-200 rounded-xl text-sm font-bold outline-none focus:border-sky-500 focus:bg-white focus:ring-4 focus:ring-sky-100 transition-all disabled:opacity-50 appearance-none cursor-pointer"
+                            >
+                              <option value="">{isLoadingCommunes ? 'Đang tải dữ liệu...' : 'Chọn Tỉnh / Thành phố'}</option>
+                              {uniqueProvinces.map(p => (
+                                <option key={p} value={p}>{p}</option>
+                              ))}
+                            </select>
+                            <span className="absolute inset-y-0 right-0 pr-3.5 flex items-center pointer-events-none text-slate-400">
+                              <ChevronDown className="h-4 w-4" />
+                            </span>
+                          </div>
+                        </label>
+
+                        {/* Xã / Phường / Thị trấn */}
+                        <label className="flex flex-col gap-1.5">
+                          <span className="text-[10px] font-black uppercase tracking-wide text-slate-500">Xã / Phường / Thị trấn *</span>
+                          <div className="relative">
+                            <span className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
+                              <MapPin className="h-4.5 w-4.5" />
+                            </span>
+                            <select
+                              id="admission-commune"
+                              value={admissionForm.commune || ''}
+                              onChange={(e) => handleCommuneChange(e.target.value)}
+                              disabled={isLoadingCommunes || !admissionForm.province}
+                              className="w-full pl-10 pr-4 py-2.5 bg-slate-50/70 border border-slate-200 rounded-xl text-sm font-bold outline-none focus:border-sky-500 focus:bg-white focus:ring-4 focus:ring-sky-100 transition-all disabled:opacity-50 appearance-none cursor-pointer"
+                            >
+                              <option value="">Chọn Xã / Phường / Thị trấn</option>
+                              {filteredCommunes.map(c => (
+                                <option key={c} value={c}>{c}</option>
+                              ))}
+                            </select>
+                            <span className="absolute inset-y-0 right-0 pr-3.5 flex items-center pointer-events-none text-slate-400">
+                              <ChevronDown className="h-4 w-4" />
+                            </span>
+                          </div>
+                        </label>
+
+                        {/* Số nhà, tên đường, thôn/xóm */}
+                        <label className="flex flex-col gap-1.5 sm:col-span-2">
+                          <span className="text-[10px] font-black uppercase tracking-wide text-slate-500">Số nhà, tên đường, thôn/xóm</span>
+                          <div className="relative">
+                            <span className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
+                              <Pin className="h-4.5 w-4.5" />
+                            </span>
+                            <input
+                              type="text"
+                              placeholder="Ví dụ: Số 12, Đường Nguyễn An Ninh..."
+                              value={admissionForm.detailedAddress || ''}
+                              onChange={(e) => handleDetailedAddressChange(e.target.value)}
+                              className="w-full pl-10 pr-4 py-2.5 bg-slate-50/70 border border-slate-200 rounded-xl text-sm font-bold outline-none focus:border-sky-500 focus:bg-white focus:ring-4 focus:ring-sky-100 transition-all placeholder:text-slate-400"
+                            />
+                          </div>
+                        </label>
+                      </>
+                    )}
+                  </div>
+                </div>
+
+                {/* Section 3: Hồ sơ đính kèm */}
+                <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/60 shadow-sm space-y-4">
+                  <div className="flex items-center gap-1.5 pb-1.5 border-b border-slate-100">
+                    <div className="w-1.5 h-4 rounded-full bg-sky-600"></div>
+                    <span className="text-xs font-black uppercase tracking-wider text-slate-700">3. Hồ sơ đính kèm (Hiện có)</span>
+                  </div>
+                  
+                  <div className="text-[11px] font-medium text-slate-400 leading-normal mb-2">
+                    Vui lòng tích chọn những hồ sơ phụ huynh đang có sẵn để nộp cho nhà trường.
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {ADMISSION_DOCUMENTS.map(docItem => {
+                      const isChecked = Boolean(admissionForm.documents?.[docItem.key]);
+                      return (
+                        <button
+                          key={`admission-doc-${docItem.key}`}
+                          type="button"
+                          onClick={() => updateAdmissionDocument(docItem.key, !isChecked)}
+                          className={`flex items-center justify-between p-3.5 rounded-2xl border transition-all text-left group cursor-pointer ${
+                            isChecked
+                              ? 'bg-emerald-50/80 border-emerald-300 text-emerald-950 shadow-sm shadow-emerald-50'
+                              : 'bg-slate-50/50 border-slate-200/80 text-slate-600 hover:bg-slate-100/50'
+                          }`}
+                        >
+                          <div className="flex items-center gap-3">
+                            <div className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all ${
+                              isChecked ? 'bg-emerald-600 text-white scale-105' : 'bg-slate-200/80 text-slate-500 group-hover:bg-slate-300/80'
+                            }`}>
+                              <FileText className="w-5 h-5" />
+                            </div>
+                            <div className="min-w-0">
+                              <div className="text-xs font-black uppercase tracking-wide text-slate-700 group-hover:text-slate-900 transition-colors truncate">{docItem.label}</div>
+                              <div className={`text-[10px] font-bold mt-0.5 ${isChecked ? 'text-emerald-600' : 'text-slate-400'}`}>
+                                {isChecked ? 'Đã đính kèm' : 'Chưa chuẩn bị'}
+                              </div>
+                            </div>
+                          </div>
+                          <div className={`w-5.5 h-5.5 rounded-full border flex items-center justify-center transition-all ${
+                            isChecked
+                              ? 'bg-emerald-500 border-emerald-500 text-white scale-100'
+                              : 'border-slate-300 bg-white text-transparent scale-95 hover:border-slate-400'
+                          }`}>
+                            <CheckCircle2 className="w-4.5 h-4.5" />
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+              </div>
+
+              {/* Footer Panel */}
+              <div className="flex flex-col-reverse sm:flex-row sm:justify-between items-center gap-3 border-t border-slate-200/60 bg-white px-5 py-4 sm:px-7 sm:py-5 shrink-0">
+                <button
+                  type="button"
+                  onClick={resetAdmissionForm}
+                  disabled={isSubmittingAdmission}
+                  className="w-full sm:w-auto px-5 py-3 rounded-xl border border-slate-200 text-slate-500 text-xs font-black uppercase tracking-wider hover:bg-rose-50 hover:text-rose-600 hover:border-rose-200 transition-all text-center disabled:opacity-40"
+                >
+                  Xóa toàn bộ form
+                </button>
+                <button
+                  type="button"
+                  onClick={submitAdmissionApplication}
+                  disabled={isSubmittingAdmission}
+                  className="w-full sm:w-auto px-8 py-3.5 rounded-xl bg-gradient-to-r from-sky-600 to-indigo-600 text-white text-xs font-black uppercase tracking-wider shadow-lg shadow-indigo-100 hover:shadow-indigo-200 hover:from-sky-700 hover:to-indigo-700 transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:shadow-none"
+                >
+                  {isSubmittingAdmission ? <Loader2 className="h-4.5 w-4.5 animate-spin" /> : <Send className="h-4.5 w-4.5" />}
+                  Xác nhận & Gửi đăng ký
+                </button>
+              </div>
+
+            </div>
+          </div>
         )}
       </div>
     );
@@ -9510,7 +9943,7 @@ ${lessonBlocks}`;
         </div>
       )}
       
-      <main className="max-w-6xl mx-auto px-4 py-4 sm:py-8 flex-1 w-full relative z-10 flex flex-col">
+      <main className={`${showAdminSettingsWorkspace ? 'max-w-[1600px] w-[98vw]' : 'max-w-6xl'} mx-auto px-4 py-4 sm:py-8 flex-1 w-full relative z-10 flex flex-col`}>
         <div className={`flex flex-nowrap items-center text-[clamp(9px,2.35vw,11px)] sm:text-xs font-black text-slate-400 ${selectedLesson && role === 'teacher' ? 'mb-2' : 'mb-2 sm:mb-8'} bg-white/80 backdrop-blur-md px-2.5 sm:px-6 py-2 sm:py-4 rounded-xl sm:rounded-2xl shadow-sm border border-white/60 uppercase tracking-wide sm:tracking-widest shrink-0 overflow-hidden`}>
             <button onClick={resetNavigationWithClean} className="hover:text-blue-600 flex items-center transition-colors whitespace-nowrap flex-shrink-0" title="Trang chủ"><Home className="w-3.5 h-3.5 sm:w-4 sm:h-4 mr-0 sm:mr-2" /> <span className="hidden sm:inline">{'Trang ch\u1ee7'}</span></button>
             {selectedGrade && <><ChevronRight className="w-3 h-3 sm:w-4 sm:h-4 mx-0.5 sm:mx-2 opacity-30 flex-shrink-0" /><div className="relative flex-shrink-0"><select value={selectedGrade} onChange={(e) => { setSelectedGrade(e.target.value); setIsTextbookExpanded(true); }} className="appearance-none bg-emerald-50 text-emerald-700 border border-emerald-100 pl-1.5 pr-5 sm:pl-2 sm:pr-7 py-0.5 rounded-md sm:rounded-lg whitespace-nowrap font-black focus:outline-none focus:ring-2 focus:ring-emerald-100 cursor-pointer">{GRADES.map(g => <option key={g} value={g}>{'Kh\u1ed1i ' + g}</option>)}</select><ChevronDown className="pointer-events-none absolute right-1 sm:right-2 top-1/2 -translate-y-1/2 w-3 h-3 opacity-60" /></div></>}
