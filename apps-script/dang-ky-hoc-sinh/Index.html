@@ -1,0 +1,1126 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <base target="_top">
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+  :root { --primary:#2563eb; --border:#dbe3ef; --text:#1e293b; --muted:#64748b; }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:20px; background:#f1f5f9; color:var(--text); font-family:Poppins,Arial,sans-serif; }
+  .container { max-width:900px; margin:0 auto; background:white; border-radius:18px; padding:28px; box-shadow:0 14px 40px rgba(15,23,42,.12); }
+  .form-header { text-align:center; margin-bottom:22px; }
+  h1 { margin:0; color:#0f172a; }
+  h3 { margin:26px 0 16px; padding-bottom:8px; border-bottom:2px solid var(--primary); color:#0f172a; }
+  .form-row { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  .form-group { margin-bottom:16px; }
+  label { display:block; margin-bottom:6px; font-weight:700; color:#334155; }
+  input, select { width:100%; padding:12px; border:1px solid var(--border); border-radius:12px; font:inherit; background:white; }
+  input:focus, select:focus { outline:none; border-color:var(--primary); box-shadow:0 0 0 4px rgba(37,99,235,.12); }
+  button#submitButton { width:100%; border:0; border-radius:14px; padding:14px; background:var(--primary); color:white; font-weight:800; cursor:pointer; }
+  button#submitButton:disabled { opacity:.6; cursor:not-allowed; }
+  #status { margin:14px 0; font-weight:700; }
+  .success { padding:12px; border-radius:12px; background:#dcfce7; color:#166534; }
+  .error { padding:12px; border-radius:12px; background:#fee2e2; color:#991b1b; }
+  .history-box { margin:6px 0 18px; }
+  .history-row { padding:14px; border:1px solid #bbf7d0; background:#f0fdf4; border-radius:14px; margin-bottom:10px; }
+  .history-note { padding:10px 12px; border:1px solid #fde68a; background:#fffbeb; color:#92400e; border-radius:12px; font-size:13px; font-weight:700; margin-bottom:10px; }
+  .history-title { font-weight:800; color:#047857; margin-bottom:10px; }
+  .sub-title { margin:12px 0 12px; padding:10px 12px; border-left:4px solid var(--primary); border-radius:10px; background:#eff6ff; color:#1d4ed8; font-family:inherit; font-size:18px; line-height:1.35; font-weight:800; }
+  .province-suggestions { margin-top:6px; display:none; max-height:210px; overflow:auto; border:1px solid var(--border); border-radius:12px; background:white; box-shadow:0 10px 24px rgba(15,23,42,.12); }
+  .province-suggestions.is-open { display:block; }
+  .province-suggestion-item { width:100%; border:0; background:white; padding:10px 12px; text-align:left; font:inherit; font-weight:700; color:#1e293b; cursor:pointer; }
+  .province-suggestion-item:hover, .province-suggestion-item[aria-selected="true"] { background:#eff6ff; color:#1d4ed8; }
+  .hint { margin-top:6px; color:var(--muted); font-size:13px; font-weight:600; }
+  .mt-2 { margin-top:8px; }
+  .error-message { color:#dc2626; font-size:12px; }
+  @media (max-width:900px) { body{padding:10px}.container{padding:18px}.form-row{grid-template-columns:1fr} input,select{font-size:16px} }
+</style>
+</head>
+  <body>
+    <div class="container">
+      <div class="form-header">
+        <h1>Biểu mẫu đăng ký học sinh</h1>
+        <p>Vui lòng điền đầy đủ và chính xác thông tin.</p>
+      </div>
+      <form id="myForm" onsubmit="handleFormSubmit(event)">
+        <div class="form-group">
+          <label>Cơ sở đăng ký học *</label>
+          <select id="coSoHoc" name="coSoHoc" required>
+            <option value="">Đang tải danh sách cơ sở...</option>
+          </select>
+          <div class="hint">Cơ sở sẽ tự xác định hậu tố lớp: Nguyễn An Ninh là A, Trần Quang Khải là B.</div>
+        </div>
+        <h3>I. Thông tin cá nhân</h3>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Họ và tên *</label>
+            <input type="text" id="hoVaTen" name="hoVaTen" required>
+          </div>
+          <div class="form-group">
+            <label>Ngày sinh *</label>
+            <input type="date" id="ngaySinh" name="ngaySinh" required>
+            <div id="ngaySinhError" class="error-message"></div>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Giới tính *</label>
+            <select name="gioiTinh" required>
+              <option value="">-- Chọn --</option>
+              <option>Nam</option>
+              <option>Nữ</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Mã định danh</label>
+            <input type="text" id="maDinhDanh" name="maDinhDanh" required placeholder="Nhập 12 số hoặc ghi: bé chưa có" title="Nhập đúng 12 số mã định danh, hoặc ghi: bé chưa có">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Số điện thoại *</label>
+            <input type="tel" name="soDienThoai" required>
+          </div>
+          <div class="form-group">
+            <label>Đăng ký học lớp *</label>
+            <select id="lopHoc" name="lopHoc" required>
+              <option value="">-- Chọn cơ sở trước --</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Học từ năm *</label>
+          <select id="tinhTrangHocSinh" name="tinhTrangHocSinh" required>
+            <option value="">Đang tải năm học...</option>
+          </select>
+          <div id="schoolYearHint" class="hint"></div>
+        </div>
+        <div id="previousAcademicBox" class="history-box"></div>
+
+        <h3>II. Địa chỉ liên lạc</h3>
+        <div class="sub-title">Nơi ở hiện tại (chính quyền 2 cấp)</div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Tỉnh / Thành *</label>
+            <select id="tinhThanh" name="tinhThanh" required>
+              <option value="">Đang tải...</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Xã / Phường *</label>
+            <input type="text" id="xaPhuongInput" name="xaPhuong" list="xaPhuongList" placeholder="Chọn tỉnh rồi gõ tên xã/phường" required>
+            <datalist id="xaPhuongList"></datalist>
+            <div class="hint">Có thể gõ có dấu hoặc không dấu để lọc nhanh.</div>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Số nhà / Khu phố</label>
+          <input type="text" name="soNha">
+        </div>
+        <div class="sub-title">Hộ khẩu thường trú (chính quyền 2 cấp)</div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Tỉnh / Thành hộ khẩu *</label>
+            <select id="tinhThanhHK" name="tinhThanhHK" required>
+              <option value="">Đang tải...</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Xã / Phường hộ khẩu *</label>
+            <input type="text" id="xaPhuongHKInput" name="xaPhuongHK" list="xaPhuongHKList" placeholder="Chọn tỉnh rồi gõ tên xã/phường" required>
+            <datalist id="xaPhuongHKList"></datalist>
+            <div class="hint">Có thể gõ có dấu hoặc không dấu để lọc nhanh.</div>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Số nhà / Khu phố hộ khẩu</label>
+          <input type="text" name="soNhaHK">
+        </div>
+
+        <h3>III. Thông tin phụ huynh</h3>
+        <div class="form-row">
+          <div class="form-group"><label>Tên cha</label><input type="text" name="tenCha"></div>
+          <div class="form-group"><label>Năm sinh cha</label><input type="number" name="namSinhCha"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Nghề nghiệp cha</label><input type="text" name="ngheNghiepCha"></div>
+          <div class="form-group"><label>SĐT cha</label><input type="tel" name="sdtCha"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Tên mẹ</label><input type="text" name="tenMe"></div>
+          <div class="form-group"><label>Năm sinh mẹ</label><input type="number" name="namSinhMe"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Nghề nghiệp mẹ</label><input type="text" name="ngheNghiepMe"></div>
+          <div class="form-group"><label>SĐT mẹ</label><input type="tel" name="sdtMe"></div>
+        </div>
+
+        <h3>IV. Thông tin khác</h3>
+        <div class="form-group">
+          <label>Tình trạng tạm trú *</label>
+          <select name="tinhTrangTamTru" required>
+            <option value="">-- Chọn --</option>
+            <option>Đang có hộ khẩu/tạm trú</option>
+            <option>Chuẩn bị làm tạm trú</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Đi xe *</label>
+          <select name="diXe" required>
+            <option value="">-- Chọn --</option>
+            <option>Có</option>
+            <option>Không</option>
+          </select>
+        </div>
+
+        <h3>V. Tải lên hồ sơ</h3>
+        <div class="form-group">
+          <label>Khai sinh *</label>
+          <input type="file" id="anhKhaiSinh" name="anhKhaiSinh" accept="image/*" required multiple>
+          <div class="hint">Có thể chọn 1-2 ảnh.</div>
+        </div>
+        <div class="form-group" id="canCuocGroup">
+          <label>Căn cước / Mã định danh *</label>
+          <input type="file" id="anhCanCuoc" name="anhCanCuoc" accept="image/*" required multiple>
+          <div class="hint">Có thể chọn ảnh mặt trước và mặt sau.</div>
+        </div>
+        <div class="form-group">
+          <label>Chân dung / ảnh thẻ *</label>
+          <input type="file" id="anhChanDung" name="anhChanDung" accept="image/*" required>
+        </div>
+        <div class="form-group">
+          <label>Học bạ *</label>
+          <input type="file" id="anhHocBa" name="anhHocBa" accept="image/*,application/pdf" required multiple>
+          <div class="hint">Có thể chọn nhiều ảnh hoặc nhiều file PDF. Hệ thống lưu từng file riêng để giáo viên xem nhanh trong hồ sơ.</div>
+        </div>
+        <div id="status"></div>
+        <button type="submit" id="submitButton">Nộp hồ sơ</button>
+      </form>
+    </div>
+    <script>
+  const RESULT_OPTIONS = ['Tốt', 'Khá', 'Đạt'];
+  const FILE_FIELDS = ['anhKhaiSinh', 'anhCanCuoc', 'anhChanDung', 'anhHocBa'];
+  const DEFAULT_REGISTRATION_CONFIG = {
+    currentSchoolYear: '2025-2026',
+    schools: [
+      { key: 'nguyen-an-ninh', name: 'THCS Nguyễn An Ninh', code: 'NAN', suffix: 'A' },
+      { key: 'tran-quang-khai', name: 'THCS Trần Quang Khải', code: 'TQK', suffix: 'B' }
+    ]
+  };
+  let registrationConfig = DEFAULT_REGISTRATION_CONFIG;
+  const BIRTH_PLACE_CACHE_KEY = 'student-registration-locations-v2';
+  const LOCATION_CACHE_TTL_MS = 60 * 60 * 1000;
+  const birthPlaceRequests = new Map();
+  const addressRequests = new Map();
+  let locationEpoch = 0;
+  let locationRevision = '';
+  const OLD_PROVINCES = [
+    'Thành phố Hà Nội',
+    'Tỉnh Hà Giang',
+    'Tỉnh Cao Bằng',
+    'Tỉnh Bắc Kạn',
+    'Tỉnh Tuyên Quang',
+    'Tỉnh Lào Cai',
+    'Tỉnh Điện Biên',
+    'Tỉnh Lai Châu',
+    'Tỉnh Sơn La',
+    'Tỉnh Yên Bái',
+    'Tỉnh Hoà Bình',
+    'Tỉnh Thái Nguyên',
+    'Tỉnh Lạng Sơn',
+    'Tỉnh Quảng Ninh',
+    'Tỉnh Bắc Giang',
+    'Tỉnh Phú Thọ',
+    'Tỉnh Vĩnh Phúc',
+    'Tỉnh Bắc Ninh',
+    'Tỉnh Hải Dương',
+    'Thành phố Hải Phòng',
+    'Tỉnh Hưng Yên',
+    'Tỉnh Thái Bình',
+    'Tỉnh Hà Nam',
+    'Tỉnh Nam Định',
+    'Tỉnh Ninh Bình',
+    'Tỉnh Thanh Hóa',
+    'Tỉnh Nghệ An',
+    'Tỉnh Hà Tĩnh',
+    'Tỉnh Quảng Bình',
+    'Tỉnh Quảng Trị',
+    'Tỉnh Thừa Thiên Huế',
+    'Thành phố Đà Nẵng',
+    'Tỉnh Quảng Nam',
+    'Tỉnh Quảng Ngãi',
+    'Tỉnh Bình Định',
+    'Tỉnh Phú Yên',
+    'Tỉnh Khánh Hòa',
+    'Tỉnh Ninh Thuận',
+    'Tỉnh Bình Thuận',
+    'Tỉnh Kon Tum',
+    'Tỉnh Gia Lai',
+    'Tỉnh Đắk Lắk',
+    'Tỉnh Đắk Nông',
+    'Tỉnh Lâm Đồng',
+    'Tỉnh Bình Phước',
+    'Tỉnh Tây Ninh',
+    'Tỉnh Bình Dương',
+    'Tỉnh Đồng Nai',
+    'Tỉnh Bà Rịa - Vũng Tàu',
+    'Thành phố Hồ Chí Minh',
+    'Tỉnh Long An',
+    'Tỉnh Tiền Giang',
+    'Tỉnh Bến Tre',
+    'Tỉnh Trà Vinh',
+    'Tỉnh Vĩnh Long',
+    'Tỉnh Đồng Tháp',
+    'Tỉnh An Giang',
+    'Tỉnh Kiên Giang',
+    'Thành phố Cần Thơ',
+    'Tỉnh Hậu Giang',
+    'Tỉnh Sóc Trăng',
+    'Tỉnh Bạc Liêu',
+    'Tỉnh Cà Mau'
+  ];
+  const communeState = {
+    current: [],
+    household: []
+  };
+  const birthPlaceState = {
+    provinces: OLD_PROVINCES,
+    districtsByProvince: {},
+    communesByDistrict: {},
+    loadedProvinces: {}
+  };
+  const birthPlaceCache = loadBirthPlaceCache();
+
+  document.addEventListener('DOMContentLoaded', function() {
+    insertBirthPlaceFields();
+    setupRegistrationFields();
+    populateProvinces(birthPlaceCache.provinces?.length ? birthPlaceCache.provinces : ['TP.HCM']);
+    loadBirthPlaceDirectory();
+    setupBirthPlacePicker();
+    document.getElementById('lopHoc').addEventListener('change', renderPreviousAcademic);
+    setupAddressPicker('current', 'tinhThanh', 'xaPhuongInput', 'xaPhuongList');
+    setupAddressPicker('household', 'tinhThanhHK', 'xaPhuongHKInput', 'xaPhuongHKList');
+    document.getElementById('myForm').addEventListener('reset', () => window.setTimeout(resetLocationPickers, 0));
+    loadRegistrationLocationBootstrap();
+    document.getElementById('maDinhDanh').addEventListener('input', syncIdentityUploadRequirement);
+    document.getElementById('hoVaTen').addEventListener('input', function(e) {
+      const start = e.target.selectionStart;
+      const end = e.target.selectionEnd;
+      e.target.value = e.target.value.toLocaleUpperCase('vi-VN');
+      e.target.setSelectionRange(start, end);
+    });
+    syncIdentityUploadRequirement();
+  });
+
+  function setupRegistrationFields() {
+    const school = document.getElementById('coSoHoc');
+    if (school) school.addEventListener('change', function() {
+      renderGradeOptions();
+      document.getElementById('lopHoc').value = '';
+      renderPreviousAcademic();
+    });
+    renderRegistrationConfig(DEFAULT_REGISTRATION_CONFIG);
+  }
+
+  function renderRegistrationConfig(config) {
+    const selectedSchool = document.getElementById('coSoHoc')?.value || '';
+    const selectedClass = document.getElementById('lopHoc')?.value || '';
+    const selectedYear = document.getElementById('tinhTrangHocSinh')?.value || '';
+    registrationConfig = config && Array.isArray(config.schools) && config.schools.length ? config : DEFAULT_REGISTRATION_CONFIG;
+    const school = document.getElementById('coSoHoc');
+    if (school) {
+      school.innerHTML = '<option value="">-- Chọn cơ sở --</option>';
+      registrationConfig.schools.forEach(item => school.appendChild(new Option(`${item.name} · lớp ${item.suffix}`, item.key)));
+      school.value = selectedSchool;
+    }
+    renderGradeOptions();
+    renderSchoolYearOptions();
+    document.getElementById('lopHoc').value = selectedClass;
+    document.getElementById('tinhTrangHocSinh').value = selectedYear;
+  }
+
+  function renderGradeOptions() {
+    const schoolKey = document.getElementById('coSoHoc')?.value || '';
+    const school = registrationConfig.schools.find(item => item.key === schoolKey);
+    const select = document.getElementById('lopHoc');
+    if (!select) return;
+    select.innerHTML = school
+      ? '<option value="">-- Chọn lớp --</option>'
+      : '<option value="">-- Chọn cơ sở trước --</option>';
+    if (!school) return;
+    for (let grade = 1; grade <= 9; grade += 1) {
+      const className = `${grade}${school.suffix}`;
+      select.appendChild(new Option(`Lớp ${className}`, className));
+    }
+  }
+
+  function getSchoolYearStart(value) {
+    return Number(String(value || '').match(/20\d{2}/)?.[0] || 0);
+  }
+
+  function renderSchoolYearOptions() {
+    const select = document.getElementById('tinhTrangHocSinh');
+    if (!select) return;
+    const currentStart = getSchoolYearStart(registrationConfig.currentSchoolYear) || 2025;
+    select.innerHTML = '<option value="">-- Chọn năm --</option>';
+    for (let year = currentStart; year <= currentStart + 7; year += 1) {
+      const schoolYear = `${year}-${year + 1}`;
+      select.appendChild(new Option(schoolYear, schoolYear));
+    }
+    const hint = document.getElementById('schoolYearHint');
+    if (hint) hint.textContent = `Chỉ được đăng ký từ năm học ${registrationConfig.currentSchoolYear} trở đi.`;
+  }
+
+  function populateProvinces(provinces) {
+    ['tinhThanh', 'tinhThanhHK'].forEach(id => {
+      const select = document.getElementById(id);
+      const selected = select.value;
+      select.innerHTML = '<option value="">-- Chọn Tỉnh/Thành --</option>';
+      const fragment = document.createDocumentFragment();
+      provinces.forEach(p => fragment.appendChild(new Option(p, p)));
+      select.appendChild(fragment);
+      select.value = selected;
+    });
+  }
+
+  function insertBirthPlaceFields() {
+    if (document.getElementById('birthProvince')) return;
+    const anchor = document.getElementById('maDinhDanh');
+    const row = anchor && anchor.closest('.form-row');
+    if (!row) return;
+    row.insertAdjacentHTML('afterend', `
+      <div class="sub-title">N&#417;i sinh (ch&#237;nh quy&#7873;n 3 c&#7845;p c&#361;)</div>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="birthProvince">T&#7881;nh n&#417;i sinh *</label>
+          <input type="text" id="birthProvince" name="birthProvince" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="birthProvinceSuggestions" placeholder="G&#245; t&#234;n t&#7881;nh" required>
+          <div id="birthProvinceSuggestions" class="province-suggestions" role="listbox" aria-label="Gợi ý tỉnh nơi sinh"></div>
+        </div>
+        <div class="form-group">
+          <label>Huy&#7879;n n&#417;i sinh *</label>
+          <select id="birthDistrict" name="birthDistrict" required>
+            <option value="">-- Ch&#7885;n t&#7881;nh tr&#432;&#7899;c --</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>X&#227; n&#417;i sinh *</label>
+          <select id="birthWard" name="birthWard" required>
+            <option value="">-- Ch&#7885;n huy&#7879;n tr&#432;&#7899;c --</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>T&#234;n n&#417;i sinh</label>
+          <input type="text" id="birthPlaceName" name="birthPlaceName" placeholder="T&#234;n b&#7879;nh vi&#7879;n, nh&#224; h&#7897; sinh ho&#7863;c n&#417;i sinh ghi tr&#234;n gi&#7845;y khai sinh">
+        </div>
+      </div>
+      <div class="sub-title">N&#417;i &#273;&#259;ng k&#253; khai sinh (ch&#237;nh quy&#7873;n 3 c&#7845;p c&#361;)</div>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="birthRegistrationProvince">T&#7881;nh &#273;&#259;ng k&#253; khai sinh *</label>
+          <input type="text" id="birthRegistrationProvince" name="birthRegistrationProvince" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="birthRegistrationProvinceSuggestions" placeholder="G&#245; t&#234;n t&#7881;nh" required>
+          <div id="birthRegistrationProvinceSuggestions" class="province-suggestions" role="listbox" aria-label="Gợi ý tỉnh đăng ký khai sinh"></div>
+        </div>
+        <div class="form-group">
+          <label>Huy&#7879;n &#273;&#259;ng k&#253; khai sinh *</label>
+          <select id="birthRegistrationDistrict" name="birthRegistrationDistrict" required>
+            <option value="">-- Ch&#7885;n t&#7881;nh tr&#432;&#7899;c --</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>X&#227; &#273;&#259;ng k&#253; khai sinh *</label>
+          <select id="birthRegistrationWard" name="birthRegistrationWard" required>
+            <option value="">-- Ch&#7885;n huy&#7879;n tr&#432;&#7899;c --</option>
+          </select>
+        </div>
+      </div>
+      <div class="sub-title">Qu&#234; qu&#225;n (ch&#237;nh quy&#7873;n 3 c&#7845;p c&#361;)</div>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="hometownProvince">T&#7881;nh qu&#234; qu&#225;n *</label>
+          <input type="text" id="hometownProvince" name="hometownProvince" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="hometownProvinceSuggestions" placeholder="G&#245; t&#234;n t&#7881;nh" required>
+          <div id="hometownProvinceSuggestions" class="province-suggestions" role="listbox" aria-label="Gợi ý tỉnh quê quán"></div>
+        </div>
+        <div class="form-group">
+          <label>Huy&#7879;n qu&#234; qu&#225;n *</label>
+          <select id="hometownDistrict" name="hometownDistrict" required>
+            <option value="">-- Ch&#7885;n t&#7881;nh tr&#432;&#7899;c --</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>X&#227; qu&#234; qu&#225;n *</label>
+          <select id="hometownWard" name="hometownWard" required>
+            <option value="">-- Ch&#7885;n huy&#7879;n tr&#432;&#7899;c --</option>
+          </select>
+        </div>
+      </div>
+    `);
+  }
+
+  function loadBirthPlaceDirectory() {
+    locationRevision = birthPlaceCache.revision || '';
+    Object.keys(birthPlaceCache.birth || {}).forEach(province => {
+      const entry = birthPlaceCache.birth[province];
+      if (entry.expiresAt > Date.now() && entry.data?.success) applyBirthProvince(entry.data);
+    });
+    populateBirthPlaceDirectory({ provinces: birthPlaceCache.birthProvinces?.length ? birthPlaceCache.birthProvinces : OLD_PROVINCES });
+  }
+
+  function callLocationServer(method, args = []) {
+    return new Promise((resolve, reject) => {
+      if (!(window.google && google.script && google.script.run)) { reject(new Error('Cần mở biểu mẫu bằng link Apps Script.')); return; }
+      let settled = false;
+      const timer = window.setTimeout(() => finish(new Error('Tải danh mục quá lâu. Vui lòng thử lại.')), 20000);
+      function finish(error, data) {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timer);
+        if (error) reject(error); else resolve(data);
+      }
+      try {
+        google.script.run.withSuccessHandler(data => finish(null, data)).withFailureHandler(error => finish(error))[method](...args);
+      } catch (error) { finish(error); }
+    });
+  }
+
+  function loadRegistrationLocationBootstrap() {
+    if (!(window.google && google.script && google.script.run)) return;
+    callLocationServer('getRegistrationLocationBootstrap').then(data => {
+      if (!data?.success) throw new Error(data?.message || 'Không tải được danh mục địa chỉ.');
+      if (locationRevision && locationRevision !== data.revision) {
+        locationEpoch += 1;
+        birthPlaceState.districtsByProvince = {};
+        birthPlaceState.communesByDistrict = {};
+        birthPlaceState.loadedProvinces = {};
+        birthPlaceCache.birth = {};
+        birthPlaceCache.address = {};
+        birthPlaceRequests.clear();
+        addressRequests.clear();
+      }
+      locationRevision = data.revision || '';
+      if (data.config) renderRegistrationConfig(data.config);
+      if (data.provinces?.length) {
+        birthPlaceCache.provinces = data.provinces;
+        populateProvinces(data.provinces);
+      }
+      if (data.birthProvinces?.length) {
+        birthPlaceCache.birthProvinces = data.birthProvinces;
+        populateBirthPlaceDirectory({ provinces: data.birthProvinces });
+      }
+      saveBirthPlaceCache();
+      const directoryError = data.addressError || data.birthError || '';
+      setLocationStatus('bootstrap', 'tinhThanh', directoryError ? getLocationErrorMessage(directoryError, 'Không tải được danh mục địa chỉ.') : '', directoryError ? loadRegistrationLocationBootstrap : null);
+      [['current', 'tinhThanh', 'xaPhuongInput', 'xaPhuongList'], ['household', 'tinhThanhHK', 'xaPhuongHKInput', 'xaPhuongHKList']].forEach(args => {
+        if (document.getElementById(args[1]).value) loadCommunesForProvince(...args, true);
+      });
+    }).catch(error => setLocationStatus('bootstrap', 'tinhThanh', getLocationErrorMessage(error, 'Không tải được danh mục địa chỉ.'), loadRegistrationLocationBootstrap));
+  }
+
+  function setLocationStatus(key, anchorId, message, retry) {
+    const anchor = document.getElementById(anchorId);
+    if (!anchor) return;
+    let status = document.getElementById(`${key}LocationStatus`);
+    if (!status) {
+      status = document.createElement('div');
+      status.id = `${key}LocationStatus`;
+      status.className = 'hint';
+      status.setAttribute('role', 'status');
+      anchor.parentElement.appendChild(status);
+    }
+    status.textContent = message;
+    if (retry) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = 'Thử lại';
+      button.style.marginLeft = '8px';
+      button.addEventListener('click', retry);
+      status.appendChild(button);
+    }
+  }
+
+  function populateBirthPlaceDirectory(data) {
+    const source = data && (data.success === undefined || data.success) ? data : {};
+    birthPlaceState.provinces = source.provinces?.length ? source.provinces : OLD_PROVINCES;
+    birthPlaceState.provinceOptions = birthPlaceState.provinces.map(name => ({ name, search: normalizeText(name) }));
+    birthPlaceState.districtsByProvince = source.districtsByProvince || birthPlaceState.districtsByProvince || {};
+    birthPlaceState.communesByDistrict = source.communesByDistrict || birthPlaceState.communesByDistrict || {};
+    ['birth', 'birthRegistration', 'hometown'].forEach(prefix => {
+      renderProvinceSuggestions(prefix);
+      renderBirthDistrictOptions(prefix);
+    });
+  }
+
+  function setupBirthPlacePicker() {
+    ['birth', 'birthRegistration', 'hometown'].forEach(prefix => setupLocationPicker(prefix));
+  }
+
+  function setupLocationPicker(prefix) {
+    const province = document.getElementById(`${prefix}Province`);
+    const district = document.getElementById(`${prefix}District`);
+    const ward = document.getElementById(`${prefix}Ward`);
+    if (!province || !district || !ward) return;
+    province.addEventListener('input', () => {
+      renderProvinceSuggestions(prefix);
+      renderBirthDistrictOptions(prefix);
+    });
+    province.addEventListener('focus', () => renderProvinceSuggestions(prefix));
+    province.addEventListener('click', () => renderProvinceSuggestions(prefix));
+    province.addEventListener('keydown', event => handleProvinceSuggestionKey(prefix, event));
+    province.addEventListener('blur', () => window.setTimeout(() => {
+      if (document.activeElement !== province) closeProvinceSuggestions(prefix);
+    }, 120));
+    province.addEventListener('change', () => renderBirthDistrictOptions(prefix));
+    district.addEventListener('change', () => renderBirthCommuneOptions(prefix));
+    district.disabled = true;
+    ward.disabled = true;
+  }
+
+  function birthPlaceKey(province, district) {
+    return `${province || ''}|||${district || ''}`;
+  }
+
+  function loadBirthPlaceCache() {
+    try {
+      const value = JSON.parse(localStorage.getItem(BIRTH_PLACE_CACHE_KEY) || '{}');
+      return value && value.schema === 2 && value.expiresAt > Date.now() ? value : {};
+    } catch (e) {
+      return {};
+    }
+  }
+
+  function saveBirthPlaceCache() {
+    try {
+      birthPlaceCache.schema = 2;
+      birthPlaceCache.revision = locationRevision;
+      birthPlaceCache.expiresAt = Date.now() + LOCATION_CACHE_TTL_MS;
+      ['birth', 'address'].forEach(kind => {
+        const entries = birthPlaceCache[kind] || {};
+        Object.keys(entries).forEach(key => { if (!(entries[key]?.expiresAt > Date.now())) delete entries[key]; });
+      });
+      localStorage.setItem(BIRTH_PLACE_CACHE_KEY, JSON.stringify(birthPlaceCache));
+    } catch (e) {
+      // Local cache is optional; form still works without it.
+    }
+  }
+
+  function closeProvinceSuggestions(prefix) {
+    const input = document.getElementById(`${prefix}Province`);
+    const box = document.getElementById(`${prefix}ProvinceSuggestions`);
+    if (box) { box.classList.remove('is-open'); box.textContent = ''; }
+    if (input) { input.setAttribute('aria-expanded', 'false'); input.removeAttribute('aria-activedescendant'); }
+  }
+
+  function handleProvinceSuggestionKey(prefix, event) {
+    if (event.isComposing || event.keyCode === 229) return;
+    const input = document.getElementById(`${prefix}Province`);
+    const box = document.getElementById(`${prefix}ProvinceSuggestions`);
+    if (!input || !box) return;
+    if (event.key === 'Escape' && box.classList.contains('is-open')) {
+      event.preventDefault();
+      closeProvinceSuggestions(prefix);
+      return;
+    }
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      if (!box.classList.contains('is-open')) renderProvinceSuggestions(prefix);
+      const options = [...box.querySelectorAll('[role="option"]')];
+      if (!options.length) return;
+      event.preventDefault();
+      const previous = options.findIndex(option => option.id === input.getAttribute('aria-activedescendant'));
+      const index = previous < 0 ? (event.key === 'ArrowDown' ? 0 : options.length - 1)
+        : (previous + (event.key === 'ArrowDown' ? 1 : -1) + options.length) % options.length;
+      options.forEach((option, optionIndex) => option.setAttribute('aria-selected', String(optionIndex === index)));
+      input.setAttribute('aria-activedescendant', options[index].id);
+      if (options[index].scrollIntoView) options[index].scrollIntoView({ block: 'nearest' });
+    } else if (event.key === 'Enter' && box.classList.contains('is-open')) {
+      const active = document.getElementById(input.getAttribute('aria-activedescendant') || '');
+      if (active && box.contains(active)) {
+        event.preventDefault();
+        selectProvinceSuggestion(prefix, active.dataset.province || '');
+      }
+    }
+  }
+
+  function renderProvinceSuggestions(prefix = 'birth') {
+    const input = document.getElementById(`${prefix}Province`);
+    const box = document.getElementById(`${prefix}ProvinceSuggestions`);
+    if (!input) return;
+    const query = normalizeText(input.value);
+    const options = (birthPlaceState.provinceOptions || [])
+      .filter(item => !query || item.search.includes(query))
+      .slice(0, 80).map(item => item.name);
+    if (!box) return;
+    if (!options.length || document.activeElement !== input) {
+      closeProvinceSuggestions(prefix);
+      return;
+    }
+    ['birth', 'birthRegistration', 'hometown'].forEach(other => { if (other !== prefix) closeProvinceSuggestions(other); });
+    box.innerHTML = options.map((name, index) => `<button type="button" id="${prefix}ProvinceOption${index}" role="option" aria-selected="false" tabindex="-1" class="province-suggestion-item" data-province="${escapeHtml(name)}">${escapeHtml(name)}</button>`).join('');
+    box.classList.add('is-open');
+    input.setAttribute('aria-expanded', 'true');
+    input.removeAttribute('aria-activedescendant');
+    box.querySelectorAll('.province-suggestion-item').forEach(button => {
+      button.addEventListener('mousedown', event => {
+        event.preventDefault();
+      });
+      button.addEventListener('click', () => selectProvinceSuggestion(prefix, button.dataset.province || ''));
+    });
+  }
+
+  function selectProvinceSuggestion(prefix = 'birth', provinceName = '') {
+    const input = document.getElementById(`${prefix}Province`);
+    if (!input || !provinceName) return;
+    input.value = provinceName;
+    closeProvinceSuggestions(prefix);
+    renderBirthDistrictOptions(prefix);
+  }
+
+  function canonicalBirthProvince(value) {
+    return (birthPlaceState.provinceOptions || []).find(item => item.search === normalizeText(value))?.name || '';
+  }
+
+  function fillLocationSelect(select, items, placeholder, scope) {
+    const selected = select.dataset.locationScope === scope ? select.value : '';
+    const fragment = document.createDocumentFragment();
+    fragment.appendChild(new Option(placeholder, ''));
+    items.forEach(name => fragment.appendChild(new Option(name, name)));
+    select.textContent = '';
+    select.appendChild(fragment);
+    select.dataset.locationScope = scope;
+    select.value = items.includes(selected) ? selected : '';
+    select.disabled = items.length === 0;
+  }
+
+  function applyBirthProvince(data) {
+    birthPlaceState.districtsByProvince[data.province] = data.districts;
+    Object.assign(birthPlaceState.communesByDistrict, data.communesByDistrict);
+    birthPlaceState.loadedProvinces[data.province] = true;
+  }
+
+  function requestBirthProvince(province) {
+    if (birthPlaceRequests.has(province)) return birthPlaceRequests.get(province);
+    const epoch = locationEpoch;
+    const request = callLocationServer('getBirthPlaceProvince', [province]).then(data => {
+      if (epoch !== locationEpoch) return null;
+      if (!data?.success || data.province !== province || !Array.isArray(data.districts) || !data.communesByDistrict) throw new Error(data?.message || 'Không tải được huyện/xã.');
+      applyBirthProvince(data);
+      if (!birthPlaceCache.birth) birthPlaceCache.birth = {};
+      birthPlaceCache.birth[province] = { expiresAt: Date.now() + LOCATION_CACHE_TTL_MS, data };
+      saveBirthPlaceCache();
+      return data;
+    }).finally(() => { if (birthPlaceRequests.get(province) === request) birthPlaceRequests.delete(province); });
+    birthPlaceRequests.set(province, request);
+    return request;
+  }
+
+  function renderBirthDistrictOptions(prefix = 'birth') {
+    const province = document.getElementById(`${prefix}Province`);
+    const district = document.getElementById(`${prefix}District`);
+    const ward = document.getElementById(`${prefix}Ward`);
+    if (!province || !district || !ward) return;
+    const selectedProvince = canonicalBirthProvince(province.value);
+    if (!selectedProvince) {
+      fillLocationSelect(district, [], '-- Chọn tỉnh trước --', '');
+      fillLocationSelect(ward, [], '-- Chọn huyện trước --', '');
+      setLocationStatus(prefix, `${prefix}Province`, '');
+      return;
+    }
+    province.value = selectedProvince;
+    if (birthPlaceState.loadedProvinces[selectedProvince]) {
+      const options = birthPlaceState.districtsByProvince[selectedProvince] || [];
+      fillLocationSelect(district, options, '-- Chọn huyện --', selectedProvince);
+      renderBirthCommuneOptions(prefix);
+      setLocationStatus(prefix, `${prefix}Province`, options.length ? '' : 'Chưa có danh mục huyện của tỉnh này.');
+      return;
+    }
+    fillLocationSelect(district, [], 'Đang tải huyện/xã...', selectedProvince);
+    fillLocationSelect(ward, [], '-- Chọn huyện trước --', '');
+    setLocationStatus(prefix, `${prefix}Province`, 'Đang tải danh mục huyện/xã...');
+    const epoch = locationEpoch;
+    requestBirthProvince(selectedProvince).then(data => {
+      if (!data) return;
+      if (canonicalBirthProvince(province.value) === selectedProvince) renderBirthDistrictOptions(prefix);
+    }).catch(error => {
+      if (epoch !== locationEpoch || canonicalBirthProvince(province.value) !== selectedProvince) return;
+      fillLocationSelect(district, [], '-- Chưa tải được huyện --', selectedProvince);
+      setLocationStatus(prefix, `${prefix}Province`, getLocationErrorMessage(error, 'Không tải được huyện/xã.'), () => renderBirthDistrictOptions(prefix));
+    });
+  }
+
+  function renderBirthCommuneOptions(prefix = 'birth') {
+    const province = document.getElementById(`${prefix}Province`);
+    const district = document.getElementById(`${prefix}District`);
+    const ward = document.getElementById(`${prefix}Ward`);
+    if (!province || !district || !ward) return;
+    const key = birthPlaceKey(province.value, district.value);
+    const options = birthPlaceState.communesByDistrict[key] || [];
+    fillLocationSelect(ward, options, district.value ? '-- Chọn xã --' : '-- Chọn huyện trước --', key);
+  }
+
+  function setupAddressPicker(key, provinceId, communeInputId, datalistId) {
+    document.getElementById(provinceId).addEventListener('change', () => loadCommunesForProvince(key, provinceId, communeInputId, datalistId));
+    document.getElementById(communeInputId).addEventListener('input', () => renderCommuneSuggestions(key, communeInputId, datalistId));
+    document.getElementById(communeInputId).addEventListener('focus', () => renderCommuneSuggestions(key, communeInputId, datalistId));
+    document.getElementById(communeInputId).disabled = true;
+  }
+
+  function resetLocationPickers() {
+    ['birth', 'birthRegistration', 'hometown'].forEach(prefix => renderBirthDistrictOptions(prefix));
+    loadCommunesForProvince('current', 'tinhThanh', 'xaPhuongInput', 'xaPhuongList');
+    loadCommunesForProvince('household', 'tinhThanhHK', 'xaPhuongHKInput', 'xaPhuongHKList');
+  }
+
+  function loadCommunesForProvince(key, provinceId, communeInputId, datalistId, preserve = false) {
+    const province = document.getElementById(provinceId).value;
+    const input = document.getElementById(communeInputId);
+    if (!preserve || input.dataset.province !== province) input.value = '';
+    input.dataset.province = province;
+    communeState[key] = [];
+    input.disabled = true;
+    renderCommuneSuggestions(key, communeInputId, datalistId);
+    if (!province) { setLocationStatus(key, provinceId, ''); return; }
+    const cached = birthPlaceCache.address?.[province];
+    if (cached?.expiresAt > Date.now() && Array.isArray(cached.items)) {
+      communeState[key] = cached.items;
+      input.disabled = false;
+      renderCommuneSuggestions(key, communeInputId, datalistId);
+      setLocationStatus(key, provinceId, '');
+      return;
+    }
+    if (window.google && google.script && google.script.run) {
+      setLocationStatus(key, provinceId, 'Đang tải xã/phường...');
+      const epoch = locationEpoch;
+      if (!addressRequests.has(province)) {
+        const request = callLocationServer('getRegistrationCommunes', [province]).then(data => {
+          if (epoch !== locationEpoch) return null;
+          if (!data?.success || data.province !== province || !Array.isArray(data.items)) throw new Error(data?.message || 'Không tải được xã/phường.');
+          if (!birthPlaceCache.address) birthPlaceCache.address = {};
+          birthPlaceCache.address[province] = { expiresAt: Date.now() + LOCATION_CACHE_TTL_MS, items: data.items };
+          saveBirthPlaceCache();
+          return data.items;
+        }).finally(() => { if (addressRequests.get(province) === request) addressRequests.delete(province); });
+        addressRequests.set(province, request);
+      }
+      addressRequests.get(province).then(items => {
+        if (!items || document.getElementById(provinceId).value !== province) return;
+        communeState[key] = items;
+        input.disabled = false;
+        renderCommuneSuggestions(key, communeInputId, datalistId);
+        setLocationStatus(key, provinceId, '');
+      }).catch(error => {
+        if (epoch !== locationEpoch || document.getElementById(provinceId).value !== province) return;
+        setLocationStatus(key, provinceId, getLocationErrorMessage(error, 'Không tải được xã/phường.'), () => loadCommunesForProvince(key, provinceId, communeInputId, datalistId, true));
+      });
+    } else {
+      input.disabled = false;
+    }
+  }
+
+  function renderCommuneSuggestions(key, communeInputId, datalistId) {
+    const list = document.getElementById(datalistId);
+    const query = normalizeText(document.getElementById(communeInputId).value);
+    const options = communeState[key]
+      .filter(name => !query || normalizeText(name).includes(query))
+      .slice(0, 80);
+    list.innerHTML = options.map(name => `<option value="${escapeHtml(name)}"></option>`).join('');
+  }
+
+  function normalizeText(value) {
+    return String(value || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/\u0111/g, 'd')
+      .replace(/\u0110/g, 'd')
+      .toLowerCase()
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function escapeHtml(value) {
+    return String(value || '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+  }
+
+  function getSafeMessage(value, fallback) {
+    if (typeof value === 'string' && value.trim()) return value.trim();
+    if (value && typeof value.message === 'string' && value.message.trim()) return value.message.trim();
+    if (value && typeof value.details === 'string' && value.details.trim()) return value.details.trim();
+    if (value && typeof value.toString === 'function') {
+      const text = value.toString();
+      if (text && text !== '[object Object]' && !/^\[object /.test(text)) return text;
+    }
+    return fallback;
+  }
+
+  function getLocationErrorMessage(value, fallback) {
+    const message = getSafeMessage(value, fallback);
+    if (/SpreadsheetApp\.openById|googleapis\.com\/auth\/spreadsheets/i.test(message)) {
+      return 'Danh mục địa phương chưa được cấp quyền đọc Google Sheet. Vui lòng báo quản trị viên cấp quyền cho Web App đăng ký.';
+    }
+    return message;
+  }
+
+  function setStatusMessage(type, message) {
+    const status = document.getElementById('status');
+    const text = getSafeMessage(message, type === 'success' ? 'Đã xử lý xong.' : 'Chưa nộp được hồ sơ. Thầy cô vui lòng thử lại hoặc chụp màn hình này gửi quản trị.');
+    status.innerHTML = `<div class="${type}">${escapeHtml(text)}</div>`;
+  }
+
+  function renderPreviousAcademic() {
+    const grade = Number(String(document.getElementById('lopHoc').value || '').match(/^\d+/)?.[0] || 0);
+    const box = document.getElementById('previousAcademicBox');
+    box.innerHTML = '';
+    if (grade < 7) return;
+    const note = document.createElement('div');
+    note.className = 'history-note';
+    note.textContent = 'Quy đổi đánh giá cũ: Trung bình = Đạt, Khá = Khá, Giỏi = Tốt.';
+    box.appendChild(note);
+    for (let g = 6; g < grade; g++) {
+      const row = document.createElement('div');
+      row.className = 'history-row';
+      row.innerHTML = `
+        <div class="history-title">Thông tin lớp ${g}</div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Kết quả học tập lớp ${g} *</label>
+            <select name="hocLucLop${g}" required>${renderResultOptions()}</select>
+          </div>
+          <div class="form-group">
+            <label>Kết quả hạnh kiểm lớp ${g} *</label>
+            <select name="hanhKiemLop${g}" required>${renderResultOptions()}</select>
+          </div>
+        </div>`;
+      box.appendChild(row);
+    }
+  }
+
+  function renderResultOptions() {
+    return '<option value="">-</option>' + RESULT_OPTIONS.map(x => `<option value="${x}">${x}</option>`).join('');
+  }
+
+  function handleFormSubmit(event) {
+    event.preventDefault();
+    const form = document.getElementById('myForm');
+    if (form.querySelector('select[data-location-scope]:disabled, #xaPhuongInput:disabled, #xaPhuongHKInput:disabled')) {
+      setStatusMessage('error', 'Vui lòng chọn đủ tỉnh, huyện, xã và chờ danh mục tải xong trước khi nộp hồ sơ.');
+      return;
+    }
+    if (!form.checkValidity()) {
+      form.reportValidity();
+      return;
+    }
+
+    const status = document.getElementById('status');
+    const submit = document.getElementById('submitButton');
+    submit.disabled = true;
+    status.textContent = 'Đang kiểm tra hồ sơ...';
+
+    const identityError = validateIdentityCode();
+    if (identityError) {
+      setStatusMessage('error', identityError);
+      submit.disabled = false;
+      return;
+    }
+
+    const schoolYear = document.getElementById('tinhTrangHocSinh').value;
+    if (getSchoolYearStart(schoolYear) < getSchoolYearStart(registrationConfig.currentSchoolYear)) {
+      setStatusMessage('error', `Năm đăng ký không được nhỏ hơn năm học hiện tại ${registrationConfig.currentSchoolYear}.`);
+      submit.disabled = false;
+      return;
+    }
+
+    const hocBaError = validateHocBaFiles();
+    if (hocBaError) {
+      setStatusMessage('error', hocBaError);
+      submit.disabled = false;
+      return;
+    }
+
+    status.textContent = 'Đang đọc và tối ưu ảnh tải lên...';
+
+    Promise.all(FILE_FIELDS.map(id => readFilesFromInput(document.getElementById(id))))
+      .then(fileData => {
+        if (!(window.google && google.script && google.script.run)) {
+          throw new Error('Bản xem trực tiếp trên máy chỉ để xem giao diện. Thầy cô cần chạy bằng link triển khai Apps Script để nộp hồ sơ.');
+        }
+        status.textContent = 'Đã chuẩn bị hồ sơ. Đang lưu vào Google Sheet và Drive...';
+        google.script.run
+          .withSuccessHandler(response => {
+            const safeResponse = response || {};
+            setStatusMessage(safeResponse.success ? 'success' : 'error', safeResponse.message);
+            if (safeResponse.success) {
+              form.reset();
+              renderGradeOptions();
+              renderSchoolYearOptions();
+              document.getElementById('previousAcademicBox').innerHTML = '';
+            }
+            submit.disabled = false;
+          })
+          .withFailureHandler(error => {
+            setStatusMessage('error', error);
+            submit.disabled = false;
+          })
+          .processForm(getFormData(form), {
+            anhKhaiSinh: fileData[0],
+            anhCanCuoc: fileData[1],
+            anhChanDung: fileData[2],
+            anhHocBa: fileData[3]
+          });
+      })
+      .catch(error => {
+        setStatusMessage('error', error);
+        submit.disabled = false;
+      });
+  }
+
+  function getFormData(form) {
+    const obj = {};
+    Array.from(form.elements).forEach(input => {
+      if (input.name && input.type !== 'file' && input.type !== 'submit') obj[input.name] = input.value;
+    });
+    obj.hoVaTen = String(obj.hoVaTen || '').trim().toLocaleUpperCase('vi-VN');
+    obj.ngaySinh = formatDateForSheet(obj.ngaySinh);
+    obj.maDinhDanh = normalizeIdentityCodeValue(obj.maDinhDanh);
+    const school = registrationConfig.schools.find(item => item.key === obj.coSoHoc);
+    obj.schoolName = school?.name || '';
+    obj.schoolCode = school?.code || '';
+    obj.classSuffix = school?.suffix || '';
+    obj.birthProvince = String(obj.birthProvince || '').trim();
+    obj.birthDistrict = String(obj.birthDistrict || '').trim();
+    obj.birthWard = String(obj.birthWard || '').trim();
+    obj.birthPlaceName = String(obj.birthPlaceName || '').trim();
+    obj.birthPlace = [obj.birthWard, obj.birthDistrict, obj.birthProvince].filter(Boolean).join(', ') || obj.birthPlaceName;
+    obj.birthRegistrationProvince = String(obj.birthRegistrationProvince || '').trim();
+    obj.birthRegistrationDistrict = String(obj.birthRegistrationDistrict || '').trim();
+    obj.birthRegistrationWard = String(obj.birthRegistrationWard || '').trim();
+    obj.birthRegistrationPlace = [obj.birthRegistrationWard, obj.birthRegistrationDistrict, obj.birthRegistrationProvince].filter(Boolean).join(', ');
+    obj.hometownProvince = String(obj.hometownProvince || '').trim();
+    obj.hometownDistrict = String(obj.hometownDistrict || '').trim();
+    obj.hometownWard = String(obj.hometownWard || '').trim();
+    obj.hometownPlace = [obj.hometownWard, obj.hometownDistrict, obj.hometownProvince].filter(Boolean).join(', ');
+    return obj;
+  }
+
+  function formatDateForSheet(value) {
+    const match = String(value || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    return match ? `${match[3]}/${match[2]}/${match[1]}` : String(value || '').trim();
+  }
+
+  const IMAGE_UPLOAD_PROFILES = {
+    anhKhaiSinh: { maxDimension: 2200, quality: 0.84 },
+    anhCanCuoc: { maxDimension: 2200, quality: 0.84 },
+    anhChanDung: { maxDimension: 1400, quality: 0.86 },
+    anhHocBa: { maxDimension: 2200, quality: 0.84 }
+  };
+
+  function readFilesFromInput(input) {
+    const fieldId = input?.id || '';
+    return Promise.all(Array.from(input?.files || []).map(file => readUploadFile(file, fieldId)));
+  }
+
+  function readUploadFile(file, fieldId) {
+    if (!String(file?.type || '').startsWith('image/')) return readOriginalUploadFile(file);
+    const profile = IMAGE_UPLOAD_PROFILES[fieldId] || IMAGE_UPLOAD_PROFILES.anhHocBa;
+
+    return new Promise((resolve, reject) => {
+      const objectUrl = URL.createObjectURL(file);
+      const image = new Image();
+      image.onload = () => {
+        try {
+          const width = image.naturalWidth || image.width || 1;
+          const height = image.naturalHeight || image.height || 1;
+          const scale = Math.min(1, profile.maxDimension / Math.max(width, height));
+          const shouldCompress = file.size > 1.5 * 1024 * 1024 || scale < 1;
+          if (!shouldCompress) {
+            URL.revokeObjectURL(objectUrl);
+            readOriginalUploadFile(file).then(resolve, reject);
+            return;
+          }
+
+          const canvas = document.createElement('canvas');
+          canvas.width = Math.max(1, Math.round(width * scale));
+          canvas.height = Math.max(1, Math.round(height * scale));
+          const context = canvas.getContext('2d', { alpha: false });
+          context.fillStyle = '#ffffff';
+          context.fillRect(0, 0, canvas.width, canvas.height);
+          context.drawImage(image, 0, 0, canvas.width, canvas.height);
+          canvas.toBlob(blob => {
+            URL.revokeObjectURL(objectUrl);
+            if (!blob) {
+              readOriginalUploadFile(file).then(resolve, reject);
+              return;
+            }
+            readOriginalUploadFile(blob, `${String(file.name || 'anh').replace(/\.[^.]+$/, '')}.jpg`)
+              .then(resolve, reject);
+          }, 'image/jpeg', profile.quality);
+        } catch (error) {
+          URL.revokeObjectURL(objectUrl);
+          readOriginalUploadFile(file).then(resolve, reject);
+        }
+      };
+      image.onerror = () => {
+        URL.revokeObjectURL(objectUrl);
+        readOriginalUploadFile(file).then(resolve, reject);
+      };
+      image.src = objectUrl;
+    });
+  }
+
+  function readOriginalUploadFile(file, fileName = file?.name) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve({
+        name: fileName || 'tep-tai-len',
+        type: file.type || 'application/octet-stream',
+        bytes: String(reader.result || '').split(',')[1] || ''
+      });
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function syncIdentityUploadRequirement() {
+    const input = document.getElementById('maDinhDanh');
+    const canCuocInput = document.getElementById('anhCanCuoc');
+    const canCuocGroup = document.getElementById('canCuocGroup');
+    const hasCode = /^\d{12}$/.test(input.value.trim());
+
+    canCuocInput.required = hasCode;
+    canCuocInput.disabled = !hasCode;
+    if (!hasCode) canCuocInput.value = '';
+    canCuocGroup.style.opacity = hasCode ? '1' : '.55';
+  }
+
+  function validateIdentityCode() {
+    const input = document.getElementById('maDinhDanh');
+    const value = normalizeIdentityCodeValue(input.value);
+    if (/^\d{12}$/.test(value) || value === 'bé chưa có') {
+      input.value = value;
+      return '';
+    }
+    return 'Mã định danh phải là đúng 12 số, hoặc ghi đúng: bé chưa có';
+  }
+
+  function normalizeIdentityCodeValue(value) {
+    const raw = String(value || '').trim();
+    if (/^\d{12}$/.test(raw)) return raw;
+    if (normalizeText(raw) === 'be chua co') return 'bé chưa có';
+    return raw;
+  }
+
+  function validateHocBaFiles() {
+    const files = Array.from(document.getElementById('anhHocBa').files || []);
+    const validFiles = files.filter(file => file.type === 'application/pdf' || file.type.startsWith('image/'));
+    if (validFiles.length !== files.length) {
+      return 'Học bạ chỉ nhận file PDF hoặc ảnh chụp.';
+    }
+    return '';
+  }
+</script>
+  </body>
+</html>

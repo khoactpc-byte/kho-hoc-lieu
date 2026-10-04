@@ -1,5 +1,4 @@
-import React from 'react';
-import { Calendar, CheckCircle2, ChevronDown, FileText, GraduationCap, Loader2, MapPin, Phone, Pin, Send, User, X } from 'lucide-react';
+import { Building2, Calendar, CheckCircle2, ChevronDown, FileText, GraduationCap, Loader2, MapPin, Phone, Pin, Send, User, X } from 'lucide-react';
 
 const fieldClass = 'w-full pl-10 pr-4 py-2.5 bg-slate-50/70 border border-slate-200 rounded-xl text-sm font-bold outline-none focus:border-sky-500 focus:bg-white focus:ring-4 focus:ring-sky-100 transition-all placeholder:text-slate-400';
 
@@ -10,7 +9,8 @@ function FieldIcon({ children }) {
 export default function AdmissionFormModal({
   schoolYear,
   form,
-  grades,
+  schools,
+  classOptions,
   documents,
   uniqueProvinces,
   filteredCommunes,
@@ -18,6 +18,7 @@ export default function AdmissionFormModal({
   isSubmitting,
   onClose,
   onFieldChange,
+  onSchoolChange,
   onDocumentChange,
   onProvinceChange,
   onCommuneChange,
@@ -25,13 +26,15 @@ export default function AdmissionFormModal({
   onReset,
   onSubmit
 }) {
+  const selectedSchool = schools.find(school => school.key === form.schoolKey);
+  const hasAvailableClasses = Array.isArray(classOptions) && classOptions.length > 0;
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/60 p-2 sm:p-4 backdrop-blur-sm">
       <div className="flex max-h-[92vh] w-full max-w-2xl flex-col overflow-hidden rounded-[32px] bg-slate-50 shadow-2xl border border-white/20">
         <div className="bg-gradient-to-r from-sky-800 via-indigo-900 to-slate-950 text-white px-5 py-5 sm:px-7 sm:py-6 relative overflow-hidden shrink-0 shadow-md">
           <div className="relative z-10 flex items-center justify-between gap-3">
             <div className="min-w-0">
-              <div className="text-[9px] tracking-[0.2em] font-black uppercase text-sky-300/90 mb-0.5">THCS Nguyễn An Ninh</div>
+              <div className="text-[9px] tracking-[0.2em] font-black uppercase text-sky-300/90 mb-0.5">{selectedSchool?.name || 'Tuyển sinh trực tuyến'}</div>
               <h3 className="text-base font-black uppercase tracking-tight text-white sm:text-xl">Đăng ký tuyển sinh {schoolYear}</h3>
               <p className="text-[11px] font-bold text-slate-300/80 mt-0.5">Hệ thống nộp hồ sơ nhập học trực tuyến</p>
             </div>
@@ -43,6 +46,10 @@ export default function AdmissionFormModal({
           <section className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/60 shadow-sm space-y-4">
             <div className="flex items-center gap-1.5 pb-2 border-b border-slate-100"><div className="w-1.5 h-4 rounded-full bg-sky-600" /><span className="text-xs font-black uppercase tracking-wider text-slate-700">1. Thông tin cá nhân học sinh</span></div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <label className="flex flex-col gap-1.5 sm:col-span-2">
+                <span className="text-[10px] font-black uppercase tracking-wide text-slate-500">Cơ sở đăng ký học *</span>
+                <div className="relative"><FieldIcon><Building2 className="h-4.5 w-4.5" /></FieldIcon><select id="admission-school" value={form.schoolKey || ''} onChange={event => onSchoolChange(event.target.value)} className={`${fieldClass} appearance-none cursor-pointer`}><option value="">Chọn cơ sở học</option>{schools.map(school => <option key={school.key} value={school.key}>{school.name}</option>)}</select><span className="absolute inset-y-0 right-0 pr-3.5 flex items-center pointer-events-none text-slate-400"><ChevronDown className="h-4 w-4" /></span></div>
+              </label>
               <label className="flex flex-col gap-1.5 sm:col-span-2">
                 <span className="text-[10px] font-black uppercase tracking-wide text-slate-500">Họ và tên học sinh *</span>
                 <div className="relative"><FieldIcon><User className="h-4.5 w-4.5" /></FieldIcon><input id="admission-fullName" value={form.fullName} onChange={event => onFieldChange('fullName', event.target.value)} placeholder="Nhập đầy đủ họ và tên tiếng Việt..." className={fieldClass} /></div>
@@ -65,7 +72,7 @@ export default function AdmissionFormModal({
               </label>
               <label className="flex flex-col gap-1.5">
                 <span className="text-[10px] font-black uppercase tracking-wide text-slate-500">Đăng ký học lớp *</span>
-                <div className="relative"><FieldIcon><GraduationCap className="h-4.5 w-4.5" /></FieldIcon><select id="admission-targetClass" value={form.targetClass} onChange={event => onFieldChange('targetClass', event.target.value)} className={`${fieldClass} appearance-none cursor-pointer`}><option value="">Chọn lớp học đăng ký</option>{grades.map(grade => <option key={grade} value={`Lớp ${grade}`}>Lớp {grade}</option>)}</select><span className="absolute inset-y-0 right-0 pr-3.5 flex items-center pointer-events-none text-slate-400"><ChevronDown className="h-4 w-4" /></span></div>
+                <div className="relative"><FieldIcon><GraduationCap className="h-4.5 w-4.5" /></FieldIcon><select id="admission-targetClass" value={form.targetClass} onChange={event => onFieldChange('targetClass', event.target.value)} disabled={!form.schoolKey || !hasAvailableClasses} className={`${fieldClass} appearance-none cursor-pointer disabled:opacity-50`}><option value="">{!form.schoolKey ? 'Chọn cơ sở trước' : hasAvailableClasses ? 'Chọn lớp học đăng ký' : 'Chưa cấu hình lớp cho cơ sở này'}</option>{classOptions.map(className => <option key={className} value={`Lớp ${className}`}>Lớp {className}</option>)}</select><span className="absolute inset-y-0 right-0 pr-3.5 flex items-center pointer-events-none text-slate-400"><ChevronDown className="h-4 w-4" /></span></div>
               </label>
             </div>
           </section>

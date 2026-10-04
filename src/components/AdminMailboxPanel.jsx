@@ -1,4 +1,3 @@
-import React from 'react';
 import { Folder, Loader2, Mail, Send, Trash2 } from 'lucide-react';
 
 export default function AdminMailboxPanel({

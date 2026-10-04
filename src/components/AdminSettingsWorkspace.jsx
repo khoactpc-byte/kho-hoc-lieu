@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useAssignmentDraft } from '../hooks/useAssignmentDraft';
 import { createPortal } from 'react-dom';
 import { CalendarDays, ClipboardPaste, Loader2, Save, Trash2 } from 'lucide-react';
 import NewTeachersModal from '../features/tran-hung-dao/NewTeachersModal';
@@ -8,6 +9,7 @@ import ThdClassesPanel from '../features/tran-hung-dao/ThdClassesPanel';
 import ThdTeachingAssignmentsPanel from '../features/tran-hung-dao/ThdTeachingAssignmentsPanel';
 import ThdTeachersPanel from '../features/tran-hung-dao/ThdTeachersPanel';
 import ThdSubjectsPanel from '../features/tran-hung-dao/ThdSubjectsPanel';
+import SchoolClassesPanel from './SchoolClassesPanel';
 import {
   DEFAULT_THD_SUBJECTS,
   POSITION_OPTIONS,
@@ -30,6 +32,9 @@ import {
   normalizeTypedAssignmentClassName
 } from '../features/tran-hung-dao/thdHelpers';
 import { postAppsScript } from '../utils/helpers';
+import { calendarDate, parseCalendarDate } from '../utils/calendarDate';
+import { getSchoolClassesForCampus, getSchoolTeachingAssignmentClassesForYear, getSchoolClassTeacherAssignments, normalizeSchoolYearKey, SCHOOL_OPTIONS } from '../utils/schoolClasses';
+import { getTeachingTeacherSuggestions } from '../utils/teacherSuggestions';
 
 const emptyTeacher = () => ({ name: '', shortName: '', subject: '', grades: [], periods: '', moneyPerPeriod: '', signatureUrl: '' });
 const emptyTeachingAssignment = () => ({
@@ -287,12 +292,6 @@ const ASSIGNMENT_SUBJECT_OPTIONS = [
   { label: 'Toán', value: 'Toán', aliases: ['Toán'] },
   { label: 'Văn', value: 'Văn', aliases: ['Ngữ Văn', 'Ngữ văn', 'Văn'] },
   { label: 'C nghệ', value: 'C nghệ', aliases: ['Công nghệ', 'CNGHỆ', 'CNghệ', 'CN nghệ'] },
-  { label: 'HĐTN,HN (SHL+SHCĐ)', value: 'HĐTN,HN (SHL+SHCĐ)', aliases: ['HĐTN,HN (SHL+CĐ)', 'HĐTN,HN (SHL, CĐ)', 'HĐTN (SHL, CĐ)'] },
-  { label: 'HĐTN,HN (DC)', value: 'HĐTN,HN (DC)', aliases: ['HĐTN (DC)'] },
-  { label: 'Toán (TS 10)', value: 'Toán (TS 10)', aliases: ['Toán (TS 10)', 'Toán TS10'] },
-  { label: 'Văn (TS 10)', value: 'Văn (TS 10)', aliases: ['Văn (TS 10)', 'Văn TS10', 'Ngữ văn (TS 10)', 'Ngữ văn TS10'] },
-  { label: 'Anh (TS 10)', value: 'Anh (TS 10)', aliases: ['Anh (TS 10)', 'Anh TS10', 'Tiếng Anh (TS 10)'] },
-  { label: 'GDQP,AN', value: 'GDQP,AN', aliases: ['GDQP, AN', 'GDQP AN', 'Giáo dục quốc phòng', 'Giáo dục quốc phòng, an ninh'] },
   { label: 'Chủ nhiệm', value: 'Chủ nhiệm', aliases: ['Chủ nhiệm', 'CN', 'GVCN', 'GV chủ nhiệm', 'Giáo viên chủ nhiệm'] }
 ];
 
@@ -327,6 +326,11 @@ const getAssignmentClassList = (value = '', classOptions = ASSIGNMENT_CLASSES) =
     const found = [...text.matchAll(/[6-9]/g)]
       .map(match => `${match[0]}PC`);
     if (found.length) return [...new Set(found)].filter(className => optionSet.has(className));
+  }
+  const legacyGrades = [...text.matchAll(/([1-9])PC/g)].map(match => match[1]);
+  if (legacyGrades.length) {
+    const migrated = classOptions.filter(className => legacyGrades.includes(getGradeFromManagedClassName(className)));
+    if (migrated.length) return [...new Set(migrated)];
   }
   const found = [];
   const rangePattern = /(\d+(?:[A-Z]+|\/+)?\d*)\s*(?:-+\s*>|→|–|—|-|đến|den)\s*(\d+(?:[A-Z]+|\/+)?\d*)/gi;
@@ -532,7 +536,6 @@ const cleanTeachingStoredNote = (value = '') => String(value || '')
   .split(/\r?\n/)
   .map(stripPasteCell)
   .filter(Boolean)
-  .filter(note => !isIgnoredTeachingPasteNote(note))
   .join('\n');
 
 const normalizeTeachingPastedNote = (value = '') => {
@@ -707,14 +710,9 @@ const getTeachingSourceTotalPerWeekValue = (columns = [], headers = [], headerMa
   return '';
 };
 
-const isIgnoredTeachingPasteNote = (value = '') => {
-  return false;
-};
-
 const buildTeachingPastedNote = (checkValue = '', noteValue = '') => {
   const check = stripPasteCell(checkValue);
   const note = stripPasteCell(noteValue);
-  if (isIgnoredTeachingPasteNote(note)) return check;
   if (check && note) return `${check}\n${note}`;
   return check || note;
 };
@@ -1232,11 +1230,6 @@ const worksheetRowsToTabText = (rows = []) => rows
   .map(row => row.map(cell => String(cell ?? '').replace(/\r?\n/g, ` ${TEACHING_CELL_BREAK} `).trim()).join('\t'))
   .join('\n');
 
-const isIgnoredTeachingWorkbookSheet = (sheetName = '') => {
-  const key = normalizeTeacherNameKey(sheetName);
-  return key === 'gddp' || key === 'giao duc dia phuong' || key === 'stem';
-};
-
 const loadXlsxLibrary = () => {
   if (typeof window === 'undefined') return Promise.reject(new Error('Chỉ đọc Excel trong trình duyệt.'));
   if (window.XLSX) return Promise.resolve(window.XLSX);
@@ -1285,8 +1278,8 @@ const getThdAssignmentTokens = () => {
 
 const splitTeachingListSegments = (value = '') => {
   let protectedValue = String(value || '');
-  protectedValue = protectedValue.replace(/hđtn\s*,\s*hn/gi, 'HĐTN\x01HN');
-  protectedValue = protectedValue.replace(/gdqp\s*,\s*an/gi, 'GDQP\x01AN');
+  protectedValue = protectedValue.replace(/hđtn\s*,\s*hn/gi, 'HĐTN\uE000HN');
+  protectedValue = protectedValue.replace(/gdqp\s*,\s*an/gi, 'GDQP\uE000AN');
   const segments = [];
   let current = '';
   let depth = 0;
@@ -1294,14 +1287,14 @@ const splitTeachingListSegments = (value = '') => {
     if (char === '(') depth += 1;
     if (char === ')') depth = Math.max(0, depth - 1);
     if ((char === ',' || char === ';' || char === '\n') && depth === 0) {
-      const segment = stripPasteCell(current.replace(/\x01/g, ','));
+      const segment = stripPasteCell(current.replaceAll('\uE000', ','));
       if (segment) segments.push(segment);
       current = '';
       return;
     }
     current += char;
   });
-  const lastSegment = stripPasteCell(current.replace(/\x01/g, ','));
+  const lastSegment = stripPasteCell(current.replaceAll('\uE000', ','));
   if (lastSegment) segments.push(lastSegment);
   return segments;
 };
@@ -1804,7 +1797,7 @@ const parseTeachingAssignmentPaste = (text = '', classOptions = ASSIGNMENT_CLASS
 
 const classSubjects = (subjects = []) => [...subjects, 'Chủ nhiệm'];
 
-const compactSchoolYearLabel = (schoolYear = '') => String(schoolYear || '').replace(/\s*-\s*/g, '-').trim();
+const compactSchoolYearLabel = normalizeSchoolYearKey;
 const LEGACY_ASSIGNMENT_YEAR_KEY = compactSchoolYearLabel('2025-2026');
 const sameJson = (left, right) => JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
 
@@ -1816,14 +1809,7 @@ const getSchoolYearStartYear = (schoolYear = '') => {
 const pad2 = (value) => String(value).padStart(2, '0');
 const dateKeyFromDate = (date) => `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
 
-const parseDateValue = (value = '') => {
-  const text = String(value || '').trim();
-  const isoMatch = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (isoMatch) return new Date(Number(isoMatch[1]), Number(isoMatch[2]) - 1, Number(isoMatch[3]));
-  const viMatch = text.match(/(\d{1,2})\D+(\d{1,2})\D+(\d{4})/);
-  if (viMatch) return new Date(Number(viMatch[3]), Number(viMatch[2]) - 1, Number(viMatch[1]));
-  return null;
-};
+const parseDateValue = parseCalendarDate;
 
 const toDateInputValue = (value = '') => {
   const parsed = parseDateValue(value);
@@ -1903,7 +1889,8 @@ const resolveTeachingImportDate = (value = '', schoolYear = '') => {
     const month = Number(explicitParts[2]);
     const year = explicitParts[3] ? Number(explicitParts[3]) : getTeachingImportYearForMonth(month, schoolYear);
     if (!day || !month || !year || day > 31 || month > 12) return '';
-    return dateKeyFromDate(new Date(year, month - 1, day));
+    const parsed = calendarDate(year, month, day);
+    return parsed ? dateKeyFromDate(parsed) : '';
   }
   const normalizedInput = normalizeTeachingImportDateInput(text, schoolYear);
   const match = normalizedInput.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
@@ -1912,7 +1899,8 @@ const resolveTeachingImportDate = (value = '', schoolYear = '') => {
   const month = Number(match[2]);
   const year = Number(match[3]);
   if (!day || !month || day > 31 || month > 12) return '';
-  return dateKeyFromDate(new Date(year, month - 1, day));
+  const parsed = calendarDate(year, month, day);
+  return parsed ? dateKeyFromDate(parsed) : '';
 };
 
 const normalizeTeachingSemesterDates = (dates = {}, schoolYear = '') => {
@@ -2122,9 +2110,11 @@ export default function AdminSettingsWorkspace({
   transcriptStartSigners,
   transcriptEndSigners,
   nanTeachers,
+  tqkTeachers = [],
   thdTeachers = [],
   thdSubjects = [],
   thdClasses,
+  schoolClassesByYear = {},
   classTeacherAssignments,
   teachingAssignments,
   thdTeachingAssignments,
@@ -2145,14 +2135,18 @@ export default function AdminSettingsWorkspace({
   const [transcriptStartSignersDraft, setTranscriptStartSignersDraft] = useState({});
   const [transcriptEndSignersDraft, setTranscriptEndSignersDraft] = useState({});
   const [teachersDraft, setTeachersDraft] = useState([]);
+  const [tqkTeachersDraft, setTqkTeachersDraft] = useState([]);
   const [thdTeachersDraft, setThdTeachersDraft] = useState([]);
   const [thdSubjectsDraft, setThdSubjectsDraft] = useState(() => DEFAULT_THD_SUBJECTS);
   const [thdClassesDraft, setThdClassesDraft] = useState(() => createDefaultThdClasses());
   const [assignmentsDraft, setAssignmentsDraft] = useState({});
-  const [teachingAssignmentsDraft, setTeachingAssignmentsDraft] = useState({});
-  const [thdTeachingAssignmentsDraft, setThdTeachingAssignmentsDraft] = useState({});
-  const [teachingAssignmentsDirty, setTeachingAssignmentsDirty] = useState(false);
-  const [thdTeachingAssignmentsDirty, setThdTeachingAssignmentsDirty] = useState(false);
+  const [classTeacherCampusCode, setClassTeacherCampusCode] = useState('NAN');
+  const teachingDraft = useAssignmentDraft(teachingAssignments);
+  const thdDraft = useAssignmentDraft(thdTeachingAssignments);
+  const { value: teachingAssignmentsDraft, setValue: setTeachingAssignmentsDraft,
+    dirty: teachingAssignmentsDirty, setDirty: setTeachingAssignmentsDirty } = teachingDraft;
+  const { value: thdTeachingAssignmentsDraft, setValue: setThdTeachingAssignmentsDraft,
+    dirty: thdTeachingAssignmentsDirty, setDirty: setThdTeachingAssignmentsDirty } = thdDraft;
   const [activeTeachingVersionId, setActiveTeachingVersionId] = useState("main");
   const [hasInitializedDefaultVersion, setHasInitializedDefaultVersion] = useState(false);
   const [pasteText, setPasteText] = useState('');
@@ -2186,6 +2180,11 @@ export default function AdminSettingsWorkspace({
   const teachingAssignmentPanelRef = useRef(null);
   const teachingAssignmentScrollRef = useRef(null);
   const activePanel = initialPanel || 'general';
+  const isTqkTeachersPanel = activePanel === 'tqkTeachers';
+  const schoolTeachersDraft = isTqkTeachersPanel ? tqkTeachersDraft : teachersDraft;
+  const setSchoolTeachersDraft = updater => (isTqkTeachersPanel ? setTqkTeachersDraft : setTeachersDraft)(updater);
+  const schoolTeachersSettingKey = isTqkTeachersPanel ? 'tqkTeachers' : 'nanTeachers';
+  const schoolTeachersCampusName = isTqkTeachersPanel ? 'THCS Trần Quang Khải' : 'THCS Nguyễn An Ninh';
   const isThdTeachingPanel = activePanel === 'thdTeachingAssignments';
   const isTeachingPanel = activePanel === 'teachingAssignments' || isThdTeachingPanel;
   const showTeachingFinancialColumns = !isThdTeachingPanel && showTeachingMoneyColumns;
@@ -2290,6 +2289,11 @@ export default function AdminSettingsWorkspace({
   }, [nanTeachers]);
 
   useEffect(() => {
+    const rows = (Array.isArray(tqkTeachers) ? tqkTeachers : []).map(normalizeTeacher);
+    setTqkTeachersDraft(rows.length ? rows : [emptyTeacher()]);
+  }, [tqkTeachers]);
+
+  useEffect(() => {
     const rows = (Array.isArray(thdTeachers) ? thdTeachers : []).map(normalizeThdTeacher);
     setThdTeachersDraft(rows.length ? rows : [emptyThdTeacher()]);
   }, [thdTeachers]);
@@ -2321,16 +2325,6 @@ export default function AdminSettingsWorkspace({
   useEffect(() => {
     setAssignmentsDraft(classTeacherAssignments || {});
   }, [classTeacherAssignments]);
-
-  useEffect(() => {
-    setTeachingAssignmentsDraft(teachingAssignments && typeof teachingAssignments === 'object' ? teachingAssignments : {});
-    setTeachingAssignmentsDirty(false);
-  }, [teachingAssignments]);
-
-  useEffect(() => {
-    setThdTeachingAssignmentsDraft(thdTeachingAssignments && typeof thdTeachingAssignments === 'object' ? thdTeachingAssignments : {});
-    setThdTeachingAssignmentsDirty(false);
-  }, [thdTeachingAssignments]);
 
   useEffect(() => {
     if (activeClassPickerIndex === null) return undefined;
@@ -2386,7 +2380,7 @@ export default function AdminSettingsWorkspace({
   };
 
   const assignmentValue = (grade, subject, semester = 'hk1') => {
-    const value = normalizeClassTeacherAssignmentValue(assignmentsBySelectedYear?.[grade]?.[subject] ?? '');
+    const value = normalizeClassTeacherAssignmentValue(getSchoolClassTeacherAssignments(assignmentsBySelectedYear, grade)?.[subject] ?? '');
     return value[semester] ?? '';
   };
 
@@ -2394,7 +2388,31 @@ export default function AdminSettingsWorkspace({
     THD_CLASS_GRADES.flatMap(grade => (thdClassesDraft?.[grade] || [])).map(normalizeClassName).filter(Boolean).sort(compareManagedClasses)
   ), [thdClassesDraft]);
 
-  const activeAssignmentClasses = isThdTeachingPanel ? thdClassOptions : ASSIGNMENT_CLASSES;
+  const schoolClassOptions = useMemo(() => (
+    getSchoolTeachingAssignmentClassesForYear(schoolClassesByYear, selectedSchoolYear, ['6', '7', '8', '9'])
+      .map(normalizeClassName)
+      .filter(Boolean)
+      .sort(compareManagedClasses)
+  ), [schoolClassesByYear, selectedSchoolYear]);
+  const activeAssignmentClasses = isThdTeachingPanel
+    ? thdClassOptions
+    : (schoolClassOptions.length ? schoolClassOptions : ASSIGNMENT_CLASSES);
+  const classTeacherScopes = useMemo(() => (
+    schoolClassOptions.length ? schoolClassOptions : grades.map(String)
+  ), [schoolClassOptions, grades]);
+  const hasSuffixedClassTeacherScopes = classTeacherScopes.some(className => /^[1-9][AB]$/.test(String(className)));
+  const classTeacherScopesByCampus = useMemo(() => {
+    if (!hasSuffixedClassTeacherScopes) {
+      return { NAN: classTeacherScopes, TQK: classTeacherScopes };
+    }
+    return {
+      NAN: getSchoolClassesForCampus(classTeacherScopes, 'NAN'),
+      TQK: getSchoolClassesForCampus(classTeacherScopes, 'TQK')
+    };
+  }, [classTeacherScopes, hasSuffixedClassTeacherScopes]);
+  const visibleClassTeacherScopes = hasSuffixedClassTeacherScopes
+    ? (classTeacherScopesByCampus[classTeacherCampusCode] || [])
+    : classTeacherScopes;
   const activeTeachingAssignmentsDraft = isThdTeachingPanel ? thdTeachingAssignmentsDraft : teachingAssignmentsDraft;
   const setActiveTeachingAssignmentsDraft = useCallback((updater, options = {}) => {
     const { markDirty = true } = options;
@@ -2404,7 +2422,7 @@ export default function AdminSettingsWorkspace({
     }
     const setter = isThdTeachingPanel ? setThdTeachingAssignmentsDraft : setTeachingAssignmentsDraft;
     setter(updater);
-  }, [isThdTeachingPanel]);
+  }, [isThdTeachingPanel, setThdTeachingAssignmentsDirty, setTeachingAssignmentsDirty, setThdTeachingAssignmentsDraft, setTeachingAssignmentsDraft]);
   const activeTeachingTeachersDraft = useMemo(() => (
     isThdTeachingPanel
       ? thdTeachersDraft.map(teacher => normalizeTeacher({
@@ -2454,7 +2472,7 @@ export default function AdminSettingsWorkspace({
     setActiveTeachingVersionId(newId);
     if (isThdTeachingPanel) setThdTeachingAssignmentsDirty(true);
     else setTeachingAssignmentsDirty(true);
-  }, [effectiveSchoolYearKey, setActiveTeachingAssignmentsDraft, isThdTeachingPanel]);
+  }, [effectiveSchoolYearKey, setActiveTeachingAssignmentsDraft, isThdTeachingPanel, setTeachingAssignmentsDirty, setThdTeachingAssignmentsDirty]);
 
   const handleDuplicateTeachingVersion = useCallback(() => {
     const newId = `v${Date.now()}`;
@@ -2491,7 +2509,7 @@ export default function AdminSettingsWorkspace({
     setActiveTeachingVersionId(newId);
     if (isThdTeachingPanel) setThdTeachingAssignmentsDirty(true);
     else setTeachingAssignmentsDirty(true);
-  }, [effectiveSchoolYearKey, activeTeachingDataKey, setActiveTeachingAssignmentsDraft, isThdTeachingPanel]);
+  }, [effectiveSchoolYearKey, activeTeachingDataKey, setActiveTeachingAssignmentsDraft, isThdTeachingPanel, setTeachingAssignmentsDirty, setThdTeachingAssignmentsDirty]);
 
   const handleDeleteTeachingVersion = useCallback((versionIdToDelete) => {
     if (versionIdToDelete === "main") return; // cannot delete main
@@ -2511,7 +2529,7 @@ export default function AdminSettingsWorkspace({
     }
     if (isThdTeachingPanel) setThdTeachingAssignmentsDirty(true);
     else setTeachingAssignmentsDirty(true);
-  }, [effectiveSchoolYearKey, setActiveTeachingAssignmentsDraft, activeTeachingVersionId, isThdTeachingPanel]);
+  }, [effectiveSchoolYearKey, setActiveTeachingAssignmentsDraft, activeTeachingVersionId, isThdTeachingPanel, setTeachingAssignmentsDirty, setThdTeachingAssignmentsDirty]);
 
   const updateTeachingVersionName = useCallback((id, name) => {
     if (!name.trim()) return;
@@ -2536,7 +2554,7 @@ export default function AdminSettingsWorkspace({
     });
     if (isThdTeachingPanel) setThdTeachingAssignmentsDirty(true);
     else setTeachingAssignmentsDirty(true);
-  }, [effectiveSchoolYearKey, setActiveTeachingAssignmentsDraft, isThdTeachingPanel]);
+  }, [effectiveSchoolYearKey, setActiveTeachingAssignmentsDraft, isThdTeachingPanel, setTeachingAssignmentsDirty, setThdTeachingAssignmentsDirty]);
 
   const defaultTeachingVersionId = useMemo(() => {
     return activeTeachingAssignmentsDraft?.[`${effectiveSchoolYearKey}_defaultVersionId`] || null;
@@ -2554,7 +2572,7 @@ export default function AdminSettingsWorkspace({
     });
     if (isThdTeachingPanel) setThdTeachingAssignmentsDirty(true);
     else setTeachingAssignmentsDirty(true);
-  }, [effectiveSchoolYearKey, setActiveTeachingAssignmentsDraft, isThdTeachingPanel]);
+  }, [effectiveSchoolYearKey, setActiveTeachingAssignmentsDraft, isThdTeachingPanel, setTeachingAssignmentsDirty, setThdTeachingAssignmentsDirty]);
 
   useEffect(() => {
     setHasInitializedDefaultVersion(false);
@@ -2592,7 +2610,7 @@ export default function AdminSettingsWorkspace({
     setEditingTeachingBatchId(newBatchId);
     if (isThdTeachingPanel) setThdTeachingAssignmentsDirty(true);
     else setTeachingAssignmentsDirty(true);
-  }, [activeTeachingDataKey, isThdTeachingPanel, setActiveTeachingAssignmentsDraft]);
+  }, [activeTeachingDataKey, isThdTeachingPanel, setActiveTeachingAssignmentsDraft, setTeachingAssignmentsDirty, setThdTeachingAssignmentsDirty]);
 
   const teachingBatchesForSelectedYear = useMemo(() => {
     let rows = activeTeachingAssignmentsDraft?.batchesByYear?.[activeTeachingDataKey];
@@ -2600,7 +2618,7 @@ export default function AdminSettingsWorkspace({
       rows = Object.values(rows);
     }
     return Array.isArray(rows) ? rows : [];
-  }, [activeTeachingAssignmentsDraft, effectiveSchoolYearKey, activeTeachingDataKey]);
+  }, [activeTeachingAssignmentsDraft, activeTeachingDataKey]);
 
   const hasTeachingBatches = isThdTeachingPanel && teachingBatchesForSelectedYear.length > 0;
   const activeTeachingBatch = hasTeachingBatches && selectedTeachingBatchId !== 'summary'
@@ -2723,20 +2741,28 @@ export default function AdminSettingsWorkspace({
       .sort((a, b) => a.name.localeCompare(b.name, 'vi'))
   ), [activeTeachingTeachersDraft]);
 
-  const getTeacherSuggestions = (value = '') => {
-    const searchKey = normalizeTeacherNameKey(value);
-    const ranked = teacherSearchOptions
-      .map(teacher => {
-        const nameKey = normalizeTeacherNameKey(teacher.name);
-        const subjectKey = normalizeTeacherNameKey(teacher.subject);
-        const score = !searchKey
-          ? 1
-          : (nameKey.startsWith(searchKey) ? 3 : (nameKey.includes(searchKey) || subjectKey.includes(searchKey) ? 2 : 0));
-        return { teacher, score };
-      })
-      .filter(item => item.score > 0)
-      .sort((a, b) => b.score - a.score || a.teacher.name.localeCompare(b.teacher.name, 'vi'));
-    return ranked.slice(0, 8).map(item => item.teacher);
+  const teacherSearchOptionsByCampus = useMemo(() => ({
+    NAN: teachersDraft.map(normalizeTeacher).filter(teacher => teacher.name),
+    TQK: tqkTeachersDraft.map(normalizeTeacher).filter(teacher => teacher.name)
+  }), [teachersDraft, tqkTeachersDraft]);
+
+  const getTeacherSuggestions = (value = '', row = {}) => {
+    if (isThdTeachingPanel) {
+      return getTeachingTeacherSuggestions({ query: value, fallbackTeachers: teacherSearchOptions });
+    }
+    const subjectKey = normalizeTeacherNameKey(row.assignment || '');
+    const subjectOption = ASSIGNMENT_SUBJECT_OPTIONS.find(option => (
+      [option.value, option.label, ...option.aliases].some(alias => normalizeTeacherNameKey(alias) === subjectKey)
+    ));
+    const selectedClasses = getAssignmentClassList(row.className, activeAssignmentClasses);
+    return getTeachingTeacherSuggestions({
+      query: value,
+      assignment: row.assignment || '',
+      classes: selectedClasses,
+      teachersByCampus: teacherSearchOptionsByCampus,
+      fallbackTeachers: teacherSearchOptions,
+      subjectAliases: subjectOption ? [subjectOption.value, subjectOption.label, ...subjectOption.aliases] : []
+    });
   };
 
   const pickTeachingTeacher = (index, teacher) => {
@@ -2764,7 +2790,7 @@ export default function AdminSettingsWorkspace({
   const openClassPicker = (index, buttonElement = null) => {
     if (buttonElement) {
       const rect = buttonElement.getBoundingClientRect();
-      const dropdownHeight = 360;
+      const dropdownHeight = 450;
       const openUp = (window.innerHeight - rect.bottom) < dropdownHeight + 16;
       setClassPickerPosition({
         top: openUp ? Math.max(8, rect.top - dropdownHeight - 4) : rect.bottom + 4,
@@ -2854,7 +2880,7 @@ export default function AdminSettingsWorkspace({
     });
   };
 
-  const getTeachingWeekNote = (weeks = '', semesterDates = teachingSemesterDatesForYear) => {
+  const getTeachingWeekNote = useCallback((weeks = '', semesterDates = teachingSemesterDatesForYear) => {
     const rawWeeks = String(weeks || '').trim();
     const weekNumber = Number(rawWeeks.replace(',', '.'));
     const weekLabel = normalizePeriods(rawWeeks) || rawWeeks.replace(/tuần/gi, '').trim() || '...';
@@ -2868,20 +2894,20 @@ export default function AdminSettingsWorkspace({
       return `35 tuần (từ ngày ${formatDateForNote(semesterDates.hk1Start)} đến ngày ${formatDateForNote(semesterDates.hk2End)})`;
     }
     return `${weekLabel} tuần (từ ngày ......... đến ngày .........)`;
-  };
+  }, [teachingSemesterDatesForYear]);
 
-  const isGeneratedTeachingNote = (note = '') => {
+  const isGeneratedTeachingNote = useCallback((note = '') => {
     const noteKey = normalizeTeacherNameKey(note);
     return (
       (noteKey.includes('tuan') && noteKey.includes('tu') && noteKey.includes('den'))
       || noteKey.includes('hk1')
       || noteKey.includes('hk2')
     );
-  };
+  }, []);
 
-  const normalizeTeachingNoteText = (value = '') => String(value ?? '').replace(/\r\n?/g, '\n').trim();
+  const normalizeTeachingNoteText = useCallback((value = '') => String(value ?? '').replace(/\r\n?/g, '\n').trim(), []);
 
-  const getTeachingNoteExtra = (note = '', generatedNote = '') => {
+  const getTeachingNoteExtra = useCallback((note = '', generatedNote = '') => {
     const text = normalizeTeachingNoteText(note);
     const generated = normalizeTeachingNoteText(generatedNote);
     if (!text) return '';
@@ -2893,9 +2919,9 @@ export default function AdminSettingsWorkspace({
     const generatedEndIndex = text.indexOf(')');
     if (generatedEndIndex >= 0) return text.slice(generatedEndIndex + 1).trim();
     return '';
-  };
+  }, [normalizeTeachingNoteText, isGeneratedTeachingNote]);
 
-  const mergeTeachingNote = (generatedNote = '', note = '') => {
+  const mergeTeachingNote = useCallback((generatedNote = '', note = '') => {
     const generated = normalizeTeachingNoteText(generatedNote);
     const text = normalizeTeachingNoteText(note);
     if (
@@ -2908,9 +2934,11 @@ export default function AdminSettingsWorkspace({
     const extra = getTeachingNoteExtra(note, generated);
     if (!generated) return extra;
     return extra ? `${generated}\n${extra}` : generated;
-  };
+  }, [normalizeTeachingNoteText, isGeneratedTeachingNote, getTeachingNoteExtra]);
+  const mergeTeachingNoteRef = useRef(mergeTeachingNote);
+  mergeTeachingNoteRef.current = mergeTeachingNote;
 
-  const updateTeachingRowsForYear = (updater) => {
+  const updateTeachingRowsForYear = useCallback((updater) => {
     if (isThdTeachingPanel && teachingBatchesForSelectedYear.length && activeTeachingBatch) {
       setTeachingSummaryDirty(true);
     }
@@ -2954,7 +2982,9 @@ export default function AdminSettingsWorkspace({
         byYear
       };
     });
-  };
+  }, [isThdTeachingPanel, teachingBatchesForSelectedYear, activeTeachingBatch, setTeachingSummaryDirty, setActiveTeachingAssignmentsDraft, activeTeachingDataKey, teachingRowsForSelectedYear]);
+  const updateTeachingRowsForYearRef = useRef(updateTeachingRowsForYear);
+  updateTeachingRowsForYearRef.current = updateTeachingRowsForYear;
 
   const updateTeachingAssignmentRow = (index, patch) => {
     updateTeachingRowsForYear(rows => rows.map((row, rowIndex) => {
@@ -3605,8 +3635,8 @@ export default function AdminSettingsWorkspace({
   const loadClassTeachersFromTeachingAssignments = () => {
     const yearSubjects = classSubjects(subjects);
     const nextYearMap = {};
-    grades.forEach(grade => {
-      nextYearMap[String(grade)] = Object.fromEntries(yearSubjects.map(subject => [subject, { hk1: '', hk2: '' }]));
+    classTeacherScopes.forEach(className => {
+      nextYearMap[String(className)] = Object.fromEntries(yearSubjects.map(subject => [subject, { hk1: '', hk2: '' }]));
     });
     const assignmentRows = teachingRowsForSelectedYear
       .map(row => normalizeTeachingAssignment(row, activeAssignmentClasses))
@@ -3621,9 +3651,10 @@ export default function AdminSettingsWorkspace({
       if (!subject) return;
       const semester = row.transcriptSigner ? 'hk2' : 'hk1';
       getAssignmentClassList(row.className, activeAssignmentClasses).forEach(className => {
-        const grade = className.replace(/[^\d]/g, '');
-        if (!grades.map(String).includes(grade)) return;
-        const currentValue = normalizeClassTeacherAssignmentValue(nextYearMap?.[grade]?.[subject] || '');
+        const grade = getGradeFromManagedClassName(className);
+        const scope = schoolClassOptions.length ? normalizeClassName(className) : grade;
+        if (!classTeacherScopes.includes(scope)) return;
+        const currentValue = normalizeClassTeacherAssignmentValue(nextYearMap?.[scope]?.[subject] || '');
         const currentNames = String(currentValue[semester] || '')
           .split(/\s*,\s*/)
           .map(item => item.trim())
@@ -3631,20 +3662,20 @@ export default function AdminSettingsWorkspace({
         if (!currentNames.some(name => normalizeTeacherNameKey(name) === normalizeTeacherNameKey(row.teacherName))) {
           currentNames.push(row.teacherName);
         }
-        nextYearMap[grade] = {
-          ...(nextYearMap[grade] || {}),
+        nextYearMap[scope] = {
+          ...(nextYearMap[scope] || {}),
           [subject]: {
             ...currentValue,
             [semester]: currentNames.join(', ')
           }
         };
-        touchedKeys.add(`${grade}|${subject}`);
+        touchedKeys.add(`${scope}|${subject}`);
       });
     });
     touchedKeys.forEach(key => {
-      const [grade, subject] = key.split('|');
-      const currentValue = normalizeClassTeacherAssignmentValue(nextYearMap?.[grade]?.[subject] || '');
-      nextYearMap[grade][subject] = {
+      const [scope, subject] = key.split('|');
+      const currentValue = normalizeClassTeacherAssignmentValue(nextYearMap?.[scope]?.[subject] || '');
+      nextYearMap[scope][subject] = {
         hk1: currentValue.hk1,
         hk2: currentValue.hk2
       };
@@ -3725,9 +3756,9 @@ export default function AdminSettingsWorkspace({
     return map;
   }, [cleanThdSubjectsDraft]);
 
-  const getTeachingRowSemesterKey = (row = {}) => {
+  const getTeachingRowSemesterKey = useCallback((row = {}) => {
     const rawSourcePeriodNote = row.sourcePeriodNote === '__SKIP__' ? '' : row.sourcePeriodNote;
-    const note = String(rawSourcePeriodNote || row.note || getAssignmentNote(row) || '');
+    const note = String(rawSourcePeriodNote || row.note || getTeachingWeekNote(row.weeks, teachingSemesterDatesForYear) || '');
     const dateMatches = [...note.matchAll(/\d{1,2}\D+\d{1,2}\D+\d{4}/g)];
     const dateMatch = dateMatches.length > 0 ? dateMatches[dateMatches.length - 1][0] : null;
     const date = dateMatch ? parseDateValue(dateMatch) : null;
@@ -3752,9 +3783,9 @@ export default function AdminSettingsWorkspace({
     
     const weekNumber = Number(String(row.weeks || '').replace(',', '.'));
     return weekNumber === 17 ? 'periodsSemester2' : 'periodsSemester1';
-  };
+  }, [teachingSemesterDatesForYear, activeAssignmentClasses, getTeachingWeekNote]);
 
-  const getConfiguredAssignmentPeriods = (assignment = '', row = {}) => {
+  const getConfiguredAssignmentPeriods = useCallback((assignment = '', row = {}) => {
     const text = String(assignment || '').trim();
     if (!text) return '';
     const rowGrades = getAssignmentClassList(row.className, activeAssignmentClasses)
@@ -3791,7 +3822,7 @@ export default function AdminSettingsWorkspace({
       if (partPeriods.length) return String(partPeriods.reduce((sum, value) => sum + value, 0));
     }
     return '';
-  };
+  }, [activeAssignmentClasses, getTeachingRowSemesterKey, thdSubjectPeriodsByKey]);
 
   const splitTechnologySummaryRowBySemester = (row = {}) => {
     const normalizedRow = normalizeTeachingAssignment(row, activeAssignmentClasses);
@@ -3862,6 +3893,8 @@ export default function AdminSettingsWorkspace({
     (Array.isArray(rows) ? rows : []).flatMap(splitTechnologySummaryRowBySemester),
     activeAssignmentClasses
   );
+  const splitAndCompactTechnologySummaryRowsRef = useRef(splitAndCompactTechnologySummaryRows);
+  splitAndCompactTechnologySummaryRowsRef.current = splitAndCompactTechnologySummaryRows;
 
   const summarizeTeachingBatchesForCurrentYear = (batches = []) => summarizeTeachingBatches(
     (Array.isArray(batches) ? batches : []).map(batch => ({
@@ -3876,7 +3909,7 @@ export default function AdminSettingsWorkspace({
     const rows = activeTeachingAssignmentsDraft?.byYear?.[activeTeachingDataKey];
     if (!Array.isArray(rows) || !rows.length) return;
     const currentRows = rows.map(row => normalizeTeachingAssignment(row, activeAssignmentClasses));
-    const nextRows = splitAndCompactTechnologySummaryRows(currentRows);
+    const nextRows = splitAndCompactTechnologySummaryRowsRef.current(currentRows);
     if (sameJson(currentRows, nextRows)) return;
     setActiveTeachingAssignmentsDraft(prev => {
       const prevObj = (prev && typeof prev === 'object') ? prev : {};
@@ -3888,7 +3921,7 @@ export default function AdminSettingsWorkspace({
         }
       };
     });
-  }, [activeAssignmentClasses, activeTeachingAssignmentsDraft, effectiveSchoolYearKey, isTeachingSummaryView, isThdTeachingPanel]);
+  }, [activeAssignmentClasses, activeTeachingAssignmentsDraft, activeTeachingDataKey, effectiveSchoolYearKey, isTeachingSummaryView, isThdTeachingPanel, setActiveTeachingAssignmentsDraft]);
 
   const applyConfiguredPeriodsToTeachingRow = (row = {}) => {
     if (!isThdTeachingPanel) return row;
@@ -3967,7 +4000,7 @@ export default function AdminSettingsWorkspace({
     };
   };
 
-  const getPeriodsPerClassWeek = (row = {}) => {
+  const getPeriodsPerClassWeek = useCallback((row = {}) => {
     const configuredPeriods = isThdTeachingPanel ? normalizePeriods(getConfiguredAssignmentPeriods(row.assignment, row)) : '';
     if (configuredPeriods && getAssignmentClassList(row.className, activeAssignmentClasses).length) return Number(configuredPeriods);
     const assignment = normalizeAssignmentSubject(row.assignment);
@@ -3982,7 +4015,7 @@ export default function AdminSettingsWorkspace({
     if (['GDCD', 'GDĐP', 'HĐTT'].includes(assignment)) return 1;
     if (assignment === 'C nghệ') return 1;
     return '';
-  };
+  }, [isThdTeachingPanel, getConfiguredAssignmentPeriods, activeAssignmentClasses, getTeachingRowSemesterKey]);
 
   const getTotalPeriodsPerWeek = (row = {}) => {
     const configuredPeriods = isThdTeachingPanel ? normalizePeriods(getConfiguredAssignmentPeriods(row.assignment, row)) : '';
@@ -4008,20 +4041,20 @@ export default function AdminSettingsWorkspace({
     return total || '';
   };
 
-  const isHdtnHnDcAssignment = (value = '') => {
+  const isHdtnHnDcAssignment = useCallback((value = '') => {
     const key = normalizeTeacherNameKey(value);
     return key.includes('hdtn,hn (dc)') || key.includes('hn (dc)') || key.includes('hdtn hn dc') || key.includes('hn dc') || key.includes('hdtn, hn (dc)') || key.includes('hđtn,hn (dc)') || key.includes('hđtn hn dc');
-  };
+  }, []);
 
-  const getHdtnHnDcFactor = (position = 'GV') => {
+  const getHdtnHnDcFactor = useCallback((position = 'GV') => {
     const pos = normalizeTeachingPosition(position);
     if (pos === 'HT') return 0.105;
     if (pos === 'PHT') return 0.20;
     if (pos === 'TPT') return 0.085;
     return 0.60; // Default GV
-  };
+  }, []);
 
-  const getTotalPeriods = (row = {}) => {
+  const getTotalPeriods = useCallback((row = {}) => {
     const totalOverride = normalizePeriods(row.totalPeriodsOverride || '');
     if (totalOverride) return Number(totalOverride);
 
@@ -4052,29 +4085,31 @@ export default function AdminSettingsWorkspace({
     if (customTotal && !normalizePeriods(row.periodsPerClassWeek || row.periodsPerClass || row.lessonPerClass || '')) return (Number(customTotal) * weeks) + adjustment;
     if (typeof periods === 'number') return (periods * classCount * weeks) + adjustment;
     return '';
-  };
+  }, [activeAssignmentClasses, isThdTeachingPanel, getPeriodsPerClassWeek, getConfiguredAssignmentPeriods, isHdtnHnDcAssignment, getHdtnHnDcFactor]);
 
-  const getTeachingRequiredPeriodsPerWeek = (position = 'GV') => {
+  const getTeachingRequiredPeriodsPerWeek = useCallback((position = 'GV') => {
     const normalizedPosition = normalizeTeachingPosition(position);
     if (normalizedPosition === 'HT' || normalizedPosition === 'TPT') return 2;
     if (normalizedPosition === 'PHT') return 4;
     return 19;
-  };
+  }, []);
 
-  const getTeachingRequiredYearTotal = (rowOrPosition) => {
+  const getTeachingRequiredYearTotal = useCallback((rowOrPosition) => {
     const position = typeof rowOrPosition === 'object' ? (rowOrPosition?.position || 'GV') : (rowOrPosition || 'GV');
     if (typeof rowOrPosition === 'object' && rowOrPosition?.sourceYearObligation) {
       const parsedObligation = Number(normalizePeriods(rowOrPosition.sourceYearObligation));
       if (!isNaN(parsedObligation) && parsedObligation >= 0) return parsedObligation;
     }
     return getTeachingRequiredPeriodsPerWeek(position) * 35;
-  };
+  }, [getTeachingRequiredPeriodsPerWeek]);
 
-  const getAssignmentNote = (row = {}, semesterDates = teachingSemesterDatesForYear) => {
+  const getAssignmentNote = useCallback((row = {}, semesterDates = teachingSemesterDatesForYear) => {
     if (row.sourcePeriodNote === '__SKIP__') return '';
     if (row.sourcePeriodNote) return row.sourcePeriodNote;
     return getTeachingWeekNote(row.weeks, semesterDates);
-  };
+  }, [teachingSemesterDatesForYear, getTeachingWeekNote]);
+  const getAssignmentNoteRef = useRef(getAssignmentNote);
+  getAssignmentNoteRef.current = getAssignmentNote;
 
   useEffect(() => {
     if (!isThdTeachingPanel) return;
@@ -4090,7 +4125,7 @@ export default function AdminSettingsWorkspace({
       };
     });
     if (!sameJson(teachingRowsForSelectedYear, nextRows)) {
-      updateTeachingRowsForYear(nextRows);
+      updateTeachingRowsForYearRef.current(nextRows);
     }
   }, [hasTeachingBatches, isThdTeachingPanel, teachingRowsForSelectedYear]);
 
@@ -4100,13 +4135,13 @@ export default function AdminSettingsWorkspace({
     const currentRows = teachingRowsForSelectedYear.map(row => normalizeTeachingAssignment(row, activeAssignmentClasses));
     const nextRows = currentRows.map(row => {
       if (!row.note || !isGeneratedTeachingNote(row.note)) return row;
-      const nextNote = mergeTeachingNote(getAssignmentNote(row), row.note);
+      const nextNote = mergeTeachingNoteRef.current(getAssignmentNoteRef.current(row), row.note);
       return row.note === nextNote ? row : { ...row, note: nextNote };
     });
     if (!sameJson(currentRows, nextRows)) {
-      updateTeachingRowsForYear(nextRows);
+      updateTeachingRowsForYearRef.current(nextRows);
     }
-  }, [activeAssignmentClasses, activePanel, hasTeachingBatches, isTeachingPanel, isThdTeachingPanel, teachingRowsForSelectedYear, teachingSemesterDatesForYear]);
+  }, [activeAssignmentClasses, activePanel, hasTeachingBatches, isGeneratedTeachingNote, isTeachingPanel, isThdTeachingPanel, teachingRowsForSelectedYear, teachingSemesterDatesForYear]);
 
   const getTeacherSchoolPeriods = (teacherName = '') => {
     const teacher = teacherByName.get(normalizeTeacherNameKey(teacherName));
@@ -4149,13 +4184,13 @@ export default function AdminSettingsWorkspace({
       moneyTotals.set(teacherKey, (moneyTotals.get(teacherKey) || 0) + moneyTotal);
     });
     return { yearTotals, moneyTotals };
-  }, [teachingRowTeacherKeys, teachingRowsForSelectedYear, teachingTeacherDetailsByKey, isThdTeachingPanel, activeAssignmentClasses, thdSubjectPeriodsByKey]);
+  }, [teachingRowTeacherKeys, teachingRowsForSelectedYear, teachingTeacherDetailsByKey, getTotalPeriods]);
 
-  const getTeacherTeachingYearTotal = (teacherName = '') => {
+  const getTeacherTeachingYearTotal = useCallback((teacherName = '') => {
     const teacherKey = normalizeTeacherNameKey(teacherName);
     if (!teacherKey) return '';
     return teachingTeacherTotalsByKey.yearTotals.get(teacherKey) || '';
-  };
+  }, [teachingTeacherTotalsByKey]);
 
   const getTeacherTeachingMoneyTotal = (teacherName = '') => {
     const teacherKey = normalizeTeacherNameKey(teacherName);
@@ -4163,7 +4198,7 @@ export default function AdminSettingsWorkspace({
     return teachingTeacherTotalsByKey.moneyTotals.get(teacherKey) || 0;
   };
 
-  const teachingTeamFilterKeys = {
+  const teachingTeamFilterKeys = useMemo(() => ({
     'team-toan': ['toan'],
     'team-van': ['van', 'ngu van'],
     'team-anh': ['t anh', 'tieng anh', 'anh van'],
@@ -4171,9 +4206,9 @@ export default function AdminSettingsWorkspace({
     'team-khxh': ['ls dl', 'lich su dia ly', 'lich su va dia ly', 'gdcd', 'giao duc cong dan'],
     'team-cam': ['cam', 'cong nghe', 'c nghe', 'mt', 'mi thuat', 'my thuat', 'an', 'am nhac', 'nt an', 'nt mt'],
     'team-tin-gdtc': ['tin', 'tin hoc', 'gdtc', 'giao duc the chat']
-  };
+  }), []);
 
-  const matchesTeachingTeamFilter = (row = {}, filterValue = '') => {
+  const matchesTeachingTeamFilter = useCallback((row = {}, filterValue = '') => {
     const keys = teachingTeamFilterKeys[filterValue] || [];
     if (!keys.length) return true;
     const values = [
@@ -4190,14 +4225,14 @@ export default function AdminSettingsWorkspace({
           : value === normalizedKey || value.includes(normalizedKey)
       ));
     });
-  };
+  }, [teachingTeamFilterKeys]);
 
-  const getTeacherPeriodDiff = (row = {}) => {
+  const getTeacherPeriodDiff = useCallback((row = {}) => {
     const teacherYearTotal = Number(getTeacherTeachingYearTotal(row.teacherName)) || 0;
     return teacherYearTotal - getTeachingRequiredYearTotal(row);
-  };
+  }, [getTeacherTeachingYearTotal, getTeachingRequiredYearTotal]);
 
-  const getTeacherCheckStatus = (rows = []) => {
+  const getTeacherCheckStatus = useCallback((rows = []) => {
     if (rows.some(row => normalizeTeacherNameKey(row.pastedNote).includes('khong khop'))) return 'error';
     if (rows.some(row => normalizeTeacherNameKey(row.pastedNote) === 'khop')) return 'ok';
 
@@ -4229,7 +4264,7 @@ export default function AdminSettingsWorkspace({
       sum + (Number(getTeachingGeneratedWeeklyCheckTotal(row, activeAssignmentClasses)) || 0)
     ), 0) * 10) / 10;
     return Math.abs(sourceTotal - generatedTotal) >= 0.05 ? 'error' : 'ok';
-  };
+  }, [teachingTeacherTotalsByKey, teachingTeacherDetailsByKey, getTeachingRequiredYearTotal, activeAssignmentClasses]);
 
   const formatSubjectLabel = (subject) => {
     const s = subject.trim();
@@ -4333,7 +4368,7 @@ export default function AdminSettingsWorkspace({
       if (matched) keys.add(teacherKey);
     });
     return keys;
-  }, [activeAssignmentClasses, isThdTeachingPanel, teachingFilter, teachingRowTeacherKeys, teachingRowsForSelectedYear]);
+  }, [getTeacherCheckStatus, getTeacherPeriodDiff, isThdTeachingPanel, matchesTeachingTeamFilter, teachingFilter, teachingRowTeacherKeys, teachingRowsForSelectedYear]);
 
   const visibleTeachingRows = useMemo(() => {
     const rows = [];
@@ -4493,7 +4528,7 @@ export default function AdminSettingsWorkspace({
       index = end + 1;
     }
     return meta;
-  }, [activeAssignmentClasses, isTeachingSummaryView, isThdTeachingPanel, visibleTeachingRowTeacherKeys, visibleTeachingRowValues]);
+  }, [activeAssignmentClasses, getTeachingRequiredYearTotal, isTeachingSummaryView, isThdTeachingPanel, teachingRowTeacherKeys, teachingTeacherDetailsByKey, teachingTeacherTotalsByKey.yearTotals, visibleTeachingRowTeacherKeys, visibleTeachingRowValues]);
 
   const combinedFilterOptions = useMemo(() => [...TEACHING_FILTER_OPTIONS, ...dynamicSubjectFilterOptions], [dynamicSubjectFilterOptions]);
   const teachingFilterLabel = useMemo(() => {
@@ -4519,11 +4554,11 @@ export default function AdminSettingsWorkspace({
     if (!showTeachingCheckModal) setTeachingCheckResultFilter('all');
   }, [showTeachingCheckModal]);
 
-  const getAssignmentClassesFromRow = (row = {}) => {
+  const getAssignmentClassesFromRow = useCallback((row = {}) => {
     return getAssignmentClassList(row.className, activeAssignmentClasses);
-  };
+  }, [activeAssignmentClasses]);
 
-  const expectedPeriodsForAssignment = (subject = '', className = '', referenceRow = {}) => {
+  const expectedPeriodsForAssignment = useCallback((subject = '', className = '', referenceRow = {}) => {
     const subjectKey = normalizeTeacherNameKey(subject);
     if (isTechnologyAssignment(subject)) {
       const grade = getGradeFromManagedClassName(className);
@@ -4543,7 +4578,7 @@ export default function AdminSettingsWorkspace({
     else if (subjectKey === 'ls dl') weeklyPeriods = 3;
     else if (['van', 'toan', 'khtn', 'chu nhiem'].includes(subjectKey)) weeklyPeriods = 4;
     return Math.round(weeklyPeriods * teachingCheckWeekCount * 10) / 10;
-  };
+  }, [isThdTeachingPanel, teachingCheckWeekCount, getConfiguredAssignmentPeriods]);
 
   const teachingCheckRows = useMemo(() => {
     if (!showTeachingCheckModal) return [];
@@ -4579,7 +4614,7 @@ export default function AdminSettingsWorkspace({
         teachers: found ? [...found.teachers].join(', ') : ''
       };
     }));
-  }, [activeAssignmentClasses, showTeachingCheckModal, teachingCheckSubjectOptions, teachingRowsForSelectedYear, teachingCheckWeekCount, isThdTeachingPanel, thdSubjectPeriodsByKey, teachingSemesterDatesForYear]);
+  }, [activeAssignmentClasses, expectedPeriodsForAssignment, getAssignmentClassesFromRow, getTotalPeriods, showTeachingCheckModal, teachingCheckSubjectOptions, teachingRowsForSelectedYear]);
 
   const teachingCheckSummary = useMemo(() => ({
     ok: teachingCheckRows.filter(row => row.diff === 0).length,
@@ -4961,6 +4996,11 @@ export default function AdminSettingsWorkspace({
     [teachersDraft]
   );
 
+  const cleanTqkTeachersDraft = useMemo(
+    () => cleanTeacherRowsForSave(tqkTeachersDraft),
+    [tqkTeachersDraft]
+  );
+
   const cleanThdTeachersDraft = useMemo(
     () => cleanThdTeacherRowsForSave(thdTeachersDraft),
     [thdTeachersDraft]
@@ -4997,6 +5037,7 @@ export default function AdminSettingsWorkspace({
     transcriptStartSigners: !sameJson(transcriptStartSignersDraft, transcriptStartSigners && typeof transcriptStartSigners === 'object' ? transcriptStartSigners : {}),
     transcriptEndSigners: !sameJson(transcriptEndSignersDraft, transcriptEndSigners && typeof transcriptEndSigners === 'object' ? transcriptEndSigners : {}),
     nanTeachers: !sameJson(cleanTeachersDraft, cleanTeacherRowsForSave(Array.isArray(nanTeachers) ? nanTeachers : [])),
+    tqkTeachers: !sameJson(cleanTqkTeachersDraft, cleanTeacherRowsForSave(Array.isArray(tqkTeachers) ? tqkTeachers : [])),
     thdTeachers: !sameJson(cleanThdTeachersDraft, cleanThdTeacherRowsForSave(Array.isArray(thdTeachers) ? thdTeachers : [])),
     thdSubjects: !sameJson(cleanThdSubjectsDraft, cleanThdSubjectRowsForSave(Array.isArray(thdSubjects) ? thdSubjects : DEFAULT_THD_SUBJECTS)),
     classTeacherAssignments: !sameJson(assignmentsDraft || {}, classTeacherAssignments || {}),
@@ -5011,10 +5052,12 @@ export default function AdminSettingsWorkspace({
     cleanThdSubjectsDraft,
     cleanThdTeachersDraft,
     cleanTeachersDraft,
+    cleanTqkTeachersDraft,
     currentSchoolYear,
     inputLocksDraft,
     inputYearLocks,
     nanTeachers,
+    tqkTeachers,
     pcResponsibleByYear,
     pcResponsibleByYearDraft,
     pcResponsibleDraft,
@@ -5067,9 +5110,20 @@ export default function AdminSettingsWorkspace({
     return () => window.clearTimeout(timer);
   }, [changedSettings.nanTeachers, cleanTeachersDraft, onSaveSetting, showNotification]);
 
+  useEffect(() => {
+    if (!changedSettings.tqkTeachers || typeof onSaveSetting !== 'function') return undefined;
+    const payload = cleanTqkTeachersDraft;
+    const timer = window.setTimeout(() => {
+      Promise.resolve(onSaveSetting('tqkTeachers', payload)).catch(() => {
+        showNotification?.('Chưa tự lưu được danh sách giáo viên Trần Quang Khải.', 'error');
+      });
+    }, 700);
+    return () => window.clearTimeout(timer);
+  }, [changedSettings.tqkTeachers, cleanTqkTeachersDraft, onSaveSetting, showNotification]);
+
   const saveTeachersDraftNow = (rows) => {
     if (typeof onSaveSetting !== 'function') return;
-    Promise.resolve(onSaveSetting('nanTeachers', cleanTeacherRowsForSave(rows))).catch(() => {
+    Promise.resolve(onSaveSetting(schoolTeachersSettingKey, cleanTeacherRowsForSave(rows))).catch(() => {
       showNotification?.('Chưa tự lưu được danh sách giáo viên.', 'error');
     });
   };
@@ -5113,12 +5167,12 @@ export default function AdminSettingsWorkspace({
   };
 
   const updateTeacher = (index, patch) => {
-    setTeachersDraft(prev => prev.map((item, rowIndex) => rowIndex === index ? normalizeTeacher({ ...item, ...patch }) : item));
+    setSchoolTeachersDraft(prev => prev.map((item, rowIndex) => rowIndex === index ? normalizeTeacher({ ...item, ...patch }) : item));
   };
 
   const chooseTeacherSignature = async (index, file) => {
     if (!file) return;
-    const teacherName = teachersDraft[index]?.name || `giao-vien-${index + 1}`;
+    const teacherName = schoolTeachersDraft[index]?.name || `giao-vien-${index + 1}`;
     setUploadingTeacherSignatureIndex(index);
     try {
       const signatureDataUrl = await resizeTeacherSignatureFile(file);
@@ -5212,7 +5266,7 @@ export default function AdminSettingsWorkspace({
   };
 
   const deleteTeacherRow = (index) => {
-    setTeachersDraft(prev => {
+    setSchoolTeachersDraft(prev => {
       const next = prev.filter((_, rowIndex) => rowIndex !== index);
       return next.length ? next : [emptyTeacher()];
     });
@@ -5220,7 +5274,7 @@ export default function AdminSettingsWorkspace({
 
   const clearAllTeachers = () => {
     const nextTeachers = [emptyTeacher()];
-    setTeachersDraft(nextTeachers);
+    setSchoolTeachersDraft(nextTeachers);
     saveTeachersDraftNow(nextTeachers);
     setPasteText('');
     showNotification?.('Đã xóa tất cả dòng giáo viên trong bảng nháp.');
@@ -5238,7 +5292,7 @@ export default function AdminSettingsWorkspace({
     if (moneyUpdates.length > 0) {
       let updatedCount = 0;
       let addedCount = 0;
-      const nextTeachers = (teachersDraft.length ? teachersDraft : [emptyTeacher()]).map(normalizeTeacher);
+      const nextTeachers = (schoolTeachersDraft.length ? schoolTeachersDraft : [emptyTeacher()]).map(normalizeTeacher);
       const indexByName = new Map(nextTeachers.map((teacher, index) => [normalizeTeacherNameKey(teacher.name), index]).filter(([key]) => key));
       moneyUpdates.forEach(item => {
         const nameKey = normalizeTeacherNameKey(item.name);
@@ -5253,7 +5307,7 @@ export default function AdminSettingsWorkspace({
           addedCount += 1;
         }
       });
-      setTeachersDraft(nextTeachers);
+      setSchoolTeachersDraft(nextTeachers);
       saveTeachersDraftNow(nextTeachers);
       setPasteText('');
       showNotification?.(`Đã cập nhật số tiền cho ${updatedCount} giáo viên${addedCount ? `, thêm ${addedCount} giáo viên mới` : ''}${unparsedMoneyRows.length ? `, bỏ qua ${unparsedMoneyRows.length} dòng không đọc được` : ''}.`);
@@ -5265,7 +5319,7 @@ export default function AdminSettingsWorkspace({
     if (periodUpdates.length > 0) {
       let updatedCount = 0;
       let addedCount = 0;
-      const nextTeachers = (teachersDraft.length ? teachersDraft : [emptyTeacher()]).map(normalizeTeacher);
+      const nextTeachers = (schoolTeachersDraft.length ? schoolTeachersDraft : [emptyTeacher()]).map(normalizeTeacher);
       const indexByName = new Map(nextTeachers.map((teacher, index) => [normalizeTeacherNameKey(teacher.name), index]).filter(([key]) => key));
       periodUpdates.forEach(item => {
         const nameKey = normalizeTeacherNameKey(item.name);
@@ -5280,7 +5334,7 @@ export default function AdminSettingsWorkspace({
           addedCount += 1;
         }
       });
-      setTeachersDraft(nextTeachers);
+      setSchoolTeachersDraft(nextTeachers);
       saveTeachersDraftNow(nextTeachers);
       setPasteText('');
       showNotification?.(`Đã cập nhật số tiết cho ${updatedCount} giáo viên${addedCount ? `, thêm ${addedCount} giáo viên mới` : ''}${unparsedPeriodRows.length ? `, bỏ qua ${unparsedPeriodRows.length} dòng không đọc được` : ''}.`);
@@ -5313,7 +5367,7 @@ export default function AdminSettingsWorkspace({
       });
     }).filter(item => item.name || item.subject || item.periods || item.moneyPerPeriod);
     const nextTeachers = parsed.length ? parsed : [emptyTeacher()];
-    setTeachersDraft(nextTeachers);
+    setSchoolTeachersDraft(nextTeachers);
     saveTeachersDraftNow(nextTeachers);
     setPasteText('');
     showNotification?.(`Đã dán ${parsed.length} dòng giáo viên.`);
@@ -5350,7 +5404,7 @@ export default function AdminSettingsWorkspace({
       const byYear = { ...(prevObj.byYear || {}) };
       const legacyYearMap = (!prevObj.byYear && effectiveSchoolYearKey === LEGACY_ASSIGNMENT_YEAR_KEY) ? prevObj : {};
       const yearMap = { ...(byYear[effectiveSchoolYearKey] || legacyYearMap) };
-      const currentValue = normalizeClassTeacherAssignmentValue(yearMap?.[grade]?.[subject] ?? '');
+      const currentValue = normalizeClassTeacherAssignmentValue(getSchoolClassTeacherAssignments(yearMap, grade)?.[subject] ?? '');
       yearMap[grade] = {
         ...(yearMap?.[grade] || {}),
         [subject]: {
@@ -5403,6 +5457,7 @@ export default function AdminSettingsWorkspace({
   const [isSaving, setIsSaving] = useState(false);
 
   const saveAll = async () => {
+    if (isSaving) return;
     const saveTasks = [];
     if (changedSettings.schoolYear) saveTasks.push(onSaveSetting('schoolYear', yearDraft));
     if (changedSettings.principalName) saveTasks.push(onSaveSetting('principalName', principalDraft.trim()));
@@ -5415,28 +5470,32 @@ export default function AdminSettingsWorkspace({
     if (changedSettings.transcriptStartSigners) saveTasks.push(onSaveSetting('transcriptStartSigners', transcriptStartSignersDraft));
     if (changedSettings.transcriptEndSigners) saveTasks.push(onSaveSetting('transcriptEndSigners', transcriptEndSignersDraft));
     if (changedSettings.nanTeachers) saveTasks.push(onSaveSetting('nanTeachers', cleanTeachersDraft));
+    if (changedSettings.tqkTeachers) saveTasks.push(onSaveSetting('tqkTeachers', cleanTqkTeachersDraft));
     if (changedSettings.thdTeachers) saveTasks.push(onSaveSetting('thdTeachers', cleanThdTeachersDraft));
     if (changedSettings.thdSubjects) saveTasks.push(onSaveSetting('thdSubjects', cleanThdSubjectsDraft));
     if (changedSettings.thdClasses) saveTasks.push(onSaveSetting('thdClasses', cleanThdClassesDraft));
     if (changedSettings.classTeacherAssignments) saveTasks.push(onSaveSetting('classTeacherAssignments', buildAssignmentsForSave()));
-    if (changedSettings.teachingAssignments) saveTasks.push(onSaveSetting('teachingAssignments', buildTeachingAssignmentsForSave()));
-    if (changedSettings.thdTeachingAssignments) saveTasks.push(onSaveSetting('thdTeachingAssignments', buildTeachingAssignmentsForSave()));
+    if (changedSettings.teachingAssignments || changedSettings.thdTeachingAssignments) {
+      const draft = changedSettings.thdTeachingAssignments ? thdDraft : teachingDraft;
+      const key = changedSettings.thdTeachingAssignments ? 'thdTeachingAssignments' : 'teachingAssignments';
+      const payload = buildTeachingAssignmentsForSave();
+      saveTasks.push(onSaveSetting(key, payload, { baseValue: draft.base })
+        .then(() => draft.acknowledge(draft.value, payload)));
+    }
     if (!saveTasks.length) {
       showNotification?.('Không có thay đổi để lưu.');
       return;
     }
-    const savedTeachingAssignments = changedSettings.teachingAssignments;
-    const savedThdTeachingAssignments = changedSettings.thdTeachingAssignments;
     
     setIsSaving(true);
     showNotification?.('Đang lưu cài đặt...', 'info');
     try {
-      await Promise.all(saveTasks);
-      if (savedTeachingAssignments) setTeachingAssignmentsDirty(false);
-      if (savedThdTeachingAssignments) setThdTeachingAssignmentsDirty(false);
+      const results = await Promise.allSettled(saveTasks);
+      const failed = results.find(result => result.status === 'rejected');
+      if (failed) throw failed.reason;
       showNotification?.('Đã lưu cài đặt.');
-    } catch (err) {
-      showNotification?.('Lỗi khi lưu cài đặt.', 'error');
+    } catch (error) {
+      showNotification?.(`Chưa lưu đủ cài đặt: ${error.message || 'hãy thử lại'}`, 'error');
     } finally {
       setIsSaving(false);
     }
@@ -5613,8 +5672,9 @@ export default function AdminSettingsWorkspace({
               </div>
             )}
 
-            {activePanel === 'teachers' && (
+            {(activePanel === 'teachers' || activePanel === 'tqkTeachers') && (
               <div className="space-y-3">
+                <div className="rounded-xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-sm font-black text-emerald-900">Danh sách riêng: {schoolTeachersCampusName}. Giáo viên ở cơ sở này không dùng chung với cơ sở còn lại.</div>
                 <div className="flex flex-wrap items-center gap-2">
                   <button type="button" onClick={() => setShowTeacherPaste(prev => !prev)} className="rounded-xl bg-emerald-600 px-4 py-3 text-sm font-black text-white shadow hover:bg-emerald-700 inline-flex items-center gap-2">
                     <ClipboardPaste className="w-5 h-5" /> {showTeacherPaste ? 'Ẩn khung dán' : 'Dán danh sách'}
@@ -5627,7 +5687,7 @@ export default function AdminSettingsWorkspace({
                 {showTeacherPaste && (
                   <div className="rounded-3xl border border-emerald-100 bg-white p-5 shadow-sm">
                     <div className="flex items-center gap-2 font-black text-emerald-900 uppercase mb-3">
-                      <ClipboardPaste className="w-5 h-5" /> Dán danh sách giáo viên NAN
+                      <ClipboardPaste className="w-5 h-5" /> Dán danh sách giáo viên {isTqkTeachersPanel ? 'TQK' : 'NAN'}
                     </div>
                     <textarea value={pasteText} onChange={(event) => setPasteText(event.target.value)} placeholder="Dán từ Excel: STT | Tên giáo viên | Môn | Số tiết | Số tiền. Cột ghi tắt có thể nhập trực tiếp trong bảng. Nếu chỉ dán Tên giáo viên | Số tiết hoặc Tên giáo viên | Số tiền, hệ thống chỉ cập nhật đúng cột đó theo tên đang có." className="w-full min-h-[120px] rounded-2xl border border-emerald-100 bg-emerald-50/40 p-3 text-sm font-bold outline-none focus:border-emerald-400" />
                     <div className="mt-3 flex flex-wrap gap-2">
@@ -5639,8 +5699,8 @@ export default function AdminSettingsWorkspace({
 
                 <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
                   {[
-                    { offset: 0, rows: teachersDraft.slice(0, Math.ceil(teachersDraft.length / 2)) },
-                    { offset: Math.ceil(teachersDraft.length / 2), rows: teachersDraft.slice(Math.ceil(teachersDraft.length / 2)) }
+                    { offset: 0, rows: schoolTeachersDraft.slice(0, Math.ceil(schoolTeachersDraft.length / 2)) },
+                    { offset: Math.ceil(schoolTeachersDraft.length / 2), rows: schoolTeachersDraft.slice(Math.ceil(schoolTeachersDraft.length / 2)) }
                   ].map((group, groupIndex) => (
                     <div key={`nan-teacher-col-${groupIndex}`} className={`${groupIndex === 1 && !group.rows.length ? 'hidden xl:block' : ''} rounded-2xl border border-slate-200 bg-white p-3 shadow-sm overflow-x-auto`}>
                       <table className="w-full min-w-[1040px] border-separate border-spacing-y-1 text-sm">
@@ -5668,7 +5728,7 @@ export default function AdminSettingsWorkspace({
                                 <td className="px-2 py-1.5"><input value={teacher.subject} onChange={(event) => updateTeacher(index, { subject: event.target.value })} list="nan-subjects" placeholder="VD: Toán" className="h-8 w-full rounded-md border border-slate-200 bg-white px-2 font-normal outline-none focus:border-blue-400" /></td>
                                 <td className="px-2 py-1.5">
                                   <input
-                                    id={`nan-teacher-signature-${index}`}
+                                    id={`${schoolTeachersSettingKey}-teacher-signature-${index}`}
                                     type="file"
                                     accept="image/*"
                                     className="hidden"
@@ -5679,7 +5739,7 @@ export default function AdminSettingsWorkspace({
                                     }}
                                   />
                                   <div className="flex items-center gap-2">
-                                    <label htmlFor={`nan-teacher-signature-${index}`} className={`inline-flex h-8 items-center justify-center gap-1.5 rounded-md border px-3 text-xs font-semibold ${isUploadingSignature ? 'cursor-wait border-slate-200 bg-slate-100 text-slate-400' : 'cursor-pointer border-sky-200 bg-sky-50 text-sky-700 hover:bg-sky-100'}`}>
+                                    <label htmlFor={`${schoolTeachersSettingKey}-teacher-signature-${index}`} className={`inline-flex h-8 items-center justify-center gap-1.5 rounded-md border px-3 text-xs font-semibold ${isUploadingSignature ? 'cursor-wait border-slate-200 bg-slate-100 text-slate-400' : 'cursor-pointer border-sky-200 bg-sky-50 text-sky-700 hover:bg-sky-100'}`}>
                                       {isUploadingSignature && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
                                       {isUploadingSignature ? 'Đang tải...' : (teacher.signatureUrl ? 'Đổi chữ ký' : 'Chèn chữ ký')}
                                     </label>
@@ -5703,8 +5763,17 @@ export default function AdminSettingsWorkspace({
                     </div>
                   ))}
                 </div>
-                <button type="button" onClick={() => setTeachersDraft(prev => [...prev, emptyTeacher()])} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50">+ Thêm giáo viên</button>
+                <button type="button" onClick={() => setSchoolTeachersDraft(prev => [...prev, emptyTeacher()])} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50">+ Thêm giáo viên</button>
               </div>
+            )}
+
+            {activePanel === 'classes' && (
+              <SchoolClassesPanel
+                selectedSchoolYear={selectedSchoolYear}
+                classesByYear={schoolClassesByYear}
+                onSaveSetting={onSaveSetting}
+                showNotification={showNotification}
+              />
             )}
 
             {activePanel === 'thdTeachers' && (
@@ -5764,6 +5833,7 @@ export default function AdminSettingsWorkspace({
                 defaultTeachingVersionId={defaultTeachingVersionId}
                 onToggleDefaultVersion={handleToggleDefaultTeachingVersion}
                 handleCreateNewTeachingBatch={handleCreateNewTeachingBatch}
+                isSaving={isSaving}
                 activeAssignmentClasses={activeAssignmentClasses}
                 activeClassPickerIndex={activeClassPickerIndex}
                 activeTeacherPickerIndex={activeTeacherPickerIndex}
@@ -5896,13 +5966,31 @@ export default function AdminSettingsWorkspace({
                   </div>
                 </div>
                 <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-4">
-                  {grades.map(grade => (
-                    <div key={`class-${grade}`} className="rounded-2xl border border-violet-100 bg-white p-2 shadow-sm">
+                  <div className="flex flex-wrap items-center gap-2 rounded-xl border border-violet-100 bg-violet-50/60 p-2 md:col-span-2 xl:col-span-4">
+                    <span className="mr-1 text-xs font-bold uppercase text-violet-900">Lọc cơ sở</span>
+                    {SCHOOL_OPTIONS.filter(school => school.code !== 'UNKNOWN').map(school => {
+                      const isSelected = classTeacherCampusCode === school.code;
+                      const classCount = classTeacherScopesByCampus[school.code]?.length || 0;
+                      return (
+                        <button
+                          key={school.code}
+                          type="button"
+                          aria-pressed={isSelected}
+                          onClick={() => setClassTeacherCampusCode(school.code)}
+                          className={`min-h-9 rounded-lg border px-3 py-1.5 text-xs font-bold transition-colors ${isSelected ? 'border-violet-500 bg-violet-600 text-white shadow-sm' : 'border-violet-200 bg-white text-violet-800 hover:bg-violet-100'}`}
+                        >
+                          {school.name} <span className={isSelected ? 'text-violet-100' : 'text-violet-500'}>· {classCount} lớp</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {visibleClassTeacherScopes.map(className => (
+                    <div key={`class-${className}`} className="rounded-2xl border border-violet-100 bg-white p-2 shadow-sm">
                     <div className="mb-2 flex items-center justify-between gap-2">
-                      <div className="text-sm font-semibold uppercase text-violet-900">Khối {grade}</div>
+                      <div className="text-sm font-semibold uppercase text-violet-900">Lớp {className}</div>
                       <button
                         type="button"
-                        onClick={() => clearClassTeacherAssignmentsByGrade(grade)}
+                        onClick={() => clearClassTeacherAssignmentsByGrade(className)}
                         className="rounded-md border border-rose-200 bg-rose-50 px-2 py-1 text-[10px] font-semibold uppercase text-rose-700 hover:bg-rose-100"
                       >
                         Xóa
@@ -5919,13 +6007,13 @@ export default function AdminSettingsWorkspace({
                       </thead>
                       <tbody>
                         {classSubjects(subjects).map((subject, index) => (
-                          <tr key={`${grade}-${subject}`} className="bg-slate-50">
+                          <tr key={`${className}-${subject}`} className="bg-slate-50">
                             <td className="rounded-l-lg px-1 py-1 text-center text-xs font-semibold text-slate-500">{index + 1}</td>
                             <td className="px-1 py-1 text-[11px] font-semibold text-slate-800">{normalizeAssignmentSubject(subject)}</td>
                             <td className="px-1 py-1">
                               <input
-                                value={assignmentValue(grade, subject, 'hk1')}
-                                onChange={(event) => updateAssignment(grade, subject, event.target.value, 'hk1')}
+                                value={assignmentValue(className, subject, 'hk1')}
+                                onChange={(event) => updateAssignment(className, subject, event.target.value, 'hk1')}
                                 list="nan-teacher-names"
                                 placeholder="GV HK1..."
                                 className="h-7 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] font-semibold outline-none focus:border-violet-400"
@@ -5933,8 +6021,8 @@ export default function AdminSettingsWorkspace({
                             </td>
                             <td className="rounded-r-lg px-1 py-1">
                               <input
-                                value={assignmentValue(grade, subject, 'hk2')}
-                                onChange={(event) => updateAssignment(grade, subject, event.target.value, 'hk2')}
+                                value={assignmentValue(className, subject, 'hk2')}
+                                onChange={(event) => updateAssignment(className, subject, event.target.value, 'hk2')}
                                 list="nan-teacher-names"
                                 placeholder="GV HK2..."
                                 className="h-7 w-full rounded-md border border-slate-200 bg-white px-2 text-[12px] font-semibold outline-none focus:border-violet-400"
@@ -5946,6 +6034,11 @@ export default function AdminSettingsWorkspace({
                     </table>
                     </div>
                   ))}
+                  {visibleClassTeacherScopes.length === 0 && (
+                    <div className="rounded-xl border border-dashed border-violet-200 bg-white p-5 text-center text-sm font-semibold text-slate-500 md:col-span-2 xl:col-span-4">
+                      Năm học này chưa có lớp thuộc cơ sở đã chọn.
+                    </div>
+                  )}
                 </div>
             </div>
             )}

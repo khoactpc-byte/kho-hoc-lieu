@@ -1,51 +1,35 @@
-# Cau hinh bao mat
+# Cấu hình bảo mật
 
-## Viec can lam ngay
+Cập nhật 04/10/2026. Mã nguồn cho định danh, API điểm, quiz nhanh/thủ công, lease phiên và sao lưu/phục hồi đã được nối và kiểm thử tại máy. **Chưa triển khai các thay đổi lên hệ thống thật.** Các cờ trong .env.example vẫn tắt.
 
-1. Thu hoi khoa Gemini cu trong Google AI Studio vi khoa nay tung nam truc tiep trong ma nguon.
-2. Tao khoa Gemini moi.
-3. Mo Apps Script, vao **Project Settings > Script Properties**, them:
+Hướng dẫn đầy đủ, ma trận quyền và thứ tự chuyển dữ liệu nằm trong [Triển khai định danh, điểm và an toàn dữ liệu](./TRIEN_KHAI_DINH_DANH_DIEM_VA_AN_TOAN_DU_LIEU.md). Kết quả thực hiện nằm trong [báo cáo](./THUC_HIEN_CAC_MUC_2026-10-03.md).
 
-| Property | Gia tri |
-| --- | --- |
-| `APP_GEMINI_API_KEY` | Khoa Gemini moi |
-| `APP_CLIENT_TOKEN` | `NGUYENANNINH_KHOA_2026` |
-| `APP_ADMIN_PASSWORD` | Mat khau admin manh, it nhat 8 ky tu |
-| `APP_TEACHER_PASSWORD` | Mat khau giao vien, it nhat 8 ky tu |
-| `APP_TEACHER_PASSWORD_ENABLED` | `true` hoac `false` |
-| `APP_THD_PASSWORD` | Mat khau khu Tran Hung Dao, it nhat 8 ky tu |
+## Bí mật chỉ lưu phía máy chủ
 
-4. Cap nhat tap tin Apps Script chinh `code_hoclieu.gs`, sau do **Deploy > Manage deployments > Edit > New version > Deploy**. `code_chambai.gs` chi la tap tin cu/tham khao, khong can deploy neu website dang dung URL cua `code_hoclieu.gs`.
-5. Dang nhap Admin bang mat khau moi. He thong se tu xoa truong `adminPass` cu khoi Firestore.
+- Script Properties: APP_ADMIN_PASSWORD, APP_THD_PASSWORD, APP_IDENTITY_BRIDGE_TOKEN; APP_GEMINI_API_KEY nếu dùng key riêng.
+- APP_TEACHER_PASSWORD_PEPPER do máy chủ tạo; không xóa hoặc thay tùy ý. Tài khoản giáo viên được băm trong Sheet TEACHER_ACCOUNTS; giới hạn người được sửa Sheet đó.
+- Netlify: FIREBASE_SERVICE_ACCOUNT_JSON, IDENTITY_BRIDGE_TOKEN cùng các biến server được liệt kê trong .env.example. Không đặt service account/bridge token/mật khẩu vào biến VITE.
+- APP_CLIENT_TOKEN là mã nhận diện công khai của ứng dụng; phải khớp APPS_SCRIPT_CLIENT_TOKEN, nhưng không được dùng thay quyền đăng nhập.
+- Không commit .env, mat_khau.txt, src/mat_khau.txt hoặc cauhinh.json. Key đã từng lộ trong mã/Git cần được thu hồi ở nhà cung cấp; chỉ xóa khỏi mã không đủ.
 
-`APP_CLIENT_TOKEN` chi la ma nhan dien ung dung web, khong phai bi mat, vi ma chay trong trinh duyet luon co the bi xem. Mat khau admin va khoa Gemini moi la bi mat va chi duoc dat trong Script Properties.
+## Quyền và phiên
 
-## Khoa Google/Firebase hien trong trinh duyet
+Firebase dùng phiên có appId và lease máy chủ. Lease tối đa 2 phút, gia hạn bằng kiểm tra phiên gốc; không vượt hạn gốc Apps Script. Đăng xuất thu hồi lease. API nhân viên kiểm tra tài khoản/phân công hiện tại; Rules mất quyền khi lease hết hạn hoặc bị thu hồi.
 
-Firebase API key va Google Drive API key dung boi trinh duyet khong the duoc giau trong ma frontend. Trong Google Cloud Console, hay gioi han chung theo:
+Mọi ghi điểm qua API kiểm tra môn, ô, học sinh trong sổ, khóa năm và xung đột. Đáp án/private bank không được đọc trực tiếp bằng SDK, kể cả từ browser Admin. Học sinh lấy kết quả rút gọn của mình qua API; không gửi điểm tự tính để máy chủ tin.
 
-- Website/referrer duoc phep.
-- Dung API can thiet.
-- Han muc su dung va canh bao chi phi.
+Rules dự thảo chặn ghi khi maintenance hoạt động. Cờ KHL_MAINTENANCE_RULES_READY chỉ được bật sau khi kiểm chứng khóa trên môi trường triển khai. Không sửa Rules thành rộng quyền để chữa lỗi màn hình.
 
-Bat Firebase App Check de giam request gia mao.
+Settings/global phải bỏ các trường mật khẩu cũ trước khi cho nhân viên đọc. Rules đã chặn nhân viên đọc global còn adminPass, teacherPass hoặc thdAdminPass. Giáo viên và THĐ không được đọc credential từ vùng này.
 
-## Firestore Rules
+## Google Drive và dữ liệu cũ
 
-Tap tin `firestore.rules.secure-ready` la mau cho giai doan chuyen sang Firebase Authentication co vai tro Admin/Giao vien/Hoc sinh. Khong deploy tap tin nay ngay luc nay: ung dung hien dang dung anonymous authentication, nen Firestore chua phan biet duoc vai tro that va quy tac chat se lam hong cac chuc nang dang chay.
+Bản Google Doc giáo viên được tạo riêng; bản học sinh dùng nội dung đã loại các khối đáp án. Công cụ kiểm kê tài liệu cũ có xem trước và thu hồi chia sẻ theo link sau xác nhận các mã tệp cụ thể. Cần kiểm tra quyền thực tế, quyền kế thừa và quyền tổ chức trước phát hành; sửa metadata Firebase không thu hồi quyền file Drive cũ.
 
-Buoc nang cap tiep theo:
+Biên nhận tải bài ràng buộc tệp với học sinh trước khi lưu bài tự luận. Nội dung Drive, Sheet tài khoản, Script Properties và key Gemini không nằm trong bản lưu Firestore; sao lưu riêng các phần này. Hộp thư Sheet có trạng thái phục hồi riêng, không phải giao dịch nguyên tử với Firestore.
 
-1. Tao tai khoan Firebase Auth rieng cho Admin va giao vien.
-2. Gan custom claim `role` tren may chu.
-3. Gan `studentId` cho tai khoan hoc sinh.
-4. Kiem thu tren mot Firebase project thu nghiem.
-5. Sau do moi deploy `firestore.rules.secure-ready`.
+## Thư viện và trình duyệt cũ
 
-## Luu y
+Giữ Tailwind 3 theo yêu cầu hỗ trợ thiết bị cũ. Chuỗi braces/chokidar/fast-glob/micromatch/Tailwind vẫn có 5 cảnh báo mức cao trong công cụ phát triển của npm; không nâng lên Tailwind 4 và không che cảnh báo. Guard khi cài/dựng giới hạn độ sâu parser và từ chối AST vòng lặp; có kiểm thử tái hiện. Audit production không có cảnh báo tại thời điểm kiểm tra. Guard giảm rủi ro tình huống đã kiểm chứng, không thay thế bản vá chính thức. Xem [advisory braces](https://github.com/advisories/GHSA-vfj7-8cjw-p6xm).
 
-- Khong dua `mat_khau.txt`, `src/mat_khau.txt`, `cauhinh.json` hoac `.env` len Git.
-- Neu mot khoa tung nam trong Git hoac ma nguon, xoa khoi ma nguon chua du: phai thu hoi va tao khoa moi.
-- Phien Admin Apps Script hien het han sau 6 gio hoac khi Apps Script xoa cache.
-- Mat khau Admin, Giao vien va khu Tran Hung Dao duoc luu trong Script Properties, khong con can luu truc tiep trong Firestore.
-- Sau khi thay `code_hoclieu.gs`, bat buoc Deploy mot version Apps Script moi.
+Firebase API key trên trình duyệt không phải cơ chế bảo vệ dữ liệu; quyền nằm ở Auth/Rules/API. Google Drive key trên frontend cần giới hạn API, referrer và hạn mức. Việc thu hồi key, bật App Check hoặc thay quyền Google Cloud cần thực hiện trên môi trường thật theo cấu hình của trường; lượt sửa mã này không xác nhận những thiết lập đó đã được áp dụng.

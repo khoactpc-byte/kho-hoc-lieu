@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { studentWorkKey } from '../utils/studentRecords';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, CheckCircle2, FileText, ListChecks, Plus, RotateCcw, Save, Trash2, X } from 'lucide-react';
 import { SELF_QUIZ_OPTION_IDS } from '../utils/selfQuiz';
 import { removeAccents, typesetMath } from '../utils/helpers';
@@ -74,23 +75,20 @@ export default function SelfQuizTeacherTools({
   const [saveFeedback, setSaveFeedback] = useState(null);
   const [isSaving, setIsSaving] = useState(false);
   const previewRef = useRef(null);
-  const questions = selfQuizDraft?.questions || [];
+  const questions = useMemo(() => selfQuizDraft?.questions || [], [selfQuizDraft?.questions]);
   const hasAnyAttempts = currentQuizResults.length > 0 || handwrittenSubmissions.length > 0;
   const normalizeOptionId = (id) => String(id || '').trim().toLowerCase();
-  const normalizeNameKey = (name = '') => removeAccents(String(name || '').toLowerCase()).replace(/[^a-z0-9]/g, '');
-  const isGenericStudentName = (name = '') => {
+  const normalizeNameKey = useCallback((name = '') => removeAccents(String(name || '').toLowerCase()).replace(/[^a-z0-9]/g, ''), []);
+  const isGenericStudentName = useCallback((name = '') => {
     const key = normalizeNameKey(name);
     return !key || key === 'hocsinh' || key === 'student' || key === 'unknown';
-  };
-  const getStudentKey = (item = {}) => {
-    const code = String(item.studentAccessCode || item.accessCode || '').trim().toUpperCase();
-    const name = item.studentName || item.fullName || item.name || '';
-    return code || (isGenericStudentName(name) ? '' : normalizeNameKey(name));
-  };
+  }, [normalizeNameKey]);
+  const getStudentKey = useCallback((item = {}) => studentWorkKey({ ...item,
+    studentId: item.studentId || (item.fullName ? item.id : '') }), []);
   const getStudentGrade = (student = {}) => String(student.className || student.grade || '').match(/[1-9]\d*/)?.[0] || '';
   const isActiveStudent = (student = {}) => {
     const status = removeAccents(String(student.status || '').toLowerCase());
-    return !status.includes('bohoc') && !status.includes('nghihoc');
+    return status !== 'dropped' && !status.includes('bohoc') && !status.includes('nghihoc');
   };
 
   const latestResultRows = useMemo(() => {
@@ -155,7 +153,7 @@ export default function SelfQuizTeacherTools({
     });
 
     return [...rows.values()].sort((a, b) => String(a.studentName || '').localeCompare(String(b.studentName || ''), 'vi', { sensitivity: 'base' }));
-  }, [currentQuizResults, handwrittenSubmissions, students, selectedGrade, currentSchoolYear]);
+  }, [currentQuizResults, handwrittenSubmissions, students, selectedGrade, currentSchoolYear, getStudentKey, isGenericStudentName]);
 
   const getEssaySubmissionForResult = (row) => {
     if (row?.essay) return row.essay;

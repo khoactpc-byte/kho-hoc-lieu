@@ -1,3 +1,35 @@
+import { useWorkspaceCollections } from './hooks/useWorkspaceCollections';
+import { useSessionLease } from './hooks/useSessionLease';
+import { useQuickQuizSession } from './hooks/useQuickQuizSession';
+import { useStudentLearningData } from './hooks/useStudentLearningData';
+import { QUICK_SCORE_SUBJECTS, SCOREBOOK_SOURCE_FILE } from './config/scorebookDomain';
+import { parseScoreNumber, formatScoreNumber, calculateSemesterAverage, calculateYearAverage, academicSummary } from './utils/scorebookCalculations';
+import { requestPrivateApi, requestServerQuiz, SERVER_QUIZ_ENABLED } from './services/serverQuizClient';
+import { syncQuizScore, resetQuizAttempts, reviewHandwrittenSubmission, updateAiGrading, createQuizAttempt } from './services/quizScorebook';
+import { useQuickScorebook } from './hooks/useQuickScorebook';
+import { useQuickScoreActions } from './hooks/useQuickScoreActions';
+import { extractSchoolYearFromText, normalizeAdmissionSchoolYear } from './utils/schoolYearText';
+import { exchangeScopedIdentity, resetScopedIdentity, SCOPED_AUTH_ENABLED, STUDENT_SESSION_KEY } from './services/scopedIdentity';
+import { saveLessonDraft } from './services/lessonDrafts';
+import { recordBelongsToStudent, findStudentAttendanceRecord, studentWorkKey } from './utils/studentRecords';
+import { buildQuizTracking } from './utils/quizTracking';
+import { stableRecordId } from './utils/idempotency';
+import { vietnamDateKey } from './utils/vietnamDate';
+import { requestJsonp } from './services/jsonpClient';
+import { createAsyncScope } from './utils/asyncScope';
+import { readFileBase64, studentUploadMime, STUDENT_UPLOAD_ACCEPT } from './utils/fileUpload';
+import { findPromotionTarget, assertPromotionPreviewCurrent } from './utils/promotionTargets';
+import { applyStudentTransitions } from './services/studentTransitions';
+import { beginPromotionJob, recordPromotionStage, finalizePromotionJob, failPromotionJob } from './services/schoolYearPromotion';
+import { studentEditKey, studentScoreIdentity } from './utils/studentScoreKeys';
+import { captureSystemSnapshot, restoreAtomicSnapshot } from './services/systemBackup';
+import { completeBackupExport } from './services/serverSystemClient';
+import { observeTeachingAssignments, saveTeachingAssignments, saveSimpleTeachingAssignments } from './services/teachingAssignments';
+import { listDriveFiles } from './services/driveClient';
+import { sanitizeHtml, formatSafeAiText } from './utils/safeHtml';
+import { normalizeNumericScore } from './utils/scoreValues';
+import { draftPatch } from './utils/documentDraft';
+import { REGISTRATION_WEB_APP_URL } from './config/registration';
 import React, { lazy, Suspense, useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { 
   BookOpen, User, GraduationCap, Lock, ChevronRight, ChevronLeft, 
@@ -8,11 +40,13 @@ import {
   Minimize, ArrowUpAZ, ArrowDownAZ, Bold, Italic, Underline, Palette, 
   AlignLeft, AlignCenter, AlignRight, AlignJustify, Camera, ArrowUp,
   ArrowDown, ChevronDown, ChevronUp, Pin, Briefcase, Pencil, Eye, EyeOff, BarChart3,
-  MoreVertical, Mail, Send, ClipboardCheck, MapPin, Phone
+  MoreVertical, Mail
 } from 'lucide-react';
-import { collection, onSnapshot, addDoc, deleteDoc, doc, setDoc, updateDoc, getDoc, getDocs, deleteField, increment } from 'firebase/firestore';
+import { collection, onSnapshot, addDoc, deleteDoc, doc, setDoc, updateDoc, getDoc, getDocs, getDocsFromServer, query, where, deleteField, increment } from 'firebase/firestore';
 import { signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
 import { auth, db, appId } from './config/firebase';
+const TeacherAccountManager = lazy(() => import('./components/TeacherAccountManager'));
+const TeacherQuickScorePanel = lazy(() => import('./components/TeacherQuickScorePanel'));
 import { 
   GRADES, SUBJECTS, TOTAL_LESSONS, SCHOOL_YEARS, 
   GOOGLE_API_KEY, GEMINI_MODELS, DEFAULT_GEMINI_MODEL, 
@@ -33,6 +67,8 @@ import {
   filterQuizResultsForContext,
   getDefaultSelfQuizDraft,
   gradeSelfQuizSubmission,
+  quizPassingPercent,
+  isQuickQuizResultPassing,
   inferMultipleChoiceTotalPoints,
   makeEmptySelfQuizQuestion,
   normalizeQuizText,
@@ -48,18 +84,102 @@ import {
   readStoredAdminSession,
   writeStoredAdminSession
 } from './utils/adminSession';
+import { compareSchoolRosterStudents, createDefaultSchoolClassesByGrade, DEFAULT_SCHOOL_CODE, getSchoolClassesForCampus, getSchoolClassesForYear, getStudentSchoolCode, normalizeSchoolCode, normalizeSchoolYearKey, SCHOOL_OPTIONS } from './utils/schoolClasses';
+import { contentBelongsToCampus, teacherHasContentScope } from './utils/teacherAccess';
 const STUDENT_MAILBOX_DRIVE_URL = 'https://drive.google.com/drive/u/0/folders/1mdDD9kK_s_o2YytkUbqM0MH-T9HR9XXE';
 const STUDENT_MAILBOX_AUTO_READ_KEY = 'khohoclieu-student-mailbox-auto-read';
-const SCOREBOOK_SOURCE_FILE = 'so diem 9pc tmt 2025-2026 MAU.xlsx';
-const SYSTEM_BACKUP_COLLECTIONS = ['students', 'scorebooks', 'class_attendance', 'class_timetables', 'class_schedules', 'news', 'student_profile_requests', 'admission_applications'];
+
+
 const DAILY_BACKUP_STORAGE_KEY = 'khl-last-daily-backup-v1';
+const TEACHER_PROFILE_STORAGE_KEY = 'khl-teacher-profile-v1';
 const ADMISSION_DOCUMENTS = [
   { key: 'transcript', label: 'Học bạ' },
   { key: 'birthCertificate', label: 'Khai sinh' },
   { key: 'identityCard', label: 'CCCD' },
   { key: 'primaryCompletion', label: 'Hoàn thành tiểu học' }
 ];
-const ADMISSION_GRADES = ['1', '2', '3', '4', '5', '6', '7', '8', '9'];
+const ADMISSION_SCHOOLS = SCHOOL_OPTIONS.filter(school => school.code !== 'UNKNOWN');
+const VIETNAM_TIME_OFFSET_MS = 7 * 60 * 60 * 1000;
+const OVERLINE_TOKEN_START = '\uE000OVERLINE:';
+const OVERLINE_TOKEN_END = '\uE001';
+
+const parseVietnamDateTimeLocal = (value = '') => {
+  if (!value) return null;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  const raw = String(value);
+  const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
+  if (match) {
+    const [, year, month, day, hour, minute] = match.map(Number);
+    return Date.UTC(year, month - 1, day, hour - 7, minute);
+  }
+  const parsed = new Date(raw).getTime();
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const formatVietnamDateTimeLocal = (value) => {
+  const ms = parseVietnamDateTimeLocal(value);
+  if (!ms) return '';
+  return new Date(ms + VIETNAM_TIME_OFFSET_MS).toISOString().slice(0, 16);
+};
+
+const renderOverlineTokens = (html = '') => String(html || '')
+  .replace(/\uE000OVERLINE:([^\uE001]+)\uE001/g, (_, text) => (
+    `<span style="text-decoration:overline;text-decoration-thickness:1px;text-decoration-skip-ink:none;">${text}</span>`
+  ));
+
+const humanizeLatexText = (value = '') => {
+  const convert = (raw = '') => String(raw || '')
+    .replace(/\\\\/g, '\\')
+    .replace(/\\mathbb\{N\}/g, 'ℕ')
+    .replace(/\\mathbb\{Z\}/g, 'ℤ')
+    .replace(/\\mathbb\{Q\}/g, 'ℚ')
+    .replace(/\\mathbb\{R\}/g, 'ℝ')
+    .replace(/\\notin\b/g, '∉')
+    .replace(/\\in\b/g, '∈')
+    .replace(/\\leq?\b/g, '≤')
+    .replace(/\\geq?\b/g, '≥')
+    .replace(/\\neq?\b/g, '≠')
+    .replace(/\\times\b/g, '×')
+    .replace(/\\cdot\b/g, '·')
+    .replace(/\\mid\b/g, '|')
+    .replace(/\\cup\b/g, '∪')
+    .replace(/\\cap\b/g, '∩')
+    .replace(/\\emptyset\b/g, '∅')
+    .replace(/\\varnothing\b/g, '∅')
+    .replace(/\\overline\{([^{}]+)\}/g, (_, text) => `${OVERLINE_TOKEN_START}${text}${OVERLINE_TOKEN_END}`)
+    .replace(/\\dots\b/g, '…')
+    .replace(/\\ldots\b/g, '…')
+    .replace(/\\cdots\b/g, '⋯')
+    .replace(/\\ast\b/g, '*')
+    .replace(/\\text\{([^{}]*)\}/g, '$1')
+    .replace(/\\left/g, '')
+    .replace(/\\right/g, '')
+    .replace(/\\,/g, ' ')
+    .replace(/\\;/g, ';')
+    .replace(/\\:/g, ':')
+    .replace(/\\\{/g, '{')
+    .replace(/\\\}/g, '}')
+    .replace(/\\\(/g, '')
+    .replace(/\\\)/g, '')
+    .replace(/\\\[/g, '')
+    .replace(/\\\]/g, '')
+    .replace(/\\([A-Za-z]+)/g, '$1');
+
+  return convert(value)
+    .replace(/\\\(([^\s\S]*?)\\\)/g, (_, math) => convert(math))
+    .replace(/\\\[([\s\S]*?)\\\]/g, (_, math) => convert(math));
+};
+
+const humanizeHtmlString = (html = '') => {
+  if (typeof document === 'undefined') return humanizeLatexText(html);
+  const wrapper = document.createElement('div');
+  wrapper.innerHTML = sanitizeHtml(html);
+  const walker = document.createTreeWalker(wrapper, NodeFilter.SHOW_TEXT);
+  const textNodes = [];
+  while (walker.nextNode()) textNodes.push(walker.currentNode);
+  textNodes.forEach(node => { node.nodeValue = humanizeLatexText(node.nodeValue); });
+  return renderOverlineTokens(wrapper.innerHTML);
+};
 
 const formatDateToDMY = (dateStr) => {
   if (!dateStr) return '-';
@@ -88,30 +208,10 @@ const isAdmissionNewsItem = (news = {}) => {
   const text = removeAccents(String(`${news.title || ''} ${news.content || ''}`).replace(/<[^>]+>/g, ' ').toLowerCase());
   return text.includes('tuyen sinh') || text.includes('tuyen hoc');
 };
-const extractSchoolYearFromText = (text, fallback) => {
-  if (!text) return fallback;
-  const doubleYearMatch = text.match(/(20\d{2})\s*[-/]\s*(20\d{2})/);
-  if (doubleYearMatch) {
-    return `${doubleYearMatch[1]}-${doubleYearMatch[2]}`;
-  }
-  const shortYearMatch = text.match(/(20\d{2})\s*[-/]\s*(\d{2})\b/);
-  if (shortYearMatch) {
-    const start = shortYearMatch[1];
-    const endShort = shortYearMatch[2];
-    const end = start.slice(0, 2) + endShort;
-    return `${start}-${end}`;
-  }
-  const singleYearMatch = text.match(/\b(20\d{2})\b/);
-  if (singleYearMatch) {
-    const startYear = parseInt(singleYearMatch[1], 10);
-    return `${startYear}-${startYear + 1}`;
-  }
-  return fallback;
-};
-
-
 const SelfQuizTeacherTools = lazy(() => import('./components/SelfQuizTeacherTools'));
 const HocSinhManager = lazy(() => import('./components/HocSinhManager'));
+const StudentProfileModal = lazy(() => import('./components/StudentProfileModal'));
+const LearningResultsWorkspace = lazy(() => import('./components/LearningResultsWorkspace'));
 const ScorebookWorkspace = lazy(() => import('./components/ScorebookWorkspace'));
 const AdminSettingsWorkspace = lazy(() => import('./components/AdminSettingsWorkspace'));
 const AdminDataSafetyWorkspace = lazy(() => import('./components/AdminDataSafetyWorkspace'));
@@ -122,7 +222,6 @@ const AdmissionFormModal = lazy(() => import('./components/AdmissionFormModal'))
 const NewsViewerModal = lazy(() => import('./components/NewsViewerModal'));
 const AdminMailboxPanel = lazy(() => import('./components/AdminMailboxPanel'));
 
-const THD_TEACHING_ASSIGNMENT_CHUNK_SIZE = 250000;
 
 class WorkspaceErrorBoundary extends React.Component {
   constructor(props) {
@@ -167,20 +266,8 @@ class WorkspaceErrorBoundary extends React.Component {
   }
 }
 
-const splitTextIntoChunks = (text = '', size = THD_TEACHING_ASSIGNMENT_CHUNK_SIZE) => {
-  const chunks = [];
-  for (let index = 0; index < text.length; index += size) {
-    chunks.push(text.slice(index, index + size));
-  }
-  return chunks.length ? chunks : [''];
-};
-
-const REGISTRATION_WEB_APP_URL = 'https://script.google.com/macros/s/AKfycby6e5ya2k105Oe7i65k9viysIZbHKOF-9CosueiNy1GvnHJbVw1lHB_0eezSxO91ls/exec';
 const ADDRESS_DIRECTORY_CACHE_KEY = 'khl-address-directory-v2';
 const getCurrentTimestamp = () => Date.now();
-const SHOW_LEGACY_ADMIN_SETTINGS_PANEL = false;
-const SHOW_LEGACY_TEACHER_TABS = false;
-const SHOW_LEGACY_PROFESSIONAL_PANEL = false;
 const NEWS_TEXT_COLORS = [
   { label: 'Đen', value: '#0f172a' },
   { label: 'Đỏ', value: '#dc2626' },
@@ -307,7 +394,6 @@ const getStudentDisplayName = (fullName = '', compact = false) => {
 
 const uniqueTextItems = (items = []) => [...new Set(items.map(item => String(item || '').trim()).filter(Boolean))];
 const cleanDocId = (value) => String(value || 'default').replace(/[^\w-]+/g, '_');
-const compactSchoolYearLabel = (schoolYear = '') => String(schoolYear || '').replace(/\s*-\s*/g, '-').trim();
 const getGradeFromClassName = (className = '') => {
   const match = String(className || '').trim().match(/(?:^|\D)(1[0-2]|[1-9])(?:\D|$)/);
   return match ? match[1] : '';
@@ -316,29 +402,15 @@ const getGivenNameSortKey = (fullName = '') => {
   const parts = removeAccents(String(fullName || '').toLowerCase()).split(/\s+/).filter(Boolean);
   return `${parts[parts.length - 1] || ''} ${parts.join(' ')}`.trim();
 };
-const parseScoreNumber = (value) => {
-  const normalized = String(value ?? '').trim().replace(',', '.');
-  if (!normalized) return null;
-  const number = Number(normalized);
-  return Number.isFinite(number) ? number : null;
-};
-const formatScoreNumber = (value) => {
-  if (!Number.isFinite(value)) return '';
-  return (Math.round(value * 10) / 10).toFixed(1);
-};
+
+
 const formatScoreDisplayValue = (value) => {
   const text = String(value ?? '').trim();
   if (!text) return '';
   const parsed = parseScoreNumber(text);
   return parsed === null ? text : formatScoreNumber(parsed);
 };
-const normalizeScoreInput = (value = '') => {
-  const normalized = String(value || '').trim();
-  if (!normalized) return '';
-  const parsed = parseScoreNumber(normalized);
-  if (parsed === null) return normalized;
-  return formatScoreNumber(Math.min(10, Math.max(0, parsed)));
-};
+const normalizeScoreInput = (value = '') => normalizeNumericScore(value);
 const getStudentYearIdentityKey = (student = {}) => {
   const accessCode = String(student.accessCode || student.studentAccessCode || '').trim().toUpperCase();
   if (accessCode) return `code:${accessCode}`;
@@ -377,14 +449,7 @@ const getQuickScoreTextClass = (scoreIndex) => ({
   dtb: 'font-black text-red-600',
   dtbcn: 'font-black text-red-600'
 }[getQuickScoreKind(scoreIndex)] || 'font-bold text-slate-700');
-const QUICK_SCORE_SUBJECTS = [
-  { key: 'ngu_van', label: 'Văn', pageIndex: 0, academic: true, txCount: 4 },
-  { key: 'toan', label: 'Toán', pageIndex: 1, academic: true, txCount: 4 },
-  { key: 'gdcd', label: 'GDCD', pageIndex: 3, academic: true, txCount: 2 },
-  { key: 'lsdl', label: 'LS-ĐL', pageIndex: 4, academic: true, txCount: 4 },
-  { key: 'khtn', label: 'KHTN', pageIndex: 5, academic: true, txCount: 4 },
-  { key: 'cong_nghe', label: 'Công nghệ', pageIndex: 6, academic: true, txCount: 2 }
-];
+
 
 const QUICK_SCORE_LABELS = {
   0: 'TX1',
@@ -514,40 +579,37 @@ const getRandomQuickScore = (subjectKey = '', absenceRatio = 0.5, scoreIndex = 0
   return capCoreAcademicRandomScore(makeScore(isCoreAcademic ? [6, 7] : [8, 9]), subjectKey, scoreIndex);
 };
 
-const loadRegistrationJsonp = (params = {}) => new Promise((resolve, reject) => {
-  const callbackName = `__khlRegistration_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-  const script = document.createElement('script');
-  const cleanup = () => {
-    delete window[callbackName];
-    script.remove();
-  };
-  const timeout = window.setTimeout(() => {
-    cleanup();
-    reject(new Error('Không tải được dữ liệu địa chỉ'));
-  }, 9000);
+const loadRegistrationJsonp = params => requestJsonp(REGISTRATION_WEB_APP_URL, params, { timeoutMs: 9000 });
 
-  window[callbackName] = (data) => {
-    window.clearTimeout(timeout);
-    cleanup();
-    resolve(data || {});
-  };
+const syncRegistrationCurrentSchoolYear = async (sourceSchoolYear, targetSchoolYear, job) => {
+  const result = await postAppsScript({ action: 'registrationAdminAction', registrationAction: 'syncCurrentSchoolYear',
+    params: { sourceSchoolYear, targetSchoolYear, sequence: job.sequence, attemptId: job.attemptId } });
+  if (result.result?.success !== true || result.result.currentSchoolYear !== targetSchoolYear) {
+    throw new Error(result.result?.message || 'Máy chủ đăng ký chưa xác nhận năm học mới.');
+  }
+};
 
-  const url = new URL(REGISTRATION_WEB_APP_URL);
-  Object.entries(params).forEach(([key, value]) => url.searchParams.set(key, value));
-  url.searchParams.set('callback', callbackName);
-  url.searchParams.set('t', Date.now());
-  script.src = url.toString();
-  script.onerror = () => {
-    window.clearTimeout(timeout);
-    cleanup();
-    reject(new Error('Không tải được dữ liệu địa chỉ'));
-  };
-  document.body.appendChild(script);
-});
+const syncRegistrationSchoolYearClasses = async (items = [], job, onProgress) => {
+  const chunks = [];
+  for (let index = 0; index < items.length; index += 20) chunks.push(items.slice(index, index + 20));
+  const results = [];
+  for (const chunk of chunks) {
+    const result = await postAppsScript({ action: 'registrationAdminAction', registrationAction: 'syncSchoolYearClasses',
+      params: { items: chunk, sourceSchoolYear: job.sourceSchoolYear, targetSchoolYear: job.targetSchoolYear, sequence: job.sequence, attemptId: job.attemptId } });
+    const response = result.result;
+    if (response?.success !== true || Number(response.updatedCount) !== chunk.length) {
+      throw new Error(response?.message || `Sheet chỉ xác nhận cập nhật ${response?.updatedCount || 0}/${chunk.length} dòng.`);
+    }
+    results.push(response || {});
+    await onProgress?.(Math.min(results.length * 20, items.length));
+  }
+  return results;
+};
 
 function App() {
   const [initialAdminSession] = useState(() => readStoredAdminSession());
   const [user, setUser] = useState(null);
+  const [scopedIdentity, setScopedIdentity] = useState(null);
   const [role, setRole] = useState(() => initialAdminSession ? 'admin' : null);
   const [loginRole, setLoginRole] = useState(null); 
   const [isAdmin, setIsAdmin] = useState(() => Boolean(initialAdminSession));
@@ -558,6 +620,12 @@ function App() {
   const [confirmModal, setConfirmModal] = useState({ show: false, message: '', onConfirm: null });
   const [modalMode, setModalMode] = useState('teacher');
   const [passwordInput, setPasswordInput] = useState('');
+  const [teacherUsername, setTeacherUsername] = useState('');
+  const [teacherProfile, setTeacherProfile] = useState(null);
+  const loginSequenceRef = useRef(0);
+  const activeLoginRequestRef = useRef(null);
+  const loginAbortRef = useRef(null);
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [newAdminPassword, setNewAdminPassword] = useState('');
@@ -565,10 +633,9 @@ function App() {
   const [isSavingStaffPassword, setIsSavingStaffPassword] = useState('');
   const [thdAdminPass, setThdAdminPass] = useState('');
   const [adminSettingsLoaded, setAdminSettingsLoaded] = useState(false);
-  const [isTeacherPassEnabled, setIsTeacherPassEnabled] = useState(false);
-  const [teacherPass, setTeacherPass] = useState('');
   const [isStudentCodeEnabled, setIsStudentCodeEnabled] = useState(true);
   const [currentSchoolYear, setCurrentSchoolYear] = useState('2025-2026'); 
+  const [schoolYearPromotionState, setSchoolYearPromotionState] = useState(null);
   const [adminSchoolYear, setAdminSchoolYear] = useState('');
   const [principalName, setPrincipalName] = useState('');
   const [pcResponsibleName, setPcResponsibleName] = useState('');
@@ -581,9 +648,11 @@ function App() {
   const [transcriptStartSigners, setTranscriptStartSigners] = useState({});
   const [transcriptEndSigners, setTranscriptEndSigners] = useState({});
   const [nanTeachers, setNanTeachers] = useState([]);
+  const [tqkTeachers, setTqkTeachers] = useState([]);
   const [thdTeachers, setThdTeachers] = useState([]);
   const [thdSubjects, setThdSubjects] = useState([]);
   const [thdClasses, setThdClasses] = useState({});
+  const [schoolClassesByYear, setSchoolClassesByYear] = useState({});
   const [classTeacherAssignments, setClassTeacherAssignments] = useState({});
   const [teachingAssignments, setTeachingAssignments] = useState({});
   const [thdTeachingAssignments, setThdTeachingAssignments] = useState({});
@@ -598,16 +667,13 @@ function App() {
   const [scorebookGrade, setScorebookGrade] = useState(null);
   const [scorebookInitialMode, setScorebookInitialMode] = useState('scorebook');
   const [quickScoreGrade, setQuickScoreGrade] = useState(String(GRADES?.[0] || '6'));
-  const [quickScorebookEdits, setQuickScorebookEdits] = useState({});
-  const [quickScoreSources, setQuickScoreSources] = useState({});
-  const [quickInputDrafts, setQuickInputDrafts] = useState({});
+  const [quickScoreSchoolCode, setQuickScoreSchoolCode] = useState(DEFAULT_SCHOOL_CODE);
   const [attendanceDocs, setAttendanceDocs] = useState([]);
   const [quickVisibleSemesters, setQuickVisibleSemesters] = useState({ hki: true, hkii: true });
   const [quickVisibleSubjects, setQuickVisibleSubjects] = useState(() => (
     QUICK_SCORE_SUBJECTS.reduce((acc, subject) => ({ ...acc, [subject.key]: true }), {})
   ));
   const [quickScoreLockedContext, setQuickScoreLockedContext] = useState(null);
-  const [quickScorebookSavingKey, setQuickScorebookSavingKey] = useState('');
   const [quickPriorityStudentIds, setQuickPriorityStudentIds] = useState(new Set());
   const [activeQuickScoreRowKey, setActiveQuickScoreRowKey] = useState('');
   const [quickScoreMailStudentIds, setQuickScoreMailStudentIds] = useState(new Set());
@@ -623,6 +689,7 @@ function App() {
   const [isSubmittingAdmission, setIsSubmittingAdmission] = useState(false);
   const [isResettingAdmissions, setIsResettingAdmissions] = useState(false);
   const [admissionForm, setAdmissionForm] = useState({
+    schoolKey: '',
     fullName: '',
     birthDate: '',
     birthPlace: '',
@@ -724,6 +791,8 @@ function App() {
   const [quizSaveSuccess, setQuizSaveSuccess] = useState(false);
   const [quizDocStatus, setQuizDocStatus] = useState({ state: '', message: '', url: '' });
   const [quizData, setQuizData] = useState(null);
+  const [serverQuizSession, setServerQuizSession] = useState(null);
+  const serverQuizDocumentsRef = useRef(new Map());
   const [quizDeliveryMode, setQuizDeliveryMode] = useState('manual');
   const [showSelfQuizBuilder, setShowSelfQuizBuilder] = useState(false);
   const [selfQuizDraft, setSelfQuizDraft] = useState(getDefaultSelfQuizDraft());
@@ -766,11 +835,19 @@ function App() {
   const [quickMaterialWarning, setQuickMaterialWarning] = useState('');
   const [quickMaterialAttemptSeed, setQuickMaterialAttemptSeed] = useState(0);
   const [isSubmittingQuickMaterial, setIsSubmittingQuickMaterial] = useState(false);
+  const studentRequestScopeRef = useRef(null);
+  const quizRequestScopeRef = useRef(null);
+  if (!studentRequestScopeRef.current) studentRequestScopeRef.current = createAsyncScope();
+  if (!quizRequestScopeRef.current) quizRequestScopeRef.current = createAsyncScope();
   const [quizFiles, setQuizFiles] = useState([]);
   const [quizAttachments, setQuizAttachments] = useState([]);
   const [showQuizToolbar, setShowQuizToolbar] = useState(false);
   const [isPreviousQuizLoaded, setIsPreviousQuizLoaded] = useState(false);
   const autoSaveTimeoutRef = useRef(null);
+  const pendingNoteSaveRef = useRef(null);
+  const noteDraftsRef = useRef(new Map());
+  const noteBaseContentRef = useRef(new Map());
+  const driveRequestRef = useRef(0);
   const notificationTimeoutRef = useRef(null);
   const studentQuizNameRef = useRef(null);
   const studentSubmitNameRef = useRef(null);
@@ -831,18 +908,39 @@ function App() {
   }, [adminSchoolYear, currentSchoolYear, extraSchoolYears]);
   const adminSelectedSchoolYear = adminSchoolYear || currentSchoolYear || schoolYearOptions[0] || '';
   const activeSchoolYear = isAdmin ? adminSelectedSchoolYear : currentSchoolYear;
+  const configuredSchoolClasses = useMemo(
+    () => getSchoolClassesForYear(schoolClassesByYear, activeSchoolYear),
+    [activeSchoolYear, schoolClassesByYear]
+  );
+  const configuredSecondaryClasses = useMemo(
+    () => getSchoolClassesForYear(schoolClassesByYear, activeSchoolYear, ['6', '7', '8', '9']),
+    [activeSchoolYear, schoolClassesByYear]
+  );
+  const configuredSecondaryClassesBySchool = useMemo(() => Object.fromEntries(
+    SCHOOL_OPTIONS.filter(school => school.code !== 'UNKNOWN').map(school => {
+      const campusClasses = getSchoolClassesForCampus(configuredSecondaryClasses, school.code);
+      const defaults = Object.values(createDefaultSchoolClassesByGrade()).flat()
+        .filter(className => getSchoolClassesForCampus([className], school.code).length > 0);
+      return [school.code, campusClasses.length ? campusClasses : defaults.filter(className => ['6', '7', '8', '9'].includes(getGradeFromClassName(className)))];
+    })
+  ), [configuredSecondaryClasses]);
   const admissionSchoolYear = useMemo(() => {
-    return extractSchoolYearFromText(viewingNews?.title || '', activeSchoolYear);
+    return normalizeAdmissionSchoolYear(extractSchoolYearFromText(viewingNews?.title || '', activeSchoolYear), activeSchoolYear);
   }, [viewingNews, activeSchoolYear]);
+  const admissionClassOptions = useMemo(() => {
+    const selectedSchool = ADMISSION_SCHOOLS.find(school => school.key === admissionForm.schoolKey);
+    if (!selectedSchool) return [];
+    const configured = getSchoolClassesForYear(schoolClassesByYear, admissionSchoolYear);
+    const available = configured.length ? configured : Object.values(createDefaultSchoolClassesByGrade()).flat();
+    return getSchoolClassesForCampus(available, selectedSchool.code);
+  }, [admissionForm.schoolKey, admissionSchoolYear, schoolClassesByYear]);
   const isAdminViewingDifferentYear = isAdmin && String(adminSelectedSchoolYear || '') !== String(currentSchoolYear || '');
-  const noteId = selectedGrade && selectedSubject && selectedLesson ? `g${selectedGrade}_${selectedSubject.replace(/\s/g, '')}_l${selectedLesson}` : null;
-  const quizId = selectedGrade && selectedSubject && selectedLesson && activeSchoolYear ? `${activeSchoolYear}_g${selectedGrade}_${selectedSubject.replace(/\s/g, '')}_l${selectedLesson}` : null;
-  const currentSchoolYearKey = useMemo(() => compactSchoolYearLabel(activeSchoolYear), [activeSchoolYear]);
+  const currentSchoolYearKey = useMemo(() => normalizeSchoolYearKey(activeSchoolYear), [activeSchoolYear]);
   const currentAdmissionApplications = useMemo(() => (
     admissionApplications.filter(item => !item.schoolYear || String(item.schoolYear) === String(activeSchoolYear || ''))
   ), [admissionApplications, activeSchoolYear]);
   const activePcResponsibleName = pcResponsibleByYear?.[currentSchoolYearKey]
-    || pcResponsibleByYear?.[compactSchoolYearLabel(currentSchoolYear)]
+    || pcResponsibleByYear?.[normalizeSchoolYearKey(currentSchoolYear)]
     || Object.values(pcResponsibleByYear || {}).find(Boolean)
     || pcResponsibleName;
   const isCurrentSchoolYearInputLocked = useMemo(() => Boolean(inputYearLocks?.[currentSchoolYearKey]), [inputYearLocks, currentSchoolYearKey]);
@@ -858,6 +956,50 @@ function App() {
       : null;
     return sameYearMatch || allStudents.find(student => student.id === currentStudent.id) || currentStudent;
   }, [allStudents, currentStudent, currentSchoolYear]);
+  const currentContentSchoolCode = role === 'teacher' || (role === 'student' && loginRole === 'teacher')
+    ? normalizeSchoolCode(teacherProfile?.schoolCode)
+    : role === 'student'
+      ? (normalizeSchoolCode(getStudentSchoolCode(activeStudentProfile || currentStudent || {})) || DEFAULT_SCHOOL_CODE)
+      : DEFAULT_SCHOOL_CODE;
+  const isContentForCurrentCampus = useCallback((item = {}) => {
+    if (isAdmin) return true;
+    if (!contentBelongsToCampus(item, currentContentSchoolCode)) return false;
+    const isTeacherView = role === 'teacher' || (role === 'student' && loginRole === 'teacher');
+    return !isTeacherView || teacherHasContentScope(teacherProfile, {
+      schoolCode: currentContentSchoolCode,
+      grade: item.grade,
+      subject: item.subject
+    });
+  }, [isAdmin, currentContentSchoolCode, role, loginRole, teacherProfile]);
+  const teacherCanUseScope = useCallback((grade, subject) => {
+    const isTeacherView = role === 'teacher' || (role === 'student' && loginRole === 'teacher');
+    return !isTeacherView || teacherHasContentScope(teacherProfile, {
+      schoolCode: currentContentSchoolCode,
+      grade,
+      subject
+    });
+  }, [role, loginRole, teacherProfile, currentContentSchoolCode]);
+  const currentTeacherHasScope = teacherCanUseScope(selectedGrade, selectedSubject);
+  const navigationGrades = useMemo(() => role === 'teacher' ? (teacherProfile?.grades || []) : GRADES, [role, teacherProfile]);
+  const navigationSubjects = useMemo(() => role === 'teacher' ? (teacherProfile?.subjects || []) : SUBJECTS, [role, teacherProfile]);
+  const noteSchoolCode = role === 'student' || role === 'teacher' ? currentContentSchoolCode : DEFAULT_SCHOOL_CODE;
+  const noteCampusPrefix = noteSchoolCode === 'NAN' ? '' : `${noteSchoolCode}_`;
+  const quizCampusPrefix = noteSchoolCode === 'NAN' ? '' : `${noteSchoolCode}_`;
+  const noteId = currentTeacherHasScope && selectedGrade && selectedSubject && selectedLesson ? `${noteCampusPrefix}g${selectedGrade}_${selectedSubject.replace(/\s/g, '')}_l${selectedLesson}` : null;
+  const quizId = currentTeacherHasScope && selectedGrade && selectedSubject && selectedLesson && activeSchoolYear ? `${activeSchoolYear}_${quizCampusPrefix}g${selectedGrade}_${selectedSubject.replace(/\s/g, '')}_l${selectedLesson}` : null;
+  useEffect(() => {
+    if (role !== 'teacher' || !teacherProfile) return;
+    if (!navigationGrades.includes(String(selectedGrade || ''))) {
+      setSelectedGrade(String(navigationGrades[0] || ''));
+      setSelectedSubject(String(navigationSubjects[0] || ''));
+      setSelectedLesson(null);
+      return;
+    }
+    if (!navigationSubjects.includes(String(selectedSubject || ''))) {
+      setSelectedSubject(String(navigationSubjects[0] || ''));
+      setSelectedLesson(null);
+    }
+  }, [role, teacherProfile, navigationGrades, navigationSubjects, selectedGrade, selectedSubject]);
   const activeStudentIsReadOnly = useMemo(() => isReadOnlyStudentRecord(activeStudentProfile), [activeStudentProfile]);
   const activeStudentReadOnlyReason = activeStudentProfile?.status === 'dropped'
     ? 'Hồ sơ đã đánh dấu bỏ học nên chỉ xem, không chỉnh sửa/nộp bài.'
@@ -941,6 +1083,24 @@ function App() {
     const nameKey = removeAccents(String(activeStudentProfile?.fullName || currentStudent?.fullName || '').toLowerCase()).replace(/[^a-z0-9]/g, '');
     return nameKey || 'guest';
   }, [activeStudentProfile, currentStudent]);
+  const studentRequestScopeKey = JSON.stringify([role, activeStudentIdentityKey, activeStudentProfile?.id, currentSchoolYear, user?.uid]);
+  const quizRequestScopeKey = JSON.stringify([studentRequestScopeKey, quizId, viewingMaterial?.id, studentSelfQuizAttemptSeed, quickMaterialAttemptSeed]);
+  studentRequestScopeRef.current.setScope(studentRequestScopeKey);
+  const quizContextRef = useRef(quizRequestScopeKey);
+  quizContextRef.current = quizRequestScopeKey;
+  quizRequestScopeRef.current.setScope(quizRequestScopeKey);
+  useEffect(() => {
+    setIsSubmittingSelfQuiz(false);
+    setIsSavingQuiz(false);
+    setQuizSaveSuccess(false);
+    setIsSubmittingQuickMaterial(false);
+    setIsSubmittingWork(false);
+    setIsUploadingPlan(false);
+  }, [quizRequestScopeKey]);
+  useEffect(() => {
+    setIsLoadingStudentMailbox(false);
+    setIsSubmittingProfileRequest(false);
+  }, [studentRequestScopeKey]);
   const mailboxAutoReadStorageKey = useMemo(() => `${STUDENT_MAILBOX_AUTO_READ_KEY}-${activeStudentIdentityKey}`, [activeStudentIdentityKey]);
   useEffect(() => {
     try {
@@ -964,7 +1124,7 @@ function App() {
     if (!years || years.length < 2) return '';
     return `${Number(years[0]) - 1}-${Number(years[1]) - 1}`;
   }, [currentSchoolYear]);
-  const previousQuizId = selectedGrade && selectedSubject && selectedLesson && previousSchoolYear ? `${previousSchoolYear}_g${selectedGrade}_${selectedSubject.replace(/\s/g, '')}_l${selectedLesson}` : null;
+  const previousQuizId = selectedGrade && selectedSubject && selectedLesson && previousSchoolYear ? `${previousSchoolYear}_${quizCampusPrefix}g${selectedGrade}_${selectedSubject.replace(/\s/g, '')}_l${selectedLesson}` : null;
 
   useEffect(() => { return () => { if (autoSaveTimeoutRef.current) clearTimeout(autoSaveTimeoutRef.current); if (notificationTimeoutRef.current) clearTimeout(notificationTimeoutRef.current); }; }, []);
   useEffect(() => {
@@ -991,12 +1151,17 @@ function App() {
         || String(a.fullName || '').localeCompare(String(b.fullName || ''), 'vi'))
   ), [allStudents, activeSchoolYear]);
   const mailboxClassOptions = useMemo(() => (
-    [...new Set(mailboxStudents.map(student => String(student.className || '').trim()).filter(Boolean))]
+    [...new Set([
+      ...configuredSchoolClasses,
+      ...mailboxStudents.map(student => String(student.className || '').trim()).filter(Boolean)
+    ])]
       .sort((a, b) => a.localeCompare(b, 'vi', { numeric: true }))
-  ), [mailboxStudents]);
+  ), [configuredSchoolClasses, mailboxStudents]);
   const fetchStudentMailbox = useCallback(async ({ silent = false } = {}) => {
     const accessCode = String(activeStudentProfile?.accessCode || currentStudent?.accessCode || '').trim().toUpperCase();
     if (!accessCode) return;
+    const request = studentRequestScopeRef.current.begin('mailbox');
+    if (!request) return;
     if (!silent) setIsLoadingStudentMailbox(true);
     try {
       const response = await postAppsScript({
@@ -1005,12 +1170,13 @@ function App() {
         className: String(activeStudentProfile?.className || currentStudent?.className || '').trim(),
         schoolYear: currentSchoolYear
       });
+      if (!studentRequestScopeRef.current.isCurrent(request)) return;
       if (response.status !== 'success') throw new Error(response.message || 'Chưa đọc được hộp thư.');
       setStudentMailboxMessages(Array.isArray(response.messages) ? response.messages : []);
     } catch (error) {
-      if (!silent) showNotification(`Chưa đọc được hộp thư: ${error.message}`, 'error');
+      if (!silent && studentRequestScopeRef.current.isCurrent(request)) showNotification(`Chưa đọc được hộp thư: ${error.message}`, 'error');
     } finally {
-      if (!silent) setIsLoadingStudentMailbox(false);
+      if (studentRequestScopeRef.current.finish(request) && !silent) setIsLoadingStudentMailbox(false);
     }
   }, [activeStudentProfile, currentStudent, currentSchoolYear, showNotification]);
   useEffect(() => {
@@ -1146,7 +1312,7 @@ function App() {
             adminSessionToken
           });
           if (response.status !== 'success') throw new Error(response.message || 'Chưa xóa được tin nhắn.');
-          showNotification(`Đã xóa ${Number(response.deletedCount || 0)} tin nhắn.`);
+          showNotification(`Đã xóa ${Number(response.deletedCount || 0)} tin nhắn.${response.warning ? ` ${response.warning}` : ''}`, response.warning ? 'error' : 'success');
         } catch (error) {
           showNotification(`Chưa xóa được tin nhắn: ${error.message}`, 'error');
         } finally {
@@ -1158,11 +1324,15 @@ function App() {
   const markManualMailboxMessageRead = useCallback(async (message) => {
     const accessCode = String(activeStudentProfile?.accessCode || currentStudent?.accessCode || '').trim().toUpperCase();
     if (!message?.id || !accessCode || message.isRead) return;
+    const request = studentRequestScopeRef.current.begin(`read-mail:${message.id}`);
+    if (!request) return;
     setStudentMailboxMessages(prev => prev.map(item => item.id === message.id ? { ...item, isRead: true } : item));
     try {
       await postAppsScript({ action: 'markStudentMailboxMessageRead', messageId: message.id, accessCode });
     } catch {
-      fetchStudentMailbox({ silent: true });
+      if (studentRequestScopeRef.current.isCurrent(request)) fetchStudentMailbox({ silent: true });
+    } finally {
+      studentRequestScopeRef.current.finish(request);
     }
   }, [activeStudentProfile, currentStudent, fetchStudentMailbox]);
 
@@ -1253,13 +1423,6 @@ function App() {
     loadStudentProfileCommunes(studentProfileDraft.householdProvince);
   }, [showStudentProfileModal, studentProfileDraft.province, studentProfileDraft.householdProvince, loadStudentProfileCommunes]);
 
-  const normalizeStudentLookup = (value = '') => removeAccents(String(value || '').trim().toLowerCase()).replace(/\s+/g, ' ');
-  const getStudentVerifyTail = (student = {}) => {
-    const identityDigits = String(student.identityCode || '').replace(/\D/g, '');
-    if (identityDigits) return identityDigits.slice(-2);
-    const birthDigits = String(student.birthDate || '').replace(/\D/g, '');
-    return birthDigits.slice(-2);
-  };
   const normalizeStudentAccessSuffix = (value = '') => String(value || '').toUpperCase().replace(/\s/g, '').replace(/^HS/, '').replace(/\D/g, '');
   const getStudentAccessLoginCode = (value = studentAccessCode) => {
     const suffix = normalizeStudentAccessSuffix(value);
@@ -1291,49 +1454,57 @@ function App() {
     setStudentFoundCode('');
     showNotification(student.fullName ? `Chào ${student.fullName}!` : 'Đã vào giao diện học sinh.');
   };
-  const handleStudentCodeLogin = () => {
+  const cancelLogin = () => {
+    loginSequenceRef.current += 1;
+    loginAbortRef.current?.abort();
+    loginAbortRef.current = null;
+    activeLoginRequestRef.current = null;
+    setIsLoggingIn(false);
+    setShowPasswordModal(false);
+    setShowStudentAccessModal(false);
+    setPasswordInput('');
+    setErrorMsg('');
+  };
+  const handleStudentCodeLogin = async () => {
+    if (activeLoginRequestRef.current != null) return;
+    const request = ++loginSequenceRef.current;
     const suffix = normalizeStudentAccessSuffix(studentAccessCode);
     const code = getStudentAccessLoginCode(suffix);
-    const codeDigits = suffix;
+
     if (!suffix) {
       showNotification('Em nhập mã HS hoặc mã định danh trước nhé.', 'error');
       return;
     }
-    const candidates = allStudents.filter(item => {
-      const accessCode = String(item.accessCode || '').toUpperCase().replace(/\s/g, '');
-      const identityCode = String(item.identityCode || '').replace(/\D/g, '');
-      return accessCode === code || (!!codeDigits && identityCode === codeDigits);
-    });
-    const student = candidates.find(item => String(item.schoolYear || '') === String(currentSchoolYear || '')) || candidates[0];
-    if (!student) {
-      showNotification('Không tìm thấy mã HS/mã định danh. Em kiểm tra lại hoặc báo giáo viên nhé.', 'error');
-      return;
-    }
+    let student;
+    activeLoginRequestRef.current = request;
+    const controller = new AbortController();
+    loginAbortRef.current = controller;
+    setIsLoggingIn(true);
+    try {
+      if (SCOPED_AUTH_ENABLED) {
+        const response = await exchangeScopedIdentity({ kind: 'student', accessCode: code }, { signal: controller.signal });
+        student = response.student;
+      } else {
+        const response = await postAppsScript({ action: 'createStudentSession', accessCode: code }, { signal: controller.signal });
+        if (request !== loginSequenceRef.current) return;
+        if (!response.studentSessionToken) throw new Error('Máy chủ chưa xác thực được học sinh.');
+
+        const matching = await getDocsFromServer(query(collection(db, 'artifacts', appId, 'public', 'data', 'students'), where('accessCode', '==', code)));
+        const candidates = matching.docs.map(item => ({ ...item.data(), id: item.id })).filter(item => item.status !== 'dropped'
+          && String(item.schoolYear || '') === String(response.studentProfile?.schoolYear || currentSchoolYear));
+        if (candidates.length > 1) throw new Error('Có nhiều hồ sơ cùng mã. Liên hệ giáo viên để đối soát.');
+        student = candidates[0];
+        if (!student) throw new Error('Hồ sơ chưa đồng bộ. Liên hệ giáo viên.');
+        if (request !== loginSequenceRef.current) return;
+        window.sessionStorage.setItem(STUDENT_SESSION_KEY, response.studentSessionToken);
+      }
+    } catch (error) { if (request === loginSequenceRef.current) showNotification(error.message, 'error'); return; }
+    finally { if (activeLoginRequestRef.current === request) { activeLoginRequestRef.current = null; loginAbortRef.current = null; setIsLoggingIn(false); } }
+    if (request !== loginSequenceRef.current) return;
     openStudentArea(student);
   };
   const handleFindStudentCode = () => {
-    const nameNeedle = normalizeStudentLookup(studentForgotName);
-    const verifyTail = String(studentForgotVerify || '').replace(/\D/g, '').slice(-2);
-    if (!nameNeedle || verifyTail.length !== 2) {
-      showNotification('Nhập họ tên và đúng 2 số xác minh nhé.', 'error');
-      return;
-    }
-    const matches = allStudents.filter(student => {
-      const sameName = normalizeStudentLookup(student.fullName) === nameNeedle;
-      return sameName && getStudentVerifyTail(student) === verifyTail;
-    });
-    if (matches.length === 1) {
-      setStudentFoundCode(matches[0].accessCode || '');
-      setStudentAccessCode(normalizeStudentAccessSuffix(matches[0].accessCode || ''));
-      setStudentName(matches[0].fullName || '');
-      showNotification('Đã tìm thấy mã học sinh.');
-    } else if (matches.length > 1) {
-      setStudentFoundCode(matches.map(item => item.accessCode).filter(Boolean).join(', '));
-      showNotification('Có nhiều bạn trùng thông tin, hãy báo giáo viên kiểm tra thêm.', 'error');
-    } else {
-      setStudentFoundCode('');
-      showNotification('Chưa tìm thấy. Kiểm tra lại họ tên và 2 số cuối.', 'error');
-    }
+    showNotification('Liên hệ giáo viên để xác minh và cấp lại mã học sinh.', 'error');
   };
 
   const applyStudentProfileImageFile = (key, file) => {
@@ -1410,139 +1581,15 @@ function App() {
     });
   };
 
-  const fileToBase64Payload = (file, field = {}) => new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    const filenameTag = field.filename || field.key || 'anh';
-    reader.onload = () => resolve({
-      filename: `[HS_${activeStudentProfile?.accessCode || activeStudentProfile?.id || 'hoc-sinh'}]_${filenameTag}_${file.name}`,
-      mimeType: file.type,
-      base64: String(reader.result || '').split(',')[1],
-      folderId: IMAGE_DRIVE_FOLDER_ID
-    });
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
+
 
   const submitStudentProfileRequest = async () => {
-    if (!activeStudentProfile?.id || isSubmittingProfileRequest) return;
-    if (activeStudentIsReadOnly) {
-      showNotification(activeStudentReadOnlyReason || 'Hồ sơ này đang ở chế độ chỉ xem.', 'error');
-      return;
-    }
-    setIsSubmittingProfileRequest(true);
-    try {
-      const uploadedImageChanges = {};
-      for (const field of STUDENT_PROFILE_IMAGE_FIELDS) {
-        const imageFiles = Array.isArray(studentProfileImages[field.key])
-          ? studentProfileImages[field.key]
-          : (studentProfileImages[field.key] ? [studentProfileImages[field.key]] : []);
-        if (!imageFiles.length) continue;
-        if (field.key === 'transcriptUrl') {
-          const uploadedUrls = [];
-          for (const imageFile of imageFiles) {
-            const uploadPayload = await fileToBase64Payload(imageFile, field);
-            const uploadRes = await postAppsScript(uploadPayload);
-            if (uploadRes.status !== 'success') throw new Error(uploadRes.message || `Chưa tải được ${field.label.toLowerCase()}`);
-            uploadedUrls.push(uploadRes.webViewLink || uploadRes.url || (uploadRes.fileId ? `https://drive.google.com/file/d/${uploadRes.fileId}/view` : ''));
-          }
-          const hasDocumentOverride = Object.prototype.hasOwnProperty.call(studentProfileDocumentOverrides, field.key);
-          const currentDocumentValue = hasDocumentOverride
-            ? studentProfileDocumentOverrides[field.key]
-            : (activeStudentPendingProfileChanges[field.key] || activeStudentProfile[field.key] || '');
-          const existingDocumentUrls = String(currentDocumentValue || '')
-            .split(/\s*,\s*|\n+/)
-            .map(item => item.trim())
-            .filter(Boolean);
-          uploadedImageChanges[field.key] = studentProfileImageAppendModes[field.key] && existingDocumentUrls.length
-            ? [...existingDocumentUrls, ...uploadedUrls].filter(Boolean).join('\n')
-            : uploadedUrls.filter(Boolean).join('\n');
-          continue;
-        }
-        const imageFile = imageFiles[0];
-        if (!imageFile) continue;
-        const uploadPayload = await fileToBase64Payload(imageFile, field);
-        const uploadRes = await postAppsScript(uploadPayload);
-        if (uploadRes.status !== 'success') throw new Error(uploadRes.message || `Chưa tải được ${field.label.toLowerCase()}`);
-        uploadedImageChanges[field.key] = uploadRes.webViewLink || uploadRes.url || (uploadRes.fileId ? `https://drive.google.com/file/d/${uploadRes.fileId}/view` : '');
-      }
-      const changes = {};
-      studentProfileEditableFields.forEach(field => {
-        const currentValue = field.type === 'select'
-          ? normalizeStudentResultRating(activeStudentProfile[field.key] || '')
-          : String(activeStudentProfile[field.key] || '').trim();
-        const nextValue = field.type === 'select'
-          ? normalizeStudentResultRating(studentProfileDraft[field.key] || '')
-          : String(studentProfileDraft[field.key] || '').trim();
-        if (nextValue !== currentValue) changes[field.key] = nextValue;
-      });
-      Object.assign(changes, uploadedImageChanges);
-      STUDENT_PROFILE_IMAGE_FIELDS.forEach(field => {
-        if (!Object.prototype.hasOwnProperty.call(studentProfileDocumentOverrides, field.key) || uploadedImageChanges[field.key]) return;
-        const currentValue = String(activeStudentPendingProfileChanges[field.key] || activeStudentProfile[field.key] || '').trim();
-        const nextValue = String(studentProfileDocumentOverrides[field.key] || '').trim();
-        if (nextValue !== currentValue) changes[field.key] = nextValue;
-      });
-      if (Object.keys(changes).length === 0) {
-        showNotification(activeStudentPendingProfileRequests.length > 0 ? 'Yêu cầu của em đang chờ admin duyệt rồi.' : 'Chưa có thông tin nào thay đổi.', 'error');
-        return;
-      }
-      const requestPayload = {
-        studentId: activeStudentProfile.id,
-        studentName: activeStudentProfile.fullName || '',
-        accessCode: activeStudentProfile.accessCode || '',
-        className: activeStudentProfile.className || '',
-        schoolYear: activeStudentProfile.schoolYear || currentSchoolYear,
-        changes: {
-          ...activeStudentPendingProfileChanges,
-          ...changes
-        },
-        status: 'pending',
-        updatedAt: Date.now()
-      };
-      const existingRequest = activeStudentPendingProfileRequests[0];
-      if (existingRequest?.id) {
-        await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'student_profile_requests', existingRequest.id), {
-          ...requestPayload,
-          createdAt: existingRequest.createdAt || Date.now()
-        }, { merge: true });
-        await Promise.all(activeStudentPendingProfileRequests.slice(1).map(request => (
-          request.id ? deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'student_profile_requests', request.id)) : Promise.resolve()
-        )));
-      } else {
-        await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'student_profile_requests'), {
-          ...requestPayload,
-          createdAt: Date.now()
-        });
-      }
-      setShowStudentProfileModal(false);
-      showNotification(existingRequest?.id ? 'Đã cập nhật yêu cầu đang chờ duyệt.' : 'Đã gửi yêu cầu sửa hồ sơ. Admin duyệt xong mới cập nhật.');
-    } catch (error) {
-      showNotification(`Chưa gửi được yêu cầu sửa: ${error.message}`, 'error');
-    } finally {
-      setIsSubmittingProfileRequest(false);
-    }
+    const { submitStudentProfileChange } = await import('./services/studentProfileRequests');
+    return submitStudentProfileChange({ activeStudentProfile, isSubmittingProfileRequest, activeStudentIsReadOnly, showNotification, activeStudentReadOnlyReason, studentRequestScopeRef, setIsSubmittingProfileRequest, STUDENT_PROFILE_IMAGE_FIELDS, studentProfileImages, studentProfileDocumentOverrides, activeStudentPendingProfileChanges, studentProfileImageAppendModes, studentProfileEditableFields, normalizeStudentResultRating, studentProfileDraft, activeStudentPendingProfileRequests, currentSchoolYear, setShowStudentProfileModal, IMAGE_DRIVE_FOLDER_ID });
   };
 
   const escapeHtml = (value = '') => String(value).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
   const escapeAttr = (value = '') => escapeHtml(value);
-  const VIETNAM_TIME_OFFSET_MS = 7 * 60 * 60 * 1000;
-  const parseVietnamDateTimeLocal = (value = '') => {
-    if (!value) return null;
-    if (typeof value === 'number') return Number.isFinite(value) ? value : null;
-    const raw = String(value);
-    const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
-    if (match) {
-      const [, year, month, day, hour, minute] = match.map(Number);
-      return Date.UTC(year, month - 1, day, hour - 7, minute);
-    }
-    const parsed = new Date(raw).getTime();
-    return Number.isFinite(parsed) ? parsed : null;
-  };
-  const formatVietnamDateTimeLocal = (value) => {
-    const ms = parseVietnamDateTimeLocal(value);
-    if (!ms) return '';
-    return new Date(ms + VIETNAM_TIME_OFFSET_MS).toISOString().slice(0, 16);
-  };
   const formatCountdown = (ms = 0) => {
     const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
     const days = Math.floor(totalSeconds / 86400);
@@ -1561,7 +1608,7 @@ function App() {
   const extractQuizAttachments = useCallback((html = '') => {
     if (!html || typeof document === 'undefined') return [];
     const tmp = document.createElement('div');
-    tmp.innerHTML = html;
+    tmp.innerHTML = sanitizeHtml(html);
     return Array.from(tmp.querySelectorAll('[data-quiz-attachment-id]')).map(node => ({
       id: node.getAttribute('data-quiz-attachment-id') || '',
       title: node.getAttribute('data-title') || 'Tài liệu đính kèm',
@@ -1576,6 +1623,63 @@ function App() {
       if (rankA !== rankB) return rankA - rankB; return a.name.localeCompare(b.name);
     });
   }, [textbookFiles]);
+
+  const clearLoginIdentity = useCallback(async () => {
+    loginAbortRef.current?.abort();
+    loginAbortRef.current = null;
+    loginSequenceRef.current += 1;
+    activeLoginRequestRef.current = null;
+    setIsLoggingIn(false);
+    studentRequestScopeRef.current.invalidate();
+    quizRequestScopeRef.current.invalidate();
+    clearStoredAdminSession();
+    window.sessionStorage.removeItem(STUDENT_SESSION_KEY);
+    window.sessionStorage.removeItem(TEACHER_PROFILE_STORAGE_KEY);
+    setTeacherProfile(null);
+    setAdminSessionToken('');
+    setCurrentStudent(null);
+    setScopedIdentity(null);
+    setIsAdmin(false);
+    setRole(null);
+    setLoginRole(null);
+    setStudentName('');
+    setStudentQuizName('');
+    setStudentQuizAnswers({});
+    setStudentQuizResult(null);
+    setStudentQuizWarning('');
+    setQuickMaterialAnswers({});
+    setQuickMaterialResult(null);
+    setQuickMaterialWarning('');
+    setSubmissionFile(null);
+    setSubmissionStatus('');
+    setIsSubmittingWork(false);
+    setPlanFile(null);
+    setPlanStatus('');
+    setIsUploadingPlan(false);
+    setShowStudentWorkReview(false);
+    setIsSubmittingProfileRequest(false);
+    setIsSubmittingSelfQuiz(false);
+    setIsSubmittingQuickMaterial(false);
+    setShowStudentProfileModal(false);
+    setShowStudentMailbox(false);
+    setStudentMailboxMessages([]);
+    setSelectedStudentMailboxMessage(null);
+    setIsLoadingStudentMailbox(false);
+    setShowClassOps(false);
+    setSelectedGrade(null);
+    setSelectedSubject(null);
+    setSelectedLesson(null);
+    setViewingMaterial(null);
+    setShowCommonLibraryWorkspace(false);
+    setShowAdmissionForm(false);
+    setShowAdmissionWorkspace(false);
+    setShowAdminSettingsWorkspace(false);
+    setShowAdminCheckWorkspace(false);
+    setShowPasswordWorkspace(false);
+    setShowDataSafetyWorkspace(false);
+    setScorebookGrade(null);
+    if (SCOPED_AUTH_ENABLED) await resetScopedIdentity();
+  }, []);
 
   const closeAdminSessionView = useCallback(() => {
     setIsAdmin(false);
@@ -1599,6 +1703,13 @@ function App() {
   useEffect(() => {
     const initAuth = async () => {
       try {
+        await auth.authStateReady();
+        if (SCOPED_AUTH_ENABLED && auth.currentUser && !auth.currentUser.isAnonymous) {
+          const hasSession = [ADMIN_SERVER_SESSION_STORAGE_KEY, STAFF_SERVER_SESSION_STORAGE_KEY, STUDENT_SESSION_KEY].some(key => window.sessionStorage.getItem(key));
+          if (hasSession) return;
+          await resetScopedIdentity();
+          return;
+        }
         if (typeof window !== 'undefined' && typeof window.__initial_auth_token !== 'undefined' && window.__initial_auth_token) {
           await signInWithCustomToken(auth, window.__initial_auth_token);
         } else { await signInAnonymously(auth); }
@@ -1607,51 +1718,32 @@ function App() {
       }
     };
     initAuth();
-    const unsubAuth = onAuthStateChanged(auth, setUser); return () => unsubAuth();
-  }, []);
-
-  useEffect(() => {
-    postAppsScript({ action: 'getAccessConfig' })
-      .then(response => {
-        if (typeof response.teacherPasswordEnabled === 'boolean') setIsTeacherPassEnabled(response.teacherPasswordEnabled);
-      })
-      .catch(() => undefined);
+    let revision = 0;
+    const unsubAuth = onAuthStateChanged(auth, async nextUser => {
+      const request = ++revision;
+      setUser(nextUser);
+      try {
+        const identity = nextUser ? (await nextUser.getIdTokenResult()).claims : null;
+        if (request === revision) setScopedIdentity(identity?.role ? identity : null);
+      } catch { if (request === revision) setScopedIdentity(null); }
+    }); return () => { revision += 1; unsubAuth(); };
   }, []);
 
   useEffect(() => {
     if (!user) return;
-    const unsubNews = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'news'), (snapshot) => { const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })); docs.sort(sortNewsForDisplay); setNewsList(docs); });
-    const unsubMats = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'materials'), (snapshot) => { const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })); setAllMaterials(docs); });
-    const unsubNotes = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'lesson_notes'), (snapshot) => { const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })); setAllNotes(docs); });
-    const unsubQuizzes = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'lesson_quizzes'), (snapshot) => { const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })); setAllQuizzes(docs); });
-    const unsubQuizResults = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'quiz_results'), (snapshot) => { const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })); setAllQuizResults(docs); });
-    const unsubQuickQuizResults = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'quick_quiz_results'), (snapshot) => { const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })); setAllQuickQuizResults(docs); });
-    const unsubLessonProgress = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'lesson_progress'), (snapshot) => { const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })); setAllLessonProgress(docs); });
-    const unsubHandwrittenSubmissions = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'handwritten_submissions'), (snapshot) => {
-      const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      docs.sort((a, b) => (b.submittedAt || 0) - (a.submittedAt || 0));
-      setAllHandwrittenSubmissions(docs);
-    });
-    const unsubStudents = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'students'), (snapshot) => { const docs = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id })); setAllStudents(docs); });
-    const unsubAdmissions = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'admission_applications'), (snapshot) => {
-      const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      docs.sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0));
-      setAdmissionApplications(docs);
-    });
-    const unsubAttendance = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'class_attendance'), (snapshot) => { const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })); setAttendanceDocs(docs); });
-    const unsubProfileRequests = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'student_profile_requests'), (snapshot) => {
-      const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      const pendingDocs = docs.filter(item => (item.status || 'pending') === 'pending');
-      setStudentProfileRequests(docs);
-      setStudentProfileRequestCount(pendingDocs.length);
-    });
-    const unsubSettings = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'global'), (docSnap) => {
+    const staffSettingsAllowed = !SCOPED_AUTH_ENABLED || ['admin', 'teacher', 'thd'].includes(scopedIdentity?.role);
+    if (!staffSettingsAllowed) setAdminSettingsLoaded(true);
+    const unsubSettings = staffSettingsAllowed ? onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'global'), { includeMetadataChanges: true }, (docSnap) => {
+      if (docSnap.metadata.hasPendingWrites) return;
       if (!docSnap.exists()) {
         setAdminSettingsLoaded(true);
         return;
       }
       const data = docSnap.data();
       if (data.schoolYear) setCurrentSchoolYear(data.schoolYear);
+      if (data.schoolYearPromotion && typeof data.schoolYearPromotion === 'object') {
+        setSchoolYearPromotionState(data.schoolYearPromotion);
+      }
       if (typeof data.isStudentCodeEnabled === 'boolean') setIsStudentCodeEnabled(data.isStudentCodeEnabled);
       if (typeof data.principalName === 'string') setPrincipalName(data.principalName);
       if (typeof data.pcResponsibleName === 'string') setPcResponsibleName(data.pcResponsibleName);
@@ -1664,61 +1756,40 @@ function App() {
       if (data.transcriptStartSigners && typeof data.transcriptStartSigners === 'object') setTranscriptStartSigners(data.transcriptStartSigners);
       if (data.transcriptEndSigners && typeof data.transcriptEndSigners === 'object') setTranscriptEndSigners(data.transcriptEndSigners);
       if (Array.isArray(data.nanTeachers)) setNanTeachers(data.nanTeachers);
+      if (Array.isArray(data.tqkTeachers)) setTqkTeachers(data.tqkTeachers);
       if (Array.isArray(data.thdTeachers)) setThdTeachers(data.thdTeachers);
       if (Array.isArray(data.thdSubjects)) setThdSubjects(data.thdSubjects);
       if (data.thdClasses && typeof data.thdClasses === 'object') setThdClasses(data.thdClasses);
+      if (data.schoolClassesByYear && typeof data.schoolClassesByYear === 'object') setSchoolClassesByYear(data.schoolClassesByYear);
       if (data.classTeacherAssignments && typeof data.classTeacherAssignments === 'object') setClassTeacherAssignments(data.classTeacherAssignments);
       if (data.teachingAssignments && typeof data.teachingAssignments === 'object') setTeachingAssignments(data.teachingAssignments);
-      if (data.thdTeachingAssignments && typeof data.thdTeachingAssignments === 'object') setThdTeachingAssignments(data.thdTeachingAssignments);
       setAdminSettingsLoaded(true);
-    });
-    let thdTeachingChunkMeta = { chunked: false, chunkCount: 0 };
-    const thdTeachingChunks = new Map();
-    const loadThdTeachingAssignmentsFromChunks = () => {
-      if (!thdTeachingChunkMeta.chunked || !thdTeachingChunkMeta.chunkCount) return;
-      const parts = [];
-      for (let index = 0; index < thdTeachingChunkMeta.chunkCount; index += 1) {
-        const text = thdTeachingChunks.get(String(index));
-        if (typeof text !== 'string') return;
-        parts.push(text);
-      }
-      try {
-        const parsed = JSON.parse(parts.join(''));
-        if (parsed && typeof parsed === 'object') setThdTeachingAssignments(parsed);
-      } catch (error) {
-        console.error('Không đọc được dữ liệu phân công Trần Hưng Đạo đã chia mảnh:', error);
-      }
-    };
-    const unsubThdTeachingAssignments = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'thdTeachingAssignments'), (docSnap) => {
-      if (!docSnap.exists()) return;
-      const data = docSnap.data();
-      if (data.chunked) {
-        const newUpdatedAt = data.updatedAt;
-        if (thdTeachingChunkMeta.updatedAt !== newUpdatedAt) {
-          thdTeachingChunks.clear();
-        }
-        thdTeachingChunkMeta = {
-          chunked: true,
-          chunkCount: Number(data.chunkCount) || 0,
-          updatedAt: newUpdatedAt
-        };
-        loadThdTeachingAssignmentsFromChunks();
-        return;
-      }
-      thdTeachingChunkMeta = { chunked: false, chunkCount: 0 };
-      thdTeachingChunks.clear();
-      if (data.value && typeof data.value === 'object') setThdTeachingAssignments(data.value);
-    });
-    const unsubThdTeachingAssignmentChunks = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'settings', 'thdTeachingAssignments', 'chunks'), (snapshot) => {
-      snapshot.docs.forEach((chunkDoc) => {
-        const data = chunkDoc.data();
-        const index = Number.isFinite(Number(data.index)) ? String(Number(data.index)) : chunkDoc.id;
-        if (typeof data.text === 'string') thdTeachingChunks.set(index, data.text);
-      });
-      loadThdTeachingAssignmentsFromChunks();
-    });
-    return () => { unsubNews(); unsubMats(); unsubNotes(); unsubQuizzes(); unsubQuizResults(); unsubQuickQuizResults(); unsubLessonProgress(); unsubHandwrittenSubmissions(); unsubStudents(); unsubAdmissions(); unsubAttendance(); unsubProfileRequests(); unsubSettings(); unsubThdTeachingAssignments(); unsubThdTeachingAssignmentChunks(); };
-  }, [user]);
+    }) : () => {};
+    const unsubThdTeachingAssignments = staffSettingsAllowed ? observeTeachingAssignments(setThdTeachingAssignments,
+      error => showNotification(error.message, 'error')) : () => {};
+    return () => { unsubSettings(); unsubThdTeachingAssignments(); };
+  }, [user, showNotification, scopedIdentity]);
+
+  useEffect(() => {
+    if (!user) return;
+    return onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'news'), snapshot => {
+      const documents = snapshot.docs.map(item => ({ ...item.data(), id: item.id }));
+      documents.sort(sortNewsForDisplay); setNewsList(documents);
+    }, error => { setNewsList([]); showNotification('Chưa tải được bản tin: ' + error.message, 'error'); });
+  }, [user, showNotification]);
+
+  useSessionLease(user, scopedIdentity, clearLoginIdentity, showNotification);
+  useWorkspaceCollections({ user, scoped: SCOPED_AUTH_ENABLED, identity: scopedIdentity, role, isAdmin, student: currentStudent,
+    grade: selectedGrade, subject: selectedSubject, schoolYear: currentSchoolYear, includeHistory: showStudentDatabase || Boolean(scorebookGrade) },
+    { materials: setAllMaterials, notes: setAllNotes, quizzes: setAllQuizzes, quizResults: setAllQuizResults,
+      quickResults: setAllQuickQuizResults, progress: setAllLessonProgress, handwritten: setAllHandwrittenSubmissions,
+      students: setAllStudents, admissions: setAdmissionApplications, attendance: setAttendanceDocs, profileRequests: setStudentProfileRequests },
+    { quiz: showQuizComposeWorkspace || showQuizWorkWorkspace || showStudentWorkReview, learning: showLearningResultsWorkspace,
+      review: showAdminCheckWorkspace || showStudentDatabase, attendance: showAttendanceWorkspace, scorebook: Boolean(scorebookGrade) }, showNotification);
+
+  useEffect(() => { setStudentProfileRequestCount(studentProfileRequests.filter(item => (item.status || 'pending') === 'pending').length); }, [studentProfileRequests]);
+  useStudentLearningData(scopedIdentity, `${serverQuizSession?.result?.submittedAt || ''}:${quickMaterialResult?.submittedAt || ''}`,
+    setAllQuizResults, setAllQuickQuizResults, setCurrentSchoolYear, setInputYearLocks, showNotification);
 
   useEffect(() => {
     if (!user || !adminSettingsLoaded) return;
@@ -1727,7 +1798,7 @@ function App() {
     const isValidSession = Boolean(session && (sessionScope === 'thd' || adminSessionToken));
     if (!isValidSession) {
       if (isAdmin) {
-        clearStoredAdminSession();
+        void clearLoginIdentity().catch(error => showNotification(error.message, 'error'));
         closeAdminSessionView();
       }
       return;
@@ -1746,26 +1817,28 @@ function App() {
         window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}#/admin/tran-hung-dao/assignments`);
       }
     }
-  }, [adminSessionToken, adminSettingsLoaded, closeAdminSessionView, isAdmin, user]);
+  }, [adminSessionToken, adminSettingsLoaded, clearLoginIdentity, closeAdminSessionView, isAdmin, showNotification, user]);
 
   useEffect(() => {
     if (!adminSessionToken) return undefined;
     let active = true;
     postAppsScript({ action: 'validateAdminSession', adminSessionToken })
-      .then((response) => {
-        if (!active || response.status === 'success') return;
-        clearStoredAdminSession();
-        setAdminSessionToken('');
+      .then(async (response) => {
+        if (!active) return;
+        if (response.status === 'success') {
+          if (SCOPED_AUTH_ENABLED) await exchangeScopedIdentity({ kind: 'staff', adminSessionToken });
+          return;
+        }
+        await clearLoginIdentity();
         closeAdminSessionView();
       })
       .catch(() => {
         if (!active) return;
-        clearStoredAdminSession();
-        setAdminSessionToken('');
+        void clearLoginIdentity().catch(error => showNotification(error.message, 'error'));
         closeAdminSessionView();
       });
     return () => { active = false; };
-  }, [adminSessionToken, closeAdminSessionView]);
+  }, [adminSessionToken, clearLoginIdentity, closeAdminSessionView, showNotification]);
 
   useEffect(() => {
     if (!isAdmin || !adminSettingsLoaded || !adminSessionToken) return;
@@ -1776,32 +1849,46 @@ function App() {
     if (typeof window === 'undefined') return undefined;
     const handleAdminSessionStorage = (event) => {
       if (event.key !== ADMIN_SESSION_STORAGE_KEY || event.newValue) return;
+      if (!isAdmin) return;
+      void clearLoginIdentity().catch(error => showNotification(error.message, 'error'));
       closeAdminSessionView();
     };
     window.addEventListener('storage', handleAdminSessionStorage);
     return () => window.removeEventListener('storage', handleAdminSessionStorage);
-  }, [closeAdminSessionView]);
+  }, [clearLoginIdentity, closeAdminSessionView, isAdmin, showNotification]);
 
-  const getScorebookDocIdForGrade = useCallback((grade) => (
-    cleanDocId(`${activeSchoolYear || 'nam-hoc'}_${SCOREBOOK_SOURCE_FILE}_khoi_${grade || 'tat-ca'}`)
-  ), [activeSchoolYear]);
+  const getScorebookDocIdForGrade = useCallback((grade, schoolCode = quickScoreSchoolCode) => (
+    cleanDocId(`${activeSchoolYear || 'nam-hoc'}_${SCOREBOOK_SOURCE_FILE}_${schoolCode}_khoi_${grade || 'tat-ca'}`)
+  ), [activeSchoolYear, quickScoreSchoolCode]);
 
-  const getScorebookStudentsForGrade = useCallback((grade) => {
+  const getScorebookStudentsForGrade = useCallback((grade, schoolCode = quickScoreSchoolCode) => {
     return [...(Array.isArray(allStudents) ? allStudents : [])]
       .filter(student => (student.status || 'active') !== 'dropped')
+      .filter(student => getStudentSchoolCode(student) === schoolCode)
       .filter(student => String(getGradeFromClassName(student.className || student.grade || '')) === String(grade))
-      .filter(student => !student.schoolYear || String(student.schoolYear) === String(activeSchoolYear))
-      .sort((a, b) => {
-        const classCompare = String(a.className || '').localeCompare(String(b.className || ''), 'vi', { numeric: true, sensitivity: 'base' });
-        if (classCompare) return classCompare;
-        return getGivenNameSortKey(a.fullName).localeCompare(getGivenNameSortKey(b.fullName), 'vi', { sensitivity: 'base' });
-      })
-      .slice(0, 40);
-  }, [allStudents, activeSchoolYear]);
+      .filter(student => !student.schoolYear || normalizeSchoolYearKey(student.schoolYear) === normalizeSchoolYearKey(activeSchoolYear))
+      .sort(compareSchoolRosterStudents);
+  }, [allStudents, activeSchoolYear, quickScoreSchoolCode]);
 
   const quickScorebookDocId = useMemo(() => getScorebookDocIdForGrade(quickScoreGrade), [getScorebookDocIdForGrade, quickScoreGrade]);
+  const quickScorebookDocIdRef = useRef(quickScorebookDocId);
+  quickScorebookDocIdRef.current = quickScorebookDocId;
+  const scorebookIdentityKey = [user?.uid, role, adminAccessScope, teacherProfile?.teacherId || teacherProfile?.id || teacherProfile?.username || '', currentStudent?.id].join('|');
+  const retainedScorebooks = useRef({ identity: '', documents: new Map() });
+  if (retainedScorebooks.current.identity !== scorebookIdentityKey) retainedScorebooks.current = { identity: scorebookIdentityKey, documents: new Map() };
+  const quickScoreDraft = useQuickScorebook(quickScorebookDocId,
+    Boolean(user && (isAdmin || quickScoreLockedContext) && showLearningResultsWorkspace && quickScoreGrade), showNotification,
+    scorebookIdentityKey);
+  const { edits: quickScorebookEdits, sources: quickScoreSources, drafts: quickInputDrafts,
+    setEdits: setQuickScorebookEdits, setSources: setQuickScoreSources, setDrafts: setQuickInputDrafts,
+    pending: quickScorebookSavingKey, loaded: quickScorebookLoaded, hasUnsavedChanges: hasQuickScoreDrafts } = quickScoreDraft;
+
 
   const quickScoreStudents = useMemo(() => getScorebookStudentsForGrade(quickScoreGrade), [getScorebookStudentsForGrade, quickScoreGrade]);
+
+  useEffect(() => {
+    if (!isAdmin && ['teacher', 'student'].includes(role)) setQuickScoreSchoolCode(currentContentSchoolCode);
+  }, [isAdmin, role, currentContentSchoolCode]);
 
   const toggleQuickPriorityStudent = useCallback((studentKey) => {
     if (!studentKey) return;
@@ -1869,36 +1956,11 @@ function App() {
     }, {});
   }, [attendanceDocs, activeSchoolYear, quickScoreGrade, quickScoreStudents]);
 
-  useEffect(() => {
-    if (!user || (!isAdmin && !quickScoreLockedContext) || !showLearningResultsWorkspace || !quickScoreGrade) {
-      setQuickScorebookEdits({});
-      setQuickScoreSources({});
-      setQuickInputDrafts({});
-      return undefined;
-    }
-    const ref = doc(db, 'artifacts', appId, 'public', 'data', 'scorebooks', quickScorebookDocId);
-    return onSnapshot(ref, (docSnap) => {
-      const data = docSnap.exists() ? (docSnap.data() || {}) : {};
-      setQuickScorebookEdits(data.edits && typeof data.edits === 'object' ? data.edits : {});
-      setQuickScoreSources(data.scoreSources && typeof data.scoreSources === 'object' ? data.scoreSources : {});
-    });
-  }, [user, isAdmin, quickScoreLockedContext, showLearningResultsWorkspace, quickScoreGrade, quickScorebookDocId]);
+  const getQuickScoreKey = useCallback((semester, pageIndex, rowIndex, scoreIndex, student = quickScoreStudents[rowIndex]) =>
+    studentEditKey(`custom:${semester}Score:${pageIndex}:r${rowIndex}:s${scoreIndex}`, student), [quickScoreStudents]);
 
-  const getQuickScoreKey = useCallback((semester, pageIndex, rowIndex, scoreIndex) => `custom:${semester}Score:${pageIndex}:r${rowIndex}:s${scoreIndex}`, []);
-
-  const findQuickScoreStudentRowIndex = useCallback((studentRecord = {}) => {
-    const recordId = String(studentRecord.studentId || studentRecord.id || '').trim();
-    const recordCode = String(studentRecord.studentAccessCode || studentRecord.accessCode || '').trim().toUpperCase();
-    const recordName = removeAccents(String(studentRecord.studentName || studentRecord.fullName || '').toLowerCase()).replace(/[^a-z0-9]/g, '');
-    return quickScoreStudents.findIndex(student => {
-      const studentId = String(student.id || '').trim();
-      const studentCode = String(student.accessCode || student.studentAccessCode || '').trim().toUpperCase();
-      const studentName = removeAccents(String(student.fullName || student.studentName || '').toLowerCase()).replace(/[^a-z0-9]/g, '');
-      return (recordId && studentId && recordId === studentId)
-        || (recordCode && studentCode && recordCode === studentCode)
-        || (recordName && studentName && recordName === studentName);
-    });
-  }, [quickScoreStudents]);
+  const findQuickScoreStudentRowIndex = useCallback((record = {}) =>
+    quickScoreStudents.findIndex(student => recordBelongsToStudent(record, student)), [quickScoreStudents]);
 
   const quickQuizScoreKeySet = useMemo(() => {
     const keySet = new Set();
@@ -1914,7 +1976,7 @@ function App() {
     });
     Object.entries(quickScoreSources || {}).forEach(([key, value]) => {
       if (value?.source === 'quiz') keySet.add(key);
-      if (value?.source === 'manualCleared') keySet.delete(key);
+      if (['manual', 'manualCleared', 'random'].includes(value?.source)) keySet.delete(key);
     });
     return keySet;
   }, [allQuizResults, allHandwrittenSubmissions, activeSchoolYear, quickScoreGrade, findQuickScoreStudentRowIndex, getQuickScoreKey, quickScoreSources]);
@@ -1937,26 +1999,17 @@ function App() {
     return columns.map(column => {
       const used = rows.some((_, rowIndex) => {
         const key = getQuickScoreKey(quizScoreSemester, quizScoreSubject.pageIndex, rowIndex, column.scoreIndex);
-        return String(scoreTargetEdits[key] || '').trim() !== '';
+        return String(scoreTargetEdits[key] ?? '').trim() !== '';
       });
       return { ...column, used };
     });
   }, [quizScoreSubject, selectedGrade, getScorebookStudentsForGrade, getQuickScoreKey, quizScoreSemester, scoreTargetEdits]);
 
   const getQuickScoreInputValue = useCallback((semester, pageIndex, rowIndex, scoreIndex) => (
-    String(quickScorebookEdits[getQuickScoreKey(semester, pageIndex, rowIndex, scoreIndex)] || '').trim()
+    String(quickScorebookEdits[getQuickScoreKey(semester, pageIndex, rowIndex, scoreIndex)] ?? '').trim()
   ), [quickScorebookEdits, getQuickScoreKey]);
 
-  const getQuickSemesterTermAverage = useCallback((semester, pageIndex, rowIndex) => {
-    const txScores = [0, 1, 2, 3]
-      .map(scoreIndex => parseScoreNumber(getQuickScoreInputValue(semester, pageIndex, rowIndex, scoreIndex)))
-      .filter(value => value !== null);
-    const midterm = parseScoreNumber(getQuickScoreInputValue(semester, pageIndex, rowIndex, 4));
-    const final = parseScoreNumber(getQuickScoreInputValue(semester, pageIndex, rowIndex, 5));
-    if (!txScores.length || midterm === null || final === null) return '';
-    const total = txScores.reduce((sum, value) => sum + value, 0) + (2 * midterm) + (3 * final);
-    return formatScoreNumber(total / (txScores.length + 5));
-  }, [getQuickScoreInputValue]);
+  const getQuickSemesterTermAverage = useCallback((semester, pageIndex, rowIndex) => { return calculateSemesterAverage(index => getQuickScoreInputValue(semester, pageIndex, rowIndex, index)); }, [getQuickScoreInputValue]);
 
   const getQuickSemesterScoreResult = useCallback((semester, pageIndex, rowIndex, scoreIndex = semester === 'hkii' ? 7 : 6) => {
     const saved = getQuickScoreInputValue(semester, pageIndex, rowIndex, scoreIndex);
@@ -1966,7 +2019,7 @@ function App() {
       const hkiAverage = parseScoreNumber(getQuickSemesterScoreResult('hki', pageIndex, rowIndex, 6));
       const hkiiAverage = parseScoreNumber(getQuickSemesterScoreResult('hkii', pageIndex, rowIndex, 6));
       if (hkiAverage === null || hkiiAverage === null) return '';
-      return formatScoreNumber((hkiAverage + (2 * hkiiAverage)) / 3);
+      return calculateYearAverage(hkiAverage, hkiiAverage);
     }
     return '';
   }, [getQuickScoreInputValue, getQuickSemesterTermAverage]);
@@ -1978,11 +2031,7 @@ function App() {
         ? getQuickSemesterScoreResult('hkii', subject.pageIndex, rowIndex, 7)
         : getQuickSemesterScoreResult(semester, subject.pageIndex, rowIndex, 6)))
       .filter(value => value !== null);
-    if (!scores.length) return '';
-    if (scores.filter(score => score >= 8).length >= 5 && scores.every(score => score >= 6.5)) return 'Tốt';
-    if (scores.filter(score => score >= 6.5).length >= 5 && scores.every(score => score >= 5)) return 'Khá';
-    if (scores.filter(score => score >= 5).length >= 5 && scores.every(score => score >= 3.5)) return 'Đạt';
-    return 'Chưa đạt';
+    return academicSummary(scores).result;
   }, [getQuickSemesterScoreResult]);
 
   const sendQuickScoreReportToStudent = useCallback(async () => {
@@ -2034,22 +2083,15 @@ function App() {
           return `${subject.label}: TX ${txScores.join(', ')} | GK ${midterm} | CK ${final} | ĐTB ${average}${fullYear ? ` | Cả năm ${fullYear}` : ''}`;
         });
         const academicResult = getQuickAcademicResult(rowIndex, quickScoreMailSemester) || 'Chưa đủ dữ liệu';
-        const studentCode = String(student.accessCode || student.studentAccessCode || '').trim().toUpperCase();
-        const studentNameKey = removeAccents(String(student.fullName || '').toLowerCase()).replace(/[^a-z0-9]/g, '');
         const absenceRows = attendanceDocs
           .filter(item => !item.schoolYear || String(item.schoolYear) === String(activeSchoolYear || ''))
+          .filter(item => !item.schoolCode || normalizeSchoolCode(item.schoolCode) === getStudentSchoolCode(student))
           .filter(item => {
             const month = Number(String(item.date || '').split('-')[1] || 0);
             return quickScoreMailSemester === 'hki' ? [9, 10, 11, 12, 1].includes(month) : [2, 3, 4, 5, 6, 7, 8].includes(month);
           })
           .map(item => {
-            const directRecord = item.records?.[student.id];
-            const matchedRecord = directRecord || Object.values(item.records || {}).find(record => {
-              const recordCode = String(record?.studentAccessCode || record?.accessCode || '').trim().toUpperCase();
-              const recordNameKey = removeAccents(String(record?.studentName || record?.fullName || '').toLowerCase()).replace(/[^a-z0-9]/g, '');
-              return (studentCode && recordCode && studentCode === recordCode)
-                || (studentNameKey && recordNameKey && studentNameKey === recordNameKey);
-            });
+            const matchedRecord = findStudentAttendanceRecord(item.records, student);
             return { date: String(item.date || ''), status: matchedRecord?.status || '' };
           })
           .filter(item => item.status === 'CP' || item.status === 'KP')
@@ -2313,7 +2355,9 @@ function App() {
     }
     const routeAction = {
       '/settings/general': () => openAdminSettingsPanel('general'),
+      '/settings/classes': () => openAdminSettingsPanel('classes'),
       '/settings/teachers': () => openAdminSettingsPanel('teachers'),
+      '/settings/tqk-teachers': () => openAdminSettingsPanel('tqkTeachers'),
       '/settings/class-teachers': () => openAdminSettingsPanel('classTeachers'),
       '/settings/teaching-assignments': () => openAdminSettingsPanel('teachingAssignments'),
       '/tran-hung-dao/teachers': () => openAdminSettingsPanel('thdTeachers'),
@@ -2484,7 +2528,9 @@ function App() {
         icon: Home,
         children: [
           { key: 'general', label: 'Thiết lập chung', href: getAdminRouteHref('/settings/general'), action: () => openAdminSettingsPanel('general') },
-          { key: 'teachers', label: 'Giáo viên chung', href: getAdminRouteHref('/settings/teachers'), action: () => openAdminSettingsPanel('teachers') },
+          { key: 'classes', label: 'Lớp học', href: getAdminRouteHref('/settings/classes'), action: () => openAdminSettingsPanel('classes') },
+          { key: 'teachers', label: 'Giáo viên THCS Nguyễn An Ninh', href: getAdminRouteHref('/settings/teachers'), action: () => openAdminSettingsPanel('teachers') },
+          { key: 'tqk-teachers', label: 'Giáo viên THCS Trần Quang Khải', href: getAdminRouteHref('/settings/tqk-teachers'), action: () => openAdminSettingsPanel('tqkTeachers') },
           { key: 'class-teachers', label: 'GV theo lớp', href: getAdminRouteHref('/settings/class-teachers'), action: () => openAdminSettingsPanel('classTeachers') },
           { key: 'teaching-assignments', label: 'Phân công', href: getAdminRouteHref('/settings/teaching-assignments'), action: () => openAdminSettingsPanel('teachingAssignments') },
           { key: 'passwords', label: 'Quản lý mật khẩu', href: getAdminRouteHref('/utilities/passwords'), action: () => setShowPasswordWorkspace(true) },
@@ -2548,243 +2594,30 @@ function App() {
     ];
   }, [adminAccessScope, adminModule, currentAdmissionApplications.length, getAdminRouteHref, openAdminQuickScore, openAdminSettingsPanel, openNoticeHome, openScorebookWorkspace, openStudentDatabaseTab, showNotification, studentProfileRequestCount]);
 
-  const saveQuickScoreValue = useCallback(async (semester, pageIndex, rowIndex, scoreIndex, rawValue) => {
-    if (!user) return false;
-    if (!canWriteCurrentSchoolYear) {
-      showNotification(`Năm học ${activeSchoolYear} đang khóa nhập liệu. Admin mở khóa mới sửa điểm được.`, 'error');
-      return false;
-    }
-    const key = getQuickScoreKey(semester, pageIndex, rowIndex, scoreIndex);
-    const nextValue = normalizeScoreInput(rawValue);
-    const previousEdits = { ...(quickScorebookEdits || {}) };
-    const previousSources = { ...(quickScoreSources || {}) };
-    const nextEdits = { ...previousEdits };
-    const nextSources = { ...previousSources };
-    if (nextValue) nextEdits[key] = nextValue;
-    else delete nextEdits[key];
-    if (nextValue) nextSources[key] = { source: 'manual', updatedAt: Date.now() };
-    else if (quickQuizScoreKeySet.has(key)) nextSources[key] = { source: 'manualCleared', updatedAt: Date.now() };
-    else delete nextSources[key];
-    setQuickScorebookEdits(nextEdits);
-    setQuickScoreSources(nextSources);
-    setQuickScorebookSavingKey(key);
-    const scorebookRef = doc(db, 'artifacts', appId, 'public', 'data', 'scorebooks', quickScorebookDocId);
-    try {
-      const basePayload = {
-        grade: String(quickScoreGrade || ''),
-        schoolYear: activeSchoolYear || '',
-        sourceFile: SCOREBOOK_SOURCE_FILE,
-        updatedAt: Date.now(),
-        authorId: user.uid
-      };
-      if (nextValue) {
-        await setDoc(scorebookRef, {
-          ...basePayload,
-          edits: { [key]: nextValue },
-          scoreSources: { [key]: nextSources[key] }
-        }, { merge: true });
-      } else {
-        await setDoc(scorebookRef, {
-          ...basePayload,
-          edits: { [key]: deleteField() },
-          scoreSources: { [key]: nextSources[key] || deleteField() }
-        }, { merge: true });
-      }
-      postAppsScript({
-        action: 'writeAuditLog',
-        auditAction: 'sua_diem',
-        actor: user.uid,
-        details: { schoolYear: activeSchoolYear, grade: quickScoreGrade, key, before: previousEdits[key] || '', after: nextValue || '' }
-      }).catch(() => undefined);
-      return true;
-    } catch (error) {
-      setQuickScorebookEdits(previousEdits);
-      setQuickScoreSources(previousSources);
-      showNotification(`Chưa lưu được ô điểm nhanh: ${error.message}`, 'error');
-      return false;
-    } finally {
-      setQuickScorebookSavingKey((prev) => (prev === key ? '' : prev));
-    }
-  }, [user, canWriteCurrentSchoolYear, getQuickScoreKey, quickScorebookEdits, quickScoreSources, quickQuizScoreKeySet, quickScorebookDocId, quickScoreGrade, activeSchoolYear, showNotification]);
-
-  const fillMissingQuickScores = useCallback(async () => {
-    if (!user) return;
-    if (!canWriteCurrentSchoolYear) {
-      showNotification(`N\u0103m h\u1ecdc ${activeSchoolYear} \u0111ang kh\u00f3a nh\u1eadp li\u1ec7u. Admin m\u1edf kh\u00f3a m\u1edbi s\u1eeda \u0111i\u1ec3m \u0111\u01b0\u1ee3c.`, 'error');
-      return;
-    }
-    if (!quickScoreStudents.length || !quickVisibleScoreColumnsBySubject.length) {
-      showNotification('Ch\u01b0a c\u00f3 d\u1eef li\u1ec7u \u0111\u1ec3 cho \u0111i\u1ec3m.', 'error');
-      return;
-    }
-
-    const fillEdits = {};
-    const fillSources = {};
-    quickScoreStudents.forEach((student, rowIndex) => {
-      if (!student) return;
-      const studentKey = getQuickScoreStudentKey(student, rowIndex);
-      const isPriorityStudent = quickPriorityStudentIds.has(studentKey);
-      quickVisibleScoreColumnsBySubject.forEach((column) => {
-        if (!column.editable) return;
-        const key = getQuickScoreKey(column.semester, column.pageIndex, rowIndex, column.scoreIndex);
-        if (quickQuizScoreKeySet.has(key)) return;
-        fillEdits[key] = getRandomQuickScore(column.subjectKey, quickAbsenceRatioByStudentId[student.id], column.scoreIndex, Boolean(student.isClassLeader), isPriorityStudent);
-        fillSources[key] = { source: 'random', updatedAt: Date.now() };
-      });
-    });
-
-    const fillCount = Object.keys(fillEdits).length;
-    if (!fillCount) {
-      showNotification('Kh\u00f4ng c\u00f2n \u00f4 \u0111i\u1ec3m tr\u1ed1ng trong ph\u1ea1m vi \u0111ang hi\u1ec3n th\u1ecb.');
-      return;
-    }
-
-    const previousEdits = { ...(quickScorebookEdits || {}) };
-    const previousSources = { ...(quickScoreSources || {}) };
-    setQuickScorebookEdits({ ...previousEdits, ...fillEdits });
-    setQuickScoreSources({ ...previousSources, ...fillSources });
-    setQuickInputDrafts((prev) => {
-      const nextDrafts = { ...prev };
-      Object.keys(fillEdits).forEach((key) => delete nextDrafts[key]);
-      return nextDrafts;
-    });
-    setQuickScorebookSavingKey('random-fill');
-
-    const scorebookRef = doc(db, 'artifacts', appId, 'public', 'data', 'scorebooks', quickScorebookDocId);
-    try {
-      await setDoc(scorebookRef, {
-        grade: String(quickScoreGrade || ''),
-        schoolYear: activeSchoolYear || '',
-        sourceFile: SCOREBOOK_SOURCE_FILE,
-        updatedAt: Date.now(),
-        authorId: user.uid,
-        edits: fillEdits,
-        scoreSources: fillSources
-      }, { merge: true });
-      showNotification(`\u0110\u00e3 cho \u0111i\u1ec3m ng\u1eabu nhi\u00ean ${fillCount} \u00f4 trong ph\u1ea1m vi \u0111ang m\u1edf.`);
-    } catch (error) {
-      setQuickScorebookEdits(previousEdits);
-      setQuickScoreSources(previousSources);
-      showNotification(`Ch\u01b0a l\u01b0u \u0111\u01b0\u1ee3c \u0111i\u1ec3m ng\u1eabu nhi\u00ean: ${error.message}`, 'error');
-    } finally {
-      setQuickScorebookSavingKey((prev) => (prev === 'random-fill' ? '' : prev));
-    }
-  }, [
-    user,
-    canWriteCurrentSchoolYear,
-    activeSchoolYear,
-    quickScoreStudents,
-    quickVisibleScoreColumnsBySubject,
-    quickScorebookEdits,
-    quickScoreSources,
-    quickInputDrafts,
-    quickPriorityStudentIds,
-    quickAbsenceRatioByStudentId,
-    quickQuizScoreKeySet,
-    getQuickScoreKey,
-    quickScorebookDocId,
-    quickScoreGrade,
-    showNotification
-  ]);
-
-  const clearVisibleQuickScores = useCallback(async () => {
-    if (!user) return;
-    if (!canWriteCurrentSchoolYear) {
-      showNotification(`N\u0103m h\u1ecdc ${activeSchoolYear} \u0111ang kh\u00f3a nh\u1eadp li\u1ec7u. Admin m\u1edf kh\u00f3a m\u1edbi s\u1eeda \u0111i\u1ec3m \u0111\u01b0\u1ee3c.`, 'error');
-      return;
-    }
-    if (!quickScoreStudents.length || !quickVisibleScoreColumnsBySubject.length) {
-      showNotification('Ch\u01b0a c\u00f3 d\u1eef li\u1ec7u \u0111\u1ec3 x\u00f3a \u0111i\u1ec3m.', 'error');
-      return;
-    }
-
-    const deleteEdits = {};
-    const deleteSources = {};
-    const keysToClear = [];
-    quickScoreStudents.forEach((student, rowIndex) => {
-      if (!student) return;
-      quickVisibleScoreColumnsBySubject.forEach((column) => {
-        const key = getQuickScoreKey(column.semester, column.pageIndex, rowIndex, column.scoreIndex);
-        if (quickQuizScoreKeySet.has(key)) return;
-        if (!quickScorebookEdits[key] && !quickInputDrafts[key]) return;
-        keysToClear.push(key);
-        deleteEdits[key] = deleteField();
-        deleteSources[key] = deleteField();
-      });
-    });
-
-    if (!keysToClear.length) {
-      showNotification('Kh\u00f4ng c\u00f3 \u00f4 \u0111i\u1ec3m n\u00e0o \u0111\u1ec3 x\u00f3a trong ph\u1ea1m vi \u0111ang hi\u1ec3n th\u1ecb.');
-      return;
-    }
-
-    const previousEdits = { ...(quickScorebookEdits || {}) };
-    const previousSources = { ...(quickScoreSources || {}) };
-    setQuickScorebookEdits((prev) => {
-      const nextEdits = { ...(prev || {}) };
-      keysToClear.forEach((key) => delete nextEdits[key]);
-      return nextEdits;
-    });
-    setQuickScoreSources((prev) => {
-      const nextSources = { ...(prev || {}) };
-      keysToClear.forEach((key) => delete nextSources[key]);
-      return nextSources;
-    });
-    setQuickInputDrafts((prev) => {
-      const nextDrafts = { ...(prev || {}) };
-      keysToClear.forEach((key) => delete nextDrafts[key]);
-      return nextDrafts;
-    });
-    setQuickScorebookSavingKey('clear-visible');
-
-    const scorebookRef = doc(db, 'artifacts', appId, 'public', 'data', 'scorebooks', quickScorebookDocId);
-    try {
-      await setDoc(scorebookRef, {
-        grade: String(quickScoreGrade || ''),
-        schoolYear: activeSchoolYear || '',
-        sourceFile: SCOREBOOK_SOURCE_FILE,
-        updatedAt: Date.now(),
-        authorId: user.uid,
-        edits: deleteEdits,
-        scoreSources: deleteSources
-      }, { merge: true });
-      showNotification(`\u0110\u00e3 x\u00f3a ${keysToClear.length} \u00f4 \u0111i\u1ec3m trong ph\u1ea1m vi \u0111ang m\u1edf.`);
-    } catch (error) {
-      setQuickScorebookEdits(previousEdits);
-      setQuickScoreSources(previousSources);
-      showNotification(`Ch\u01b0a x\u00f3a \u0111\u01b0\u1ee3c \u0111i\u1ec3m: ${error.message}`, 'error');
-    } finally {
-      setQuickScorebookSavingKey((prev) => (prev === 'clear-visible' ? '' : prev));
-    }
-  }, [
-    user,
-    canWriteCurrentSchoolYear,
-    activeSchoolYear,
-    quickScoreStudents,
-    quickVisibleScoreColumnsBySubject,
-    quickScorebookEdits,
-    quickScoreSources,
-    quickInputDrafts,
-    quickQuizScoreKeySet,
-    getQuickScoreKey,
-    quickScorebookDocId,
-    quickScoreGrade,
-    showNotification
-  ]);
+  const { saveQuickScoreValue, fillMissingQuickScores, clearVisibleQuickScores } = useQuickScoreActions({
+    user, canWrite: canWriteCurrentSchoolYear, schoolYear: activeSchoolYear || '', grade: quickScoreGrade,
+    schoolCode: quickScoreSchoolCode, schoolName: SCHOOL_OPTIONS.find(item => item.code === quickScoreSchoolCode)?.name || '',
+    sourceFile: SCOREBOOK_SOURCE_FILE, draft: quickScoreDraft, getKey: getQuickScoreKey, quizKeys: quickQuizScoreKeySet,
+    students: quickScoreStudents, columns: quickVisibleScoreColumnsBySubject, priorityIds: quickPriorityStudentIds,
+    getStudentKey: getQuickScoreStudentKey, absenceRatios: quickAbsenceRatioByStudentId, randomScore: getRandomQuickScore, showNotification
+  });
 
   useEffect(() => {
     if (!user || !noteId) { setNoteHtml(''); setIsLoadingNote(false); setAutoSaveStatus(''); return; }
     setIsLoadingNote(true); setAutoSaveStatus('');
     const unsubNote = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'lesson_notes', noteId), (docSnap) => {
-      const content = docSnap.exists() ? (docSnap.data().content || '') : ''; setNoteHtml(content); setIsLoadingNote(false);
+      const content = docSnap.exists() ? (docSnap.data().content || '') : '';
+      const draftKey = `${teacherProfile?.teacherId || teacherProfile?.id || user.uid}/${noteId}`;
+      noteBaseContentRef.current.set(noteId, content);
+      setNoteHtml(noteDraftsRef.current.get(draftKey)?.content ?? content); setIsLoadingNote(false);
     }, () => { setIsLoadingNote(false); setNoteHtml('<p style="color: #f59e0b; font-weight: bold;">Đường truyền mạng yếu, hệ thống đang làm việc ở chế độ ngoại tuyến...</p>'); });
     return () => unsubNote();
-  }, [user, noteId]);
+  }, [user, noteId, teacherProfile?.teacherId, teacherProfile?.id]);
 
   const splitQuizContent = useCallback((html = '') => {
     if (typeof document === 'undefined') return { question: String(html || ''), answer: '' };
     const wrapper = document.createElement('div');
-    wrapper.innerHTML = String(html || '');
+    wrapper.innerHTML = sanitizeHtml(html);
     const answerBlocks = Array.from(wrapper.querySelectorAll('.teacher-only'));
     const answer = answerBlocks.map(node => node.innerHTML).join('<p><br></p>');
     answerBlocks.forEach(node => node.remove());
@@ -2800,8 +2633,8 @@ function App() {
   const syncQuizPartsFromContent = useCallback((content = '') => {
     const parts = splitQuizContent(content);
     const cleanedParts = {
-      question: humanizeHtmlString(parts.question),
-      answer: humanizeHtmlString(parts.answer)
+      question: sanitizeHtml(humanizeHtmlString(parts.question)),
+      answer: sanitizeHtml(humanizeHtmlString(parts.answer))
     };
     setQuizQuestionHtml(cleanedParts.question);
     setQuizAnswerHtml(cleanedParts.answer);
@@ -2842,6 +2675,51 @@ function App() {
       return;
     }
     setIsLoadingQuiz(true);
+    if (SERVER_QUIZ_ENABLED) {
+      const controller = new AbortController();
+      let revision = 0;
+      let scheduleTimer;
+      setServerQuizSession(null);
+      setQuizData(null);
+      const load = async () => {
+        const request = ++revision;
+        clearTimeout(scheduleTimer);
+        try {
+          const response = await requestServerQuiz(role === 'student' ? 'start' : 'read', { quizId }, { signal: controller.signal });
+          if (controller.signal.aborted || request !== revision) return;
+          const data = response.quiz;
+          serverQuizDocumentsRef.current.set(quizId, data);
+          const content = role === 'student' ? response.content || (response.manual ? '' : '<p>Bài kiểm tra tự chấm.</p>') : data.content || '';
+          setQuizHtml(content); syncQuizPartsFromContent(content);
+          setQuizTitle(data.title || ''); setQuizAttachments(role === 'student' ? [] : extractQuizAttachments(content));
+          setQuizPublishNow(!!data.isPublished); setQuizPublishAt(formatVietnamDateTimeLocal(data.publishAt));
+          const nextQuiz = role === 'student' ? response.quizData || null : data.quizData || null;
+          setQuizData(nextQuiz); setSelfQuizDraft(nextQuiz || getDefaultSelfQuizDraft());
+          setQuizDeliveryMode(data.deliveryMode || 'auto'); setQuizScoreTarget(data.scoreTarget || null);
+          setQuizDocStatus(data.quizDocUrl ? { state: 'success', message: 'Đã có Google Doc đề kiểm tra', url: data.quizDocUrl } : { state: '', message: '', url: '' });
+          if (role === 'student') {
+            setServerQuizSession({ ...response, quizId });
+            if (response.pending && !response.readOnly && data.publishAt > Date.now()) {
+              scheduleTimer = setTimeout(() => { void load(); }, Math.min(data.publishAt - Date.now() + 50, 2147483647));
+            }
+          }
+        } catch (error) {
+          if (controller.signal.aborted || request !== revision) return;
+          if (error.status === 404) serverQuizDocumentsRef.current.set(quizId, { serverVersion: null, updatedAt: null });
+          else serverQuizDocumentsRef.current.delete(quizId);
+          setServerQuizSession(null);
+          setQuizHtml(''); syncQuizPartsFromContent(''); setQuizData(null); setQuizTitle('');
+          setQuizScoreTarget(null); setQuizPublishNow(false); setQuizPublishAt(''); setQuizAttachments([]);
+          if (error.status !== 404) showNotification(error.message, 'error');
+        } finally { if (!controller.signal.aborted && request === revision) setIsLoadingQuiz(false); }
+      };
+      // Teacher editors read once; optimistic version checks reject later conflicting saves.
+      // Students subscribe only to the safe public header and receive questions through the API.
+      let stop = () => {};
+      if (role === 'student') stop = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'lesson_quizzes', quizId), () => { void load(); }, () => { void load(); });
+      else void load();
+      return () => { controller.abort(); clearTimeout(scheduleTimer); stop(); };
+    }
     const unsubQuiz = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'lesson_quizzes', quizId), (docSnap) => {
       if (docSnap.exists()) {
         const data = docSnap.data();
@@ -2876,14 +2754,14 @@ function App() {
       setIsLoadingQuiz(false);
     }, () => { setIsLoadingQuiz(false); setQuizHtml(''); setQuizQuestionHtml(''); setQuizAnswerHtml(''); setQuizTitle(''); setQuizData(null); setQuizDeliveryMode('manual'); setQuizScoreTarget(null); });
     return () => unsubQuiz();
-  }, [user, quizId, extractQuizAttachments, syncQuizPartsFromContent]);
+  }, [user, quizId, role, studentSelfQuizAttemptSeed, extractQuizAttachments, syncQuizPartsFromContent, showNotification]);
 
-  const activeSelfQuiz = useMemo(() => (quizDeliveryMode === 'auto' && quizData?.questions?.length ? { ...rebalanceSelfQuizPoints(quizData, quizHtml || quizQuestionHtml), shuffleQuestions: true, shuffleOptions: true } : null), [quizData, quizDeliveryMode, quizHtml, quizQuestionHtml]);
-  const activeSelfQuizPassingPercent = activeSelfQuiz?.requirePassingScore ? Math.min(100, Math.max(0, Number(activeSelfQuiz.passingPercent) || 0)) : 0;
+  const activeSelfQuiz = useMemo(() => (quizDeliveryMode === 'auto' && quizData?.questions?.length ? SERVER_QUIZ_ENABLED && role === 'student' ? quizData : { ...rebalanceSelfQuizPoints(quizData, quizHtml || quizQuestionHtml), shuffleQuestions: true, shuffleOptions: true } : null), [quizData, quizDeliveryMode, quizHtml, quizQuestionHtml, role]);
+  const activeSelfQuizPassingPercent = activeSelfQuiz?.requirePassingScore ? quizPassingPercent(activeSelfQuiz.passingPercent) : 0;
   const activeSelfQuizQuestionCount = activeSelfQuiz?.questions?.length || 0;
   const studentAnsweredSelfQuizCount = useMemo(() => activeSelfQuiz?.questions?.filter(q => studentQuizAnswers[q.id]).length || 0, [activeSelfQuiz, studentQuizAnswers]);
   const studentEssayText = useMemo(() => extractEssayTextFromHtml(quizHtml), [quizHtml]);
-  const studentQuizDraftKey = useMemo(() => quizId ? `khohoclieu-self-quiz-draft-${quizId}-${activeStudentIdentityKey}` : '', [quizId, activeStudentIdentityKey]);
+  const studentQuizDraftKey = useMemo(() => quizId ? `khohoclieu-self-quiz-draft-${quizId}-${activeStudentIdentityKey}${SERVER_QUIZ_ENABLED ? '-' + (serverQuizSession?.attemptId || 'pending') : ''}` : '', [quizId, activeStudentIdentityKey, serverQuizSession?.attemptId]);
 
   useEffect(() => {
     if (role !== 'teacher' || !contentEditableRef.current || !noteId) return;
@@ -2894,7 +2772,7 @@ function App() {
       (!currentHtml.trim() && String(noteHtml || '').trim()) ||
       currentHtml.includes('Đang tải dữ liệu bài học');
     if (shouldRefreshEditor) {
-      contentEditableRef.current.innerHTML = humanizeHtmlString(noteHtml || '');
+      contentEditableRef.current.innerHTML = sanitizeHtml(humanizeHtmlString(noteHtml || ''));
       contentEditableRef.current.setAttribute('data-loaded-id', noteId);
     }
   }, [role, noteHtml, noteId, isLoadingNote]);
@@ -2903,7 +2781,7 @@ function App() {
     if (role !== 'teacher' || !quizEditorRef.current || !quizId || !showQuizComposeWorkspace) return;
     if (isLoadingQuiz) { quizEditorRef.current.innerHTML = '<p style="color: #94a3b8; font-style: italic;">Đang tải bài kiểm tra...</p>'; quizEditorRef.current.removeAttribute('data-loaded-id'); return; }
     if (quizEditorRef.current.getAttribute('data-loaded-id') !== quizId) { syncQuizPartsFromContent(quizHtml || ''); quizEditorRef.current.setAttribute('data-loaded-id', quizId); setQuizAttachments(extractQuizAttachments(quizHtml || '')); }
-  }, [role, quizHtml, quizId, isLoadingQuiz, showQuizComposeWorkspace, extractQuizAttachments]);
+  }, [role, quizHtml, quizId, isLoadingQuiz, showQuizComposeWorkspace, extractQuizAttachments, syncQuizPartsFromContent]);
 
   useEffect(() => { if (role !== 'teacher') typesetMath(studentContentRef.current); }, [noteHtml, role, selectedGrade, selectedSubject, selectedLesson]);
   useEffect(() => { if (role !== 'teacher') typesetMath(studentQuizContentRef.current); }, [quizHtml, quizData, studentQuizAnswers, studentQuizResult, role, selectedGrade, selectedSubject, selectedLesson]);
@@ -2970,15 +2848,21 @@ function App() {
   useEffect(() => {
     const hasQuizDraft = activeSelfQuiz && !studentQuizResult && (studentQuizName.trim() || Object.keys(studentQuizAnswers).length > 0);
     const hasManualDraft = role === 'student' && (studentName.trim() || submissionFile);
-    if (!hasQuizDraft && !hasManualDraft) return undefined;
     const warnBeforeLeave = (event) => {
+      const hasScoreDraft = hasQuickScoreDrafts() || [...retainedScorebooks.current.documents.values()].some(item => item.pendingSave || Object.keys(draftPatch(item.base, item.edits)).length);
+      if (!hasQuizDraft && !hasManualDraft && !hasScoreDraft) return;
       event.preventDefault();
       event.returnValue = '';
     };
     window.addEventListener('beforeunload', warnBeforeLeave);
     return () => window.removeEventListener('beforeunload', warnBeforeLeave);
-  }, [activeSelfQuiz, studentQuizResult, studentQuizName, studentQuizAnswers, role, studentName, submissionFile]);
+  }, [activeSelfQuiz, studentQuizResult, studentQuizName, studentQuizAnswers, role, studentName, submissionFile, hasQuickScoreDrafts]);
   useEffect(() => { if (showAiModal && aiResponse) typesetMath(aiResponseContentRef.current); }, [showAiModal, aiResponse]);
+  useEffect(() => {
+    const reportMathError = event => showNotification(event.detail, 'error');
+    window.addEventListener('khl-math-error', reportMathError);
+    return () => window.removeEventListener('khl-math-error', reportMathError);
+  }, [showNotification]);
 
   const handleToggleRole = () => {
     if (role === 'teacher' && contentEditableRef.current) { setNoteHtml(contentEditableRef.current.innerHTML); setSelectedImage(null); }
@@ -2986,7 +2870,7 @@ function App() {
     if (newRole === 'teacher') {
       requestAnimationFrame(() => {
         if (contentEditableRef.current && noteId) {
-          contentEditableRef.current.innerHTML = humanizeHtmlString(noteHtml || '');
+          contentEditableRef.current.innerHTML = sanitizeHtml(humanizeHtmlString(noteHtml || ''));
           contentEditableRef.current.setAttribute('data-loaded-id', noteId);
         }
       });
@@ -3003,7 +2887,8 @@ function App() {
     setAdminSchoolYear(schoolYearOptions[nextIndex] || adminSelectedSchoolYear);
   };
 
-  const updateGlobalSetting = async (key, value) => {
+  const updateGlobalSetting = async (key, value, options = {}) => {
+    if (!user) throw new Error('Phiên đăng nhập đã hết hạn. Bản nháp chưa được lưu.');
     if (key === 'isAdminPassEnabled') {
       if (!user) return;
       try {
@@ -3015,49 +2900,47 @@ function App() {
       return;
     }
     if (key === 'adminPass') return;
-    if (key === 'isStudentCodeEnabled') setIsStudentCodeEnabled(value);
-    if (key === 'schoolYear') setCurrentSchoolYear(value);
-    if (key === 'principalName') setPrincipalName(value);
-    if (key === 'pcResponsibleName') setPcResponsibleName(value);
-    if (key === 'pcResponsibleByYear') setPcResponsibleByYear(value && typeof value === 'object' ? value : {});
-    if (key === 'extraSchoolYears') setExtraSchoolYears(Array.isArray(value) ? value : []);
-    if (key === 'inputYearLocks') setInputYearLocks(value && typeof value === 'object' ? value : {});
-    if (key === 'transcriptStartDates') setTranscriptStartDates(value && typeof value === 'object' ? value : {});
-    if (key === 'transcriptEndDates') setTranscriptEndDates(value && typeof value === 'object' ? value : {});
-    if (key === 'transcriptGrade9EndDates') setTranscriptGrade9EndDates(value && typeof value === 'object' ? value : {});
-    if (key === 'transcriptStartSigners') setTranscriptStartSigners(value && typeof value === 'object' ? value : {});
-    if (key === 'transcriptEndSigners') setTranscriptEndSigners(value && typeof value === 'object' ? value : {});
-    if (key === 'nanTeachers') setNanTeachers(Array.isArray(value) ? value : []);
-    if (key === 'thdTeachers') setThdTeachers(Array.isArray(value) ? value : []);
-    if (key === 'thdSubjects') setThdSubjects(Array.isArray(value) ? value : []);
-    if (key === 'thdClasses') setThdClasses(value && typeof value === 'object' ? value : {});
-    if (key === 'classTeacherAssignments') setClassTeacherAssignments(value && typeof value === 'object' ? value : {});
-    if (key === 'teachingAssignments') setTeachingAssignments(value && typeof value === 'object' ? value : {});
-    if (key === 'thdTeachingAssignments') setThdTeachingAssignments(value && typeof value === 'object' ? value : {});
     if (!user) return;
     try {
       if (key === 'thdTeachingAssignments') {
-        const serialized = JSON.stringify(value && typeof value === 'object' ? value : {});
-        const chunks = splitTextIntoChunks(serialized);
-        const parentRef = doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'thdTeachingAssignments');
-        await Promise.all(chunks.map((text, index) => (
-          setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'thdTeachingAssignments', 'chunks', String(index)), {
-            index,
-            text,
-            updatedAt: Date.now()
-          })
-        )));
-        await setDoc(parentRef, {
-          chunked: true,
-          chunkCount: chunks.length,
-          updatedAt: Date.now(),
-          value: deleteField()
-        }, { merge: true });
-        await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'global'), { thdTeachingAssignments: deleteField() }, { merge: true });
-        showNotification(`Đã lưu thiết lập (${chunks.length} mảnh dữ liệu).`);
+        const result = await saveTeachingAssignments(value && typeof value === 'object' ? value : {}, options);
+        showNotification(`Đã lưu thiết lập (${result.chunkCount} mảnh cùng phiên bản).`);
         return;
       }
-      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'global'), { [key]: value }, { merge: true });
+      if (key === 'teachingAssignments') {
+        await saveSimpleTeachingAssignments(value, options.baseValue);
+      } else if (key === 'schoolYear') {
+        const job = await beginPromotionJob(currentSchoolYear, value, user.uid, 'setting');
+        try {
+          await recordPromotionStage(job, 'sheet-config');
+          await syncRegistrationCurrentSchoolYear(currentSchoolYear, value, job);
+          await finalizePromotionJob(job);
+        } catch (error) {
+          await failPromotionJob(job, 'Chưa chốt năm học giữa Firebase và máy chủ đăng ký; cần thử lại đúng năm đã chọn.');
+          throw error;
+        }
+      } else {
+        await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'global'), { [key]: value }, { merge: true });
+      }
+      if (key === 'isStudentCodeEnabled') setIsStudentCodeEnabled(value);
+      if (key === 'schoolYear') setCurrentSchoolYear(value);
+      if (key === 'principalName') setPrincipalName(value);
+      if (key === 'pcResponsibleName') setPcResponsibleName(value);
+      if (key === 'pcResponsibleByYear') setPcResponsibleByYear(value && typeof value === 'object' ? value : {});
+      if (key === 'extraSchoolYears') setExtraSchoolYears(Array.isArray(value) ? value : []);
+      if (key === 'inputYearLocks') setInputYearLocks(value && typeof value === 'object' ? value : {});
+      if (key === 'transcriptStartDates') setTranscriptStartDates(value && typeof value === 'object' ? value : {});
+      if (key === 'transcriptEndDates') setTranscriptEndDates(value && typeof value === 'object' ? value : {});
+      if (key === 'transcriptGrade9EndDates') setTranscriptGrade9EndDates(value && typeof value === 'object' ? value : {});
+      if (key === 'transcriptStartSigners') setTranscriptStartSigners(value && typeof value === 'object' ? value : {});
+      if (key === 'transcriptEndSigners') setTranscriptEndSigners(value && typeof value === 'object' ? value : {});
+      if (key === 'nanTeachers') setNanTeachers(Array.isArray(value) ? value : []);
+      if (key === 'tqkTeachers') setTqkTeachers(Array.isArray(value) ? value : []);
+      if (key === 'thdTeachers') setThdTeachers(Array.isArray(value) ? value : []);
+      if (key === 'thdSubjects') setThdSubjects(Array.isArray(value) ? value : []);
+      if (key === 'thdClasses') setThdClasses(value && typeof value === 'object' ? value : {});
+      if (key === 'schoolClassesByYear') setSchoolClassesByYear(value && typeof value === 'object' ? value : {});
+      if (key === 'classTeacherAssignments') setClassTeacherAssignments(value && typeof value === 'object' ? value : {});
       if (['inputYearLocks', 'schoolYear', 'isStudentCodeEnabled'].includes(key)) {
         postAppsScript({ action: 'writeAuditLog', auditAction: 'doi_thiet_lap_quan_trong', actor: user?.uid || 'Admin', details: { key, after: value } }).catch(() => undefined);
       }
@@ -3065,51 +2948,19 @@ function App() {
     } catch (e) {
       console.error('Không lưu được thiết lập:', e);
       showNotification(`Chưa lưu được thiết lập: ${e?.message || 'lỗi không xác định'}`, 'error');
+      throw e;
     }
   };
 
   const buildSystemSnapshot = useCallback(async () => {
-    const collections = {};
-    for (const collectionName of SYSTEM_BACKUP_COLLECTIONS) {
-      const result = await getDocs(collection(db, 'artifacts', appId, 'public', 'data', collectionName));
-      collections[collectionName] = result.docs.map(item => ({ id: item.id, ...item.data() }));
-    }
-    const settingsResult = await getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'global'));
-    const safeSettings = settingsResult.exists() ? { ...settingsResult.data() } : {};
-    delete safeSettings.adminPass;
-    delete safeSettings.teacherPass;
-    delete safeSettings.thdAdminPass;
-    const nextSnapshot = {
-      version: 1,
-      schoolYear: currentSchoolYear,
-      createdAt: Date.now(),
-      collections,
-      settings: safeSettings
-    };
-    setSystemSnapshot(nextSnapshot);
-    return nextSnapshot;
+    const snapshot = await captureSystemSnapshot(currentSchoolYear);
+    setSystemSnapshot(snapshot); return snapshot;
   }, [currentSchoolYear]);
 
-  const restoreSystemSnapshot = useCallback(async (backupSnapshot = {}) => {
-    const collections = backupSnapshot.collections && typeof backupSnapshot.collections === 'object' ? backupSnapshot.collections : {};
-    for (const collectionName of SYSTEM_BACKUP_COLLECTIONS) {
-      if (!Array.isArray(collections[collectionName])) continue;
-      const target = collection(db, 'artifacts', appId, 'public', 'data', collectionName);
-      const current = await getDocs(target);
-      await Promise.all(current.docs.map(item => deleteDoc(item.ref)));
-      const items = collections[collectionName];
-      for (let index = 0; index < items.length; index += 50) {
-        await Promise.all(items.slice(index, index + 50).map(item => {
-          const { id, ...data } = item;
-          return setDoc(doc(target, id), data);
-        }));
-      }
-    }
-    if (backupSnapshot.settings && typeof backupSnapshot.settings === 'object') {
-      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'global'), backupSnapshot.settings);
-    }
-    await buildSystemSnapshot();
-  }, [buildSystemSnapshot]);
+  const restoreSystemSnapshot = useCallback(async (snapshot, options) => {
+    const result = await restoreAtomicSnapshot(snapshot, options);
+    setSystemSnapshot(snapshot); return result;
+  }, []);
 
   const uniqueProvinces = useMemo(() => {
     const set = new Set(communesList.map(x => x.province));
@@ -3258,6 +3109,7 @@ function App() {
 
   const resetAdmissionForm = () => {
     setAdmissionForm({
+      schoolKey: '',
       fullName: '',
       birthDate: '',
       birthPlace: '',
@@ -3277,11 +3129,18 @@ function App() {
   };
 
   const submitAdmissionApplication = async () => {
+    const selectedSchool = ADMISSION_SCHOOLS.find(item => item.key === admissionForm.schoolKey);
     const fullName = admissionForm.fullName.trim();
     const birthDate = admissionForm.birthDate.trim();
     const birthPlace = admissionForm.birthPlace.trim();
     const phone = admissionForm.phone.trim();
     const targetClass = admissionForm.targetClass.trim();
+
+    if (!selectedSchool) {
+      showNotification('Vui lòng chọn cơ sở đăng ký học.', 'error');
+      document.getElementById('admission-school')?.focus();
+      return;
+    }
 
     if (!fullName) {
       showNotification('Vui lòng nhập Họ và tên của học sinh.', 'error');
@@ -3308,6 +3167,12 @@ function App() {
       document.getElementById('admission-targetClass')?.focus();
       return;
     }
+    const normalizedTargetClass = targetClass.replace(/^LỚP\s*/i, '').replace(/\s+/g, '').toUpperCase();
+    if (!admissionClassOptions.includes(normalizedTargetClass)) {
+      showNotification('Lớp đăng ký không thuộc cơ sở hoặc chưa được cấu hình cho năm học này. Vui lòng chọn lại.', 'error');
+      document.getElementById('admission-targetClass')?.focus();
+      return;
+    }
 
     if (uniqueProvinces.length > 0) {
       if (!admissionForm.province) {
@@ -3331,11 +3196,16 @@ function App() {
     try {
       await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'admission_applications'), {
         schoolYear: admissionSchoolYear,
+        schoolKey: selectedSchool.key,
+        schoolCode: selectedSchool.code,
+        schoolName: selectedSchool.name,
+        classSuffix: targetClass.replace(/^Lớp\s*/i, '').match(/^[1-9](.*)$/)?.[1] || '',
         fullName,
         birthDate,
         birthPlace: admissionForm.birthPlace.trim(),
         phone,
         targetClass,
+        grade: targetClass.replace(/^Lớp\s*/i, '').replace(/[A-Z].*$/i, ''),
         address: admissionForm.address.trim(),
         documents: { ...(admissionForm.documents || {}) },
         createdAt: Date.now(),
@@ -3420,28 +3290,267 @@ function App() {
 
   const createSafetyBackup = useCallback(async (reason = 'truoc-thao-tac-nguy-hiem') => {
     const snapshot = await buildSystemSnapshot();
-    await postAppsScript({ action: 'createSystemBackup', snapshot, reason, actor: user?.uid || 'Admin' });
+    const exported = await postAppsScript({ action: 'createSystemBackup', snapshot, reason, actor: user?.uid || 'Admin' });
+    if (snapshot.maintenanceJobId) await completeBackupExport(snapshot.maintenanceJobId, exported.id);
     return snapshot;
   }, [buildSystemSnapshot, user]);
 
-  useEffect(() => {
-    if (!showDataSafetyWorkspace) return;
-    buildSystemSnapshot().catch(error => showNotification(`Chưa đọc đủ dữ liệu để sao lưu: ${error.message}`, 'error'));
-  }, [buildSystemSnapshot, showDataSafetyWorkspace, showNotification]);
+  const startSchoolYearPromotion = useCallback(async (preview = {}) => {
+    const sourceSchoolYear = normalizeSchoolYearKey(preview.sourceSchoolYear || '');
+    const targetSchoolYear = normalizeSchoolYearKey(preview.targetSchoolYear || '');
+    if (!user) throw new Error('Chưa có phiên đăng nhập để chuyển năm học.');
+    if (!sourceSchoolYear || !targetSchoolYear) throw new Error('Thiếu năm học nguồn hoặc năm học mới.');
+    const currentSchoolYearKey = normalizeSchoolYearKey(currentSchoolYear);
+    if (![sourceSchoolYear, targetSchoolYear].includes(currentSchoolYearKey)) {
+      throw new Error(`Năm học hệ thống hiện tại là ${currentSchoolYear}; thao tác này chỉ tiếp tục được cho giai đoạn ${sourceSchoolYear} sang ${targetSchoolYear}.`);
+    }
+    if (!preview.canExecute) throw new Error('Danh sách chưa đủ điều kiện để chuyển năm học.');
 
+    const studentsRef = collection(db, 'artifacts', appId, 'public', 'data', 'students');
+    const latestStudentsSnapshot = await getDocsFromServer(studentsRef);
+    const latestStudentDataById = new Map(latestStudentsSnapshot.docs.map(item => [item.id, item.data()]));
+    const latestStudents = latestStudentsSnapshot.docs.map(item => ({ ...item.data(), id: item.id }));
+    assertPromotionPreviewCurrent(preview.sourceVersions, latestStudents, sourceSchoolYear);
+    const sourceStudentsById = new Map(latestStudents
+      .filter(student => normalizeSchoolYearKey(student.schoolYear || sourceSchoolYear) === sourceSchoolYear)
+      .map(student => [student.id, student]));
+    const previewStudentIds = new Set([
+      ...(Array.isArray(preview.transitions) ? preview.transitions : []).map(item => item?.student?.id),
+      ...(Array.isArray(preview.alreadyPrepared) ? preview.alreadyPrepared : []).map(item => (item?.student || item)?.id),
+      ...(Array.isArray(preview.completions) ? preview.completions : []).map(item => item?.student?.id),
+      ...(Array.isArray(preview.classRepairs) ? preview.classRepairs : []).map(item => item?.studentId)
+    ].filter(Boolean));
+    const droppedAfterPreview = [...sourceStudentsById.values()].filter(student => (
+      previewStudentIds.has(student.id) && student.status === 'dropped'
+    ));
+    if ([...previewStudentIds].some(id => !sourceStudentsById.has(id))) {
+      throw new Error('Có hồ sơ trong bản xem trước đã bị xóa hoặc chuyển năm. Hãy làm mới danh sách trước khi tiếp tục.');
+    }
+    if (droppedAfterPreview.length) {
+      throw new Error(`Có ${droppedAfterPreview.length} học sinh trong danh sách vừa được đánh dấu nghỉ. Chưa chuyển năm; hãy làm mới bản xem trước để kiểm tra lại.`);
+    }
+    const targetStudents = latestStudents
+      .filter(student => normalizeSchoolYearKey(student.schoolYear || '') === targetSchoolYear);
+    const findTargetRecord = student => findPromotionTarget(student, targetStudents);
+
+    const plannedTransitions = (Array.isArray(preview.transitions) ? preview.transitions : [])
+      .map(item => ({ ...item, student: sourceStudentsById.get(item?.student?.id) }))
+      .filter(item => item.student && item.student.status !== 'dropped' && item.targetClassName);
+    const preparedTransitions = (Array.isArray(preview.alreadyPrepared) ? preview.alreadyPrepared : [])
+      .map(item => {
+        const previewStudent = item?.student || item;
+        const student = sourceStudentsById.get(previewStudent?.id);
+        if (!student) return null;
+        const targetStudent = findTargetRecord(student);
+        return {
+          student,
+          targetStudent,
+          sourceClassName: item?.sourceClassName || student.className || '',
+          targetClassName: targetStudent?.className || item?.targetClassName || ''
+        };
+      })
+      .filter(item => item?.student && item.student.status !== 'dropped' && item.targetClassName);
+    const transitionsByStudentId = new Map();
+    [...plannedTransitions, ...preparedTransitions].forEach(item => {
+      const targetStudent = findTargetRecord(item.student);
+      const targetClassName = targetStudent?.className || item.targetClassName;
+      if (!targetClassName) return;
+      transitionsByStudentId.set(item.student.id, { ...item, targetStudent, targetClassName });
+    });
+    const transitions = [...transitionsByStudentId.values()];
+    const completions = (Array.isArray(preview.completions) ? preview.completions : [])
+      .map(item => ({ ...item, student: sourceStudentsById.get(item?.student?.id) }))
+      .filter(item => item.student && item.student.status !== 'dropped');
+    const pendingTransitions = transitions.filter(item => !findTargetRecord(item.student));
+    const skippedCount = transitions.length - pendingTransitions.length;
+    const sourcePatches = new Map();
+    (Array.isArray(preview.classRepairs) ? preview.classRepairs : []).forEach(item => {
+      const student = sourceStudentsById.get(item.studentId);
+      if (!student || student.status === 'dropped' || !item.className) return;
+      sourcePatches.set(item.studentId, {
+        className: item.className,
+        grade: item.grade || getGradeFromClassName(item.className)
+      });
+    });
+    completions.forEach(item => {
+      const current = sourcePatches.get(item.student.id) || {};
+      sourcePatches.set(item.student.id, {
+        ...current,
+        hocLucLop9: item.student.hocLucLop9 || item.academicResult || '',
+        completionStatus: 'completed_grade_9',
+        completionSchoolYear: sourceSchoolYear
+      });
+    });
+
+    let promotionStage = 'backup';
+
+    const operations = [
+      ...pendingTransitions.map(item => {
+        const { id, ...studentData } = item.student;
+        const sourceClassName = item.sourceClassName || item.student.className || '';
+        return {
+          type: 'create',
+          sourceRef: doc(studentsRef, id),
+          expectedSource: latestStudentDataById.get(id),
+          ref: doc(studentsRef, stableRecordId('promotion', item.student.studentKey || item.student.accessCode || id, targetSchoolYear, getStudentSchoolCode(item.student))),
+          data: {
+            ...studentData,
+            studentKey: item.student.studentKey || item.student.accessCode || item.student.id,
+            className: item.targetClassName,
+            grade: getGradeFromClassName(item.targetClassName),
+            schoolYear: targetSchoolYear,
+            previousStudentId: id,
+            classHistory: {
+              ...(studentData.classHistory && typeof studentData.classHistory === 'object' ? studentData.classHistory : {}),
+              [sourceSchoolYear]: sourceClassName,
+              [targetSchoolYear]: item.targetClassName
+            },
+            promotion: {
+              sourceSchoolYear,
+              targetSchoolYear,
+              sourceClassName,
+              targetClassName: item.targetClassName,
+              outcome: item.outcome || 'promote',
+              academicResult: item.academicResult || '',
+              source: item.source || '',
+              processedAt: Date.now()
+            },
+            createdAt: Date.now(),
+            createdBy: user.uid,
+            updatedAt: Date.now(),
+            updatedBy: user.uid
+          }
+        };
+      }),
+      ...transitions.filter(item => item.targetStudent).map(item => ({
+        type: 'verify', ref: doc(studentsRef, item.targetStudent.id),
+        expected: latestStudentDataById.get(item.targetStudent.id),
+        sourceRef: doc(studentsRef, item.student.id), expectedSource: latestStudentDataById.get(item.student.id)
+      })),
+      ...[...sourcePatches.entries()].map(([studentId, patch]) => ({
+        type: 'patch',
+        ref: doc(studentsRef, studentId),
+        expected: latestStudentDataById.get(studentId),
+        data: {
+          ...patch,
+          classHistory: {
+            ...(sourceStudentsById.get(studentId)?.classHistory && typeof sourceStudentsById.get(studentId).classHistory === 'object'
+              ? sourceStudentsById.get(studentId).classHistory
+              : {}),
+            [sourceSchoolYear]: patch.className || sourceStudentsById.get(studentId)?.className || ''
+          },
+          updatedAt: Date.now(),
+          updatedBy: user.uid
+        }
+      }))
+    ];
+    const scorebookGuards = (preview.scorebookGuards || []).map(item => ({ ...item,
+      ref: doc(db, 'artifacts', appId, 'public', 'data', 'scorebooks', item.id) }));
+    const job = await beginPromotionJob(sourceSchoolYear, targetSchoolYear, user.uid);
+
+    try {
+      await createSafetyBackup(`chuyen-nam-hoc-${sourceSchoolYear}-sang-${targetSchoolYear}`);
+      promotionStage = 'firebase';
+      await recordPromotionStage(job, promotionStage);
+      const createdCount = await applyStudentTransitions(operations, job, scorebookGuards);
+      promotionStage = 'sheet';
+      await recordPromotionStage(job, promotionStage, { createdCount });
+
+      const sheetHistoryByStudentId = new Map();
+      transitions.forEach(item => {
+        const student = item.student;
+        const sourcePatch = sourcePatches.get(student.id) || {};
+        sheetHistoryByStudentId.set(student.id, {
+          identityCode: student.identityCode || '',
+          accessCode: student.accessCode || student.studentCode || '',
+          fullName: student.fullName || '',
+          birthDate: student.birthDate || '',
+          sourceSchoolYear,
+          sourceClassName: sourcePatch.className || item.sourceClassName || student.className || '',
+          targetSchoolYear,
+          targetClassName: item.targetClassName,
+          schoolName: student.schoolName || '',
+          schoolCode: student.schoolCode || '',
+          classSuffix: student.classSuffix || ''
+        });
+      });
+      completions.forEach(item => {
+        const student = item.student;
+        const sourcePatch = sourcePatches.get(student.id) || {};
+        if (!sheetHistoryByStudentId.has(student.id)) {
+          sheetHistoryByStudentId.set(student.id, {
+            identityCode: student.identityCode || '',
+            accessCode: student.accessCode || student.studentCode || '',
+            fullName: student.fullName || '',
+            birthDate: student.birthDate || '',
+            sourceSchoolYear,
+            sourceClassName: sourcePatch.className || student.className || '',
+            schoolName: student.schoolName || '',
+            schoolCode: student.schoolCode || '',
+            classSuffix: student.classSuffix || ''
+          });
+        }
+      });
+
+      await syncRegistrationSchoolYearClasses([...sheetHistoryByStudentId.values()], job,
+        sheetProcessed => recordPromotionStage(job, 'sheet', { sheetProcessed }));
+      promotionStage = 'sheet-config';
+      await recordPromotionStage(job, promotionStage);
+      await syncRegistrationCurrentSchoolYear(sourceSchoolYear, targetSchoolYear, job);
+
+      promotionStage = 'finalize';
+      await recordPromotionStage(job, promotionStage);
+      const { extraSchoolYears: nextExtraSchoolYears, schoolClassesByYear: nextClassesByYear } =
+        await finalizePromotionJob(job, transitions.map(item => item.targetClassName));
+      setCurrentSchoolYear(targetSchoolYear);
+      setExtraSchoolYears(nextExtraSchoolYears);
+      setSchoolClassesByYear(nextClassesByYear);
+      adminSchoolYearTouchedRef.current = true;
+      setAdminSchoolYear(targetSchoolYear);
+    } catch (error) {
+      const message = ['sheet', 'sheet-config'].includes(promotionStage)
+        ? 'Firebase đã chuẩn bị hồ sơ nhưng Google Sheet chưa đồng bộ; năm hệ thống chưa đổi. Có thể chạy lại để tiếp tục.'
+        : promotionStage === 'finalize'
+          ? 'Firebase và Google Sheet đã cập nhật nhưng chưa chốt năm học hệ thống. Có thể chạy lại để đối soát và hoàn tất.'
+          : 'Chưa hoàn tất ghi hồ sơ lên Firebase. Có thể chạy lại để đối soát và tiếp tục.';
+      try {
+        await failPromotionJob(job, message);
+      } catch (statusError) {
+        console.error('Không lưu được trạng thái lỗi chuyển năm học:', statusError?.message || 'lỗi không xác định');
+      }
+      throw new Error(`${message} ${error?.message || ''}`.trim(), { cause: error });
+    }
+
+    postAppsScript({
+      action: 'writeAuditLog',
+      auditAction: 'chuyen_nam_hoc_va_len_lop',
+      actor: user.uid || 'Admin',
+      details: {
+        sourceSchoolYear,
+        targetSchoolYear,
+        createdCount: pendingTransitions.length,
+        classRepairCount: sourcePatches.size,
+        repeatedCount: pendingTransitions.filter(item => item.outcome === 'repeat').length,
+        completionCount: completions.length,
+        skippedCount
+      }
+    }).catch(() => undefined);
+    return { createdCount: pendingTransitions.length, skippedCount };
+  }, [createSafetyBackup, currentSchoolYear, user]);
+
+  const dailyBackupInFlight = useRef(false);
   useEffect(() => {
     if (!isAdmin || !adminSessionToken || !user) return;
-    const today = new Date().toISOString().slice(0, 10);
-    if (localStorage.getItem(DAILY_BACKUP_STORAGE_KEY) === today) return;
-    let active = true;
-    buildSystemSnapshot()
-      .then(snapshot => postAppsScript({ action: 'createSystemBackup', snapshot, reason: 'hang-ngay', actor: user.uid || 'Admin' }))
+    const today = vietnamDateKey();
+    if (localStorage.getItem(DAILY_BACKUP_STORAGE_KEY) === today || dailyBackupInFlight.current) return;
+    dailyBackupInFlight.current = true;
+    createSafetyBackup('hang-ngay')
       .then(() => {
-        if (active) localStorage.setItem(DAILY_BACKUP_STORAGE_KEY, today);
+        localStorage.setItem(DAILY_BACKUP_STORAGE_KEY, today);
       })
-      .catch(() => undefined);
-    return () => { active = false; };
-  }, [adminSessionToken, buildSystemSnapshot, isAdmin, user]);
+      .catch(() => undefined)
+      .finally(() => { dailyBackupInFlight.current = false; });
+  }, [adminSessionToken, createSafetyBackup, isAdmin, user]);
 
   const saveAdminServerPassword = async () => {
     if (newAdminPassword.length < 8) {
@@ -3466,24 +3575,19 @@ function App() {
     }
   };
 
-  const saveStaffAccessConfig = async (type) => {
-    const password = type === 'teacher' ? teacherPass : thdAdminPass;
+  const saveStaffAccessConfig = async () => {
+    const password = thdAdminPass;
     if (password.length < 8) {
       showNotification('Mật khẩu phải có ít nhất 8 ký tự.', 'error');
       return;
     }
-    setIsSavingStaffPassword(type);
+    setIsSavingStaffPassword('thd');
     try {
-      const payload = type === 'teacher'
-        ? { teacherPassword: password, teacherPasswordEnabled: isTeacherPassEnabled }
-        : { thdPassword: password };
-      await postAppsScript({ action: 'updateAccessConfig', ...payload, actor: user?.uid || 'Admin' });
+      await postAppsScript({ action: 'updateAccessConfig', thdPassword: password, actor: user?.uid || 'Admin' });
       await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'global'), {
-        teacherPass: deleteField(),
         thdAdminPass: deleteField()
       }, { merge: true });
-      if (type === 'teacher') setTeacherPass('');
-      else setThdAdminPass('');
+      setThdAdminPass('');
       showNotification('Đã lưu mật khẩu trên máy chủ.');
     } catch (error) {
       showNotification(`Chưa lưu được mật khẩu: ${error.message}`, 'error');
@@ -3492,47 +3596,49 @@ function App() {
     }
   };
 
-  const toggleTeacherPasswordOnServer = async () => {
-    const nextValue = !isTeacherPassEnabled;
-    try {
-      await postAppsScript({ action: 'updateAccessConfig', teacherPasswordEnabled: nextValue, actor: user?.uid || 'Admin' });
-      setIsTeacherPassEnabled(nextValue);
-      showNotification(nextValue ? 'Đã bật mật khẩu giáo viên.' : 'Đã tắt yêu cầu mật khẩu giáo viên.');
-    } catch (error) {
-      showNotification(`Chưa đổi được thiết lập: ${error.message}`, 'error');
-    }
-  };
-
   useEffect(() => {
-    const fetchSGK = async () => {
-      if (!selectedGrade) return; const fId = TEXTBOOK_FOLDERS[selectedGrade]; if (!fId) { setTextbookFiles([]); return; }
-      setIsLoadingTextbooks(true);
-      try { const resp = await fetch(`https://www.googleapis.com/drive/v3/files?q='${fId}'+in+parents+and+trashed=false&key=${GOOGLE_API_KEY}&fields=files(id,name,mimeType,webViewLink,iconLink)`); const data = await resp.json(); if (data.files) setTextbookFiles(data.files); } catch { setTextbookFiles([]); } finally { setIsLoadingTextbooks(false); }
-    };
-    fetchSGK();
+    let active = true;
+    const controller = new AbortController();
+    const folderId = TEXTBOOK_FOLDERS[selectedGrade];
+    setTextbookFiles([]);
+    if (!folderId) return undefined;
+    setIsLoadingTextbooks(true);
+    listDriveFiles({ folderId, apiKey: GOOGLE_API_KEY, signal: controller.signal })
+      .then(files => { if (active) setTextbookFiles(files); })
+      .catch(error => { if (active && error.name !== 'AbortError') setTextbookFiles([]); })
+      .finally(() => { if (active) setIsLoadingTextbooks(false); });
+    return () => { active = false; controller.abort(); };
   }, [selectedGrade]);
 
+  useEffect(() => { driveRequestRef.current += 1; return () => { driveRequestRef.current += 1; }; }, [role, selectedGrade, selectedSubject, currentContentSchoolCode]);
+
   const fetchDriveData = useCallback(async () => {
-    if (!role || role !== 'teacher' || !selectedGrade || !selectedSubject) return;
+    if (role !== 'teacher' || !selectedGrade || !selectedSubject || !teacherCanUseScope(selectedGrade, selectedSubject)) return;
+    const requestId = ++driveRequestRef.current;
     setIsLoadingDrive(true); setDriveError('');
     try {
-      const resp = await fetch(`https://www.googleapis.com/drive/v3/files?q='${MASTER_DRIVE_FOLDER_ID}'+in+parents+and+trashed=false&pageSize=1000&key=${GOOGLE_API_KEY}&fields=files(id,name,mimeType,webViewLink,description)`);
-      const data = await resp.json();
-      if (data.files) {
-        const searchTag = `[K${selectedGrade}_${selectedSubject}`;
-        const filtered = data.files.filter(f => f.name.includes(searchTag) && !f.name.startsWith('[CHO_XOA]'));
-        setDriveFiles(filtered);
-        const visibleDriveIds = new Set(filtered.map(f => f.id));
-        const stalePinnedMaterials = allMaterials.filter(m => String(m.grade) === String(selectedGrade) && String(m.subject) === String(selectedSubject) && m.driveFileId && !visibleDriveIds.has(m.driveFileId) );
-        if (stalePinnedMaterials.length > 0 && user && role === 'teacher') { await Promise.all(stalePinnedMaterials.map(m => deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'materials', m.id)) )); }
-      }
-    } catch { setDriveError('Lỗi kết nối API Drive.'); } finally { setIsLoadingDrive(false); }
-  }, [role, selectedGrade, selectedSubject, allMaterials, user]);
+      const files = await listDriveFiles({ folderId: MASTER_DRIVE_FOLDER_ID, apiKey: GOOGLE_API_KEY });
+      if (requestId !== driveRequestRef.current) return;
+      const searchTag = `[K${selectedGrade}_${selectedSubject}`;
+      const filtered = files.filter(file => {
+        const campus = file.name.startsWith('[TQK]_') ? 'TQK' : 'NAN';
+        return campus === currentContentSchoolCode && file.name.includes(searchTag) && !file.name.startsWith('[CHO_XOA]');
+      });
+      setDriveFiles(filtered);
+    } catch (error) {
+      if (requestId === driveRequestRef.current) setDriveError(error.message || 'Lỗi kết nối API Drive.');
+    } finally { if (requestId === driveRequestRef.current) setIsLoadingDrive(false); }
+  }, [role, selectedGrade, selectedSubject, teacherCanUseScope, currentContentSchoolCode]);
 
   useEffect(() => { fetchDriveData(); }, [fetchDriveData]);
 
   const openTeacherLogin = async () => {
+    try { await clearLoginIdentity(); } catch (error) { showNotification(error.message, 'error'); return; }
     clearStoredAdminSession();
+    window.sessionStorage.removeItem(STAFF_SERVER_SESSION_STORAGE_KEY);
+    window.sessionStorage.removeItem(TEACHER_PROFILE_STORAGE_KEY);
+    setTeacherProfile(null);
+    setAdminSessionToken('');
     setIsAdmin(false);
     setShowAdminSettingsWorkspace(false);
     setShowAdminCheckWorkspace(false);
@@ -3541,30 +3647,30 @@ function App() {
     if (typeof window !== 'undefined' && window.location.hash.toLowerCase().startsWith('#/admin')) {
       window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
     }
-    if (isTeacherPassEnabled) {
-      setModalMode('teacher');
-      setPasswordInput('');
-      setErrorMsg('');
-      setShowPasswordModal(true);
-      return;
-    }
-    try {
-      const response = await postAppsScript({ action: 'createStaffSession', role: 'teacher', password: '' });
-      if (!response.staffSessionToken) throw new Error(response.message || 'Không tạo được phiên giáo viên.');
-      window.sessionStorage.setItem(STAFF_SERVER_SESSION_STORAGE_KEY, response.staffSessionToken);
-      setRole('teacher');
-      setLoginRole('teacher');
-    } catch (error) {
-      showNotification(`Chưa vào được khu Giáo viên: ${error.message}`, 'error');
-    }
+    setModalMode('teacher');
+    setTeacherUsername('');
+    setPasswordInput('');
+    setErrorMsg('');
+    setShowPasswordModal(true);
   };
 
   const handleLogin = async () => {
+    if (activeLoginRequestRef.current != null) return;
+    if (!passwordInput || (modalMode === 'teacher' && !teacherUsername.trim())) { setErrorMsg('Nhập đầy đủ tên đăng nhập và mật khẩu.'); return; }
+    const request = ++loginSequenceRef.current;
+    activeLoginRequestRef.current = request;
+    const controller = new AbortController();
+    loginAbortRef.current = controller;
+    setIsLoggingIn(true);
+    try {
     if (modalMode === 'admin') {
       try {
         setErrorMsg('');
-        const response = await postAppsScript({ action: 'createAdminSession', password: passwordInput });
+        const response = await postAppsScript({ action: 'createAdminSession', password: passwordInput }, { signal: controller.signal });
+        if (request !== loginSequenceRef.current) return;
         if (response.status !== 'success' || !response.adminSessionToken) throw new Error(response.message || 'Không tạo được phiên admin.');
+        if (SCOPED_AUTH_ENABLED) await exchangeScopedIdentity({ kind: 'staff', adminSessionToken: response.adminSessionToken }, { signal: controller.signal });
+        if (request !== loginSequenceRef.current) return;
         window.sessionStorage.setItem(ADMIN_SERVER_SESSION_STORAGE_KEY, response.adminSessionToken);
         setAdminSessionToken(response.adminSessionToken);
         writeStoredAdminSession('notice', 'full');
@@ -3580,12 +3686,15 @@ function App() {
         setShowPasswordModal(false);
         showNotification("Đã vào Quản trị");
       } catch (error) {
-        setErrorMsg(error.message || 'Mật khẩu không chính xác!');
+        if (request === loginSequenceRef.current) setErrorMsg(error.message || 'Mật khẩu không chính xác!');
       }
     } else if (modalMode === 'thdAdmin') {
       try {
-        const response = await postAppsScript({ action: 'createStaffSession', role: 'thd', password: passwordInput });
+        const response = await postAppsScript({ action: 'createStaffSession', role: 'thd', password: passwordInput }, { signal: controller.signal });
+        if (request !== loginSequenceRef.current) return;
         if (!response.staffSessionToken) throw new Error(response.message || 'Không tạo được phiên Trần Hưng Đạo.');
+        if (SCOPED_AUTH_ENABLED) await exchangeScopedIdentity({ kind: 'staff', staffSessionToken: response.staffSessionToken }, { signal: controller.signal });
+        if (request !== loginSequenceRef.current) return;
         window.sessionStorage.setItem(STAFF_SERVER_SESSION_STORAGE_KEY, response.staffSessionToken);
         writeStoredAdminSession('thd', 'thd');
         setAdminAccessScope('thd');
@@ -3599,25 +3708,56 @@ function App() {
         if (typeof window !== 'undefined') window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}#/admin/tran-hung-dao/assignments`);
         showNotification("Đã vào Trần Hưng Đạo");
       } catch (error) {
-        setErrorMsg(error.message || 'Mật khẩu Trần Hưng Đạo không chính xác!');
+        if (request === loginSequenceRef.current) setErrorMsg(error.message || 'Mật khẩu Trần Hưng Đạo không chính xác!');
       }
     } else if (modalMode === 'teacher') {
       try {
-        const response = await postAppsScript({ action: 'createStaffSession', role: 'teacher', password: passwordInput });
-        if (!response.staffSessionToken) throw new Error(response.message || 'Không tạo được phiên giáo viên.');
+        const response = await postAppsScript({ action: 'createStaffSession', role: 'teacher', username: teacherUsername, password: passwordInput }, { signal: controller.signal });
+        if (request !== loginSequenceRef.current) return;
+        if (!response.staffSessionToken || !response.teacherProfile) throw new Error(response.message || 'Không tạo được phiên giáo viên.');
+        if (SCOPED_AUTH_ENABLED) await exchangeScopedIdentity({ kind: 'staff', staffSessionToken: response.staffSessionToken }, { signal: controller.signal });
+        if (request !== loginSequenceRef.current) return;
         window.sessionStorage.setItem(STAFF_SERVER_SESSION_STORAGE_KEY, response.staffSessionToken);
+        window.sessionStorage.setItem(TEACHER_PROFILE_STORAGE_KEY, JSON.stringify(response.teacherProfile));
+        setTeacherProfile(response.teacherProfile);
+        setSelectedGrade(String(response.teacherProfile.grades?.[0] || ''));
+        setSelectedSubject(String(response.teacherProfile.subjects?.[0] || ''));
+        setSelectedLesson(null);
         setRole('teacher');
         setLoginRole('teacher');
         setShowPasswordModal(false);
-        showNotification("Xin chào Giáo viên!");
+        showNotification(`Xin chào ${response.teacherProfile.fullName || 'Giáo viên'}!`);
       } catch (error) {
-        setErrorMsg(error.message || 'Mật khẩu giáo viên không chính xác!');
+        if (request === loginSequenceRef.current) setErrorMsg(error.message || 'Tên đăng nhập hoặc mật khẩu không chính xác!');
       }
     }
-    setPasswordInput('');
+    if (request === loginSequenceRef.current) setPasswordInput('');
+    } finally {
+      if (activeLoginRequestRef.current === request) { activeLoginRequestRef.current = null; loginAbortRef.current = null; setIsLoggingIn(false); }
+    }
   };
 
-  const handleExitAdmin = () => {
+  const handleLogout = async () => {
+    try { await clearLoginIdentity(); } catch (error) { showNotification(error.message, 'error'); return false; }
+    closeAdminSessionView();
+    setShowAdminSettingsWorkspace(false);
+    setShowAdminCheckWorkspace(false);
+    setShowPasswordWorkspace(false);
+    setScorebookGrade(null);
+    resetNavigationWithClean();
+    if (window.location.hash.toLowerCase().startsWith('#/admin')) window.history.replaceState(null, '', window.location.pathname + window.location.search);
+    return true;
+  };
+
+  const openStudentLogin = async () => {
+    if (!await handleLogout()) return;
+    if (isStudentCodeEnabled || SCOPED_AUTH_ENABLED) {
+      setShowStudentAccessModal(true); setStudentForgotMode(false); setStudentFoundCode('');
+    } else { setRole('student'); setLoginRole('student'); }
+  };
+
+  const handleExitAdmin = async () => {
+    try { await clearLoginIdentity(); } catch (error) { showNotification(error.message, 'error'); return; }
     clearStoredAdminSession();
     setAdminSessionToken('');
     closeAdminSessionView();
@@ -3634,7 +3774,7 @@ function App() {
 
   useEffect(() => {
     if (!showAddNews || !newsContentRef.current) return;
-    newsContentRef.current.innerHTML = editingNews?.content || '';
+    newsContentRef.current.innerHTML = sanitizeHtml(editingNews?.content || '');
   }, [showAddNews, editingNews]);
 
   const openNewsForm = (news = null) => {
@@ -3642,7 +3782,7 @@ function App() {
     setNewsTitle(news?.title || '');
     setShowAddNews(true);
     window.setTimeout(() => {
-      if (newsContentRef.current) newsContentRef.current.innerHTML = news?.content || '';
+      if (newsContentRef.current) newsContentRef.current.innerHTML = sanitizeHtml(news?.content || '');
     }, 0);
   };
 
@@ -3666,7 +3806,7 @@ function App() {
   };
 
   const handleAddNews = async () => {
-    const content = newsContentRef.current?.innerHTML?.trim();
+    const content = sanitizeHtml(newsContentRef.current?.innerHTML?.trim() || '');
     if (!user || !newsTitle.trim() || !content || content === '<br>') { showNotification("Vui lòng nhập đủ Tiêu đề và Nội dung!", "error"); return; }
     setIsSubmittingNews(true);
     try {
@@ -3725,36 +3865,95 @@ function App() {
 
   const handleSelectDriveFile = async (file) => {
     if (!user) { showNotification("Phiên đăng nhập hết hạn", "error"); return; }
+    if (!teacherCanUseScope(selectedGrade, selectedSubject)) { showNotification('Tài khoản chưa được phân công khối/môn này.', 'error'); return; }
     let fType = 'link'; const mime = file.mimeType.toLowerCase();
     if (mime.includes('pdf')) fType = 'pdf'; else if (mime.includes('presentation') || file.name.includes('.ppt')) fType = 'ppt'; else if (mime.includes('image')) fType = 'image';
-    let title = file.name.replace(/\[.*?\]_/, '').replace(/\.[^/.]+$/, "");
-    try { await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'materials'), { grade: String(selectedGrade), subject: String(selectedSubject), lesson: String(selectedLesson), title: title, url: file.webViewLink, driveFileId: file.id, type: fType, createdAt: Date.now(), authorId: user.uid }); showNotification("Đã ghim tài liệu thành công!"); } catch { showNotification("Lỗi ghim tài liệu", "error"); }
+    let title = getDriveDisplayName(file.name).replace(/\.[^/.]+$/, "");
+    try { await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'materials'), { studentSafe: true, schoolYear: activeSchoolYear, schoolCode: currentContentSchoolCode, grade: String(selectedGrade), subject: String(selectedSubject), lesson: String(selectedLesson), title: title, url: file.webViewLink, driveFileId: file.id, type: fType, createdAt: Date.now(), authorId: user.uid }); showNotification("Đã ghim tài liệu thành công!"); } catch { showNotification("Lỗi ghim tài liệu", "error"); }
   };
 
   const getMaterialsForDriveFile = useCallback((file, { currentOnly = true } = {}) => {
     const fileId = file.id || extractDriveFileId(file.webViewLink);
     const fileTitle = cleanDriveTitle(file.name);
-    return allMaterials.filter(m => !currentOnly || (String(m.grade) === String(selectedGrade) && String(m.subject) === String(selectedSubject))).filter(m => { const materialFileId = m.driveFileId || extractDriveFileId(m.url); if (fileId && materialFileId) return fileId === materialFileId; if (!currentOnly) return false; return cleanDriveTitle(m.title) === fileTitle; });
-  }, [allMaterials, selectedGrade, selectedSubject]);
+    return allMaterials
+      .filter(m => isContentForCurrentCampus(m) && (!currentOnly || (String(m.grade) === String(selectedGrade) && String(m.subject) === String(selectedSubject))))
+      .filter(m => {
+        const materialFileId = m.driveFileId || extractDriveFileId(m.url);
+        if (fileId && materialFileId) return fileId === materialFileId;
+        if (!currentOnly) return false;
+        return cleanDriveTitle(m.title) === fileTitle;
+      });
+  }, [allMaterials, selectedGrade, selectedSubject, isContentForCurrentCampus]);
 
   const getPinnedLessonsForDriveFile = useCallback((file) => { const lessons = getMaterialsForDriveFile(file).map(m => Number(m.lesson)).filter(Boolean); return [...new Set(lessons)].sort((a, b) => a - b).map(lesson => getWeekDisplayName(String(lesson))); }, [getMaterialsForDriveFile]);
 
   const handleHideFromDrive = async (file) => {
     if (!user || role !== 'teacher') return;
-    setConfirmModal({ show: true, message: `File này sẽ được đổi tên thêm [CHO_XOA] ở phía trước để ẩn khỏi Kho chung. File vẫn còn trong Google Drive để thầy cô có thể xóa tay sau. Bạn có chắc chắn?`, onConfirm: async () => { const oldName = file.name; setDriveFiles(prev => prev.filter(f => f.id !== file.id)); showNotification("Đang ẩn file khỏi Kho chung...", "success"); try { const res = await postAppsScript({ action: 'rename', fileId: file.id }); if (res.status === 'success') { const linkedMaterials = getMaterialsForDriveFile(file, { currentOnly: false }); if (linkedMaterials.length > 0) { await Promise.all(linkedMaterials.map(m => deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'materials', m.id)) )); } showNotification(`Đã ẩn file "${oldName.replace(/\[.*?\]_/, '')}" khỏi Kho chung${linkedMaterials.length ? ` và gỡ ${linkedMaterials.length} ghim` : ''}.`); } else { showNotification(`Lỗi: ${res.message}`, "error"); fetchDriveData(); } } catch { fetchDriveData(); } } });
+    if (!teacherCanUseScope(selectedGrade, selectedSubject)) { showNotification('Tài khoản chưa được phân công khối/môn này.', 'error'); return; }
+    setConfirmModal({ show: true, message: `File này sẽ được đổi tên thêm [CHO_XOA] ở phía trước để ẩn khỏi Kho chung. File vẫn còn trong Google Drive để thầy cô có thể xóa tay sau. Bạn có chắc chắn?`, onConfirm: async () => { const oldName = file.name; setDriveFiles(prev => prev.filter(f => f.id !== file.id)); showNotification("Đang ẩn file khỏi Kho chung...", "success"); try { const res = await postAppsScript({ action: 'rename', fileId: file.id, schoolCode: currentContentSchoolCode, grade: selectedGrade, subject: selectedSubject }); if (res.status === 'success') { const linkedMaterials = getMaterialsForDriveFile(file, { currentOnly: false }); if (linkedMaterials.length > 0) { await Promise.all(linkedMaterials.map(m => deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'materials', m.id)) )); } showNotification(`Đã ẩn file "${getDriveDisplayName(oldName)}" khỏi Kho chung${linkedMaterials.length ? ` và gỡ ${linkedMaterials.length} ghim` : ''}.`); } else { showNotification(`Lỗi: ${res.message}`, "error"); fetchDriveData(); } } catch { fetchDriveData(); } } });
   };
 
-  const handleEditorInput = () => { if (role !== 'teacher' || !noteId) return; if (contentEditableRef.current) setNoteHtml(contentEditableRef.current.innerHTML); setAutoSaveStatus('Đang chờ lưu...'); if (autoSaveTimeoutRef.current) clearTimeout(autoSaveTimeoutRef.current); autoSaveTimeoutRef.current = setTimeout(() => { handleAutoSave(); }, 2000); };
+  useEffect(() => {
+    return () => {
+      if (autoSaveTimeoutRef.current) { clearTimeout(autoSaveTimeoutRef.current); autoSaveTimeoutRef.current = null; }
+      const pending = pendingNoteSaveRef.current;
+      pendingNoteSaveRef.current = null;
+      if (pending) void pending();
+    };
+  }, [noteId, role]);
 
-  const handleAutoSave = async () => {
-     if (!contentEditableRef.current || !noteId || !user) return;
-     setAutoSaveStatus('Đang lưu...');
-     try { const savedContent = contentEditableRef.current.innerHTML; await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'lesson_notes', noteId), { content: savedContent, updatedAt: Date.now(), authorId: user.uid, grade: String(selectedGrade), subject: String(selectedSubject), lesson: String(selectedLesson) }); setNoteHtml(savedContent); contentEditableRef.current.setAttribute('data-loaded-id', noteId); setAutoSaveStatus('☁️ Đã lưu tự động'); setTimeout(() => setAutoSaveStatus(''), 4000); } catch { setAutoSaveStatus('Lỗi lưu tự động'); }
+  const handleEditorInput = () => {
+    if (role !== 'teacher' || !noteId || !contentEditableRef.current) return;
+    const draftKey = `${teacherProfile?.teacherId || teacherProfile?.id || user?.uid}/${noteId}`;
+    const draft = { content: sanitizeHtml(contentEditableRef.current.innerHTML), noteId, authorId: user?.uid,
+      draftKey, baseContent: noteDraftsRef.current.get(draftKey)?.baseContent ?? noteBaseContentRef.current.get(noteId),
+      schoolCode: currentContentSchoolCode, schoolYear: activeSchoolYear, grade: String(selectedGrade), subject: String(selectedSubject), lesson: String(selectedLesson) };
+    noteDraftsRef.current.set(draftKey, draft);
+    setNoteHtml(draft.content); setAutoSaveStatus('Đang chờ lưu...');
+    if (autoSaveTimeoutRef.current) clearTimeout(autoSaveTimeoutRef.current);
+    const save = () => handleAutoSave(draft);
+    pendingNoteSaveRef.current = save;
+    autoSaveTimeoutRef.current = setTimeout(() => {
+      autoSaveTimeoutRef.current = null;
+      if (pendingNoteSaveRef.current === save) pendingNoteSaveRef.current = null;
+      void save();
+    }, 2000);
+  };
+
+  const handleAutoSave = async (draft) => {
+    if (!draft?.noteId || !draft.authorId) return;
+    setAutoSaveStatus('Đang lưu...');
+    try {
+      await saveLessonDraft(draft);
+      noteBaseContentRef.current.set(draft.noteId, draft.content);
+      const latest = noteDraftsRef.current.get(draft.draftKey);
+      if (latest?.content === draft.content) noteDraftsRef.current.delete(draft.draftKey);
+      else if (latest) latest.baseContent = draft.content;
+      if (contentEditableRef.current?.getAttribute('data-loaded-id') === draft.noteId) setAutoSaveStatus('☁️ Đã lưu tự động');
+    } catch (error) { if (contentEditableRef.current?.getAttribute('data-loaded-id') === draft.noteId) setAutoSaveStatus(error.message || 'Lỗi lưu tự động; bản nháp được giữ'); }
   };
 
   const handleSaveNote = async () => {
-    if (!contentEditableRef.current || !noteId || !user) return; if (autoSaveTimeoutRef.current) clearTimeout(autoSaveTimeoutRef.current); setIsSavingNote(true);
-    try { const savedContent = contentEditableRef.current.innerHTML; await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'lesson_notes', noteId), { content: savedContent, updatedAt: Date.now(), authorId: user.uid, grade: String(selectedGrade), subject: String(selectedSubject), lesson: String(selectedLesson) }); setNoteHtml(savedContent); setAllNotes(prev => { const note = { id: noteId, content: savedContent, grade: String(selectedGrade), subject: String(selectedSubject), lesson: String(selectedLesson), updatedAt: Date.now() }; const others = prev.filter(n => n.id !== noteId); return [...others, note]; }); contentEditableRef.current.setAttribute('data-loaded-id', noteId); setSaveSuccess(true); setAutoSaveStatus(''); setTimeout(() => setSaveSuccess(false), 3000); showNotification('Đã lưu bài học thành công!'); } catch (e) { showNotification('Lỗi lưu bài học: ' + e.message, 'error'); } finally { setIsSavingNote(false); }
+    if (!contentEditableRef.current || !noteId || !user) return;
+    if (!teacherCanUseScope(selectedGrade, selectedSubject)) { showNotification('Tài khoản chưa được phân công khối/môn này.', 'error'); return; }
+    if (autoSaveTimeoutRef.current) clearTimeout(autoSaveTimeoutRef.current);
+    autoSaveTimeoutRef.current = null; pendingNoteSaveRef.current = null;
+    const draftKey = `${teacherProfile?.teacherId || teacherProfile?.id || user.uid}/${noteId}`;
+    const draft = { noteId, draftKey, baseContent: noteDraftsRef.current.get(draftKey)?.baseContent ?? noteBaseContentRef.current.get(noteId),
+      content: sanitizeHtml(contentEditableRef.current.innerHTML), authorId: user.uid, schoolCode: currentContentSchoolCode,
+      schoolYear: activeSchoolYear, grade: String(selectedGrade), subject: String(selectedSubject), lesson: String(selectedLesson) };
+    noteDraftsRef.current.set(draftKey, draft); setIsSavingNote(true);
+    try {
+      await saveLessonDraft(draft);
+      noteBaseContentRef.current.set(noteId, draft.content);
+      const latest = noteDraftsRef.current.get(draftKey);
+      if (latest?.content === draft.content) noteDraftsRef.current.delete(draftKey);
+      else if (latest) latest.baseContent = draft.content;
+      setNoteHtml(latest?.content ?? draft.content);
+      setSaveSuccess(true); setAutoSaveStatus(''); setTimeout(() => setSaveSuccess(false), 3000);
+      showNotification('Đã lưu bài học thành công!');
+    } catch (error) { showNotification(`Lỗi lưu bài học: ${error.message}`, 'error'); }
+    finally { setIsSavingNote(false); }
   };
 
   const handleQuizEditorInput = () => { if (quizEditorRef.current) refreshQuizHtmlFromEditors(); };
@@ -3790,68 +3989,6 @@ ${answerText || '(Chua co dap an, hay tu tao dap an dung va bieu diem)'}`;
   const normalizeMathDelimiters = (value = '') => String(value)
     .replace(/\$\$([\s\S]*?)\$\$/g, (_, math) => `\\[${math.trim()}\\]`)
     .replace(/(^|[^\\])\$([^\n$]+?)\$/g, (_, prefix, math) => `${prefix}\\(${math.trim()}\\)`);
-
-  const OVERLINE_TOKEN_START = '\uE000OVERLINE:';
-  const OVERLINE_TOKEN_END = '\uE001';
-
-  const renderOverlineTokens = (html = '') => String(html || '')
-    .replace(/\uE000OVERLINE:([^\uE001]+)\uE001/g, (_, text) => (
-      `<span style="text-decoration:overline;text-decoration-thickness:1px;text-decoration-skip-ink:none;">${text}</span>`
-    ));
-
-  const humanizeLatexText = (value = '') => {
-    const convert = (raw = '') => String(raw || '')
-      .replace(/\\\\/g, '\\')
-      .replace(/\\mathbb\{N\}/g, 'ℕ')
-      .replace(/\\mathbb\{Z\}/g, 'ℤ')
-      .replace(/\\mathbb\{Q\}/g, 'ℚ')
-      .replace(/\\mathbb\{R\}/g, 'ℝ')
-      .replace(/\\notin\b/g, '∉')
-      .replace(/\\in\b/g, '∈')
-      .replace(/\\leq?\b/g, '≤')
-      .replace(/\\geq?\b/g, '≥')
-      .replace(/\\neq?\b/g, '≠')
-      .replace(/\\times\b/g, '×')
-      .replace(/\\cdot\b/g, '·')
-      .replace(/\\mid\b/g, '|')
-      .replace(/\\cup\b/g, '∪')
-      .replace(/\\cap\b/g, '∩')
-      .replace(/\\emptyset\b/g, '∅')
-      .replace(/\\varnothing\b/g, '∅')
-      .replace(/\\overline\{([^{}]+)\}/g, (_, text) => `${OVERLINE_TOKEN_START}${text}${OVERLINE_TOKEN_END}`)
-      .replace(/\\dots\b/g, '…')
-      .replace(/\\ldots\b/g, '…')
-      .replace(/\\cdots\b/g, '⋯')
-      .replace(/\\ast\b/g, '*')
-      .replace(/\\text\{([^{}]*)\}/g, '$1')
-      .replace(/\\left/g, '')
-      .replace(/\\right/g, '')
-      .replace(/\\,/g, ' ')
-      .replace(/\\;/g, ';')
-      .replace(/\\:/g, ':')
-      .replace(/\\\{/g, '{')
-      .replace(/\\\}/g, '}')
-      .replace(/\\\(/g, '')
-      .replace(/\\\)/g, '')
-      .replace(/\\\[/g, '')
-      .replace(/\\\]/g, '')
-      .replace(/\\([A-Za-z]+)/g, '$1');
-
-    return convert(value)
-      .replace(/\\\(([\s\S]*?)\\\)/g, (_, math) => convert(math))
-      .replace(/\\\[([\s\S]*?)\\\]/g, (_, math) => convert(math));
-  };
-
-  const humanizeHtmlString = (html = '') => {
-    if (typeof document === 'undefined') return humanizeLatexText(html);
-    const wrapper = document.createElement('div');
-    wrapper.innerHTML = String(html || '');
-    const walker = document.createTreeWalker(wrapper, NodeFilter.SHOW_TEXT);
-    const textNodes = [];
-    while (walker.nextNode()) textNodes.push(walker.currentNode);
-    textNodes.forEach(node => { node.nodeValue = humanizeLatexText(node.nodeValue); });
-    return renderOverlineTokens(wrapper.innerHTML);
-  };
 
   const textToPasteHtml = (text = '') => {
     const normalized = humanizeLatexText(normalizeMathDelimiters(text.replace(/\r\n/g, '\n')));
@@ -3891,7 +4028,7 @@ ${answerText || '(Chua co dap an, hay tu tao dap an dung va bieu diem)'}`;
 
   const normalizePastedHtml = (html = '') => {
     const wrapper = document.createElement('div');
-    wrapper.innerHTML = html;
+    wrapper.innerHTML = sanitizeHtml(html);
     wrapper.querySelectorAll('script, style, meta, link').forEach(node => node.remove());
     const walker = document.createTreeWalker(wrapper, NodeFilter.SHOW_TEXT);
     const textNodes = [];
@@ -3948,9 +4085,10 @@ ${answerText || '(Chua co dap an, hay tu tao dap an dung va bieu diem)'}`;
 </html>`;
 
   const uploadQuizDocSnapshot = async (content, publishNowValue = false, publishAtMs = null) => {
+    const contextKey = quizContextRef.current;
     try {
       const html = buildQuizArchiveHtml(content, publishNowValue, publishAtMs);
-      const filename = getQuizArchiveName();
+      const filename = `[${currentContentSchoolCode}]_${getQuizArchiveName()}`;
       setQuizDocStatus({ state: 'loading', message: 'Đang tạo Google Doc trên Drive...', url: '' });
       showNotification('Đang tạo Google Doc đề kiểm tra trên Drive...');
       const res = await postAppsScript({
@@ -3958,7 +4096,11 @@ ${answerText || '(Chua co dap an, hay tu tao dap an dung va bieu diem)'}`;
         filename,
         html,
         folderId: QUIZ_DRIVE_FOLDER_ID,
+        schoolCode: currentContentSchoolCode,
+        grade: String(selectedGrade),
+        subject: String(selectedSubject),
       });
+      if (quizContextRef.current !== contextKey) return res.status === 'success' ? res : null;
       if (res.status === 'success') {
         setQuizDocStatus({ state: 'success', message: 'Đã tạo Google Doc đề kiểm tra', url: res.url || '' });
         showNotification('Đã tạo Google Doc đề kiểm tra: ' + (res.url || 'mở trong Drive'));
@@ -3966,6 +4108,7 @@ ${answerText || '(Chua co dap an, hay tu tao dap an dung va bieu diem)'}`;
       }
       throw new Error(res.message || 'Apps Script chưa tạo được Google Doc.');
     } catch (docError) {
+      if (quizContextRef.current !== contextKey) return null;
       setQuizDocStatus({ state: 'error', message: 'Chưa tạo được Google Doc: ' + docError.message, url: '' });
       showNotification('Đã lưu bài kiểm tra, nhưng chưa tạo được Google Doc: ' + docError.message, 'error');
       return null;
@@ -3973,26 +4116,42 @@ ${answerText || '(Chua co dap an, hay tu tao dap an dung va bieu diem)'}`;
   };
 
   const persistQuiz = async (savedContent, publishNowValue, publishAtValue, extraFields = {}) => {
+    if (!teacherCanUseScope(selectedGrade, selectedSubject)) {
+      showNotification('Tài khoản chưa được phân công khối/môn này.', 'error');
+      return;
+    }
     if (!canWriteCurrentSchoolYear) {
       showNotification(`Năm học ${activeSchoolYear} đang khóa nhập liệu. Admin mở khóa mới lưu/phát đề được.`, 'error');
       return;
     }
+    const request = quizRequestScopeRef.current.begin('save-quiz');
+    if (!request) return { ok: false };
     setIsSavingQuiz(true);
     try {
       const publishAtMs = publishAtValue ? parseVietnamDateTimeLocal(publishAtValue) : null;
-      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'lesson_quizzes', quizId), {
+      const quizPayload = {
         content: savedContent,
         isPublished: publishNowValue,
         publishAt: publishAtMs,
         updatedAt: Date.now(),
         authorId: user.uid,
+        schoolCode: currentContentSchoolCode,
         schoolYear: activeSchoolYear,
         grade: String(selectedGrade),
         subject: String(selectedSubject),
         lesson: String(selectedLesson),
         title: (extraFields.title ?? quizTitle).trim() || `${selectedSubject} ${selectedGrade} - ${getWeekDisplayName(selectedLesson)}`,
         ...extraFields
-      }, { merge: true });
+      };
+      let savedServerQuiz;
+      if (SERVER_QUIZ_ENABLED) {
+        const base = serverQuizDocumentsRef.current.get(quizId);
+        if (!base) throw new Error('Chờ tải đề từ máy chủ trước khi lưu.');
+        savedServerQuiz = await requestServerQuiz(!savedContent && extraFields.quizData === null ? 'clear' : 'publish', { quizId, quiz: { quizData, deliveryMode: quizDeliveryMode, scoreTarget: quizScoreTarget, ...quizPayload },
+          expectedVersion: base?.serverVersion ?? null, expectedLegacyUpdatedAt: base?.updatedAt ?? null });
+        serverQuizDocumentsRef.current.set(quizId, savedServerQuiz.quiz || { serverVersion: null, updatedAt: null });
+      } else await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'lesson_quizzes', quizId), quizPayload, { merge: true });
+      if (!quizRequestScopeRef.current.isCurrent(request)) return { ok: true };
       setQuizHtml(savedContent);
       setQuizTitle((extraFields.title ?? quizTitle).trim() || `${selectedSubject} ${selectedGrade} - ${getWeekDisplayName(selectedLesson)}`);
       setQuizPublishNow(publishNowValue);
@@ -4001,20 +4160,25 @@ ${answerText || '(Chua co dap an, hay tu tao dap an dung va bieu diem)'}`;
       if (Object.prototype.hasOwnProperty.call(extraFields, 'scoreTarget')) setQuizScoreTarget(extraFields.scoreTarget || null);
       if (quizEditorRef.current) quizEditorRef.current.setAttribute('data-loaded-id', quizId);
       setQuizSaveSuccess(true);
-      setTimeout(() => setQuizSaveSuccess(false), 3000);
+      const savedContext = quizContextRef.current;
+      setTimeout(() => { if (quizContextRef.current === savedContext) setQuizSaveSuccess(false); }, 3000);
       showNotification('Đã lưu bài kiểm tra thành công!');
       if (String(savedContent || '').trim()) {
         const quizDoc = await uploadQuizDocSnapshot(savedContent, publishNowValue, publishAtMs);
+        if (!quizRequestScopeRef.current.isCurrent(request)) return { ok: true };
         if (quizDoc?.url || quizDoc?.fileId) {
-          await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'lesson_quizzes', quizId), {
+          const archivePatch = {
             quizDocUrl: quizDoc.url || '',
             quizDocFileId: quizDoc.fileId || '',
             quizDocName: quizDoc.filename || '',
             quizDocUpdatedAt: Date.now()
-          });
+          };
+          if (SERVER_QUIZ_ENABLED) await requestServerQuiz('archive', { quizId, expectedVersion: savedServerQuiz.quiz.serverVersion, ...archivePatch });
+          else await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'lesson_quizzes', quizId), archivePatch);
         }
       }
-    } catch (e) { showNotification('Lỗi lưu bài kiểm tra: ' + e.message, 'error'); } finally { setIsSavingQuiz(false); }
+      return { ok: true };
+    } catch (e) { if (quizRequestScopeRef.current.isCurrent(request)) showNotification('Lỗi lưu bài kiểm tra: ' + e.message, 'error'); return { ok: false }; } finally { if (quizRequestScopeRef.current.finish(request)) setIsSavingQuiz(false); }
   };
 
   const openQuizPublishModal = async (savedContent) => {
@@ -4072,6 +4236,11 @@ ${answerText || '(Chua co dap an, hay tu tao dap an dung va bieu diem)'}`;
 
   const handleClearQuiz = async () => {
     if (!window.confirm('Xóa hết nội dung bài kiểm tra tuần này?')) return;
+    const contextKey = quizContextRef.current;
+    if (quizId && user) {
+      const saved = await persistQuiz('', false, '', { quizData: null, scoreTarget: null });
+      if (!saved?.ok || quizContextRef.current !== contextKey) return;
+    }
     if (quizEditorRef.current) {
       quizEditorRef.current.innerHTML = '';
       quizEditorRef.current.setAttribute('data-loaded-id', quizId || '');
@@ -4089,7 +4258,6 @@ ${answerText || '(Chua co dap an, hay tu tao dap an dung va bieu diem)'}`;
     setQuizDeliveryMode('manual');
     setQuizScoreTarget(null);
     setSelfQuizDraft(getDefaultSelfQuizDraft());
-    if (quizId && user) await persistQuiz('', false, '', { quizData: null, scoreTarget: null });
   };
 
   const handleToggleQuizPublish = async () => {
@@ -4133,8 +4301,11 @@ ${answerText || '(Chua co dap an, hay tu tao dap an dung va bieu diem)'}`;
       showNotification('Đã bỏ nội dung đề năm trước.');
       return;
     }
+    const contextKey = quizContextRef.current;
     try {
-      const prevSnap = await getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'lesson_quizzes', previousQuizId));
+      const previous = SERVER_QUIZ_ENABLED ? await requestServerQuiz('read', { quizId: previousQuizId }) : null;
+      const prevSnap = previous ? { exists: () => true, data: () => previous.quiz } : await getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'lesson_quizzes', previousQuizId));
+      if (quizContextRef.current !== contextKey) return;
       if (!prevSnap.exists() || !prevSnap.data().content) { showNotification(`Chưa có đề năm ${previousSchoolYear} cho bài này.`, 'error'); return; }
       const content = prevSnap.data().content || '';
       setShowQuizEditor(true);
@@ -4143,18 +4314,25 @@ ${answerText || '(Chua co dap an, hay tu tao dap an dung va bieu diem)'}`;
       setQuizAttachments(extractQuizAttachments(content));
       setIsPreviousQuizLoaded(true);
       showNotification(`Đã lấy đề năm ${previousSchoolYear}.`);
-    } catch { showNotification('Không lấy được đề năm trước.', 'error'); }
+    } catch { if (quizContextRef.current === contextKey) showNotification('Không lấy được đề năm trước.', 'error'); }
   };
 
   const savedQuizArchive = useMemo(() => {
     return [...allQuizzes]
+      .filter(item => isContentForCurrentCampus(item))
       .filter(item => String(item.grade || '') === String(selectedGrade || ''))
       .filter(item => String(item.subject || '') === String(selectedSubject || ''))
-      .filter(item => String(item.content || '').trim())
+      .filter(item => item.hasContent || String(item.content || '').trim())
       .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
-  }, [allQuizzes, selectedGrade, selectedSubject]);
+  }, [allQuizzes, selectedGrade, selectedSubject, isContentForCurrentCampus]);
 
-  const loadQuizFromArchive = (quiz = {}) => {
+  const loadQuizFromArchive = async (quiz = {}) => {
+    const contextKey = quizContextRef.current;
+    try {
+      if (SERVER_QUIZ_ENABLED) {
+        quiz = (await requestServerQuiz('read', { quizId: quiz.id })).quiz;
+        if (quizContextRef.current !== contextKey) return;
+      }
     const content = quiz.content || '';
     setQuizHtml(content);
     syncQuizPartsFromContent(content);
@@ -4162,20 +4340,22 @@ ${answerText || '(Chua co dap an, hay tu tao dap an dung va bieu diem)'}`;
     setQuizTitle(quiz.title || `${quiz.subject || selectedSubject} ${quiz.grade || selectedGrade} - ${getWeekDisplayName(quiz.lesson || selectedLesson)}`);
     setShowQuizArchive(false);
     showNotification('Đã đưa đề từ kho vào khung soạn.');
+    } catch (error) { if (quizContextRef.current === contextKey) showNotification(error.message, 'error'); }
   };
 
   const handleQuizFileUpload = async (e, selectedFiles = null) => {
     e?.preventDefault?.();
     const filesToUpload = selectedFiles || quizFiles;
     if (!quizEditorRef.current || !filesToUpload.length || !user) return;
+    if (!teacherCanUseScope(selectedGrade, selectedSubject)) { showNotification('Tài khoản chưa được phân công khối/môn này.', 'error'); return; }
     setQuizFiles(filesToUpload);
     setIsSubmitting(true); setUploadProgress({ current: 0, total: filesToUpload.length });
     try {
       const addedAttachments = [];
       for (let i = 0; i < filesToUpload.length; i++) {
         const file = filesToUpload[i]; setUploadProgress(prev => ({ ...prev, current: i + 1 }));
-        const base64Data = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result.split(',')[1]); r.onerror = rej; r.readAsDataURL(file); });
-        const up = await postAppsScript({ filename: `[KIEMTRA_${activeSchoolYear}_K${selectedGrade}_${selectedSubject}_B${selectedLesson}]_${file.name}`, mimeType: file.type, base64: base64Data, folderId: QUIZ_DRIVE_FOLDER_ID });
+        const base64Data = await readFileBase64(file);
+        const up = await postAppsScript({ filename: `[${currentContentSchoolCode}]_[KIEMTRA_${activeSchoolYear}_K${selectedGrade}_${selectedSubject}_B${selectedLesson}]_${file.name}`, mimeType: file.type, base64: base64Data, folderId: QUIZ_DRIVE_FOLDER_ID, schoolCode: currentContentSchoolCode, grade: String(selectedGrade), subject: String(selectedSubject) });
         if (up.status === 'success') {
           const title = (up.filename || file.name).replace(/\[.*?\]_/, '');
           const attachmentId = `quiz_attach_${Date.now()}_${i}`;
@@ -4204,7 +4384,7 @@ ${answerText || '(Chua co dap an, hay tu tao dap an dung va bieu diem)'}`;
 
   const handleEditorImageClick = (e, owner = 'lesson') => { if (e.target.tagName === 'IMG') { setSelectedImage(e.target); setSelectedImageOwner(owner); const rect = e.target.getBoundingClientRect(); const containerRect = e.currentTarget.parentElement.getBoundingClientRect(); setImagePopupPos({ x: rect.left - containerRect.left + (rect.width / 2), y: rect.top - containerRect.top - 40 }); } else { setSelectedImage(null); } };
 
-  const handleDeleteSelectedImage = async (e) => { e.preventDefault(); if (!selectedImage) return; const imgSrc = selectedImage.src; selectedImage.remove(); setSelectedImage(null); showNotification("?? x?a ?nh kh?i khung so?n th?o"); const driveIdMatch = imgSrc.match(/id=([^&]+)/); if (driveIdMatch && driveIdMatch[1]) { try { await postAppsScript({ action: 'rename', fileId: driveIdMatch[1] }); } catch { /* intentionally ignored */ } } selectedImageOwner === 'quiz' ? handleQuizEditorInput() : handleEditorInput(); };
+  const handleDeleteSelectedImage = async (e) => { e.preventDefault(); if (!selectedImage) return; const imgSrc = selectedImage.src; selectedImage.remove(); setSelectedImage(null); showNotification("?? x?a ?nh kh?i khung so?n th?o"); const driveIdMatch = imgSrc.match(/id=([^&]+)/); if (driveIdMatch && driveIdMatch[1]) { try { await postAppsScript({ action: 'rename', fileId: driveIdMatch[1], schoolCode: currentContentSchoolCode, grade: String(selectedGrade), subject: String(selectedSubject) }); } catch { /* intentionally ignored */ } } selectedImageOwner === 'quiz' ? handleQuizEditorInput() : handleEditorInput(); };
 
   const extractQuizTextFromImage = async (compressedBase64) => {
     if (IS_LOCAL_PREVIEW) return 'Nội dung đề được OCR từ ảnh dán vào.';
@@ -4334,8 +4514,9 @@ YEU CAU:
         }
         document.execCommand('insertHTML', false, `<img id="${imgId}" src="${compressedBase64}" style="opacity: 0.5; filter: blur(2px); transition: all 0.3s; max-width: 100%; cursor: pointer;" alt="Đang tải ảnh lên hệ thống..." />`);
         try {
-          const base64Data = compressedBase64.split(',')[1]; const prefix = targetType === 'news' ? '[TIN_TUC]' : (targetType === 'quiz' ? `[KIEMTRA_${activeSchoolYear}_K${selectedGrade}_${selectedSubject}_B${selectedLesson}]` : `[K${selectedGrade}_${selectedSubject}_B${selectedLesson}]`);
-          const res = await postAppsScript({ filename: `${prefix}_ẢnhDán_${Date.now()}.jpg`, mimeType: 'image/jpeg', base64: base64Data, folderId: targetType === 'quiz' ? QUIZ_DRIVE_FOLDER_ID : IMAGE_DRIVE_FOLDER_ID });
+          const base64Data = compressedBase64.split(',')[1]; const prefix = targetType === 'news' ? '[TIN_TUC]' : (targetType === 'quiz' ? `[${currentContentSchoolCode}]_[KIEMTRA_${activeSchoolYear}_K${selectedGrade}_${selectedSubject}_B${selectedLesson}]` : `[${currentContentSchoolCode}]_[K${selectedGrade}_${selectedSubject}_B${selectedLesson}]`);
+          const uploadScope = targetType === 'news' ? {} : { schoolCode: currentContentSchoolCode, grade: String(selectedGrade), subject: String(selectedSubject) };
+          const res = await postAppsScript({ filename: `${prefix}_ẢnhDán_${Date.now()}.jpg`, mimeType: 'image/jpeg', base64: base64Data, folderId: targetType === 'quiz' ? QUIZ_DRIVE_FOLDER_ID : IMAGE_DRIVE_FOLDER_ID, contentType: targetType === 'news' ? 'news' : `teacher-${targetType}`, ...uploadScope });
           if (res.status === 'success') { applyUploadedImageToEditor({ imgId, targetType, compressedBase64, res }); showNotification("Đã tải và hiển thị ảnh thành công!"); } else { applyUploadedImageToEditor({ imgId, targetType, compressedBase64, res: null }); showNotification("Chưa tải ảnh lên Drive được, ảnh vẫn được giữ trong bài.", "error"); }
         } catch { applyUploadedImageToEditor({ imgId, targetType, compressedBase64, res: null }); showNotification("Chưa tải ảnh lên Drive được, ảnh vẫn được giữ trong bài.", "error"); } finally { setIsPastingImage(false); }
       }; img.src = base64Local;
@@ -4359,30 +4540,34 @@ YEU CAU:
     e.preventDefault(); if (!user) return;
     if (uploadTab === 'manual') {
       if (manualFiles.length === 0) { showNotification("Vui lòng chọn ít nhất 1 file!", "error"); return; } setIsSubmitting(true); setUploadProgress({ current: 0, total: manualFiles.length });
+      if (!teacherCanUseScope(selectedGrade, selectedSubject)) { setIsSubmitting(false); showNotification('Tài khoản chưa được phân công khối/môn này.', 'error'); return; }
       for (let i = 0; i < manualFiles.length; i++) {
         const file = manualFiles[i]; setUploadProgress(prev => ({ ...prev, current: i + 1 })); if (file.size > 30 * 1024 * 1024) continue;
-        try { const base64Data = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result.split(',')[1]); r.onerror = rej; r.readAsDataURL(file); }); const payload = { filename: `[K${selectedGrade}_${selectedSubject}]_${file.name}`, mimeType: file.type, base64: base64Data, folderId: MASTER_DRIVE_FOLDER_ID }; await postAppsScript(payload); } catch { /* intentionally ignored */ }
+        try { const base64Data = await readFileBase64(file); const payload = { filename: `[${currentContentSchoolCode}]_[K${selectedGrade}_${selectedSubject}]_${file.name}`, mimeType: file.type, base64: base64Data, folderId: MASTER_DRIVE_FOLDER_ID, schoolCode: currentContentSchoolCode, grade: String(selectedGrade), subject: String(selectedSubject) }; await postAppsScript(payload); } catch { /* intentionally ignored */ }
       } setIsSubmitting(false); setManualFiles([]); setShowBulkUpload(false); fetchDriveData(); showNotification("Đã up toàn bộ file lên Kho Chung Drive thành công!");
     } else if (uploadTab === 'bylesson') {
+      if (!teacherCanUseScope(selectedGrade, selectedSubject)) { showNotification('Tài khoản chưa được phân công khối/môn này.', 'error'); return; }
       let tasks = []; Object.keys(lessonFilesMap).forEach(lesson => { lessonFilesMap[lesson].forEach(file => tasks.push({ lesson: String(lesson), file })); });
       if (tasks.length === 0) { showNotification("Vui lòng chọn file cho ít nhất 1 tuần!", "error"); return; } setIsSubmitting(true); setUploadProgress({ current: 0, total: tasks.length });
       for (let i = 0; i < tasks.length; i++) {
         const { lesson, file } = tasks[i]; setUploadProgress(prev => ({ ...prev, current: i + 1 })); if (file.size > 30 * 1024 * 1024) continue;
         try {
-          const base64Data = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result.split(',')[1]); r.onerror = rej; r.readAsDataURL(file); });
-          const res = await postAppsScript({ filename: `[K${selectedGrade}_${selectedSubject}_B${lesson}]_${file.name}`, mimeType: file.type, base64: base64Data, folderId: MASTER_DRIVE_FOLDER_ID });
-          if (res.status === 'success') { let fType = 'link'; const mime = file.type.toLowerCase(); if (mime.includes('pdf')) fType = 'pdf'; else if (mime.includes('presentation') || file.name.includes('.ppt')) fType = 'ppt'; else if (mime.includes('image')) fType = 'image'; const savedTitle = (res.filename || file.name).replace(/\[.*?\]_/, '').replace(/\.[^/.]+$/, ""); await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'materials'), { grade: String(selectedGrade), subject: String(selectedSubject), lesson: String(lesson), title: savedTitle, url: res.url, driveFileId: res.fileId, type: fType, createdAt: Date.now(), authorId: user.uid }); }
+          const base64Data = await readFileBase64(file);
+          const res = await postAppsScript({ filename: `[${currentContentSchoolCode}]_[K${selectedGrade}_${selectedSubject}_B${lesson}]_${file.name}`, mimeType: file.type, base64: base64Data, folderId: MASTER_DRIVE_FOLDER_ID, schoolCode: currentContentSchoolCode, grade: String(selectedGrade), subject: String(selectedSubject) });
+          if (res.status === 'success') { let fType = 'link'; const mime = file.type.toLowerCase(); if (mime.includes('pdf')) fType = 'pdf'; else if (mime.includes('presentation') || file.name.includes('.ppt')) fType = 'ppt'; else if (mime.includes('image')) fType = 'image'; const savedTitle = getDriveDisplayName(res.filename || file.name).replace(/\.[^/.]+$/, ""); await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'materials'), { studentSafe: true, schoolYear: activeSchoolYear, schoolCode: currentContentSchoolCode, grade: String(selectedGrade), subject: String(selectedSubject), lesson: String(lesson), title: savedTitle, url: res.url, driveFileId: res.fileId, type: fType, createdAt: Date.now(), authorId: user.uid }); }
         } catch { /* intentionally ignored */ }
       } setIsSubmitting(false); setLessonFilesMap({}); setShowBulkUpload(false); fetchDriveData(); showNotification("Đã up và TỰ ĐỘNG GHIM tất cả file thành công!");
     } else if (uploadTab === 'link') {
       if (!linkData.url) { showNotification("Vui lòng nhập đường dẫn link!", "error"); return; } setIsSubmitting(true);
-      try { const linkTitle = linkData.title.trim() || getDefaultLinkTitle(linkData.url); await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'materials'), { grade: String(selectedGrade), subject: String(selectedSubject), lesson: String(linkData.lesson), title: linkTitle, url: linkData.url, type: linkData.type, createdAt: Date.now(), authorId: user.uid }); showNotification(`Đã ghim link thành công vào Tuần ${linkData.lesson}!`); setLinkData({ title: '', url: '', lesson: linkData.lesson, type: 'pdf' }); setShowBulkUpload(false); } catch { /* intentionally ignored */ } finally { setIsSubmitting(false); }
+      if (!teacherCanUseScope(selectedGrade, selectedSubject)) { showNotification('Tài khoản chưa được phân công khối/môn này.', 'error'); setIsSubmitting(false); return; }
+      try { const linkTitle = linkData.title.trim() || getDefaultLinkTitle(linkData.url); await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'materials'), { studentSafe: true, schoolYear: activeSchoolYear, schoolCode: currentContentSchoolCode, grade: String(selectedGrade), subject: String(selectedSubject), lesson: String(linkData.lesson), title: linkTitle, url: linkData.url, type: linkData.type, createdAt: Date.now(), authorId: user.uid }); showNotification(`Đã ghim link thành công vào Tuần ${linkData.lesson}!`); setLinkData({ title: '', url: '', lesson: linkData.lesson, type: 'pdf' }); setShowBulkUpload(false); } catch { /* intentionally ignored */ } finally { setIsSubmitting(false); }
     }
   };
 
   const handleInlineLinkSubmit = async (e) => {
     e.preventDefault(); if (!user || !selectedGrade || !selectedSubject || !selectedLesson) return; if (!inlineLinkData.url) { showNotification("Vui lòng nhập đường dẫn link!", "error"); return; } setIsSubmitting(true);
-    try { const linkTitle = inlineLinkData.title.trim() || getDefaultLinkTitle(inlineLinkData.url); await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'materials'), { grade: String(selectedGrade), subject: String(selectedSubject), lesson: String(selectedLesson), title: linkTitle, url: inlineLinkData.url, type: inlineLinkData.type, createdAt: Date.now(), authorId: user.uid }); setInlineLinkData({ title: '', url: '', type: 'link' }); setShowInlineLink(false); showNotification(`Đã thêm link vào bài!`); } catch { showNotification("Lỗi thêm link", "error"); } finally { setIsSubmitting(false); }
+    if (!teacherCanUseScope(selectedGrade, selectedSubject)) { showNotification('Tài khoản chưa được phân công khối/môn này.', 'error'); setIsSubmitting(false); return; }
+    try { const linkTitle = inlineLinkData.title.trim() || getDefaultLinkTitle(inlineLinkData.url); await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'materials'), { studentSafe: true, schoolYear: activeSchoolYear, schoolCode: currentContentSchoolCode, grade: String(selectedGrade), subject: String(selectedSubject), lesson: String(selectedLesson), title: linkTitle, url: inlineLinkData.url, type: inlineLinkData.type, createdAt: Date.now(), authorId: user.uid }); setInlineLinkData({ title: '', url: '', type: 'link' }); setShowInlineLink(false); showNotification(`Đã thêm link vào bài!`); } catch { showNotification("Lỗi thêm link", "error"); } finally { setIsSubmitting(false); }
   };
 
   const sortedDriveFiles = useMemo(() => {
@@ -4492,7 +4677,7 @@ YEU CAU:
     } catch (e) { setAiError('L\u1ed7i k\u1ebft n\u1ed1i: ' + e.message); } finally { setIsAiLoading(false); }
   };
 
-  const formatAiText = (text) => { return String(text || '').replace(/\r\n/g, '\n').replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>').replace(/\n/g, '<br/>'); };
+  const formatAiText = (text) => formatSafeAiText(text);
 
   const appendAiToQuickQuiz = async () => {
     if (!aiResponse || !user || !selectedGrade || !selectedSubject || !selectedLesson) return;
@@ -4530,6 +4715,10 @@ YEU CAU:
       return;
     }
     const title = `Hỏi đáp nhanh - ${selectedSubject} ${selectedGrade} - ${getWeekDisplayName(selectedLesson)}`;
+    if (!teacherCanUseScope(selectedGrade, selectedSubject)) {
+      showNotification('Tài khoản chưa được phân công khối/môn này.', 'error');
+      return;
+    }
     setIsSavingQuiz(true);
     try {
       const materialPayload = {
@@ -4542,12 +4731,16 @@ YEU CAU:
         updatedAt: Date.now(),
         createdAt: Date.now(),
         authorId: user.uid,
+        schoolCode: currentContentSchoolCode,
         schoolYear: activeSchoolYear,
         grade: String(selectedGrade),
         subject: String(selectedSubject),
         lesson: String(selectedLesson)
       };
-      const materialRef = await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'materials'), materialPayload);
+      const materialRef = SERVER_QUIZ_ENABLED ? doc(collection(db, 'artifacts', appId, 'public', 'data', 'materials'))
+        : await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'materials'), materialPayload);
+      if (SERVER_QUIZ_ENABLED) await requestServerQuiz('publish', { kind: 'material', quizId: materialRef.id, expectedVersion: null,
+        quiz: { ...materialPayload, deliveryMode: 'auto', isPublished: true, publishAt: null, content: savedContent } });
       setShowAiModal(false);
       setAiResponse('');
       setViewingMaterial({ id: materialRef.id, ...materialPayload });
@@ -4569,8 +4762,8 @@ YEU CAU:
       if (quizEditorRef.current) {
         const nextQuestion = `${quizEditorRef.current.innerHTML.trim() ? `${quizEditorRef.current.innerHTML}<p><br/></p>` : ''}${parts.question}<p><br/></p>`;
         const nextAnswer = `${quizAnswerEditorRef.current?.innerHTML?.trim() ? `${quizAnswerEditorRef.current.innerHTML}<p><br/></p>` : ''}${parts.answer}`;
-        quizEditorRef.current.innerHTML = nextQuestion;
-        if (quizAnswerEditorRef.current) quizAnswerEditorRef.current.innerHTML = nextAnswer;
+        quizEditorRef.current.innerHTML = sanitizeHtml(nextQuestion);
+        if (quizAnswerEditorRef.current) quizAnswerEditorRef.current.innerHTML = sanitizeHtml(nextAnswer);
         const savedContent = composeQuizContent(nextQuestion, nextAnswer);
         setQuizQuestionHtml(nextQuestion);
         setQuizAnswerHtml(nextAnswer);
@@ -4595,7 +4788,7 @@ YEU CAU:
       const promptText = buildQuizAnswerPrompt(questionHtml, answerHtml);
       if (IS_LOCAL_PREVIEW) {
         const sample = 'DAP AN - BIEU DIEM<br/>Cau 1: A - 1 diem.<br/>Tong diem: 10 diem.';
-        if (quizAnswerEditorRef.current) quizAnswerEditorRef.current.innerHTML = sample;
+        if (quizAnswerEditorRef.current) quizAnswerEditorRef.current.innerHTML = sanitizeHtml(sample);
         setQuizAnswerHtml(sample);
         return composeQuizContent(questionHtml, sample);
       }
@@ -4607,7 +4800,7 @@ YEU CAU:
       const txt = extractAiText(data);
       if (!txt || !String(txt).trim()) throw new Error(getAiEmptyReason(data));
       const answerContent = formatAiText(txt);
-      if (quizAnswerEditorRef.current) quizAnswerEditorRef.current.innerHTML = answerContent;
+      if (quizAnswerEditorRef.current) quizAnswerEditorRef.current.innerHTML = sanitizeHtml(answerContent);
       setQuizAnswerHtml(answerContent);
       const nextContent = composeQuizContent(questionHtml, answerContent);
       setQuizHtml(nextContent);
@@ -4709,10 +4902,19 @@ Giáo viên có thể sửa prompt này trước khi bấm tạo câu hỏi.`;
     setSelfQuizDraft(prev => ({ ...prev, questions: prev.questions.filter(q => q.id !== questionId) }));
   };
   const handleSaveSelfQuiz = async () => {
+    if (!teacherCanUseScope(selectedGrade, selectedSubject)) {
+      const message = 'Tài khoản chưa được phân công khối/môn này.';
+      showNotification(message, 'error');
+      return { ok: false, message };
+    }
     if (!quizId || !user) {
       const message = 'Chưa thể lưu đề tự chấm. Thầy cô kiểm tra lại đăng nhập, khối, môn và tuần.';
       showNotification(message, 'error');
       return { ok: false, message };
+    }
+    if (!canWriteCurrentSchoolYear) {
+      const message = 'Năm học đang khóa nhập liệu. Chưa lưu đề.';
+      showNotification(message, 'error'); return { ok: false, message };
     }
     const savedContent = getCurrentQuizContent();
     const normalized = rebalanceSelfQuizPoints(normalizeSelfQuizDraft(selfQuizDraft), savedContent);
@@ -4731,17 +4933,31 @@ Giáo viên có thể sửa prompt này trước khi bấm tạo câu hỏi.`;
       showNotification(message, 'error');
       return { ok: false, message };
     }
+    const request = quizRequestScopeRef.current.begin('save-quiz');
+    if (!request) return { ok: false, message: 'Đang lưu đề. Thầy cô chờ hoàn tất.' };
+    setIsSavingQuiz(true);
     try {
-    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'lesson_quizzes', quizId), {
+    const quizPayload = {
       content: savedContent,
       quizData: normalized,
       updatedAt: Date.now(),
       authorId: user.uid,
       schoolYear: activeSchoolYear,
+      schoolCode: currentContentSchoolCode,
       grade: String(selectedGrade),
       subject: String(selectedSubject),
       lesson: String(selectedLesson)
-    }, { merge: true });
+    };
+      if (SERVER_QUIZ_ENABLED) {
+        const base = serverQuizDocumentsRef.current.get(quizId);
+        if (!base) throw new Error('Chờ tải đề từ máy chủ trước khi lưu.');
+        const saved = await requestServerQuiz('publish', { quizId, quiz: { ...quizPayload, deliveryMode: 'auto', isPublished: quizPublishNow,
+          publishAt: parseVietnamDateTimeLocal(quizPublishAt), title: quizTitle, scoreTarget: quizScoreTarget },
+          expectedVersion: base?.serverVersion ?? null, expectedLegacyUpdatedAt: base?.updatedAt ?? null });
+        serverQuizDocumentsRef.current.set(quizId, saved.quiz);
+      } else await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'lesson_quizzes', quizId), quizPayload, { merge: true });
+      if (!quizRequestScopeRef.current.isCurrent(request)) return { ok: false, message: 'Đã lưu đề, nhưng màn hình đã chuyển.' };
+      if (SERVER_QUIZ_ENABLED) setQuizDeliveryMode('auto');
       setQuizHtml(savedContent);
       setQuizData(normalized);
       setSelfQuizDraft(normalized);
@@ -4751,21 +4967,21 @@ Giáo viên có thể sửa prompt này trước khi bấm tạo câu hỏi.`;
     } catch (error) {
       console.error('Save self quiz failed:', error);
       const message = `Chưa lưu được đề tự chấm: ${error?.message || 'lỗi không xác định'}`;
-      showNotification(message, 'error');
+      if (quizRequestScopeRef.current.isCurrent(request)) showNotification(message, 'error');
       return { ok: false, message };
-    }
+    } finally { if (quizRequestScopeRef.current.finish(request)) setIsSavingQuiz(false); }
   };
 
   const getLessonOfficialText = useCallback((lesson) => {
     if (String(lesson) === String(selectedLesson) && contentEditableRef.current) { return (contentEditableRef.current.innerText || '').trim(); }
-    const found = allNotes.find(n => String(n.grade) === String(selectedGrade) && String(n.subject) === String(selectedSubject) && String(n.lesson) === String(lesson)); return stripHtmlToText(found?.content || '');
-  }, [selectedLesson, selectedGrade, selectedSubject, allNotes]);
+    const found = allNotes.find(n => isContentForCurrentCampus(n) && String(n.grade) === String(selectedGrade) && String(n.subject) === String(selectedSubject) && String(n.lesson) === String(lesson)); return stripHtmlToText(found?.content || '');
+  }, [selectedLesson, selectedGrade, selectedSubject, allNotes, isContentForCurrentCampus]);
 
   const buildGeminiProPrompt = useCallback(() => {
     const lessons = (aiSelectedLessons.length ? aiSelectedLessons : [Number(selectedLesson || 1)]).map(Number).filter(Boolean).sort((a, b) => a - b);
     const lessonBlocks = lessons.map(lesson => {
       const officialText = getLessonOfficialText(lesson) || '(Chưa có nội dung bài giảng chính thức.)';
-      const materials = allMaterials.filter(m => String(m.grade) === String(selectedGrade) && String(m.subject) === String(selectedSubject) && String(m.lesson) === String(lesson)).map((m, idx) => `${idx + 1}. ${m.title}\nLink: ${m.url || ''}`).join('\n\n') || '(Không có tài liệu đính kèm.)';
+      const materials = allMaterials.filter(m => isContentForCurrentCampus(m) && String(m.grade) === String(selectedGrade) && String(m.subject) === String(selectedSubject) && String(m.lesson) === String(lesson)).map((m, idx) => `${idx + 1}. ${m.title}\nLink: ${m.url || ''}`).join('\n\n') || '(Không có tài liệu đính kèm.)';
       return `BÀI ${lesson}\n\nNỘI DUNG BÀI GIẢNG:\n${officialText}\n\nTÀI LIỆU ĐÍNH KÈM:\n${materials}`;
     }).join('\n\n==============================\n\n');
     return `Ban la giao vien chuyen mon. Hay tao cau hoi dua tren noi dung sau:
@@ -4784,7 +5000,7 @@ NGUYEN TAC:
 
 DU LIEU BAI HOC:
 ${lessonBlocks}`;
-  }, [aiSelectedLessons, selectedLesson, selectedGrade, selectedSubject, allMaterials, aiPrompt, getFormulaFormatInstruction, getLessonOfficialText]);
+  }, [aiSelectedLessons, selectedLesson, selectedGrade, selectedSubject, allMaterials, aiPrompt, getFormulaFormatInstruction, getLessonOfficialText, isContentForCurrentCampus]);
 
   const buildAiLessonSourceText = useCallback(() => {
     const lessons = (aiSelectedLessons.length ? aiSelectedLessons : [Number(selectedLesson || 1)]).map(Number).filter(Boolean).sort((a, b) => a - b);
@@ -4884,35 +5100,35 @@ ${lessonBlocks}`;
     return text;
   };
 
-  const getSelfQuizCorrectCount = (result = null) => {
+  const getSelfQuizCorrectCount = useCallback((result = null) => {
     const answers = Array.isArray(result?.answers) ? result.answers : [];
     if (answers.length) return answers.filter(answer => answer.isCorrect).length;
     return Number(result?.score || 0);
-  };
+  }, []);
 
-  const getSelfQuizQuestionCount = (result = null) => {
+  const getSelfQuizQuestionCount = useCallback((result = null) => {
     const answers = Array.isArray(result?.answers) ? result.answers : [];
     return answers.length || Number(result?.total || 0) || 0;
-  };
+  }, []);
 
-  const getSelfQuizTotalPoint = () => {
+  const getSelfQuizTotalPoint = useCallback(() => {
     const quizTotal = (activeSelfQuiz?.questions || []).reduce((sum, q) => sum + (Number(q.points) || 0), 0);
     if (quizTotal > 0) return quizTotal;
     return inferMultipleChoiceTotalPoints(quizHtml || quizQuestionHtml) || 4;
-  };
+  }, [activeSelfQuiz, quizHtml, quizQuestionHtml]);
 
-  const getSelfQuizPointPerQuestion = (result = null) => {
+  const getSelfQuizPointPerQuestion = useCallback((result = null) => {
     const questionCount = getSelfQuizQuestionCount(result) || activeSelfQuizQuestionCount;
     return questionCount ? getSelfQuizTotalPoint() / questionCount : 0;
-  };
+  }, [getSelfQuizQuestionCount, activeSelfQuizQuestionCount, getSelfQuizTotalPoint]);
 
-  const getSelfQuizScorePoint = (result = null) => {
+  const getSelfQuizScorePoint = useCallback((result = null) => {
     if (!result) return 0;
     const answers = Array.isArray(result.answers) ? result.answers : [];
     if (answers.length) return getSelfQuizCorrectCount(result) * getSelfQuizPointPerQuestion(result);
     const score = Number(result.score);
     return Number.isFinite(score) ? score : 0;
-  };
+  }, [getSelfQuizCorrectCount, getSelfQuizPointPerQuestion]);
 
   const getSelfQuizAnswerPoint = (answer = {}, result = null) => answer.isCorrect ? getSelfQuizPointPerQuestion(result) : 0;
 
@@ -4960,36 +5176,6 @@ ${lessonBlocks}`;
 
   const normalizeNameKey = (name = '') => removeAccents(String(name || '').toLowerCase()).replace(/[^a-z0-9]/g, '');
 
-  const findScorebookRowIndexForStudent = useCallback((studentRecord = {}, grade = selectedGrade) => {
-    const rows = getScorebookStudentsForGrade(grade);
-    const recordId = String(studentRecord.studentId || studentRecord.id || '').trim();
-    const recordCode = String(studentRecord.studentAccessCode || studentRecord.accessCode || '').trim().toUpperCase();
-    const recordName = normalizeNameKey(studentRecord.studentName || studentRecord.fullName || '');
-    return rows.findIndex(student => {
-      const studentId = String(student.id || '').trim();
-      const studentCode = String(student.accessCode || student.studentAccessCode || '').trim().toUpperCase();
-      const studentName = normalizeNameKey(student.fullName || student.studentName || '');
-      return (recordId && studentId && recordId === studentId)
-        || (recordCode && studentCode && recordCode === studentCode)
-        || (recordName && studentName && recordName === studentName);
-    });
-  }, [getScorebookStudentsForGrade, selectedGrade]);
-
-  const findScorebookStudentsByAttemptKey = useCallback((studentKey = '', grade = selectedGrade) => {
-    const key = String(studentKey || '').trim();
-    if (!key) return [];
-    const keyUpper = key.toUpperCase();
-    const keyName = normalizeNameKey(key);
-    return getScorebookStudentsForGrade(grade).filter(student => {
-      const studentId = String(student.id || '').trim();
-      const studentCode = String(student.accessCode || student.studentAccessCode || '').trim().toUpperCase();
-      const studentName = normalizeNameKey(student.fullName || student.studentName || '');
-      return (studentId && studentId === key)
-        || (studentCode && studentCode === keyUpper)
-        || (studentName && studentName === keyName);
-    });
-  }, [getScorebookStudentsForGrade, selectedGrade]);
-
   const normalizeQuizScoreForScorebook = useCallback((score, maxScore = 10) => {
     const scoreNumber = parseScoreNumber(score);
     const maxNumber = parseScoreNumber(maxScore) || 10;
@@ -4997,45 +5183,31 @@ ${lessonBlocks}`;
     return normalizeScoreInput(maxNumber === 10 ? scoreNumber : (scoreNumber / maxNumber) * 10);
   }, []);
 
-  const writeQuizScoreToScorebook = useCallback(async ({ target = quizScoreTarget, studentRecord = {}, score, maxScore = 10, overwriteExisting = false } = {}) => {
-    if (!user || !canWriteCurrentSchoolYear || !target?.semester || target.pageIndex === undefined || target.scoreIndex === undefined) return false;
+  const writeQuizScoreToScorebook = useCallback(async ({ target = quizScoreTarget, studentRecord = {}, score,
+    maxScore = 10, overwriteExisting = false, attemptKind = 'quiz_results' } = {}) => {
+    if (!target?.semester || target.pageIndex === undefined || target.scoreIndex === undefined) return { status: 'noTarget' };
+    if (!user || !canWriteCurrentSchoolYear) return { status: 'failed', message: 'Chưa có quyền lưu điểm.' };
     const grade = String(target.grade || studentRecord.grade || selectedGrade || '');
-    const rowIndex = findScorebookRowIndexForStudent(studentRecord, grade);
-    const nextScore = normalizeQuizScoreForScorebook(score, maxScore);
-    if (!grade || rowIndex < 0 || !nextScore) return false;
-    const scorebookDocId = getScorebookDocIdForGrade(grade);
-    const scoreKey = getQuickScoreKey(target.semester, target.pageIndex, rowIndex, target.scoreIndex);
-    const ref = doc(db, 'artifacts', appId, 'public', 'data', 'scorebooks', scorebookDocId);
+    const schoolCode = normalizeSchoolCode(target.schoolCode || studentRecord.schoolCode || currentContentSchoolCode) || DEFAULT_SCHOOL_CODE;
+    const student = getScorebookStudentsForGrade(grade, schoolCode).find(item => recordBelongsToStudent(studentRecord, item));
+    const scoreValue = normalizeQuizScoreForScorebook(score, maxScore);
+    if (!student || scoreValue === null || scoreValue === '') return { status: 'needsReview', message: 'Chưa xác định được học sinh hoặc điểm.' };
     try {
-      const snap = await getDoc(ref);
-      const data = snap.exists() ? (snap.data() || {}) : {};
-      const currentEdits = data.edits && typeof data.edits === 'object' ? data.edits : {};
-      if (!overwriteExisting && String(currentEdits[scoreKey] || '').trim()) return false;
-      const nextEdits = { ...currentEdits, [scoreKey]: nextScore };
-      await setDoc(ref, {
-        grade,
-        schoolYear: activeSchoolYear || '',
-        sourceFile: SCOREBOOK_SOURCE_FILE,
-        edits: nextEdits,
-        scoreSources: { [scoreKey]: { source: 'quiz', updatedAt: Date.now() } },
-        updatedAt: Date.now(),
-        authorId: user.uid
-      }, { merge: true });
-      if (scorebookDocId === quickScorebookDocId) {
-        setQuickScorebookEdits(prev => ({ ...(prev || {}), [scoreKey]: nextScore }));
-        setQuickScoreSources(prev => ({ ...(prev || {}), [scoreKey]: { source: 'quiz', updatedAt: Date.now() } }));
-      }
-      return true;
-    } catch {
-      return false;
-    }
-  }, [user, canWriteCurrentSchoolYear, quizScoreTarget, selectedGrade, findScorebookRowIndexForStudent, normalizeQuizScoreForScorebook, getScorebookDocIdForGrade, getQuickScoreKey, activeSchoolYear, quickScorebookDocId]);
+      const written = await syncQuizScore({ documentId: getScorebookDocIdForGrade(grade, schoolCode),
+        metadata: { grade, schoolYear: activeSchoolYear || '', schoolCode, sourceFile: SCOREBOOK_SOURCE_FILE, authorId: user.uid },
+        key: studentEditKey('custom:' + target.semester + 'Score:' + target.pageIndex + ':r0:s' + target.scoreIndex, student),
+        score: scoreValue, attempt: { id: studentRecord.id, quizId: studentRecord.quizId, kind: attemptKind }, overwriteExisting });
+      return { status: written ? 'written' : 'existing' };
+    } catch (error) { return { status: 'failed', message: error.message }; }
+  }, [user, canWriteCurrentSchoolYear, quizScoreTarget, selectedGrade, currentContentSchoolCode, getScorebookStudentsForGrade,
+    normalizeQuizScoreForScorebook, getScorebookDocIdForGrade, activeSchoolYear]);
 
   const getCurrentQuizScoreTargets = useCallback((records = []) => {
     const candidates = [
       quizScoreTarget,
       ...records.map(record => record?.scoreTarget),
       ...allQuizzes
+        .filter(isContentForCurrentCampus)
         .filter(q => String(q.grade) === String(selectedGrade))
         .filter(q => String(q.subject) === String(selectedSubject))
         .filter(q => String(q.lesson) === String(selectedLesson))
@@ -5052,82 +5224,13 @@ ${lessonBlocks}`;
         seen.add(key);
         return true;
       });
-  }, [quizScoreTarget, allQuizzes, selectedGrade, selectedSubject, selectedLesson, activeSchoolYear]);
-
-  const clearQuizScoresFromScorebook = useCallback(async ({ target = quizScoreTarget, targets = null, records = [] } = {}) => {
-    if (!user || !canWriteCurrentSchoolYear) return false;
-    const activeTargets = (Array.isArray(targets) && targets.length ? targets : [target])
-      .filter(item => item?.semester && item.pageIndex !== undefined && item.scoreIndex !== undefined);
-    if (!activeTargets.length || !records.length) return false;
-    const groups = new Map();
-    activeTargets.forEach(item => {
-      const grade = String(item.grade || selectedGrade || '');
-      if (!grade) return;
-      const scorebookDocId = getScorebookDocIdForGrade(grade);
-      const keys = records.flatMap(record => {
-        const rowIndex = findScorebookRowIndexForStudent(record, grade);
-        if (rowIndex < 0) return [];
-        const scoreKey = getQuickScoreKey(item.semester, item.pageIndex, rowIndex, item.scoreIndex);
-        const legacyScoreKey = scoreKey.replace(/^custom:/, '');
-        return scoreKey === legacyScoreKey ? [scoreKey] : [scoreKey, legacyScoreKey];
-      }).filter(Boolean);
-      if (!keys.length) return;
-      const current = groups.get(scorebookDocId) || { grade, keys: new Set() };
-      keys.forEach(key => current.keys.add(key));
-      groups.set(scorebookDocId, current);
-    });
-    if (!groups.size) return false;
-    let cleared = false;
-    for (const [scorebookDocId, group] of groups.entries()) {
-      const keys = [...group.keys];
-      const ref = doc(db, 'artifacts', appId, 'public', 'data', 'scorebooks', scorebookDocId);
-      try {
-        const snap = await getDoc(ref);
-        if (snap.exists()) {
-          const updates = keys.reduce((acc, key) => ({ ...acc, [`edits.${key}`]: deleteField(), [`scoreSources.${key}`]: deleteField() }), {});
-          await updateDoc(ref, updates);
-        }
-        await setDoc(ref, {
-          grade: group.grade,
-          schoolYear: activeSchoolYear || '',
-          sourceFile: SCOREBOOK_SOURCE_FILE,
-          updatedAt: Date.now(),
-          authorId: user.uid
-        }, { merge: true });
-        if (scorebookDocId === quickScorebookDocId) {
-          setQuickScorebookEdits(prev => {
-            const next = { ...(prev || {}) };
-            keys.forEach(key => { delete next[key]; });
-            return next;
-          });
-          setQuickScoreSources(prev => {
-            const next = { ...(prev || {}) };
-            keys.forEach(key => { delete next[key]; });
-            return next;
-          });
-        }
-        setQuickInputDrafts(prev => {
-          const next = { ...(prev || {}) };
-          keys.forEach(key => { delete next[key]; });
-          return next;
-        });
-        cleared = true;
-      } catch {
-        // Continue clearing the remaining grade documents; stale score cleanup should be best-effort.
-      }
-    }
-    return cleared;
-  }, [user, canWriteCurrentSchoolYear, quizScoreTarget, selectedGrade, findScorebookRowIndexForStudent, getScorebookDocIdForGrade, getQuickScoreKey, activeSchoolYear, quickScorebookDocId]);
+  }, [quizScoreTarget, allQuizzes, selectedGrade, selectedSubject, selectedLesson, activeSchoolYear, isContentForCurrentCampus]);
 
   const findSelfQuizResultForSubmission = (submission = {}) => {
-    const nameKey = normalizeNameKey(submission.studentName);
-    const codeKey = String(submission.studentAccessCode || '').trim().toUpperCase();
     const candidates = currentQuizResults
       .filter(result => {
         if (String(result.quizId || '') !== String(submission.quizId || quizId || '')) return false;
-        const sameCode = codeKey && String(result.studentAccessCode || '').trim().toUpperCase() === codeKey;
-        const sameName = nameKey && normalizeNameKey(result.studentName) === nameKey;
-        return sameCode || sameName;
+        return recordBelongsToStudent(result, { accessCode: submission.studentAccessCode, id: submission.studentId });
       })
       .sort((a, b) => (b.submittedAt || 0) - (a.submittedAt || 0));
     return candidates[0] || null;
@@ -5141,12 +5244,19 @@ ${lessonBlocks}`;
       if (!options.silent) showNotification('Bài nộp này chưa có file để AI chấm.', 'error');
       return;
     }
+    if (!isContentForCurrentCampus(submission) || !teacherCanUseScope(submission.grade, submission.subject)) {
+      if (!options.silent) showNotification('Tài khoản không có quyền chấm bài này.', 'error');
+      return;
+    }
+    const request = quizRequestScopeRef.current.begin('ai-grading');
+    if (!request) return;
+    const context = { schoolYear: submission.schoolYear || activeSchoolYear, schoolCode: normalizeSchoolCode(submission.schoolCode) || DEFAULT_SCHOOL_CODE,
+      grade: submission.grade || selectedGrade, subject: submission.subject || selectedSubject, lesson: submission.lesson || selectedLesson };
+    let runId;
     setGradingSubmissionId(submission.id);
     try {
-      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'handwritten_submissions', submission.id), {
-        aiStatus: 'grading',
-        aiStartedAt: Date.now()
-      }, { merge: true });
+      runId = await updateAiGrading({ id: submission.id, fileId: submission.fileId, context,
+        patch: { aiStatus: 'grading', aiStartedAt: Date.now() } });
       const selfQuizResult = findSelfQuizResultForSubmission(submission);
       const gradingPrompt = buildHandwrittenGradingPrompt(submission, selfQuizResult);
       const { data: res, modelId: gradingModelId } = await runWithGeminiModelFallback(async (modelId) => {
@@ -5157,6 +5267,7 @@ ${lessonBlocks}`;
           subject: String(submission.subject || selectedSubject || ''),
           lesson: String(submission.lesson || selectedLesson || ''),
           schoolYear: String(submission.schoolYear || activeSchoolYear || currentSchoolYear || ''),
+          schoolCode: normalizeSchoolCode(submission.schoolCode) || DEFAULT_SCHOOL_CODE,
           prompt: gradingPrompt
         };
         try {
@@ -5169,32 +5280,23 @@ ${lessonBlocks}`;
       });
       const aiText = res.result || res.text || '';
       const parsed = extractAiScore(aiText);
-      const submissionDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'handwritten_submissions', submission.id);
-      const latestSubmissionSnap = await getDoc(submissionDocRef);
-      const latestSubmission = latestSubmissionSnap.exists() ? latestSubmissionSnap.data() : null;
-      if (latestSubmission && latestSubmission.fileId && latestSubmission.fileId !== submission.fileId) return;
-      await setDoc(submissionDocRef, {
-        aiStatus: 'graded',
-        status: 'ai_graded',
-        aiScore: parsed.score,
-        aiMaxScore: parsed.maxScore,
-        aiComment: aiText,
-        aiModel: res.model || gradingModelId,
-        aiGradedAt: Date.now()
-      }, { merge: true });
-      if (!options.silent) showNotification('AI đã chấm nháp, giáo viên xem lại rồi lưu điểm.');
+      await updateAiGrading({ id: submission.id, fileId: submission.fileId, context, runId, patch: {
+        aiStatus: 'graded', status: 'ai_graded', aiScore: parsed.score, aiMaxScore: parsed.maxScore,
+        aiComment: aiText, aiModel: res.model || gradingModelId, aiGradedAt: Date.now()
+      } });
+      if (!options.silent && quizRequestScopeRef.current.isCurrent(request)) showNotification('AI đã chấm nháp, giáo viên xem lại rồi lưu điểm.');
     } catch (error) {
       const cleanMessage = normalizeServiceErrorMessage(error.message || String(error));
-      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'handwritten_submissions', submission.id), {
-        aiStatus: 'error',
-        aiError: cleanMessage,
-        aiFailedAt: Date.now()
-      }, { merge: true }).catch(() => {});
-      if (!options.silent) showNotification('AI chua cham duoc: ' + cleanMessage, 'error');
+      if (runId) await updateAiGrading({ id: submission.id, fileId: submission.fileId, context, runId,
+        patch: { aiStatus: 'error', aiError: cleanMessage, aiFailedAt: Date.now() } }).catch(() => undefined);
+      if (!options.silent && quizRequestScopeRef.current.isCurrent(request)) showNotification('AI chua cham duoc: ' + cleanMessage, 'error');
     } finally {
-      setGradingSubmissionId('');
+      if (quizRequestScopeRef.current.finish(request)) setGradingSubmissionId('');
     }
   };
+
+  const runAiGradingForSubmissionRef = useRef(runAiGradingForSubmission);
+  runAiGradingForSubmissionRef.current = runAiGradingForSubmission;
 
   const handleGradeNextSubmission = async () => {
     const next = [...currentHandwrittenSubmissions]
@@ -5212,33 +5314,36 @@ ${lessonBlocks}`;
   };
 
   const saveTeacherGradeForSubmission = async (submission) => {
-    if (!submission?.id) return;
-    if (!canWriteCurrentSchoolYear) {
-      showNotification(`Năm học ${activeSchoolYear} đang khóa nhập liệu. Admin mở khóa mới lưu điểm được.`, 'error');
-      return;
-    }
+    if (!submission?.id || !user || !canWriteCurrentSchoolYear) return;
+    const request = quizRequestScopeRef.current.begin('review-' + submission.id);
+    if (!request) return;
     const draft = submissionGradeDrafts[submission.id] || {};
-    const teacherScore = String(draft.teacherScore ?? submission.teacherScore ?? submission.aiScore ?? '').trim();
-    const teacherMaxScore = String(draft.teacherMaxScore ?? submission.teacherMaxScore ?? submission.aiMaxScore ?? '10').trim();
-    const teacherComment = String(draft.teacherComment ?? submission.teacherComment ?? '').trim();
-    if (!teacherScore) {
-      showNotification('Thầy cô nhập điểm trước khi lưu.', 'error');
-      return;
-    }
+    const review = {
+      teacherScore: String(draft.teacherScore ?? submission.teacherScore ?? submission.aiScore ?? '').trim(),
+      teacherMaxScore: String(draft.teacherMaxScore ?? submission.teacherMaxScore ?? submission.aiMaxScore ?? '10').trim(),
+      teacherComment: String(draft.teacherComment ?? submission.teacherComment ?? '').trim()
+    };
+    const { id, ...expected } = submission;
+    const schoolCode = normalizeSchoolCode(submission.schoolCode || currentContentSchoolCode) || DEFAULT_SCHOOL_CODE;
+    const grade = String(submission.grade || selectedGrade);
+    const target = submission.scoreTarget || quizScoreTarget;
+    const student = getScorebookStudentsForGrade(grade, schoolCode).find(item => recordBelongsToStudent(submission, item));
+    const scorebook = target?.semester && target.pageIndex !== undefined && target.scoreIndex !== undefined && student ? {
+      documentId: getScorebookDocIdForGrade(grade, schoolCode),
+      metadata: { grade, schoolCode, schoolYear: activeSchoolYear, sourceFile: SCOREBOOK_SOURCE_FILE, authorId: user.uid },
+      key: studentEditKey('custom:' + target.semester + 'Score:' + target.pageIndex + ':r0:s' + target.scoreIndex, student)
+    } : null;
     try {
-      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'handwritten_submissions', submission.id), {
-        status: 'teacher_reviewed',
-        teacherScore,
-        teacherMaxScore,
-        teacherComment,
-        reviewedAt: Date.now(),
-        reviewedBy: user?.uid || ''
-      }, { merge: true });
-      await writeQuizScoreToScorebook({ studentRecord: submission, score: teacherScore, maxScore: teacherMaxScore, overwriteExisting: true });
-      showNotification('Đã lưu điểm giáo viên.');
+      const result = await reviewHandwrittenSubmission({ id, expected, review, scorebook, context: {
+        grade, schoolCode, schoolYear: activeSchoolYear, subject: submission.subject || selectedSubject,
+        lesson: submission.lesson || selectedLesson, authorId: user.uid
+      } });
+      if (!quizRequestScopeRef.current.isCurrent(request)) return;
+      showNotification(result.status === 'written' ? 'Đã lưu bài chấm và điểm vào sổ.'
+        : result.status === 'noTarget' ? 'Đã lưu bài chấm.' : 'Đã lưu bài chấm. Điểm sửa tay hoặc điểm cũ trong sổ được giữ để đối chiếu.');
     } catch (error) {
-      showNotification('Chưa lưu được điểm: ' + error.message, 'error');
-    }
+      if (quizRequestScopeRef.current.isCurrent(request)) showNotification('Chưa lưu được điểm: ' + error.message, 'error');
+    } finally { quizRequestScopeRef.current.finish(request); }
   };
 
   const hasHandwrittenScore = (submission = {}) => {
@@ -5252,17 +5357,8 @@ ${lessonBlocks}`;
   };
 
   const sendStudentTestResults = useCallback(async (student) => {
-    const studentId = String(student?.id || '').trim();
-    const studentCode = String(student?.accessCode || student?.studentAccessCode || '').trim().toUpperCase();
-    const studentNameKey = normalizeNameKey(student?.fullName || student?.studentName || '');
-    const matchesStudent = (record = {}) => {
-      const recordId = String(record.studentId || '').trim();
-      const recordCode = String(record.studentAccessCode || record.accessCode || '').trim().toUpperCase();
-      const recordNameKey = normalizeNameKey(record.studentName || record.fullName || '');
-      return (studentId && recordId && studentId === recordId)
-        || (studentCode && recordCode && studentCode === recordCode)
-        || (studentNameKey && recordNameKey && studentNameKey === recordNameKey);
-    };
+    const matchesStudent = record => recordBelongsToStudent(record, student)
+      && (!record.schoolCode || normalizeSchoolCode(record.schoolCode) === getStudentSchoolCode(student));
     const matchesYear = (record = {}) => !record.schoolYear || String(record.schoolYear) === String(activeSchoolYear || '');
     const getResultTime = (record = {}) => Number(record.reviewedAt || record.submittedAt || record.createdAt || record.updatedAt || 0);
     const records = [
@@ -5365,23 +5461,12 @@ ${lessonBlocks}`;
       studentSubmitSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
       return;
     }
-    if (submissionFile.size > 25 * 1024 * 1024) {
-      setSubmissionStatus('File qua lon! (Duoi 25MB).');
-      return;
-    }
+    let mimeType;
+    try { mimeType = studentUploadMime(submissionFile); }
+    catch (error) { setSubmissionStatus(error.message); return; }
 
-    const currentStudentAccessCode = String(activeStudentProfile?.accessCode || currentStudent?.accessCode || '').trim().toUpperCase();
-    const currentStudentNameKey = normalizeNameKey(activeStudentProfile?.fullName || currentStudent?.fullName || studentName);
     const matchingManualSubmissions = currentHandwrittenSubmissions
-      .filter(submission => {
-        const submissionCode = String(submission.studentAccessCode || '').trim().toUpperCase();
-        const submissionNameKey = normalizeNameKey(submission.studentName);
-        if (currentStudentAccessCode) {
-          return (submissionCode && currentStudentAccessCode === submissionCode)
-            || (!submissionCode && currentStudentNameKey && submissionNameKey && currentStudentNameKey === submissionNameKey);
-        }
-        return currentStudentNameKey && submissionNameKey && currentStudentNameKey === submissionNameKey;
-      })
+      .filter(submission => recordBelongsToStudent(submission, activeStudentProfile || currentStudent || {}))
       .sort((a, b) => (b.submittedAt || 0) - (a.submittedAt || 0));
     const existingManualSubmission = matchingManualSubmissions[0] || null;
 
@@ -5391,85 +5476,95 @@ ${lessonBlocks}`;
       return;
     }
 
+    const request = quizRequestScopeRef.current.begin('essay');
+    if (!request) return;
     setIsSubmittingWork(true);
     setSubmissionStatus('');
     try {
-      const reader = new FileReader();
-      reader.onload = async () => {
-        try {
-          const cleanName = studentName.trim();
-          const payload = {
-            filename: `[${currentSchoolYear}]_[K${selectedGrade}]_[${selectedSubject}]_[B${selectedLesson}]_${cleanName}_${submissionFile.name}`,
-            mimeType: submissionFile.type,
-            base64: reader.result.split(',')[1],
-            folderId: STUDENT_SUBMISSION_FOLDER_ID
-          };
-          const res = await postAppsScript(payload);
-          if (res.status === 'success') {
-            const submissionPayload = {
-              quizId: quizId || '',
-              schoolYear: currentSchoolYear,
-              grade: String(selectedGrade || ''),
-              subject: String(selectedSubject || ''),
-              lesson: String(selectedLesson || ''),
-              scoreTarget: quizScoreTarget || null,
-              studentId: activeStudentProfile?.id || currentStudent?.id || '',
-              studentAccessCode: activeStudentProfile?.accessCode || currentStudent?.accessCode || '',
-              studentName: cleanName,
-              fileName: res.filename || submissionFile.name,
-              fileUrl: res.url || '',
-              fileId: res.fileId || '',
-              mimeType: submissionFile.type || '',
-              fileSize: submissionFile.size || 0,
-              status: 'queued',
-              aiStatus: 'queued',
-              submittedAt: Date.now(),
-              submittedBy: user?.uid || ''
-            };
-            let savedSubmissionId = '';
-            const submissionRef = await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'handwritten_submissions'), submissionPayload);
-            savedSubmissionId = submissionRef.id;
-            setSubmissionStatus('Đã gửi bài. Chờ giáo viên chấm bài.');
-            setSubmissionFile(null);
-            setStudentName(activeStudentProfile?.fullName || '');
-            runAiGradingForSubmission({ ...submissionPayload, id: savedSubmissionId }, { silent: true });
-          } else {
-            setSubmissionStatus('Loi tai len');
-          }
-        } catch {
-          setSubmissionStatus('Loi ket noi');
-        } finally {
-          setIsSubmittingWork(false);
-        }
+    const cleanName = studentName.trim();
+    const base64 = await readFileBase64(submissionFile);
+    if (!quizRequestScopeRef.current.isCurrent(request)) return;
+    const payload = {
+      filename: `[${currentContentSchoolCode}]_[${currentSchoolYear}]_[K${selectedGrade}]_[${selectedSubject}]_[B${selectedLesson}]_${cleanName}_${submissionFile.name}`,
+      mimeType,
+      base64,
+      folderId: STUDENT_SUBMISSION_FOLDER_ID
+    };
+    const res = await postAppsScript(payload);
+    if (!quizRequestScopeRef.current.isCurrent(request)) return;
+    if (res.status === 'success') {
+      const submissionPayload = {
+        quizId: quizId || '',
+        schoolYear: currentSchoolYear,
+        schoolCode: currentContentSchoolCode,
+        grade: String(selectedGrade || ''),
+        subject: String(selectedSubject || ''),
+        lesson: String(selectedLesson || ''),
+        scoreTarget: quizScoreTarget || null,
+        studentId: activeStudentProfile?.id || currentStudent?.id || '',
+        studentAccessCode: activeStudentProfile?.accessCode || currentStudent?.accessCode || '',
+        studentName: cleanName,
+        fileName: res.filename || submissionFile.name,
+        fileUrl: res.url || '',
+        fileId: res.fileId || '',
+        uploadReceipt: res.uploadReceipt || '',
+        mimeType,
+        fileSize: submissionFile.size || 0,
+        status: 'queued',
+        aiStatus: 'queued',
+        submittedAt: Date.now(),
+        submittedBy: user?.uid || ''
       };
-      reader.readAsDataURL(submissionFile);
-    } catch {
-      setSubmissionStatus('Loi he thong');
-      setIsSubmittingWork(false);
+      const submissionRef = SCOPED_AUTH_ENABLED
+        ? await requestPrivateApi('data', 'submitEssay', { submission: submissionPayload, requestId: globalThis.crypto.randomUUID() }, { signal: request.signal })
+        : await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'handwritten_submissions'), submissionPayload);
+      if (!quizRequestScopeRef.current.isCurrent(request)) return;
+      setSubmissionStatus('Đã gửi bài. Chờ giáo viên chấm bài.');
+      setSubmissionFile(null);
+      setStudentName(activeStudentProfile?.fullName || '');
+      if (!SCOPED_AUTH_ENABLED || role !== 'student') void runAiGradingForSubmission({ ...submissionPayload, id: submissionRef.id }, { silent: true });
+    } else {
+      setSubmissionStatus(res.message || 'Chưa tải được bài làm.');
+    }
+    } catch (error) {
+      if (quizRequestScopeRef.current.isCurrent(request)) setSubmissionStatus(error.message || 'Chưa gửi được bài làm.');
+    } finally {
+      if (quizRequestScopeRef.current.finish(request)) setIsSubmittingWork(false);
     }
   };
 
   const handleTeacherPlanUpload = async () => {
     const uploadSubject = planSubject || selectedSubject;
     if (!planFile || !uploadSubject) return; if (planFile.size > 25 * 1024 * 1024) { setPlanStatus('❌ File quá lớn!'); return; }
+    if (!teacherCanUseScope(selectedGrade, uploadSubject)) { setPlanStatus('❌ Tài khoản chưa được phân công khối/môn này.'); return; }
+    const request = quizRequestScopeRef.current.begin('teacher-plan');
+    if (!request) return;
     setIsUploadingPlan(true); setPlanStatus('');
     try {
-      const reader = new FileReader();
-      reader.onload = async () => {
-        try { const payload = { filename: `[KHBD_${currentSchoolYear}]_[K${selectedGrade}]_[${uploadSubject}]_${planFile.name}`, mimeType: planFile.type, base64: reader.result.split(',')[1], folderId: TEACHER_PLAN_FOLDER_ID }; const res = await postAppsScript(payload); if (res.status === 'success') { setPlanStatus('🎉 Đã nộp Kế hoạch Bài dạy thành công!'); setPlanFile(null); setPlanSubject(uploadSubject); } else setPlanStatus('❌ Lỗi tải lên'); } catch { setPlanStatus('❌ Lỗi kết nối'); } finally { setIsUploadingPlan(false); }
-      }; reader.readAsDataURL(planFile);
-    } catch { setPlanStatus('❌ Lỗi hệ thống'); setIsUploadingPlan(false); }
+      const base64 = await readFileBase64(planFile);
+      if (!quizRequestScopeRef.current.isCurrent(request)) return;
+      const payload = { filename: `[${currentContentSchoolCode}]_[KHBD_${currentSchoolYear}]_[K${selectedGrade}]_[${uploadSubject}]_${planFile.name}`, mimeType: planFile.type, base64, folderId: TEACHER_PLAN_FOLDER_ID, schoolCode: currentContentSchoolCode, grade: String(selectedGrade), subject: String(uploadSubject) };
+      const res = await postAppsScript(payload);
+      if (!quizRequestScopeRef.current.isCurrent(request)) return;
+      if (res.status === 'success') { setPlanStatus('🎉 Đã nộp Kế hoạch Bài dạy thành công!'); setPlanFile(null); setPlanSubject(uploadSubject); }
+      else setPlanStatus(`❌ ${res.message || 'Lỗi tải lên'}`);
+    } catch (error) {
+      if (quizRequestScopeRef.current.isCurrent(request)) setPlanStatus(`❌ ${error.message || 'Lỗi kết nối'}`);
+    } finally {
+      if (quizRequestScopeRef.current.finish(request)) setIsUploadingPlan(false);
+    }
   };
 
   const uploadInlineMaterials = async (files = [], { successMessage = 'Đã up và ghim file vào bài thành công!' } = {}) => {
     if (!user) return 0;
+    if (!teacherCanUseScope(selectedGrade, selectedSubject)) { showNotification('Tài khoản chưa được phân công khối/môn này.', 'error'); return 0; }
     const filesToUpload = Array.from(files || []).filter(Boolean);
     if (filesToUpload.length === 0) { showNotification("Vui lòng chọn file!", "error"); return 0; }
     setIsSubmitting(true); setUploadProgress({ current: 0, total: filesToUpload.length });
     let successCount = 0;
     for (let i = 0; i < filesToUpload.length; i++) {
         const file = filesToUpload[i]; setUploadProgress(prev => ({ ...prev, current: i + 1 })); if (file.size > 30 * 1024 * 1024) continue;
-        try { const safeName = file.name || `AnhDan_${Date.now()}_${i + 1}.jpg`; const base64Data = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result.split(',')[1]); r.onerror = rej; r.readAsDataURL(file); }); const payload = { filename: `[K${selectedGrade}_${selectedSubject}_B${selectedLesson}]_${safeName}`, mimeType: file.type || 'image/jpeg', base64: base64Data, folderId: MASTER_DRIVE_FOLDER_ID }; const res = await postAppsScript(payload); if (res.status === 'success') { let fType = 'link'; const mime = String(file.type || '').toLowerCase(); if (mime.includes('pdf')) fType = 'pdf'; else if (mime.includes('presentation') || safeName.includes('.ppt')) fType = 'ppt'; else if (mime.includes('image')) fType = 'image'; const savedTitle = (res.filename || safeName).replace(/\[.*?\]_/, '').replace(/\.[^/.]+$/, ""); await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'materials'), { grade: String(selectedGrade), subject: String(selectedSubject), lesson: String(selectedLesson), title: savedTitle, url: res.url, driveFileId: res.fileId, type: fType, createdAt: Date.now(), authorId: user.uid }); successCount++; } } catch { /* intentionally ignored */ }
+        try { const safeName = file.name || `AnhDan_${Date.now()}_${i + 1}.jpg`; const base64Data = await readFileBase64(file); const payload = { filename: `[${currentContentSchoolCode}]_[K${selectedGrade}_${selectedSubject}_B${selectedLesson}]_${safeName}`, mimeType: file.type || 'image/jpeg', base64: base64Data, folderId: MASTER_DRIVE_FOLDER_ID, schoolCode: currentContentSchoolCode, grade: String(selectedGrade), subject: String(selectedSubject) }; const res = await postAppsScript(payload); if (res.status === 'success') { let fType = 'link'; const mime = String(file.type || '').toLowerCase(); if (mime.includes('pdf')) fType = 'pdf'; else if (mime.includes('presentation') || safeName.includes('.ppt')) fType = 'ppt'; else if (mime.includes('image')) fType = 'image'; const savedTitle = getDriveDisplayName(res.filename || safeName).replace(/\.[^/.]+$/, ""); await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'materials'), { studentSafe: true, schoolYear: activeSchoolYear, schoolCode: currentContentSchoolCode, grade: String(selectedGrade), subject: String(selectedSubject), lesson: String(selectedLesson), title: savedTitle, url: res.url, driveFileId: res.fileId, type: fType, createdAt: Date.now(), authorId: user.uid }); successCount++; } } catch { /* intentionally ignored */ }
     }
     setIsSubmitting(false);
     if (successCount > 0) { setShowInlineLink(false); showNotification(successMessage); }
@@ -5491,12 +5586,14 @@ ${lessonBlocks}`;
     await uploadInlineMaterials(imageFiles, { successMessage: 'Đã dán ảnh, tải lên Drive và ghim vào bài.' });
   };
 
-  const handleDeleteMaterial = async (id) => { if (role !== 'teacher') return; setConfirmModal({ show: true, message: 'Gỡ tài liệu này khỏi bài học?', onConfirm: async () => { await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'materials', id)); showNotification("Đã gỡ tài liệu"); } }); };
+  const handleDeleteMaterial = async (id) => { if (role !== 'teacher') return; setConfirmModal({ show: true, message: 'Gỡ tài liệu này khỏi bài học?', onConfirm: async () => { const material = allMaterials.find(item => item.id === id); if (!material || !isContentForCurrentCampus(material) || !teacherCanUseScope(material.grade, material.subject)) { showNotification('Tài khoản không có quyền gỡ tài liệu này.', 'error'); return; } await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'materials', id)); showNotification("Đã gỡ tài liệu"); } }); };
   const resetNavigationWithClean = () => { setSelectedGrade(null); setSelectedSubject(null); setSelectedLesson(null); setViewingMaterial(null); setShowCommonLibraryWorkspace(false); setTeacherTab('giang_day'); setPlanSubject(''); setIsTextbookExpanded(window.innerWidth >= 640); };
   const handleCopyLink = async (url) => { try { await navigator.clipboard.writeText(url); showNotification("Đã copy liên kết tải tài liệu"); } catch { const t = document.createElement("textarea"); t.value = url; document.body.appendChild(t); t.select(); try { document.execCommand('copy'); showNotification("Đã copy liên kết tải tài liệu"); } catch { /* intentionally ignored */ } document.body.removeChild(t); } };
   const renderIcon = (type) => { switch(type) { case 'quick_quiz': return <ListChecks className="w-6 h-6 text-emerald-600" />; case 'pdf': return <FileText className="w-6 h-6 text-red-500" />; case 'ppt': return <MonitorPlay className="w-6 h-6 text-orange-500" />; case 'image': return <ImageIcon className="w-6 h-6 text-green-500" />; default: return <LinkIcon className="w-6 h-6 text-blue-500" />; } };
 
   const handleSubmitQuickMaterialQuiz = async () => {
+    if (isSubmittingQuickMaterial) return;
+    if (role === 'student' && (activeStudentIsReadOnly || !canWriteCurrentSchoolYear || !studentCanAccessCurrentGradeQuiz)) { setQuickMaterialWarning('Em chưa có quyền nộp bài ở năm học hoặc khối này.'); return; }
     if (!viewingQuickQuizData || !currentQuickMaterialAttemptData || !viewingMaterial?.id || !user) return;
     const submitStudentName = (activeStudentProfile?.fullName || currentStudent?.fullName || studentQuizName || '').trim();
     if (!submitStudentName) {
@@ -5508,8 +5605,19 @@ ${lessonBlocks}`;
       setQuickMaterialWarning(`Còn ${unanswered.length} câu chưa chọn đáp án.`);
       return;
     }
+    const request = quizRequestScopeRef.current.begin('quick-quiz');
+    if (!request) return;
     setIsSubmittingQuickMaterial(true);
     try {
+      if (SERVER_QUIZ_ENABLED && role === 'student') {
+        if (!quickServer.response?.attemptId || quickServer.id !== viewingMaterial.id) throw new Error('Mở lại bài để nhận lượt làm hợp lệ.');
+        const response = await requestServerQuiz('submit', { kind: 'material', attemptId: quickServer.response.attemptId, answers: quickMaterialAnswers }, { signal: request.signal });
+        if (!quizRequestScopeRef.current.isCurrent(request)) return;
+        setQuickMaterialResult(response.result);
+        setQuickMaterialWarning(response.result.needsRetake ? 'Chưa đạt mức yêu cầu. Em làm lại với lượt câu hỏi mới.' : '');
+        if (response.result.needsRetake) { setQuickMaterialAnswers({}); quickServer.reload(); }
+        return;
+      }
       const result = gradeSelfQuizSubmission({
         quizData: currentQuickMaterialAttemptData,
         answersByQuestionId: quickMaterialAnswers,
@@ -5524,22 +5632,25 @@ ${lessonBlocks}`;
       result.materialId = viewingMaterial.id;
       result.studentId = activeStudentProfile?.id || currentStudent?.id || '';
       result.studentAccessCode = activeStudentProfile?.accessCode || currentStudent?.accessCode || '';
-      const passingPercent = Number(viewingQuickQuizData.passingPercent || 80);
+      result.schoolCode = currentContentSchoolCode;
+      const passingPercent = quizPassingPercent(viewingQuickQuizData.passingPercent);
+      result.passingPercent = passingPercent;
       if (result.percent < passingPercent) {
         setQuickMaterialResult(null);
         setQuickMaterialAnswers({});
         setQuickMaterialAttemptSeed(prev => prev + 1);
-        setQuickMaterialWarning(`Em đạt ${formatPointScore(result.score)}/${formatPointScore(result.total || 10)}, chưa đủ 8/10 để qua. Hệ thống đã đổi bộ câu hỏi và đáp án cho lượt làm lại.`);
+        setQuickMaterialWarning(`Em đạt ${formatPointScore(result.score)}/${formatPointScore(result.total || 10)}, chưa đủ ${passingPercent}% để qua. Hệ thống đã đổi bộ câu hỏi và đáp án cho lượt làm lại.`);
         return;
       }
       await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'quick_quiz_results'), result);
+      if (!quizRequestScopeRef.current.isCurrent(request)) return;
       setQuickMaterialResult(result);
       setQuickMaterialWarning('');
       showNotification('Đã hoàn thành hỏi đáp nhanh.');
     } catch (error) {
-      setQuickMaterialWarning('Chưa lưu được bài làm: ' + (error?.message || String(error)));
+      if (quizRequestScopeRef.current.isCurrent(request)) setQuickMaterialWarning('Chưa lưu được bài làm: ' + (error?.message || String(error)));
     } finally {
-      setIsSubmittingQuickMaterial(false);
+      if (quizRequestScopeRef.current.finish(request)) setIsSubmittingQuickMaterial(false);
     }
   };
 
@@ -5556,11 +5667,20 @@ ${lessonBlocks}`;
     return styles[index % styles.length];
   };
 
-  const currentMaterialsFiltered = useMemo(() => { return allMaterials.filter(m => String(m.grade) === String(selectedGrade) && String(m.subject) === String(selectedSubject) && String(m.lesson) === String(selectedLesson)); }, [allMaterials, selectedGrade, selectedSubject, selectedLesson]);
+  const currentMaterialsFiltered = useMemo(() => {
+    if (!currentTeacherHasScope) return [];
+    return allMaterials.filter(m => isContentForCurrentCampus(m)
+      && String(m.grade) === String(selectedGrade)
+      && String(m.subject) === String(selectedSubject)
+      && String(m.lesson) === String(selectedLesson));
+  }, [allMaterials, selectedGrade, selectedSubject, selectedLesson, isContentForCurrentCampus, currentTeacherHasScope]);
   const sortedCurrentMaterials = useMemo(() => [...currentMaterialsFiltered].sort((a, b) => (a.title || '').localeCompare(b.title || '', 'vi')), [currentMaterialsFiltered]);
   const currentQuickQuizMaterials = useMemo(() => sortedCurrentMaterials.filter(m => m.type === 'quick_quiz'), [sortedCurrentMaterials]);
   const sortedCurrentStudyMaterials = useMemo(() => sortedCurrentMaterials.filter(m => m.type !== 'quick_quiz'), [sortedCurrentMaterials]);
+  const quickServer = useQuickQuizSession(viewingMaterial, role, user, showNotification);
+  useEffect(() => { if (quickServer.response?.result) setQuickMaterialResult(quickServer.response.result); }, [quickServer.response]);
   const viewingQuickQuizData = useMemo(() => {
+    if (SERVER_QUIZ_ENABLED) return role === 'student' ? quickServer.response?.quizData || null : quickServer.response?.quiz?.quizData || null;
     if (viewingMaterial?.type !== 'quick_quiz' || !viewingMaterial?.quizData?.questions?.length) return null;
     return {
       ...viewingMaterial.quizData,
@@ -5569,8 +5689,11 @@ ${lessonBlocks}`;
       shuffleQuestions: true,
       shuffleOptions: true
     };
-  }, [viewingMaterial?.id, viewingMaterial?.type, viewingMaterial?.quizData]);
-  const viewingQuickQuizQuestions = useMemo(() => buildSelfQuizQuestionsForStudent(viewingQuickQuizData), [viewingQuickQuizData, viewingMaterial?.id, quickMaterialAttemptSeed]);
+  }, [viewingMaterial?.type, viewingMaterial?.quizData, quickServer.response, role]);
+  const viewingQuickQuizQuestions = useMemo(() => SERVER_QUIZ_ENABLED && role === 'student'
+    ? (viewingQuickQuizData?.questions || []).map(question => ({ ...question, displayOptions: question.options })) : buildSelfQuizQuestionsForStudent(
+    viewingQuickQuizData ? { ...viewingQuickQuizData, attemptSeed: quickMaterialAttemptSeed } : null
+  ), [viewingQuickQuizData, quickMaterialAttemptSeed, role]);
   const currentQuickMaterialAttemptData = useMemo(() => viewingQuickQuizData ? {
     ...viewingQuickQuizData,
     questions: viewingQuickQuizQuestions.map((question) => { const nextQuestion = { ...question }; delete nextQuestion.displayOptions; return nextQuestion; })
@@ -5582,7 +5705,8 @@ ${lessonBlocks}`;
     setQuickMaterialResult(null);
     setQuickMaterialWarning('');
     setQuickMaterialAttemptSeed(prev => prev + 1);
-    setStudentQuizName(activeStudentProfile?.fullName || currentStudent?.fullName || studentQuizName || '');
+    const profileName = activeStudentProfile?.fullName || currentStudent?.fullName || '';
+    setStudentQuizName(currentName => profileName || currentName || '');
   }, [viewingMaterial?.id, viewingMaterial?.type, activeStudentProfile?.fullName, currentStudent?.fullName]);
   const openMaterial = (material) => {
     if (material?.type === 'quick_quiz') {
@@ -5593,14 +5717,17 @@ ${lessonBlocks}`;
     else setViewingMaterial(material);
   };
   const isQuizVisibleForStudents = useCallback((quiz) => {
-    if (!quiz?.content) return false;
+    if (!quiz?.content && !quiz?.hasContent) return false;
     const publishAtMs = parseVietnamDateTimeLocal(quiz.publishAt);
     return !!quiz.isPublished || (!!publishAtMs && nowMs >= publishAtMs);
   }, [nowMs]);
   const currentQuizVisibleForStudents = useMemo(() => isQuizVisibleForStudents({ content: quizHtml, isPublished: quizPublishNow, publishAt: quizPublishAt }), [quizHtml, quizPublishNow, quizPublishAt, isQuizVisibleForStudents]);
   const shuffledSelfQuizQuestions = useMemo(() => {
-    return buildSelfQuizQuestionsForStudent(activeSelfQuiz);
-  }, [activeSelfQuiz, quizId, studentSelfQuizAttemptSeed]);
+    if (SERVER_QUIZ_ENABLED && role === 'student') return (activeSelfQuiz?.questions || []).map(question => ({ ...question, displayOptions: question.options }));
+    return buildSelfQuizQuestionsForStudent(
+      activeSelfQuiz ? { ...activeSelfQuiz, attemptSeed: studentSelfQuizAttemptSeed } : null
+    );
+  }, [activeSelfQuiz, studentSelfQuizAttemptSeed, role]);
   const currentSelfQuizAttemptData = useMemo(() => activeSelfQuiz ? {
     ...activeSelfQuiz,
     questions: shuffledSelfQuizQuestions.map((question) => { const nextQuestion = { ...question }; delete nextQuestion.displayOptions; return nextQuestion; })
@@ -5610,38 +5737,26 @@ ${lessonBlocks}`;
   }, [allQuizResults, quizId, activeSchoolYear, selectedGrade, selectedSubject, selectedLesson]);
   const currentHandwrittenSubmissions = useMemo(() => {
     return allHandwrittenSubmissions
+      .filter(item => isContentForCurrentCampus(item))
       .filter(item => String(item.schoolYear || '') === String(activeSchoolYear || ''))
       .filter(item => String(item.grade || '') === String(selectedGrade || ''))
       .filter(item => String(item.subject || '') === String(selectedSubject || ''))
       .filter(item => String(item.lesson || '') === String(selectedLesson || ''))
       .sort((a, b) => (b.submittedAt || 0) - (a.submittedAt || 0));
-  }, [allHandwrittenSubmissions, activeSchoolYear, selectedGrade, selectedSubject, selectedLesson]);
+  }, [allHandwrittenSubmissions, activeSchoolYear, selectedGrade, selectedSubject, selectedLesson, isContentForCurrentCampus]);
   const selectedHandwrittenSubmission = currentHandwrittenSubmissions[handwrittenViewerIndex] || null;
-  const activeStudentWorkKeys = useMemo(() => {
-    const code = String(activeStudentProfile?.accessCode || currentStudent?.accessCode || '').trim().toUpperCase();
-    const names = [
-      activeStudentProfile?.fullName,
-      currentStudent?.fullName
-    ].map(name => normalizeNameKey(name)).filter(Boolean);
-    return { code, names: [...new Set(names)] };
-  }, [activeStudentProfile, currentStudent]);
-  const isCurrentStudentRecord = useCallback((record = {}) => {
-    const recordCode = String(record.studentAccessCode || record.accessCode || '').trim().toUpperCase();
-    const recordName = normalizeNameKey(record.studentName || record.fullName || '');
-    if (activeStudentWorkKeys.code) {
-      if (recordCode) return activeStudentWorkKeys.code === recordCode;
-      return !!recordName && activeStudentWorkKeys.names.includes(recordName);
-    }
-    return !!recordName && activeStudentWorkKeys.names.includes(recordName);
-  }, [activeStudentWorkKeys]);
+  const isCurrentStudentRecord = useCallback(record => recordBelongsToStudent(record, activeStudentProfile || currentStudent || {}), [activeStudentProfile, currentStudent]);
+
   useEffect(() => {
-    if (role !== 'student' || !user || !currentLessonProgressDocId || !selectedGrade || !selectedSubject || !selectedLesson || !currentSchoolYear) return undefined;
+    if (role !== 'student' || activeStudentIsReadOnly || !canWriteCurrentSchoolYear || !user || !currentLessonProgressDocId || !selectedGrade || !selectedSubject || !selectedLesson || !currentSchoolYear) return undefined;
     if (!activeStudentProfile && !currentStudent) return undefined;
     const saveProgressTick = async () => {
       if (document.hidden) return;
       try {
-        await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'lesson_progress', currentLessonProgressDocId), {
+        if (SCOPED_AUTH_ENABLED) await requestPrivateApi('data', 'progress', { subject: String(selectedSubject), lesson: String(selectedLesson), tickId: globalThis.crypto.randomUUID() });
+        else await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'lesson_progress', currentLessonProgressDocId), {
           elapsedMs: increment(30000),
+          schoolCode: currentContentSchoolCode,
           updatedAt: Date.now(),
           schoolYear: currentSchoolYear,
           grade: String(selectedGrade),
@@ -5658,13 +5773,14 @@ ${lessonBlocks}`;
     };
     const timer = window.setInterval(saveProgressTick, 30000);
     return () => window.clearInterval(timer);
-  }, [role, user, currentLessonProgressDocId, selectedGrade, selectedSubject, selectedLesson, currentSchoolYear, activeStudentProfile, currentStudent]);
+  }, [activeStudentIsReadOnly, canWriteCurrentSchoolYear, currentContentSchoolCode, role, user, currentLessonProgressDocId, selectedGrade, selectedSubject, selectedLesson, currentSchoolYear, activeStudentProfile, currentStudent]);
   const lessonJourneyMap = useMemo(() => {
     const map = {};
     if (role !== 'student' || !selectedGrade || !selectedSubject) return map;
     Array.from({ length: TOTAL_LESSONS }, (_, i) => String(i + 1)).forEach(lesson => {
       const lessonQuickMaterials = allMaterials.filter(m =>
         m.type === 'quick_quiz' &&
+        isContentForCurrentCampus(m) &&
         String(m.schoolYear || currentSchoolYear || '') === String(currentSchoolYear || '') &&
         String(m.grade) === String(selectedGrade) &&
         String(m.subject) === String(selectedSubject) &&
@@ -5686,7 +5802,8 @@ ${lessonBlocks}`;
           String(result.subject) === String(selectedSubject) &&
           String(result.lesson) === lesson;
         const sameMaterial = !result.materialId || lessonQuickMaterials.some(m => String(m.id) === String(result.materialId));
-        return sameLesson && sameMaterial && isCurrentStudentRecord(result) && Number(result.percent || 0) >= 80;
+        const material = lessonQuickMaterials.find(item => String(item.id) === String(result.materialId));
+        return sameLesson && sameMaterial && isCurrentStudentRecord(result) && isQuickQuizResultPassing(result, material);
       });
       const percent = hasQuickQuiz
         ? Math.round((theoryRatio * 50) + (quickPassed ? 50 : 0))
@@ -5700,7 +5817,7 @@ ${lessonBlocks}`;
       };
     });
     return map;
-  }, [role, selectedGrade, selectedSubject, allMaterials, allLessonProgress, allQuickQuizResults, currentSchoolYear, isCurrentStudentRecord]);
+  }, [role, selectedGrade, selectedSubject, allMaterials, allLessonProgress, allQuickQuizResults, currentSchoolYear, isCurrentStudentRecord, isContentForCurrentCampus]);
   const schoolYearJourneyPercent = useMemo(() => {
     if (role !== 'student') return 0;
     const lessonPercents = Array.from({ length: TOTAL_LESSONS }, (_, i) => {
@@ -5712,12 +5829,13 @@ ${lessonBlocks}`;
     return Math.round(lessonPercents.reduce((sum, value) => sum + value, 0) / lessonPercents.length);
   }, [role, lessonJourneyMap]);
   const studentSavedQuizResult = useMemo(() => {
+    if (SERVER_QUIZ_ENABLED && serverQuizSession?.quizId === quizId) return serverQuizSession.result || null;
     return [...currentQuizResults].filter(isCurrentStudentRecord).sort((a, b) => (b.submittedAt || 0) - (a.submittedAt || 0))[0] || null;
-  }, [currentQuizResults, isCurrentStudentRecord]);
+  }, [currentQuizResults, isCurrentStudentRecord, serverQuizSession, quizId]);
   const studentSavedHandwrittenSubmission = useMemo(() => {
     return [...currentHandwrittenSubmissions].filter(isCurrentStudentRecord).sort((a, b) => (b.submittedAt || 0) - (a.submittedAt || 0))[0] || null;
   }, [currentHandwrittenSubmissions, isCurrentStudentRecord]);
-  const isStudentQuizResultPassing = (result) => !activeSelfQuizPassingPercent || Number(result?.percent || 0) >= activeSelfQuizPassingPercent;
+  const isStudentQuizResultPassing = (result) => result?.serverGraded ? result.completed === true : !activeSelfQuizPassingPercent || Number(result?.percent || 0) >= activeSelfQuizPassingPercent;
   const studentSelfQuizSubmitted = (!!studentSavedQuizResult && isStudentQuizResultPassing(studentSavedQuizResult)) || (!!studentQuizResult && isStudentQuizResultPassing(studentQuizResult));
   const studentEssaySubmitted = !!studentSavedHandwrittenSubmission;
   const studentReviewQuizResult = studentSavedQuizResult || studentQuizResult;
@@ -5726,7 +5844,7 @@ ${lessonBlocks}`;
   const formatPointScore = formatVietnamPointScore;
   const studentWorkReviewScore = useMemo(() => {
     const quizScore = getSelfQuizScorePoint(studentReviewQuizResult);
-    const hasQuizScore = !!studentReviewQuizResult;
+    const hasQuizScore = !!studentReviewQuizResult && studentReviewQuizResult.score !== undefined;
     const essayScore = Number((studentSavedHandwrittenSubmission?.teacherScore ?? studentSavedHandwrittenSubmission?.aiScore) || 0);
     const hasEssayScore = (studentSavedHandwrittenSubmission?.teacherScore ?? studentSavedHandwrittenSubmission?.aiScore) !== undefined
       && (studentSavedHandwrittenSubmission?.teacherScore ?? studentSavedHandwrittenSubmission?.aiScore) !== null
@@ -5739,26 +5857,19 @@ ${lessonBlocks}`;
       totalScore: quizScore + essayScore,
       hasTotalScore: hasQuizScore || hasEssayScore
     };
-  }, [studentReviewQuizResult, studentSavedHandwrittenSubmission]);
+  }, [studentReviewQuizResult, studentSavedHandwrittenSubmission, getSelfQuizScorePoint]);
 
   const lockStudentEssayForLeaving = async () => {
     if (!user || !quizId || !studentEssayText || studentEssaySubmitted || !canWriteCurrentSchoolYear) return;
     const lockName = (activeStudentProfile?.fullName || currentStudent?.fullName || studentName || '').trim();
-    const currentStudentAccessCode = String(activeStudentProfile?.accessCode || currentStudent?.accessCode || '').trim().toUpperCase();
-    const currentStudentNameKey = normalizeNameKey(lockName);
-    const alreadyLockedOrSubmitted = currentHandwrittenSubmissions.some(submission => {
-      const submissionCode = String(submission.studentAccessCode || '').trim().toUpperCase();
-      const submissionNameKey = normalizeNameKey(submission.studentName);
-      if (currentStudentAccessCode) {
-        return (submissionCode && currentStudentAccessCode === submissionCode)
-          || (!submissionCode && currentStudentNameKey && submissionNameKey && currentStudentNameKey === submissionNameKey);
-      }
-      return currentStudentNameKey && submissionNameKey && currentStudentNameKey === submissionNameKey;
-    });
+    const alreadyLockedOrSubmitted = currentHandwrittenSubmissions.some(submission => recordBelongsToStudent(submission, activeStudentProfile || currentStudent || {}));
     if (alreadyLockedOrSubmitted) return;
+    const request = quizRequestScopeRef.current.begin('essay');
+    if (!request) return;
     const submissionPayload = {
       quizId: quizId || '',
       schoolYear: currentSchoolYear,
+      schoolCode: currentContentSchoolCode,
       grade: String(selectedGrade || ''),
       subject: String(selectedSubject || ''),
       lesson: String(selectedLesson || ''),
@@ -5779,13 +5890,19 @@ ${lessonBlocks}`;
       submittedBy: user?.uid || ''
     };
     try {
-      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'handwritten_submissions'), submissionPayload);
+      if (SCOPED_AUTH_ENABLED) await requestPrivateApi('data', 'submitEssay', { submission: submissionPayload, requestId: globalThis.crypto.randomUUID() }, { signal: request.signal });
+      else await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'handwritten_submissions'), submissionPayload);
+      if (!quizRequestScopeRef.current.isCurrent(request)) return;
       setSubmissionFile(null);
       setSubmissionStatus('Em đã thoát ra ngoài nên bài tự luận đã bị khóa. Hãy báo giáo viên nếu cần mở lại.');
     } catch {
-      setSubmissionStatus('Chưa khóa được bài khi thoát ra ngoài. Em báo giáo viên kiểm tra lại.');
+      if (quizRequestScopeRef.current.isCurrent(request)) setSubmissionStatus('Chưa khóa được bài khi thoát ra ngoài. Em báo giáo viên kiểm tra lại.');
+    } finally {
+      quizRequestScopeRef.current.finish(request);
     }
   };
+  const lockStudentEssayForLeavingRef = useRef(lockStudentEssayForLeaving);
+  lockStudentEssayForLeavingRef.current = lockStudentEssayForLeaving;
 
   useEffect(() => {
     if (role !== 'teacher' && showStudentWorkReview) typesetMath(studentWorkReviewRef.current);
@@ -5805,7 +5922,7 @@ ${lessonBlocks}`;
       .sort((a, b) => (a.submittedAt || 0) - (b.submittedAt || 0))[0];
     if (!next) return;
     autoGradingIdsRef.current.add(next.id);
-    runAiGradingForSubmission(next, { silent: true }).finally(() => {
+    runAiGradingForSubmissionRef.current(next, { silent: true }).finally(() => {
       autoGradingIdsRef.current.delete(next.id);
     });
   }, [user, role, currentHandwrittenSubmissions, gradingSubmissionId]);
@@ -5838,9 +5955,7 @@ ${lessonBlocks}`;
     const key = String(studentKey || '').trim();
     if (key) {
       const index = currentHandwrittenSubmissions.findIndex(submission => {
-        const code = String(submission.studentAccessCode || '').trim().toUpperCase();
-        const submissionKey = code || normalizeNameKey(submission.studentName);
-        return submissionKey === key;
+        return studentWorkKey(submission) === key;
       });
       if (index >= 0) setHandwrittenViewerIndex(index);
     }
@@ -5859,80 +5974,72 @@ ${lessonBlocks}`;
     setShowHandwrittenSubmissions(pendingHandwrittenSubmissionCount > 0);
   };
 
-  const resetQuizAttemptsForCurrentLesson = () => {
-    const total = currentQuizResults.length + currentHandwrittenSubmissions.length;
-    const resetRecords = [...currentQuizResults, ...currentHandwrittenSubmissions];
-    const scoreTargets = getCurrentQuizScoreTargets(resetRecords);
-    const scoreCleanupRecords = scoreTargets.length ? getScorebookStudentsForGrade(selectedGrade) : [];
-    if (!total && !scoreCleanupRecords.length) {
-      showNotification('Chưa có lượt nộp nào để xóa.');
-      return;
-    }
-    setConfirmModal({
-      show: true,
-      message: `Cho học sinh làm lại bài này?\nHệ thống sẽ xóa ${currentQuizResults.length} lượt trắc nghiệm, ${currentHandwrittenSubmissions.length} bài tự luận và dọn cột điểm nhanh đang gắn với bài hiện tại.`,
-      onConfirm: async () => {
-        try {
-          await clearQuizScoresFromScorebook({ records: scoreCleanupRecords.length ? scoreCleanupRecords : resetRecords, targets: scoreTargets });
-          await Promise.all([
-            ...currentQuizResults.map(result => deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'quiz_results', result.id))),
-            ...currentHandwrittenSubmissions.map(submission => deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'handwritten_submissions', submission.id)))
-          ]);
-          setStudentQuizResult(null);
-          setSubmissionGradeDrafts({});
-          setHandwrittenViewerIndex(0);
-          showNotification('Đã xóa lượt nộp cũ. Học sinh có thể làm lại.');
-        } catch (error) {
-          showNotification('Chưa xóa được lượt nộp: ' + error.message, 'error');
-        }
-      }
+  const confirmQuizReset = (quizAttempts, essayAttempts, label) => {
+    if (!user || !canWriteCurrentSchoolYear || (!isAdmin && role !== 'teacher')) return;
+    if (!quizAttempts.length && !essayAttempts.length) { showNotification('Chưa có lượt nộp nào để xóa.'); return; }
+    const records = [...quizAttempts, ...essayAttempts];
+    const groups = new Map();
+    records.forEach(record => {
+      getCurrentQuizScoreTargets([record]).forEach(target => {
+        const grade = String(target.grade || record.grade || selectedGrade || '');
+        const schoolCode = normalizeSchoolCode(target.schoolCode || record.schoolCode || currentContentSchoolCode) || DEFAULT_SCHOOL_CODE;
+        const student = getScorebookStudentsForGrade(grade, schoolCode).find(item => recordBelongsToStudent(record, item));
+        if (!student) return;
+        const documentId = getScorebookDocIdForGrade(grade, schoolCode);
+        const group = groups.get(documentId) || { documentId, keys: [], metadata: {
+          grade, schoolYear: activeSchoolYear || '', schoolCode, sourceFile: SCOREBOOK_SOURCE_FILE, authorId: user.uid
+        } };
+        group.keys.push(studentEditKey('custom:' + target.semester + 'Score:' + target.pageIndex + ':r0:s' + target.scoreIndex, student));
+        groups.set(documentId, group);
+      });
     });
-  };
-
-  const resetQuizAttemptsForStudent = (studentKey, studentNameLabel = '') => {
-    const key = String(studentKey || '').trim();
-    if (!key) return;
-    const matchesKey = (record = {}) => {
-      const code = String(record.studentAccessCode || record.accessCode || '').trim().toUpperCase();
-      const recordKey = code || normalizeNameKey(record.studentName || record.fullName || '');
-      return recordKey === key;
-    };
-    const quizAttempts = currentQuizResults.filter(matchesKey);
-    const essayAttempts = currentHandwrittenSubmissions.filter(matchesKey);
-    const scoreTargets = getCurrentQuizScoreTargets([...quizAttempts, ...essayAttempts]);
-    const scorebookStudentRecords = findScorebookStudentsByAttemptKey(key, selectedGrade);
-    const total = quizAttempts.length + essayAttempts.length;
-    if (!total && (!scoreTargets.length || !scorebookStudentRecords.length)) {
-      showNotification('Học sinh này chưa có lượt nộp hoặc điểm gắn bài kiểm tra để cho làm lại.');
-      return;
-    }
-    setConfirmModal({
-      show: true,
-      message: `Cho ${studentNameLabel || 'học sinh này'} làm lại bài này?\nHệ thống sẽ xóa ${quizAttempts.length} lượt trắc nghiệm, ${essayAttempts.length} bài tự luận và dọn ô điểm nhanh đang gắn với riêng em này.`,
+    const toAttempt = kind => ({ id, ...expected }) => ({ id, kind, expected });
+    const attempts = [...quizAttempts.map(toAttempt('quiz_results')), ...essayAttempts.map(toAttempt('handwritten_submissions'))];
+    const contextKey = quizRequestScopeKey;
+    setConfirmModal({ show: true,
+      message: 'Cho ' + label + ' làm lại? Hệ thống sẽ xóa ' + attempts.length
+        + ' lượt nộp và điểm tự động xác định được từ các lượt này. Điểm sửa tay được giữ.',
       onConfirm: async () => {
+        if (quizContextRef.current !== contextKey) { showNotification('Bạn đã chuyển bài hoặc tài khoản. Mở lại bài cần xóa.', 'error'); return; }
+        const request = quizRequestScopeRef.current.begin('reset-quiz');
+        if (!request) return;
         try {
-          const resetRecords = [...quizAttempts, ...essayAttempts, ...scorebookStudentRecords];
-          await clearQuizScoresFromScorebook({ records: resetRecords, targets: scoreTargets });
-          await Promise.all([
-            ...quizAttempts.map(result => deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'quiz_results', result.id))),
-            ...essayAttempts.map(submission => deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'handwritten_submissions', submission.id)))
-          ]);
+          if (SERVER_QUIZ_ENABLED && (essayAttempts.some(attempt => !attempt.serverVersion) || quizAttempts.some(attempt => !attempt.serverGraded))) {
+            throw new Error('Cần đối soát bài cũ và tự luận trước khi dùng mở lại đề máy chủ.');
+          }
+          const result = SERVER_QUIZ_ENABLED
+            ? await requestServerQuiz('reset', { quizId, attemptIds: quizAttempts.map(attempt => attempt.id),
+              essayIds: essayAttempts.map(attempt => attempt.id), expectedEssays: Object.fromEntries(essayAttempts.map(({id, ...expected}) => [id, expected])),
+              expectedSubmittedAt: Object.fromEntries(quizAttempts.map(attempt => [attempt.id, attempt.submittedAt])) })
+            : await resetQuizAttempts({ attempts, scorebooks: [...groups.values()], context: {
+              schoolYear: activeSchoolYear, schoolCode: currentContentSchoolCode, grade: selectedGrade, subject: selectedSubject, lesson: selectedLesson
+            } });
+          if (!quizRequestScopeRef.current.isCurrent(request)) return;
+          setStudentQuizResult(null);
           setSubmissionGradeDrafts(prev => {
             const next = { ...prev };
             essayAttempts.forEach(submission => { delete next[submission.id]; });
             return next;
           });
-          showNotification(`Đã cho ${studentNameLabel || 'học sinh'} làm lại.`);
+          setHandwrittenViewerIndex(0);
+          showNotification('Đã xóa ' + result.deleted + ' lượt nộp và ' + result.cleared + ' ô điểm tự động.'
+            + (result.preserved ? ' Giữ ' + result.preserved + ' ô sửa tay hoặc chưa xác định được nguồn; giáo viên cần đối chiếu.' : ''));
         } catch (error) {
-          showNotification('Chưa cho học sinh làm lại được: ' + error.message, 'error');
-        }
+          if (quizRequestScopeRef.current.isCurrent(request)) showNotification('Chưa xóa được lượt nộp: ' + error.message, 'error');
+        } finally { quizRequestScopeRef.current.finish(request); }
       }
     });
+  };
+  const resetQuizAttemptsForCurrentLesson = () => confirmQuizReset(currentQuizResults, currentHandwrittenSubmissions, 'học sinh bài này');
+  const resetQuizAttemptsForStudent = (studentKey, label = '') => {
+    const matches = record => studentWorkKey(record) === String(studentKey || '');
+    confirmQuizReset(currentQuizResults.filter(matches), currentHandwrittenSubmissions.filter(matches), label || 'học sinh này');
   };
 
   const handleSubmitSelfQuiz = async (options = {}) => {
     const autoSubmit = options?.autoSubmit === true;
-    if (!activeSelfQuiz || !currentSelfQuizAttemptData || !quizId || !user) return;
+    if (isSubmittingSelfQuiz || !activeSelfQuiz || !currentSelfQuizAttemptData || !quizId || !user) return;
+    if (SERVER_QUIZ_ENABLED && (!serverQuizSession?.attemptId || serverQuizSession.quizId !== quizId)) { showNotification('Mở lại bài để nhận lượt làm hợp lệ.', 'error'); return; }
     if (activeStudentIsReadOnly) {
       if (!autoSubmit) showNotification(activeStudentReadOnlyReason || 'Hồ sơ này đang ở chế độ chỉ xem, không thể nộp bài.', 'error');
       return;
@@ -5962,17 +6069,7 @@ ${lessonBlocks}`;
       studentQuizNameRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
       return;
     }
-    const currentStudentAccessCode = String(activeStudentProfile?.accessCode || currentStudent?.accessCode || '').trim().toUpperCase();
-    const currentStudentNameKey = normalizeNameKey(submitStudentName);
-    const alreadySubmitted = currentQuizResults.some(result => {
-      const resultCode = String(result.studentAccessCode || '').trim().toUpperCase();
-      const resultNameKey = normalizeNameKey(result.studentName);
-      if (currentStudentAccessCode) {
-        return (resultCode && currentStudentAccessCode === resultCode)
-          || (!resultCode && currentStudentNameKey && resultNameKey && currentStudentNameKey === resultNameKey);
-      }
-      return currentStudentNameKey && resultNameKey && currentStudentNameKey === resultNameKey;
-    });
+    const alreadySubmitted = currentQuizResults.some(result => recordBelongsToStudent(result, activeStudentProfile || currentStudent || {}));
     if (alreadySubmitted && !activeSelfQuizPassingPercent) {
       const warning = 'Em đã nộp bài này rồi. Mỗi học sinh chỉ làm 1 lần.';
       setStudentQuizWarning(warning);
@@ -5987,9 +6084,27 @@ ${lessonBlocks}`;
       showNotification(warning, 'error');
       return;
     }
+    const request = quizRequestScopeRef.current.begin('self-quiz');
+    if (!request) return;
     setStudentQuizWarning(autoSubmit ? 'Em đã thoát ra ngoài nên hệ thống đã tự nộp bài trắc nghiệm.' : '');
     setIsSubmittingSelfQuiz(true);
     try {
+      if (SERVER_QUIZ_ENABLED) {
+        const response = await requestServerQuiz('submit', { attemptId: serverQuizSession.attemptId, answers: studentQuizAnswers, autoSubmit });
+        if (!quizRequestScopeRef.current.isCurrent(request)) return;
+        const result = response.result;
+        if (studentQuizDraftKey) localStorage.removeItem(studentQuizDraftKey);
+        if (result.needsRetake) {
+          setStudentQuizAnswers({}); setStudentQuizResult(null);
+          setStudentSelfQuizAttemptSeed(value => value + 1);
+          const message = result.score === undefined ? 'Bài chưa đạt. Em làm lại lượt mới nhé.' : 'Em đạt ' + formatPointScore(result.score) + '/' + formatPointScore(result.total) + '. Em làm lại lượt mới nhé.';
+          setStudentQuizWarning(message); showNotification(message, 'error');
+        } else {
+          setServerQuizSession(previous => ({ ...previous, result })); setStudentQuizResult(result);
+          showNotification(result.scoreSync.status === 'written' ? 'Đã nộp bài và lưu điểm.' : 'Đã nộp bài.');
+        }
+        return;
+      }
       const result = gradeSelfQuizSubmission({
         quizData: currentSelfQuizAttemptData,
         answersByQuestionId: studentQuizAnswers,
@@ -6003,6 +6118,7 @@ ${lessonBlocks}`;
       });
       result.studentId = activeStudentProfile?.id || currentStudent?.id || '';
       result.studentAccessCode = activeStudentProfile?.accessCode || currentStudent?.accessCode || '';
+      result.schoolCode = currentContentSchoolCode;
       result.scoreTarget = quizScoreTarget || null;
       if (autoSubmit) {
         result.autoSubmitted = true;
@@ -6019,18 +6135,29 @@ ${lessonBlocks}`;
         showNotification(warning, 'error');
         return;
       }
-      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'quiz_results'), result);
-      await writeQuizScoreToScorebook({ studentRecord: result, score: result.score, maxScore: result.total || 10, overwriteExisting: true });
+      const attemptId = cleanDocId(`${quizId}_${studentScoreIdentity(result)}_${studentSelfQuizAttemptSeed}`);
+      const attemptRef = doc(db, 'artifacts', appId, 'public', 'data', 'quiz_results', attemptId);
+      await createQuizAttempt({ id: attemptId, result, context: {
+        schoolYear: currentSchoolYear, schoolCode: currentContentSchoolCode, grade: selectedGrade,
+        subject: selectedSubject, lesson: selectedLesson
+      } });
+      const scoreSync = await writeQuizScoreToScorebook({ studentRecord: { ...result, id: attemptId }, score: result.score, maxScore: result.total || 10, overwriteExisting: true });
+      await updateDoc(attemptRef, { scoreSync });
+      if (!quizRequestScopeRef.current.isCurrent(request)) return;
       setStudentQuizResult(result);
       if (studentQuizDraftKey) localStorage.removeItem(studentQuizDraftKey);
-      showNotification('Đã nộp bài và lưu điểm.');
+      showNotification(scoreSync.status === 'written' ? 'Đã nộp bài và lưu điểm.'
+        : scoreSync.status === 'noTarget' ? 'Đã nộp bài.' : 'Đã nộp bài; điểm chưa đồng bộ. Giáo viên có thể đồng bộ lại.',
+        ['failed', 'needsReview'].includes(scoreSync.status) ? 'error' : 'success');
       if (activeSelfQuiz.allowRetake === false) setStudentQuizAnswers({});
     } catch (e) {
-      showNotification('Chưa lưu được điểm: ' + e.message, 'error');
+      if (quizRequestScopeRef.current.isCurrent(request)) showNotification('Chưa lưu được điểm: ' + e.message, 'error');
     } finally {
-      setIsSubmittingSelfQuiz(false);
+      if (quizRequestScopeRef.current.finish(request)) setIsSubmittingSelfQuiz(false);
     }
   };
+  const handleSubmitSelfQuizRef = useRef(handleSubmitSelfQuiz);
+  handleSubmitSelfQuizRef.current = handleSubmitSelfQuiz;
   const quizPublishAtMs = useMemo(() => parseVietnamDateTimeLocal(quizPublishAt), [quizPublishAt]);
   const scheduledQuizPending = !!quizHtml && !currentQuizVisibleForStudents && !!quizPublishAtMs && quizPublishAtMs > nowMs;
   const studentCurrentQuizVisible = currentQuizVisibleForStudents && studentCanAccessCurrentGradeQuiz;
@@ -6045,11 +6172,11 @@ ${lessonBlocks}`;
       if (submissionFilePickerActiveRef.current) return;
       if (activeSelfQuiz && !studentSelfQuizSubmitted && !isSubmittingSelfQuiz && autoSelfQuizSubmitKeyRef.current !== exitKey) {
         autoSelfQuizSubmitKeyRef.current = exitKey;
-        handleSubmitSelfQuiz({ autoSubmit: true });
+        handleSubmitSelfQuizRef.current({ autoSubmit: true });
       }
       if (studentEssayText && !studentEssaySubmitted && !isSubmittingWork && autoEssayLockKeyRef.current !== exitKey) {
         autoEssayLockKeyRef.current = exitKey;
-        lockStudentEssayForLeaving();
+        lockStudentEssayForLeavingRef.current();
       }
     };
     const handleVisibilityChange = () => {
@@ -6062,7 +6189,7 @@ ${lessonBlocks}`;
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('pagehide', handlePageHide);
     };
-  }, [role, studentCurrentQuizVisible, quizId, canWriteCurrentSchoolYear, activeStudentIsReadOnly, activeStudentProfile, currentStudent, studentQuizName, studentName, user, activeSelfQuiz, studentSelfQuizSubmitted, isSubmittingSelfQuiz, studentEssayText, studentEssaySubmitted, isSubmittingWork, handleSubmitSelfQuiz, lockStudentEssayForLeaving]);
+  }, [role, studentCurrentQuizVisible, quizId, canWriteCurrentSchoolYear, activeStudentIsReadOnly, activeStudentProfile, currentStudent, studentQuizName, studentName, user, activeSelfQuiz, studentSelfQuizSubmitted, isSubmittingSelfQuiz, studentEssayText, studentEssaySubmitted, isSubmittingWork]);
   const scheduledQuizCountdownText = useMemo(() => formatCountdown((quizPublishAtMs || 0) - nowMs), [quizPublishAtMs, nowMs]);
   const quizScoreCount = useMemo(() => {
     const keys = new Set();
@@ -6076,7 +6203,7 @@ ${lessonBlocks}`;
   const pendingHandwrittenSubmissionCount = useMemo(() => (
     currentHandwrittenSubmissions.filter(submission => submission.status !== 'teacher_reviewed').length
   ), [currentHandwrittenSubmissions]);
-  const quizHasQuickContent = useMemo(() => !!String(stripHtmlToText(composeQuizContent()) || '').trim(), [composeQuizContent, quizQuestionHtml, quizAnswerHtml]);
+  const quizHasQuickContent = useMemo(() => !!String(stripHtmlToText(composeQuizContent()) || '').trim(), [composeQuizContent]);
   const quizPublishAction = useMemo(() => {
     const isOpenOrScheduled = currentQuizVisibleForStudents || !!quizPublishAt;
     return {
@@ -6091,7 +6218,7 @@ ${lessonBlocks}`;
     const map = {};
     if (role === 'student' && !studentCanAccessCurrentGradeQuiz) return map;
     allQuizzes
-      .filter(q => String(q.grade) === String(selectedGrade) && String(q.subject) === String(selectedSubject) && String(q.schoolYear || currentSchoolYear) === String(currentSchoolYear) && isQuizVisibleForStudents(q))
+      .filter(q => isContentForCurrentCampus(q) && String(q.grade) === String(selectedGrade) && String(q.subject) === String(selectedSubject) && String(q.schoolYear || currentSchoolYear) === String(currentSchoolYear) && isQuizVisibleForStudents(q))
       .forEach(q => {
         const target = q.scoreTarget || {};
         const scoreLabel = target.label || QUICK_SCORE_LABELS[target.scoreIndex] || '';
@@ -6102,7 +6229,7 @@ ${lessonBlocks}`;
         };
       });
     return map;
-  }, [allQuizzes, selectedGrade, selectedSubject, currentSchoolYear, isQuizVisibleForStudents, role, studentCanAccessCurrentGradeQuiz]);
+  }, [allQuizzes, selectedGrade, selectedSubject, currentSchoolYear, isQuizVisibleForStudents, role, studentCanAccessCurrentGradeQuiz, isContentForCurrentCampus]);
   const quizLessonSet = useMemo(() => new Set(Object.keys(quizLessonMetaMap)), [quizLessonMetaMap]);
   const studentCompletedQuizLessonSet = useMemo(() => {
     if (role !== 'student') return new Set();
@@ -6204,151 +6331,42 @@ ${lessonBlocks}`;
       lessonCount: total.lessonCount + row.lessonCount
     }), { groups: 0, materialCount: 0, noteCount: 0, quizCount: 0, lessonCount: 0 })
   ), [adminCheckUploadRows]);
-  const adminCheckMissingQuizRows = useMemo(() => {
-    const getWorkKey = (item = {}) => {
-      const code = String(item.studentAccessCode || item.accessCode || '').trim().toUpperCase();
-      if (code) return `code:${code}`;
-      const name = normalizeNameKey(item.studentName || item.fullName || '');
-      return name ? `name:${name}` : '';
-    };
-    return allQuizzes
-      .filter(quiz => String(quiz.schoolYear || activeSchoolYear || '') === String(activeSchoolYear || ''))
-      .filter(quiz => adminCheckGrade === 'all' || String(quiz.grade || '') === String(adminCheckGrade))
-      .filter(quiz => adminCheckSubject === 'all' || String(quiz.subject || '') === String(adminCheckSubject))
-      .filter(isQuizVisibleForStudents)
-      .map(quiz => {
-        const contextMatches = (record = {}) => (
-          String(record.quizId || '') === String(quiz.id || '') ||
-          (
-            String(record.schoolYear || '') === String(activeSchoolYear || '') &&
-            String(record.grade || '') === String(quiz.grade || '') &&
-            String(record.subject || '') === String(quiz.subject || '') &&
-            String(record.lesson || '') === String(quiz.lesson || '')
-          )
-        );
-        const submittedKeys = new Set([
-          ...allQuizResults.filter(contextMatches),
-          ...allHandwrittenSubmissions.filter(contextMatches)
-        ].map(getWorkKey).filter(Boolean));
-        const students = getScorebookStudentsForGrade(quiz.grade);
-        const missingStudents = students.filter(student => {
-          const studentKey = getWorkKey(student);
-          return studentKey && !submittedKeys.has(studentKey);
-        });
-        return {
-          id: quiz.id,
-          grade: String(quiz.grade || ''),
-          subject: String(quiz.subject || ''),
-          lesson: String(quiz.lesson || ''),
-          title: quiz.title || `${quiz.subject || ''} ${quiz.grade || ''} - ${getWeekDisplayName(quiz.lesson || '')}`,
-          expectedCount: students.length,
-          submittedCount: Math.max(0, students.length - missingStudents.length),
-          missingCount: missingStudents.length,
-          missingStudents,
-          updatedAt: Number(quiz.updatedAt || quiz.publishAt || 0)
-        };
-      })
-      .sort((a, b) => {
-        if (b.missingCount !== a.missingCount) return b.missingCount - a.missingCount;
-        const gradeCompare = String(a.grade).localeCompare(String(b.grade), 'vi', { numeric: true });
-        if (gradeCompare) return gradeCompare;
-        const subjectCompare = String(a.subject).localeCompare(String(b.subject), 'vi', { sensitivity: 'base' });
-        if (subjectCompare) return subjectCompare;
-        return Number(a.lesson || 0) - Number(b.lesson || 0);
-      });
-  }, [allQuizzes, allQuizResults, allHandwrittenSubmissions, activeSchoolYear, adminCheckGrade, adminCheckSubject, getScorebookStudentsForGrade, isQuizVisibleForStudents]);
-  const adminCheckMissingTotals = useMemo(() => (
-    adminCheckMissingQuizRows.reduce((total, row) => ({
-      quizCount: total.quizCount + 1,
-      expectedCount: total.expectedCount + row.expectedCount,
-      submittedCount: total.submittedCount + row.submittedCount,
-      missingCount: total.missingCount + row.missingCount
-    }), { quizCount: 0, expectedCount: 0, submittedCount: 0, missingCount: 0 })
-  ), [adminCheckMissingQuizRows]);
-  const adminCheckMissingMatrix = useMemo(() => {
-    const getWorkKey = (item = {}) => {
-      const code = String(item.studentAccessCode || item.accessCode || '').trim().toUpperCase();
-      if (code) return `code:${code}`;
-      const name = normalizeNameKey(item.studentName || item.fullName || '');
-      return name ? `name:${name}` : '';
-    };
+  const adminQuizTracking = useMemo(() => {
     const gradeList = adminCheckGrade === 'all' ? GRADES : [String(adminCheckGrade)];
-    const columns = allQuizzes
-      .filter(quiz => String(quiz.schoolYear || activeSchoolYear || '') === String(activeSchoolYear || ''))
-      .filter(quiz => gradeList.includes(String(quiz.grade || '')))
-      .filter(quiz => adminCheckSubject === 'all' || String(quiz.subject || '') === String(adminCheckSubject))
-      .filter(isQuizVisibleForStudents)
-      .map(quiz => {
-        const contextMatches = (record = {}) => (
-          String(record.quizId || '') === String(quiz.id || '') ||
-          (
-            String(record.schoolYear || '') === String(activeSchoolYear || '') &&
-            String(record.grade || '') === String(quiz.grade || '') &&
-            String(record.subject || '') === String(quiz.subject || '') &&
-            String(record.lesson || '') === String(quiz.lesson || '')
-          )
-        );
-        const submittedKeys = new Set([
-          ...allQuizResults.filter(contextMatches),
-          ...allHandwrittenSubmissions.filter(contextMatches)
-        ].map(getWorkKey).filter(Boolean));
-        return {
-          id: quiz.id,
-          grade: String(quiz.grade || ''),
-          subject: String(quiz.subject || ''),
-          lesson: String(quiz.lesson || ''),
-          label: getWeekDisplayName(quiz.lesson || ''),
-          title: quiz.title || `${quiz.subject || ''} ${quiz.grade || ''} - ${getWeekDisplayName(quiz.lesson || '')}`,
-          submittedKeys
-        };
-      })
-      .sort((a, b) => {
-        const gradeCompare = String(a.grade).localeCompare(String(b.grade), 'vi', { numeric: true });
-        if (gradeCompare) return gradeCompare;
-        const subjectCompare = String(a.subject).localeCompare(String(b.subject), 'vi', { sensitivity: 'base' });
-        if (subjectCompare) return subjectCompare;
-        return Number(a.lesson || 0) - Number(b.lesson || 0);
-      });
-    const studentKeySet = new Set();
-    const students = gradeList.flatMap(gradeValue => getScorebookStudentsForGrade(gradeValue))
-      .filter(student => {
-        const key = getWorkKey(student) || student.id || student.fullName;
-        if (!key || studentKeySet.has(key)) return false;
-        studentKeySet.add(key);
-        return true;
-      })
-      .sort((a, b) => {
-        const gradeCompare = String(getGradeFromClassName(a.className || a.grade || '')).localeCompare(String(getGradeFromClassName(b.className || b.grade || '')), 'vi', { numeric: true });
-        if (gradeCompare) return gradeCompare;
-        return getGivenNameSortKey(a.fullName).localeCompare(getGivenNameSortKey(b.fullName), 'vi', { sensitivity: 'base' });
-      });
-    const rows = students.map(student => {
-      const key = getWorkKey(student);
-      const cells = columns.map(column => {
-        const submitted = key && column.submittedKeys.has(key);
-        return { columnId: column.id, submitted };
-      });
-      const submittedCount = cells.filter(cell => cell.submitted).length;
-      const missingCount = Math.max(0, columns.length - submittedCount);
-      return { student, key: key || student.id || student.fullName, cells, submittedCount, missingCount };
+    const quizzes = allQuizzes.filter(quiz => gradeList.includes(String(quiz.grade || ''))
+      && (adminCheckSubject === 'all' || String(quiz.subject || '') === String(adminCheckSubject)));
+    const students = gradeList.flatMap(grade => getScorebookStudentsForGrade(grade)).sort((a, b) => {
+      const gradeCompare = String(getGradeFromClassName(a.className || a.grade || '')).localeCompare(String(getGradeFromClassName(b.className || b.grade || '')), 'vi', { numeric: true });
+      return gradeCompare || getGivenNameSortKey(a.fullName).localeCompare(getGivenNameSortKey(b.fullName), 'vi', { sensitivity: 'base' });
     });
-    const visibleRows = rows.filter(row => {
-      if (adminCheckSubmissionFilter === 'all') return true;
-      if (adminCheckSubmissionFilter === 'done') return columns.length > 0 && row.missingCount === 0;
-      return row.missingCount > 0;
-    });
-    return { columns, rows, visibleRows };
-  }, [allQuizzes, allQuizResults, allHandwrittenSubmissions, activeSchoolYear, adminCheckGrade, adminCheckSubject, adminCheckSubmissionFilter, getScorebookStudentsForGrade, isQuizVisibleForStudents]);
+    const tracking = buildQuizTracking({ quizzes, results: [...allQuizResults, ...allHandwrittenSubmissions], students,
+      schoolYear: activeSchoolYear, schoolCode: quickScoreSchoolCode, isVisible: isQuizVisibleForStudents });
+    tracking.columns = tracking.columns.map(quiz => ({ ...quiz,
+      label: getWeekDisplayName(quiz.lesson || ''),
+      title: quiz.title || `${quiz.subject || ''} ${quiz.grade || ''} - ${getWeekDisplayName(quiz.lesson || '')}`,
+      updatedAt: Number(quiz.updatedAt || quiz.publishAt || 0)
+    })).sort((a, b) => String(a.grade).localeCompare(String(b.grade), 'vi', { numeric: true })
+      || String(a.subject).localeCompare(String(b.subject), 'vi', { sensitivity: 'base' }) || Number(a.lesson || 0) - Number(b.lesson || 0));
+    tracking.rows = tracking.rows.map(row => ({ ...row, cells: tracking.columns.map(column => row.cells.find(cell => cell.columnId === column.id)) }));
+    return tracking;
+  }, [allQuizzes, allQuizResults, allHandwrittenSubmissions, activeSchoolYear, quickScoreSchoolCode, adminCheckGrade, adminCheckSubject, getScorebookStudentsForGrade, isQuizVisibleForStudents]);
+  const adminCheckMissingQuizRows = useMemo(() => [...adminQuizTracking.columns].sort((a, b) => b.missingCount - a.missingCount), [adminQuizTracking]);
+  const adminCheckMissingTotals = useMemo(() => adminCheckMissingQuizRows.reduce((total, row) => ({
+    quizCount: total.quizCount + 1, expectedCount: total.expectedCount + row.expectedCount,
+    submittedCount: total.submittedCount + row.submittedCount, missingCount: total.missingCount + row.missingCount
+  }), { quizCount: 0, expectedCount: 0, submittedCount: 0, missingCount: 0 }), [adminCheckMissingQuizRows]);
+  const adminCheckMissingMatrix = useMemo(() => ({ ...adminQuizTracking, visibleRows: adminQuizTracking.rows.filter(row => {
+    if (adminCheckSubmissionFilter === 'done') return row.expectedCount > 0 && row.missingCount === 0;
+    if (adminCheckSubmissionFilter === 'missing') return row.missingCount > 0;
+    return true;
+  }) }), [adminQuizTracking, adminCheckSubmissionFilter]);
   const adminCheckLearningRows = useMemo(() => {
-    const getWorkKey = (item = {}) => {
-      const code = String(item.studentAccessCode || item.accessCode || '').trim().toUpperCase();
-      if (code) return `code:${code}`;
-      const name = normalizeNameKey(item.studentName || item.fullName || '');
-      return name ? `name:${name}` : '';
-    };
     const gradeList = adminCheckGrade === 'all' ? GRADES : [String(adminCheckGrade)];
+    const studentsById = new Map(gradeList.flatMap(grade => getScorebookStudentsForGrade(grade)).map(student => [student.id, student]));
+    const getWorkKey = item => studentWorkKey(item, studentsById);
     const contentPairs = new Map();
     const addPair = (item = {}) => {
+      if (!contentBelongsToCampus(item, quickScoreSchoolCode)) return;
       const gradeValue = String(item.grade || '');
       const subjectValue = String(item.subject || '');
       const lessonValue = String(item.lesson || '');
@@ -6385,6 +6403,7 @@ ${lessonBlocks}`;
     const progressByStudentPair = new Map();
     allLessonProgress
       .filter(item => String(item.schoolYear || '') === String(activeSchoolYear || ''))
+      .filter(item => contentBelongsToCampus(item, quickScoreSchoolCode))
       .forEach(item => {
         const key = getWorkKey(item);
         if (!key) return;
@@ -6395,7 +6414,8 @@ ${lessonBlocks}`;
     const quickPassedByStudentPair = new Set();
     allQuickQuizResults
       .filter(item => String(item.schoolYear || '') === String(activeSchoolYear || ''))
-      .filter(item => Number(item.percent || 0) >= 80)
+      .filter(item => contentBelongsToCampus(item, quickScoreSchoolCode))
+      .filter(item => isQuickQuizResultPassing(item, allMaterials.find(material => String(material.id) === String(item.materialId))))
       .forEach(item => {
         const key = getWorkKey(item);
         if (!key) return;
@@ -6404,7 +6424,7 @@ ${lessonBlocks}`;
     return gradeList.flatMap(gradeValue => {
       const gradePairs = pairsByGrade[String(gradeValue)] || [];
       return getScorebookStudentsForGrade(gradeValue).map(student => {
-        const studentKey = getWorkKey(student);
+        const studentKey = getWorkKey({ ...student, studentId: student.id });
         const stats = gradePairs.reduce((acc, pair) => {
           const pairKey = `${pair.grade}__${pair.subject}__${pair.lesson}`;
           const elapsedMs = progressByStudentPair.get(`${studentKey}__${pairKey}`) || 0;
@@ -6436,7 +6456,7 @@ ${lessonBlocks}`;
       if (gradeCompare) return gradeCompare;
       return getGivenNameSortKey(a.student.fullName).localeCompare(getGivenNameSortKey(b.student.fullName), 'vi', { sensitivity: 'base' });
     });
-  }, [allMaterials, allNotes, allLessonProgress, allQuickQuizResults, activeSchoolYear, adminCheckGrade, adminCheckSubject, getScorebookStudentsForGrade]);
+  }, [allMaterials, allNotes, allLessonProgress, allQuickQuizResults, activeSchoolYear, quickScoreSchoolCode, adminCheckGrade, adminCheckSubject, getScorebookStudentsForGrade]);
   const adminCheckLearningTotals = useMemo(() => {
     const rowsWithTargets = adminCheckLearningRows.filter(row => row.targetCount > 0);
     const averagePercent = rowsWithTargets.length
@@ -6450,19 +6470,27 @@ ${lessonBlocks}`;
     };
   }, [adminCheckLearningRows]);
   const displayNewsList = useMemo(() => {
-    return isAdmin ? newsList : newsList.filter(n => !n.isHidden);
-  }, [newsList, isAdmin]);
+    if (isAdmin) return newsList;
+    const visibleNews = newsList.filter(item => !item.isHidden);
+    if (role !== 'student' || (!activeStudentProfile && !currentStudent)) return visibleNews;
+    const viewerSchoolCode = getStudentSchoolCode(activeStudentProfile || currentStudent || {});
+    const effectiveSchoolCode = viewerSchoolCode === 'UNKNOWN' ? 'UNKNOWN' : viewerSchoolCode;
+    return visibleNews.filter(item => (
+      item.type !== 'class_schedule' || effectiveSchoolCode !== 'UNKNOWN'
+        && (normalizeSchoolCode(item.schoolCode) || DEFAULT_SCHOOL_CODE) === effectiveSchoolCode
+    ));
+  }, [newsList, isAdmin, role, activeStudentProfile, currentStudent]);
   const pinnedNewsFeed = useMemo(() => displayNewsList.filter(n => n.isPinned).sort((a, b) => getNewsCreatedTime(b) - getNewsCreatedTime(a)).map(n => ({ ...n, isAuto: false, timestamp: n.createdAt })), [displayNewsList]);
   const combinedFeedSorted = useMemo(() => {
-    const materialItems = [...allMaterials].filter(m => m.type !== 'quick_quiz').sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).slice(0, 4).map(m => ({ id: `m_${m.id}`, isAuto: true, iconType: 'material', targetGrade: m.grade, targetSubject: m.subject, targetLesson: m.lesson, title: `TÀI LIỆU MỚI: ${m.subject} ${m.grade} - ${getWeekDisplayName(m.lesson)}`, content: `<p>Vừa cập nhật: <b>${m.title}</b></p>`, timestamp: m.createdAt }));
-    const noteItems = [...allNotes].filter(n => n.grade).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)).slice(0, 4).map(n => ({ id: `n_${n.id}`, isAuto: true, iconType: 'note', targetGrade: n.grade, targetSubject: n.subject, targetLesson: n.lesson, title: `GV đã up bài học: ${n.subject} ${n.grade} - ${getWeekDisplayName(n.lesson)}`, content: '<p>Nội dung bài học vừa được cập nhật.</p>', timestamp: n.updatedAt }));
-    const quizItems = [...allQuizzes].filter(q => q.grade && String(q.schoolYear || currentSchoolYear) === String(currentSchoolYear) && isQuizVisibleForStudents(q) && (role !== 'student' || !activeStudentGrade || String(q.grade) === String(activeStudentGrade))).sort((a, b) => (b.updatedAt || b.publishAt || 0) - (a.updatedAt || a.publishAt || 0)).slice(0, 4).map(q => ({ id: `q_${q.id}`, isAuto: true, iconType: 'quiz', targetGrade: q.grade, targetSubject: q.subject, targetLesson: q.lesson, title: `GV đã up bài kiểm tra: ${q.subject} ${q.grade} - ${getWeekDisplayName(q.lesson)}`, content: '<p>Bài kiểm tra đã sẵn sàng.</p>', timestamp: q.updatedAt || q.publishAt }));
+    const materialItems = [...allMaterials].filter(m => isContentForCurrentCampus(m) && m.type !== 'quick_quiz').sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).slice(0, 4).map(m => ({ id: `m_${m.id}`, isAuto: true, iconType: 'material', targetGrade: m.grade, targetSubject: m.subject, targetLesson: m.lesson, title: `TÀI LIỆU MỚI: ${m.subject} ${m.grade} - ${getWeekDisplayName(m.lesson)}`, content: `<p>Vừa cập nhật: <b>${m.title}</b></p>`, timestamp: m.createdAt }));
+    const noteItems = [...allNotes].filter(n => isContentForCurrentCampus(n) && n.grade).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)).slice(0, 4).map(n => ({ id: `n_${n.id}`, isAuto: true, iconType: 'note', targetGrade: n.grade, targetSubject: n.subject, targetLesson: n.lesson, title: `GV đã up bài học: ${n.subject} ${n.grade} - ${getWeekDisplayName(n.lesson)}`, content: '<p>Nội dung bài học vừa được cập nhật.</p>', timestamp: n.updatedAt }));
+    const quizItems = [...allQuizzes].filter(q => isContentForCurrentCampus(q) && q.grade && String(q.schoolYear || currentSchoolYear) === String(currentSchoolYear) && isQuizVisibleForStudents(q) && (role !== 'student' || !activeStudentGrade || String(q.grade) === String(activeStudentGrade))).sort((a, b) => (b.updatedAt || b.publishAt || 0) - (a.updatedAt || a.publishAt || 0)).slice(0, 4).map(q => ({ id: `q_${q.id}`, isAuto: true, iconType: 'quiz', targetGrade: q.grade, targetSubject: q.subject, targetLesson: q.lesson, title: `GV đã up bài kiểm tra: ${q.subject} ${q.grade} - ${getWeekDisplayName(q.lesson)}`, content: '<p>Bài kiểm tra đã sẵn sàng.</p>', timestamp: q.updatedAt || q.publishAt }));
     return [...materialItems, ...noteItems, ...quizItems].sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0)).slice(0, 4);
-  }, [allMaterials, allNotes, allQuizzes, currentSchoolYear, isQuizVisibleForStudents, role, activeStudentGrade]);
+  }, [allMaterials, allNotes, allQuizzes, currentSchoolYear, isQuizVisibleForStudents, role, activeStudentGrade, isContentForCurrentCampus]);
   const studentMailboxAutoMessages = useMemo(() => {
     if (role !== 'student' || !activeStudentGrade) return [];
     const materialItems = allMaterials
-      .filter(item => item.type !== 'quick_quiz' && String(item.grade || '') === String(activeStudentGrade))
+      .filter(item => isContentForCurrentCampus(item) && item.type !== 'quick_quiz' && String(item.grade || '') === String(activeStudentGrade))
       .map(item => ({
         id: `auto-material-${item.id}`,
         source: 'auto',
@@ -6475,7 +6503,7 @@ ${lessonBlocks}`;
         targetLesson: item.lesson
       }));
     const noteItems = allNotes
-      .filter(item => String(item.grade || '') === String(activeStudentGrade))
+      .filter(item => isContentForCurrentCampus(item) && String(item.grade || '') === String(activeStudentGrade))
       .map(item => ({
         id: `auto-note-${item.id}-${item.updatedAt || 0}`,
         source: 'auto',
@@ -6488,7 +6516,7 @@ ${lessonBlocks}`;
         targetLesson: item.lesson
       }));
     const quizItems = allQuizzes
-      .filter(item => String(item.grade || '') === String(activeStudentGrade)
+      .filter(item => isContentForCurrentCampus(item) && String(item.grade || '') === String(activeStudentGrade)
         && String(item.schoolYear || currentSchoolYear) === String(currentSchoolYear)
         && isQuizVisibleForStudents(item))
       .map(item => ({
@@ -6502,8 +6530,6 @@ ${lessonBlocks}`;
         targetSubject: item.subject,
         targetLesson: item.lesson
       }));
-    const studentId = String(activeStudentProfile?.id || currentStudent?.id || '').trim();
-    const studentNameKey = normalizeNameKey(activeStudentProfile?.fullName || currentStudent?.fullName || '');
     const studentClassName = String(activeStudentProfile?.className || currentStudent?.className || '').trim();
     const attendanceItems = attendanceDocs.flatMap(attendance => {
       if (attendance.schoolYear && String(attendance.schoolYear) !== String(currentSchoolYear || '')) return [];
@@ -6511,9 +6537,7 @@ ${lessonBlocks}`;
       return Object.entries(attendance.records || {}).flatMap(([recordKey, record]) => {
         if (!['CP', 'KP'].includes(record?.status)) return [];
         const recordId = String(record?.studentId || recordKey || '').trim();
-        const recordNameKey = normalizeNameKey(record?.studentName || '');
-        const matchesStudent = (studentId && recordId === studentId)
-          || (studentNameKey && recordNameKey === studentNameKey);
+        const matchesStudent = recordBelongsToStudent({ ...record, studentId: recordId }, activeStudentProfile || currentStudent || {});
         if (!matchesStudent) return [];
         const dateValue = String(attendance.date || '').trim();
         const dateLabel = /^\d{4}-\d{2}-\d{2}$/.test(dateValue)
@@ -6534,7 +6558,7 @@ ${lessonBlocks}`;
       .map(item => ({ ...item, isRead: mailboxAutoReadIds.includes(item.id) }))
       .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
       .slice(0, 40);
-  }, [role, activeStudentGrade, activeStudentProfile, currentStudent, allMaterials, allNotes, allQuizzes, attendanceDocs, currentSchoolYear, isQuizVisibleForStudents, mailboxAutoReadIds]);
+  }, [role, activeStudentGrade, activeStudentProfile, currentStudent, allMaterials, allNotes, allQuizzes, attendanceDocs, currentSchoolYear, isQuizVisibleForStudents, mailboxAutoReadIds, isContentForCurrentCampus]);
   const studentMailboxItems = useMemo(() => (
     [
       ...studentMailboxMessages.map(item => ({ ...item, source: 'admin' })),
@@ -6749,205 +6773,7 @@ ${lessonBlocks}`;
     moveQuickScoreInputFocus(event, rowIndex, columnIndex, direction);
   }, [moveQuickScoreInputFocus]);
 
-  const renderTeacherQuickScorePanel = () => (
-    <>
-      <style>{`
-        @media (max-width: 639px) {
-          html:has(.teacher-quick-score-landscape),
-          body:has(.teacher-quick-score-landscape) {
-            overflow: hidden !important;
-          }
-          .teacher-quick-score-landscape {
-            position: fixed !important;
-            top: 0 !important;
-            left: 0 !important;
-            width: 100vh !important;
-            height: 100vw !important;
-            width: 100dvh !important;
-            height: 100dvw !important;
-            max-width: none !important;
-            max-height: none !important;
-            transform: rotate(90deg) translateY(-100%) !important;
-            transform-origin: top left;
-            overflow: hidden !important;
-            padding: 6px !important;
-            border-radius: 0 !important;
-          }
-          .teacher-quick-score-toolbar {
-            min-height: 42px;
-            margin-bottom: 6px !important;
-            padding-bottom: 6px !important;
-          }
-          .teacher-quick-score-title {
-            max-width: 210px;
-          }
-          .teacher-quick-score-title-main {
-            font-size: 11px !important;
-            line-height: 1.1 !important;
-          }
-          .teacher-quick-score-table-wrap {
-            max-height: calc(100dvw - 54px) !important;
-          }
-        }
-      `}</style>
-      <div className="teacher-quick-score-landscape fixed inset-0 z-[260] m-0 flex h-[100dvh] w-screen flex-col rounded-none border-0 bg-white p-2 shadow-2xl sm:static sm:mt-4 sm:block sm:h-auto sm:w-auto sm:rounded-2xl sm:border sm:border-slate-200 sm:p-4 sm:shadow-sm">
-      <div className="teacher-quick-score-toolbar mb-2 flex shrink-0 flex-nowrap items-center justify-between gap-2 border-b border-slate-100 pb-2 sm:mb-3 sm:flex-wrap sm:border-b-0 sm:pb-0">
-        <div className="teacher-quick-score-title min-w-0">
-          <div className="teacher-quick-score-title-main font-black text-slate-900 uppercase text-sm">Bảng nhập điểm nhanh</div>
-          <div className="text-[11px] font-bold text-slate-500">Khối {quickScoreGrade} · {quickScoreLockedContext?.subjectLabel || selectedSubject}</div>
-        </div>
-        <div className="flex shrink-0 flex-nowrap items-center gap-1.5 sm:flex-wrap sm:gap-2">
-          {quickScorebookSavingKey && <div className="text-xs font-black text-emerald-700 flex items-center gap-1"><Loader2 className="w-3.5 h-3.5 animate-spin" /> Đang lưu...</div>}
-          <button type="button" onClick={() => setQuickVisibleSemesters({ hki: !quickVisibleSemesters.hki, hkii: quickVisibleSemesters.hkii })} className={`h-8 rounded-lg border px-3 text-[11px] font-black uppercase ${quickVisibleSemesters.hki ? 'bg-violet-600 text-white border-violet-600' : 'bg-white text-slate-700 border-slate-200'}`}>HK1</button>
-          <button type="button" onClick={() => setQuickVisibleSemesters({ hki: quickVisibleSemesters.hki, hkii: !quickVisibleSemesters.hkii })} className={`h-8 rounded-lg border px-3 text-[11px] font-black uppercase ${quickVisibleSemesters.hkii ? 'bg-violet-600 text-white border-violet-600' : 'bg-white text-slate-700 border-slate-200'}`}>HK2</button>
-          <button type="button" onClick={() => { setShowLearningResultsWorkspace(false); setQuickScoreLockedContext(null); }} className="h-8 rounded-lg border border-rose-100 bg-rose-50 px-3 text-[11px] font-black uppercase text-rose-600">Đóng</button>
-        </div>
-      </div>
-      {!canWriteCurrentSchoolYear && (
-        <div className="mb-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-[11px] font-black uppercase text-rose-700">
-          Năm học {activeSchoolYear} đang khóa nhập điểm
-        </div>
-      )}
 
-      <div data-quick-score-scope="teacher" className="teacher-quick-score-table-wrap min-h-0 flex-1 overflow-auto rounded-xl border border-slate-300 overscroll-contain sm:max-h-[70vh]">
-        <table className="min-w-max w-full border-collapse text-[11px]">
-          <thead>
-            <tr className="bg-slate-100">
-              <th rowSpan={3} className="sticky left-0 z-[70] min-w-[190px] max-w-[190px] border border-slate-400 bg-slate-100 px-2 py-1 text-left font-black shadow-[4px_0_0_#f8fafc]">ƯT · Họ và tên</th>
-              {quickSelectedSubjects.map((subject) => (
-                <th key={`teacher-quick-subject-${subject.key}`} colSpan={quickSubjectColSpanBySubject[subject.key] || 0} className="border-x-4 border-y-2 border-slate-600 px-1 py-1 text-center font-black">{subject.label}</th>
-              ))}
-              <th rowSpan={3} className="min-w-[56px] border border-slate-400 px-1 py-1 text-center font-black">KQ HK1</th>
-              <th rowSpan={3} className="min-w-[56px] border border-slate-400 px-1 py-1 text-center font-black">KQ HK2</th>
-              <th rowSpan={3} className="min-w-[64px] border border-slate-400 px-1 py-1 text-center font-black">KQ Cả năm</th>
-            </tr>
-            <tr className="bg-slate-50">
-              {quickSelectedSubjects.flatMap((subject) => (
-                quickSelectedSemesters.map((semester, semesterIndex) => {
-                  const isSubjectStart = semesterIndex === 0;
-                  const isSubjectEnd = semesterIndex === quickSelectedSemesters.length - 1;
-                  return (
-                    <th key={`teacher-quick-semester-head-${subject.key}-${semester.key}`} colSpan={(subject.txCount || 4) + 3 + (semester.key === 'hkii' ? 1 : 0)} className={`border border-slate-300 px-1 py-1 text-center font-black ${isSubjectStart ? 'border-l-4 border-l-slate-600 ' : ''}${isSubjectEnd ? 'border-r-4 border-r-slate-600 ' : ''}${semester.key === 'hki' ? 'bg-amber-100 text-amber-900' : 'bg-sky-100 text-sky-900'}`}>
-                      {semester.label}
-                    </th>
-                  );
-                })
-              ))}
-            </tr>
-            <tr className="bg-slate-50">
-              {quickSelectedSubjects.flatMap((subject) => (
-                quickSelectedSemesters.flatMap((semester, semesterIndex) => {
-                  const labels = [...Array.from({ length: subject.txCount || 4 }, (_, idx) => `TX${idx + 1}`), 'GK', 'CK', 'ĐTB', ...(semester.key === 'hkii' ? ['ĐTBCN'] : [])];
-                  return labels.map((label, labelIndex) => {
-                    const isSubjectStart = semesterIndex === 0 && labelIndex === 0;
-                    const isSubjectEnd = semesterIndex === quickSelectedSemesters.length - 1 && labelIndex === labels.length - 1;
-                    const scoreIndex = label.startsWith('TX') ? Number(label.replace('TX', '')) - 1 : (label === 'GK' ? 4 : (label === 'CK' ? 5 : (label === 'ĐTB' ? 6 : 7)));
-                    return (
-                      <th key={`teacher-quick-col-head-${subject.key}-${semester.key}-${label}`} style={{ minWidth: getQuickScoreColumnWidth(scoreIndex), width: getQuickScoreColumnWidth(scoreIndex) }} className={`border border-slate-300 px-1 py-1 text-center font-black ${isSubjectStart ? 'border-l-4 border-l-slate-600 ' : ''}${isSubjectEnd ? 'border-r-4 border-r-slate-600 ' : ''}${semester.key === 'hki' ? 'bg-amber-50' : 'bg-sky-50'}`}>
-                        {label}
-                      </th>
-                    );
-                  });
-                })
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {quickScoreStudents.map((student, rowIndex) => {
-              const studentKey = getQuickScoreStudentKey(student, rowIndex);
-              const isPriorityStudent = quickPriorityStudentIds.has(studentKey);
-              const isActiveRow = activeQuickScoreRowKey === studentKey;
-              const rowToneClass = isActiveRow ? 'bg-indigo-50/95' : (isPriorityStudent ? 'bg-emerald-50/70' : (rowIndex % 2 ? 'bg-white' : 'bg-slate-50/30'));
-              const nameToneClass = isActiveRow ? 'bg-indigo-50' : (isPriorityStudent ? 'bg-emerald-50' : 'bg-white');
-              return (
-              <tr key={`teacher-quick-row-${student.id || rowIndex}`} onClick={() => setActiveQuickScoreRowKey(studentKey)} className={`${rowToneClass} ${isActiveRow ? 'outline outline-2 outline-indigo-300 outline-offset-[-2px]' : ''}`}>
-                <td className={`sticky left-0 z-[60] min-w-[190px] max-w-[190px] border border-slate-300 px-2 py-1 font-bold whitespace-nowrap overflow-hidden text-ellipsis shadow-[4px_0_0_#ffffff] ${nameToneClass}`}>
-                  <label className="flex min-w-0 items-center gap-2">
-                    <input
-                      type="checkbox"
-                      checked={isPriorityStudent}
-                      onClick={(event) => event.stopPropagation()}
-                      onChange={() => toggleQuickPriorityStudent(studentKey)}
-                      className="h-4 w-4 shrink-0 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
-                      title="Ưu tiên khi tự sinh điểm"
-                    />
-                    <span className="truncate">{student.fullName || ''}</span>
-                  </label>
-                </td>
-                {quickVisibleScoreColumnsBySubject.map((column, columnIndex) => {
-                  const editKey = getQuickScoreKey(column.semester, column.pageIndex, rowIndex, column.scoreIndex);
-                  const manualValue = getQuickScoreInputValue(column.semester, column.pageIndex, rowIndex, column.scoreIndex);
-                  const fallbackValue = column.scoreIndex === 6 ? getQuickSemesterTermAverage(column.semester, column.pageIndex, rowIndex) : (column.scoreIndex === 7 ? getQuickSemesterScoreResult('hkii', column.pageIndex, rowIndex, 7) : '');
-                  const draftValue = quickInputDrafts[editKey];
-                  const displayValue = draftValue !== undefined ? draftValue : formatScoreDisplayValue(manualValue || fallbackValue);
-                  const previousColumn = columnIndex > 0 ? quickVisibleScoreColumnsBySubject[columnIndex - 1] : null;
-                  const nextColumn = columnIndex < quickVisibleScoreColumnsBySubject.length - 1 ? quickVisibleScoreColumnsBySubject[columnIndex + 1] : null;
-                  const isSubjectStart = !previousColumn || previousColumn.subjectKey !== column.subjectKey;
-                  const isSubjectEnd = !nextColumn || nextColumn.subjectKey !== column.subjectKey;
-                  const subjectDividerClass = `${isSubjectStart ? 'border-l-4 border-l-slate-600 ' : ''}${isSubjectEnd ? 'border-r-4 border-r-slate-600 ' : ''}`;
-                  const semesterBgClass = column.semester === 'hki' ? 'bg-amber-50/65' : 'bg-sky-50/65';
-                  const scoreTextClass = getQuickScoreTextClass(column.scoreIndex);
-                  const columnWidth = getQuickScoreColumnWidth(column.scoreIndex);
-                  const isQuizScore = quickQuizScoreKeySet.has(editKey);
-                  const parsedDisplayScore = parseScoreNumber(displayValue);
-                  const isLowAverageScore = (column.scoreIndex === 6 || column.scoreIndex === 7) && parsedDisplayScore !== null && parsedDisplayScore < 5;
-                  const readOnlyScoreBgClass = isLowAverageScore ? 'bg-rose-100 text-rose-800 ring-1 ring-inset ring-rose-300' : (isActiveRow ? 'bg-indigo-50/85' : semesterBgClass);
-                  const inputBgClass = isActiveRow ? 'bg-indigo-50' : (manualValue ? 'bg-violet-50/70' : semesterBgClass);
-                  if (!column.editable) {
-                    return (
-                      <td key={`teacher-quick-score-${student.id || rowIndex}-${column.id}`} style={{ minWidth: columnWidth, width: columnWidth }} className={`relative border border-slate-300 px-1 py-0.5 text-center ${scoreTextClass} ${readOnlyScoreBgClass} ${subjectDividerClass}`}>
-                        {displayValue}
-                        {isQuizScore && <button type="button" title="Điểm từ bài kiểm tra" aria-label="Điểm từ bài kiểm tra" className="absolute right-0 top-0 z-10 h-2.5 w-2.5 rounded-bl-md bg-rose-600" />}
-                      </td>
-                    );
-                  }
-                  return (
-                    <td key={`teacher-quick-score-${student.id || rowIndex}-${column.id}`} style={{ minWidth: columnWidth, width: columnWidth }} className={`relative border border-slate-300 p-0 ${subjectDividerClass}`}>
-                      <input
-                        data-quick-score-input="true"
-                        data-quick-row={rowIndex}
-                        data-quick-col={columnIndex}
-                        disabled={!canWriteCurrentSchoolYear}
-                        title={!canWriteCurrentSchoolYear ? `Năm học ${activeSchoolYear} đang khóa nhập điểm` : undefined}
-                        value={displayValue}
-                        onChange={(event) => {
-                        const rawDraft = event.target.value;
-                        const parsedDraft = parseScoreNumber(rawDraft);
-                        const nextDraft = parsedDraft === null ? rawDraft : (parsedDraft > 10 ? '10' : (parsedDraft < 0 ? '0' : rawDraft));
-                        setQuickInputDrafts(prev => ({ ...prev, [editKey]: nextDraft }));
-                      }} onKeyDown={(event) => handleQuickScoreInputKeyDown(event, rowIndex, columnIndex)} onBlur={async (event) => {
-                        const next = event.target.value;
-                        const saved = await saveQuickScoreValue(column.semester, column.pageIndex, rowIndex, column.scoreIndex, next);
-                        if (saved) {
-                          setQuickInputDrafts((prev) => {
-                            const nextDrafts = { ...prev };
-                            delete nextDrafts[editKey];
-                            return nextDrafts;
-                          });
-                        }
-                      }} onFocus={() => setActiveQuickScoreRowKey(studentKey)} placeholder="-" className={`w-full h-8 sm:h-6 border-0 px-0.5 text-center text-[16px] sm:text-[11px] outline-none disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400 ${scoreTextClass} ${inputBgClass} focus:bg-yellow-50`} />
-                      {isQuizScore && <button type="button" title="Điểm từ bài kiểm tra" aria-label="Điểm từ bài kiểm tra" className="absolute right-0 top-0 z-10 h-2.5 w-2.5 rounded-bl-md bg-rose-600" />}
-                    </td>
-                  );
-                })}
-                <td className={`border border-slate-300 px-2 py-0.5 text-center font-black text-slate-700 ${isActiveRow ? 'bg-indigo-50/85' : ''}`}>{getQuickAcademicResult(rowIndex, 'hki')}</td>
-                <td className={`border border-slate-300 px-2 py-0.5 text-center font-black text-slate-700 ${isActiveRow ? 'bg-indigo-50/85' : ''}`}>{getQuickAcademicResult(rowIndex, 'hkii')}</td>
-                <td className={`border border-slate-300 px-2 py-0.5 text-center font-black text-slate-700 ${isActiveRow ? 'bg-indigo-50/85' : ''}`}>{getQuickAcademicResult(rowIndex, 'fullYear')}</td>
-              </tr>
-              );
-            })}
-            {!quickSelectedSemesters.length || !quickSelectedSubjects.length ? <tr><td colSpan={4} className="border border-slate-200 px-3 py-4 text-center text-sm font-bold text-slate-500">Hãy chọn ít nhất 1 học kỳ.</td></tr> : null}
-            {!quickScoreStudents.length && (
-              <tr>
-                <td colSpan={1 + quickVisibleScoreColumnsBySubject.length + 3} className="border border-slate-200 px-3 py-4 text-center text-sm font-bold text-slate-500">Chưa có danh sách học sinh khối {quickScoreGrade} cho năm học {activeSchoolYear}.</td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-    </div>
-    </>
-  );
 
   const pageBackgroundStyle = {
     backgroundColor: '#e0f2fe',
@@ -6988,10 +6814,10 @@ ${lessonBlocks}`;
       <div className="min-h-screen flex flex-col relative font-sans" style={pageBackgroundStyle}><MainBackground />
         
         {toast.show && (
-          <div className="fixed top-0 left-0 right-0 z-[300] pointer-events-none flex justify-center">
-            <div className={`mt-3 mx-4 px-5 py-2.5 rounded-full shadow-2xl flex items-center gap-3 border border-white/20 backdrop-blur-md animate-in slide-in-from-top-4 duration-500 overflow-hidden max-w-lg w-full ${toast.type === 'success' ? 'bg-emerald-500/95 text-white' : 'bg-rose-500/95 text-white'}`}>
+          <div className="fixed top-0 left-0 right-0 z-[1200] pointer-events-none flex justify-center">
+            <div role={toast.type === 'error' ? 'alert' : 'status'} aria-live={toast.type === 'error' ? 'assertive' : 'polite'} className={`mt-3 mx-4 px-5 py-2.5 rounded-2xl shadow-2xl flex items-center gap-3 border border-white/20 backdrop-blur-md animate-in slide-in-from-top-4 duration-500 overflow-hidden max-w-lg w-full ${toast.type === 'success' ? 'bg-emerald-500/95 text-white' : 'bg-rose-500/95 text-white'}`}>
               {toast.type === 'success' ? <CheckCircle2 className="w-4 h-4 sm:w-5 sm:h-5 flex-shrink-0" /> : <X className="w-4 h-4 sm:w-5 sm:h-5 flex-shrink-0" />}
-              <marquee scrollamount="4" className="text-[11px] sm:text-xs font-black uppercase tracking-widest leading-none pt-0.5 whitespace-nowrap">{toast.message}</marquee>
+              <span className="text-[11px] sm:text-xs font-bold leading-relaxed whitespace-normal">{toast.message}</span>
             </div>
           </div>
         )}
@@ -7386,109 +7212,7 @@ ${lessonBlocks}`;
             </div>
           )}
 
-          {SHOW_LEGACY_ADMIN_SETTINGS_PANEL && isAdmin && (
-              <div className="admin-settings-panel w-full max-w-none mb-6 bg-white/90 p-5 rounded-3xl shadow-xl border border-blue-200 space-y-6">
-                  <div className="flex justify-between items-center border-b border-blue-100 pb-3">
-                      <h3 className="text-sm font-black text-slate-800 flex items-center gap-2 uppercase tracking-widest"><Settings className="w-4 h-4 text-blue-600"/> Quản trị hệ thống</h3>
-                      <button onClick={handleExitAdmin} className="bg-rose-100 text-rose-600 hover:bg-rose-600 hover:text-white px-4 py-2 rounded-xl text-xs font-black transition-colors uppercase flex items-center gap-1.5"><X className="w-4 h-4"/> Thoát Quản Trị</button>
-                  </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
-                    <button
-                      type="button"
-                      onClick={() => openStudentDatabaseTab('current')}
-                      className="min-h-[112px] bg-indigo-50/80 border border-indigo-100 rounded-2xl p-4 text-left flex flex-col justify-between gap-3 hover:bg-indigo-100 transition-colors"
-                    >
-                      <div>
-                        <div className="font-black text-sm text-indigo-900">Mở Database học sinh</div>
-                        <div className="text-xs text-indigo-700/70 font-bold mt-0.5 leading-snug">Hồ sơ, mã học sinh, ảnh giấy tờ và phụ huynh</div>
-                      </div>
-                      {studentProfileRequestCount > 0 && <div className="self-start rounded-full bg-rose-500 px-2.5 py-1 text-[10px] font-black text-white">{studentProfileRequestCount} yêu cầu</div>}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setShowAttendanceWorkspace(true)}
-                      className="min-h-[112px] bg-cyan-50/80 border border-cyan-100 rounded-2xl p-4 text-left flex flex-col justify-between gap-3 hover:bg-cyan-100 transition-colors"
-                    >
-                      <div>
-                        <div className="font-black text-sm text-cyan-900">Mở Điểm danh</div>
-                        <div className="text-xs text-cyan-700/70 font-bold mt-0.5 leading-snug">Theo tháng trên máy tính, theo tuần trên điện thoại</div>
-                      </div>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setShowScheduleWorkspace(true)}
-                      className="min-h-[112px] bg-emerald-50/80 border border-emerald-100 rounded-2xl p-4 text-left flex flex-col justify-between gap-3 hover:bg-emerald-100 transition-colors"
-                    >
-                      <div>
-                        <div className="font-black text-sm text-emerald-900">Mở Thời khóa biểu</div>
-                        <div className="text-xs text-emerald-700/70 font-bold mt-0.5 leading-snug">Xếp môn học theo lớp và thứ trong tuần</div>
-                      </div>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => openQuickScoreWorkspace({ locked: false })}
-                      className="min-h-[112px] bg-violet-50/80 border border-violet-100 rounded-2xl p-4 text-left flex flex-col justify-between gap-3 hover:bg-violet-100 transition-colors"
-                    >
-                      <div>
-                        <div className="font-black text-sm text-violet-900">Mở Kết quả học tập</div>
-                        <div className="text-xs text-violet-700/70 font-bold mt-0.5 leading-snug">Sổ điểm và học bạ theo 4 khối</div>
-                      </div>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setShowAdminCheckWorkspace(true)}
-                      className="min-h-[112px] bg-amber-50/80 border border-amber-100 rounded-2xl p-4 text-left flex flex-col justify-between gap-3 hover:bg-amber-100 transition-colors"
-                    >
-                      <div>
-                        <div className="font-black text-sm text-amber-900">Mở Kiểm tra</div>
-                        <div className="text-xs text-amber-700/70 font-bold mt-0.5 leading-snug">Thống kê up bài và học sinh chưa làm</div>
-                      </div>
-                    </button>
-                      <button
-                        type="button"
-                        onClick={() => setShowAdminSettingsWorkspace(true)}
-                        className="min-h-[112px] bg-blue-50/80 border border-blue-100 rounded-2xl p-4 text-left flex flex-col justify-between gap-3 hover:bg-blue-100 transition-colors"
-                      >
-                          <div className="mb-3">
-                              <div className="font-black text-sm text-blue-900">Mở Cài đặt</div>
-                              <div className="text-xs text-blue-700/70 font-bold mt-0.5 leading-snug">Năm học, giám đốc và giáo viên theo lớp</div>
-                          </div>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setShowPasswordWorkspace(true)}
-                        className="min-h-[112px] bg-slate-50 border border-slate-200 rounded-2xl p-4 text-left flex flex-col justify-between gap-3 hover:bg-slate-100 transition-colors"
-                      >
-                        <div>
-                          <div className="font-black text-sm text-slate-800">Mở Quản lý mật khẩu</div>
-                          <div className="text-xs text-slate-500 font-bold mt-0.5 leading-snug">Giáo viên, admin và mã học sinh</div>
-                        </div>
-                      </button>
-                    <button
-                      type="button"
-                      onClick={() => setIsAdminTextbookExpanded(!isAdminTextbookExpanded)}
-                      className="min-h-[112px] bg-emerald-50/80 border border-emerald-100 rounded-2xl p-4 text-left flex flex-col justify-between gap-3 hover:bg-emerald-100 transition-colors"
-                    >
-                      <div>
-                        <div className="font-black text-sm text-emerald-900">{isAdminTextbookExpanded ? 'Thu gọn Kho Sách Giáo Khoa' : 'Mở Kho Sách Giáo Khoa'}</div>
-                        <div className="text-xs text-emerald-700/70 font-bold mt-0.5 leading-snug">Mở nhanh kho Drive SGK để chỉnh sửa file</div>
-                      </div>
-                    </button>
-                  </div>
-                  <div className="mt-3">
-                     {isAdminTextbookExpanded && (
-                         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 rounded-2xl border border-emerald-100 bg-emerald-50/50 p-4 animate-in slide-in-from-top-2">
-                             {GRADES.map(g => (
-                                <a key={g} href={`https://drive.google.com/drive/folders/${TEXTBOOK_FOLDERS[g]}?usp=drive_link`} target="_blank" rel="noopener noreferrer" className="bg-white border border-emerald-200 p-3 rounded-xl flex flex-col items-center justify-center hover:border-emerald-500 hover:shadow-md transition-all group">
-                                   <Folder className="w-6 h-6 text-emerald-400 group-hover:text-emerald-600 mb-1.5 transition-colors" />
-                                   <span className="font-black text-emerald-800 text-xs uppercase">SGK Lớp {g}</span>
-                                </a>
-                             ))}
-                         </div>
-                     )}
-                  </div>
-              </div>
-          )}
+
 
           {isAdmin && showAdminSettingsWorkspace && (
             <Suspense fallback={<div className="fixed inset-x-0 top-[114px] sm:top-[84px] bottom-0 z-[120] bg-white flex items-center justify-center text-sm font-black text-blue-700">Đang mở cài đặt...</div>}>
@@ -7508,9 +7232,11 @@ ${lessonBlocks}`;
                 transcriptStartSigners={transcriptStartSigners}
                 transcriptEndSigners={transcriptEndSigners}
                 nanTeachers={nanTeachers}
+                tqkTeachers={tqkTeachers}
                 thdTeachers={thdTeachers}
                 thdSubjects={thdSubjects}
                 thdClasses={thdClasses}
+                schoolClassesByYear={schoolClassesByYear}
                 classTeacherAssignments={classTeacherAssignments}
                 teachingAssignments={teachingAssignments}
                 thdTeachingAssignments={thdTeachingAssignments}
@@ -7529,7 +7255,9 @@ ${lessonBlocks}`;
                 <Suspense fallback={<div className="rounded-3xl border border-indigo-100 bg-indigo-50 p-4 text-xs font-black text-indigo-700">Đang mở database học sinh...</div>}>
                   <HocSinhManager
                     students={allStudents}
+                    configuredClassOptions={configuredSchoolClasses}
                     currentSchoolYear={activeSchoolYear}
+                    systemSchoolYear={currentSchoolYear}
                     initialTab={studentDatabaseInitialTab}
                     initialTabKey={studentDatabaseOpenKey}
                     user={user}
@@ -7538,6 +7266,8 @@ ${lessonBlocks}`;
                     onSendMailboxMessages={sendGeneratedStudentMailboxMessages}
                     learningProgressRows={adminCheckLearningRows}
                     onBeforeDangerousAction={createSafetyBackup}
+                    onStartSchoolYearPromotion={startSchoolYearPromotion}
+                    schoolYearPromotionState={schoolYearPromotionState}
                     onBack={() => setShowStudentDatabase(false)}
                     onOpenAttendance={() => {
                       setShowStudentDatabase(false);
@@ -7548,371 +7278,8 @@ ${lessonBlocks}`;
               </div>
             </div>
           )}
-          {(isAdmin || quickScoreLockedContext) && showLearningResultsWorkspace && (
-            <div className="fixed inset-x-0 top-[114px] sm:top-[84px] bottom-0 z-[120] bg-slate-100/95 backdrop-blur-md overflow-y-auto p-2 sm:p-3">
-              <div className="w-full max-w-none mx-auto space-y-3">
-                <div className="sticky top-0 z-10 rounded-3xl border border-violet-100 bg-white/95 px-4 sm:px-6 py-4 shadow-lg backdrop-blur flex items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <h3 className="font-black text-violet-950 text-base sm:text-xl uppercase tracking-tight flex items-center gap-2">
-                      <GraduationCap className="w-5 h-5 text-violet-600" /> Kết quả học tập
-                    </h3>
-                    <div className="text-[10px] sm:text-xs font-bold text-violet-700/70 truncate">Quản lý sổ điểm và học bạ theo khối trong năm học {activeSchoolYear}</div>
-                  </div>
-                  <button type="button" onClick={() => { setShowLearningResultsWorkspace(false); setQuickScoreLockedContext(null); }} title="Đóng" className="shrink-0 w-11 h-11 rounded-full bg-rose-600 text-white shadow-lg flex items-center justify-center hover:bg-rose-700">
-                    <X className="w-5 h-5" />
-                  </button>
-                </div>
-                {isAdmin && !quickScoreLockedContext && <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
-                  <div className="rounded-3xl border border-violet-100 bg-white p-4 sm:p-5 shadow-sm">
-                    <div className="flex items-center gap-2 mb-4">
-                      <FileText className="w-5 h-5 text-violet-600" />
-                      <div>
-                        <div className="font-black text-violet-950 uppercase">Sổ điểm</div>
-                        <div className="text-xs font-bold text-violet-700/70">Mỗi khối một bảng sổ điểm riêng</div>
-                      </div>
-                    </div>
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                      {GRADES.map(grade => (
-                        <button key={`scorebook-${grade}`} type="button" onClick={() => openScorebookWorkspace('scorebook', grade)} className="min-h-[110px] rounded-2xl border border-violet-100 bg-violet-50 text-violet-800 p-3 flex flex-col items-center justify-center gap-2 hover:bg-violet-600 hover:text-white transition-colors">
-                          <FileText className="w-6 h-6" />
-                          <span className="text-xs font-black uppercase">Khối {grade}</span>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                  <div className="rounded-3xl border border-blue-100 bg-white p-4 sm:p-5 shadow-sm">
-                    <div className="flex items-center gap-2 mb-4">
-                      <BookOpen className="w-5 h-5 text-blue-600" />
-                      <div>
-                        <div className="font-black text-blue-950 uppercase">Học bạ</div>
-                        <div className="text-xs font-bold text-blue-700/70">Mỗi khối một khu học bạ riêng</div>
-                      </div>
-                    </div>
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                      {GRADES.map(grade => (
-                        <button key={`transcript-${grade}`} type="button" onClick={() => openScorebookWorkspace('transcript', grade)} className="min-h-[110px] rounded-2xl border border-blue-100 bg-blue-50 text-blue-800 p-3 flex flex-col items-center justify-center gap-2 hover:bg-blue-600 hover:text-white transition-colors">
-                          <BookOpen className="w-6 h-6" />
-                          <span className="text-xs font-black uppercase">Khối {grade}</span>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                </div>}
-
-                <div className="rounded-3xl border border-slate-200 bg-white p-4 sm:p-5 shadow-sm">
-                  <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
-                    <div>
-                      <div className="font-black text-slate-900 uppercase">Bảng nhập điểm nhanh (liên thông sổ chính)</div>
-                      <div className="text-xs font-bold text-slate-500 mt-1">Sửa ở đây sẽ cập nhật vào sổ điểm của khối đã chọn, và ngược lại.</div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      {quickScorebookSavingKey && <div className="text-xs font-black text-emerald-700 flex items-center gap-1"><Loader2 className="w-3.5 h-3.5 animate-spin" /> Đang lưu...</div>}
-                      {isAdmin && <button
-                        type="button"
-                        onClick={fillMissingQuickScores}
-                        disabled={!!quickScorebookSavingKey || !quickScoreStudents.length || !canWriteCurrentSchoolYear}
-                        className="h-10 rounded-xl border border-emerald-200 bg-emerald-50 px-3 text-xs font-black uppercase text-emerald-700 hover:bg-emerald-100 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
-                      >
-                        <Sparkles className="w-3.5 h-3.5" /> {'Cho \u0111i\u1ec3m'}
-                      </button>}
-                      {isAdmin && <button
-                        type="button"
-                        onClick={clearVisibleQuickScores}
-                        disabled={!!quickScorebookSavingKey || !quickScoreStudents.length || !canWriteCurrentSchoolYear}
-                        className="h-10 rounded-xl border border-rose-200 bg-rose-50 px-3 text-xs font-black uppercase text-rose-700 hover:bg-rose-100 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" /> {'X\u00f3a'}
-                      </button>}
-                      {isAdmin && <button
-                        type="button"
-                        onClick={() => openScorebookWorkspace('scorebook', quickScoreGrade)}
-                        className="h-10 rounded-xl border border-violet-200 bg-violet-50 px-3 text-xs font-black uppercase text-violet-700 hover:bg-violet-100"
-                      >
-                        Mở sổ khối {quickScoreGrade}
-                      </button>}
-                      {isAdmin && <button
-                        type="button"
-                        onClick={() => openScorebookWorkspace('transcript', quickScoreGrade)}
-                        className="h-10 rounded-xl border border-blue-200 bg-blue-50 px-3 text-xs font-black uppercase text-blue-700 hover:bg-blue-100"
-                      >
-                        Học bạ khối {quickScoreGrade}
-                      </button>}
-                    </div>
-                  </div>
-
-                  <div className="mb-4 flex flex-wrap items-start justify-between gap-2">
-                  {quickScoreLockedContext && (
-                    <div className="flex flex-wrap gap-2">
-                      <span className="h-8 rounded-lg border border-violet-200 bg-violet-50 px-3 inline-flex items-center text-[11px] font-black uppercase text-violet-800">Khối {quickScoreLockedContext.grade}</span>
-                      <span className="h-8 rounded-lg border border-blue-200 bg-blue-50 px-3 inline-flex items-center text-[11px] font-black uppercase text-blue-800">{quickScoreLockedContext.subjectLabel}</span>
-                    </div>
-                  )}
-                  <div className={`${quickScoreLockedContext ? 'hidden' : 'flex'} flex-wrap gap-2`}>
-                    {GRADES.map((grade) => (
-                      <button
-                        key={`quick-grade-${grade}`}
-                        type="button"
-                        onClick={() => setQuickScoreGrade(String(grade))}
-                        className={`h-9 rounded-lg px-3 text-xs font-black uppercase border transition-colors ${String(quickScoreGrade) === String(grade) ? 'bg-violet-600 text-white border-violet-600' : 'bg-white text-slate-600 border-slate-200 hover:border-violet-300 hover:text-violet-700'}`}
-                      >
-                        Khối {grade}
-                      </button>
-                    ))}
-                  </div>
-
-                  <div className="flex flex-wrap items-center justify-end gap-2">
-                    <button type="button" onClick={() => setQuickVisibleSemesters({ hki: !quickVisibleSemesters.hki, hkii: quickVisibleSemesters.hkii })} className={`h-8 rounded-lg border px-3 text-[11px] font-black uppercase ${quickVisibleSemesters.hki ? 'bg-violet-600 text-white border-violet-600' : 'bg-white text-slate-700 border-slate-200'}`}>HK1</button>
-                    <button type="button" onClick={() => setQuickVisibleSemesters({ hki: quickVisibleSemesters.hki, hkii: !quickVisibleSemesters.hkii })} className={`h-8 rounded-lg border px-3 text-[11px] font-black uppercase ${quickVisibleSemesters.hkii ? 'bg-violet-600 text-white border-violet-600' : 'bg-white text-slate-700 border-slate-200'}`}>HK2</button>
-
-                  <div className={`${quickScoreLockedContext ? 'hidden' : 'flex'} flex-wrap gap-2`}>
-                    <button
-                      type="button"
-                      onClick={() => setQuickVisibleSubjects(
-                        QUICK_SCORE_SUBJECTS.reduce(
-                          (acc, subject) => ({ ...acc, [subject.key]: !allQuickSubjectsVisible }),
-                          {}
-                        )
-                      )}
-                      className="h-8 rounded-lg border border-slate-200 bg-white px-3 text-[11px] font-black uppercase text-slate-700 hover:border-violet-300"
-                    >
-                      {allQuickSubjectsVisible ? 'Đóng tất cả môn' : 'Mở tất cả môn'}
-                    </button>
-                    {QUICK_SCORE_SUBJECTS.map((subject) => (
-                      <button
-                        key={`quick-subject-toggle-${subject.key}`}
-                        type="button"
-                        onClick={() => setQuickVisibleSubjects(prev => ({ ...prev, [subject.key]: !prev[subject.key] }))}
-                        className={`h-8 rounded-lg border px-3 text-[11px] font-black uppercase ${quickVisibleSubjects[subject.key] ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-700 border-slate-200'}`}
-                      >
-                        {subject.label}
-                      </button>
-                    ))}
-                  </div>
-                  </div>
-                  </div>
-                  {isAdmin && (
-                    <div className="mb-3 flex flex-wrap items-center gap-2 rounded-xl border border-emerald-100 bg-emerald-50/60 p-2">
-                      <Mail className="h-4 w-4 shrink-0 text-emerald-700" />
-                      <span className="min-w-[180px] flex-1 text-xs font-black text-emerald-800">
-                        Đã chọn {quickScoreMailStudentIds.size} học sinh
-                      </span>
-                      <select
-                        value={quickScoreMailSemester}
-                        onChange={(event) => setQuickScoreMailSemester(event.target.value)}
-                        className="h-9 rounded-lg border border-emerald-200 bg-white px-3 text-xs font-black text-emerald-800 outline-none"
-                      >
-                        <option value="hki">HK1</option>
-                        <option value="hkii">HK2</option>
-                      </select>
-                      <button
-                        type="button"
-                        onClick={sendQuickScoreReportToStudent}
-                        disabled={isSendingQuickScoreMail || !quickScoreMailStudentIds.size}
-                        className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-emerald-600 px-3 text-xs font-black uppercase text-white disabled:opacity-50"
-                      >
-                        {isSendingQuickScoreMail ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
-                        Gửi phiếu điểm
-                      </button>
-                    </div>
-                  )}
-                  {!canWriteCurrentSchoolYear && (
-                    <div className="mb-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-black uppercase text-rose-700">
-                      Năm học {activeSchoolYear} đang khóa nhập điểm
-                    </div>
-                  )}
-
-                  <div data-quick-score-scope="admin" className="overflow-auto rounded-2xl border border-slate-300">
-                    <table className="min-w-max w-full border-collapse text-[11px]">
-                      <thead>
-                        <tr className="bg-slate-100">
-                          <th rowSpan={3} className="sticky left-0 z-[70] min-w-[190px] max-w-[190px] border border-slate-400 bg-slate-100 px-2 py-1 text-left font-black shadow-[4px_0_0_#f8fafc]">
-                            <label className="flex items-center gap-2">
-                              <input
-                                type="checkbox"
-                                checked={quickScoreStudents.length > 0 && quickScoreStudents.every((student, index) => quickScoreMailStudentIds.has(getQuickScoreStudentKey(student, index)))}
-                                onChange={toggleAllQuickScoreMailStudents}
-                                className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
-                                title="Chọn tất cả học sinh để gửi phiếu điểm"
-                              />
-                              <span>Họ và tên</span>
-                            </label>
-                          </th>
-                          {quickSelectedSubjects.map((subject) => (
-                            <th key={`quick-subject-${subject.key}`} colSpan={quickSubjectColSpanBySubject[subject.key] || 0} className="border-x-4 border-y-2 border-slate-600 px-1 py-1 text-center font-black">
-                              {subject.label}
-                            </th>
-                          ))}
-                          <th rowSpan={3} className="min-w-[56px] border border-slate-400 px-1 py-1 text-center font-black">KQ HK1</th>
-                          <th rowSpan={3} className="min-w-[56px] border border-slate-400 px-1 py-1 text-center font-black">KQ HK2</th>
-                          <th rowSpan={3} className="min-w-[64px] border border-slate-400 px-1 py-1 text-center font-black">KQ Cả năm</th>
-                        </tr>
-                        <tr className="bg-slate-50">
-                          {quickSelectedSubjects.flatMap((subject) => (
-                            quickSelectedSemesters.map((semester, semesterIndex) => {
-                              const isSubjectStart = semesterIndex === 0;
-                              const isSubjectEnd = semesterIndex === quickSelectedSemesters.length - 1;
-                              return (
-                              <th
-                                key={`quick-semester-head-${subject.key}-${semester.key}`}
-                                colSpan={(subject.txCount || 4) + 3 + (semester.key === 'hkii' ? 1 : 0)}
-                                className={`border border-slate-300 px-1 py-1 text-center font-black ${isSubjectStart ? 'border-l-4 border-l-slate-600 ' : ''}${isSubjectEnd ? 'border-r-4 border-r-slate-600 ' : ''}${semester.key === 'hki' ? 'bg-amber-100 text-amber-900' : 'bg-sky-100 text-sky-900'}`}
-                              >
-                                {semester.label}
-                              </th>
-                              );
-                            })
-                          ))}
-                        </tr>
-                        <tr className="bg-slate-50">
-                          {quickSelectedSubjects.flatMap((subject) => (
-                            quickSelectedSemesters.flatMap((semester, semesterIndex) => {
-                              const labels = [
-                                ...Array.from({ length: subject.txCount || 4 }, (_, idx) => `TX${idx + 1}`),
-                                'GK',
-                                'CK',
-                                'ĐTB',
-                                ...(semester.key === 'hkii' ? ['ĐTBCN'] : [])
-                              ];
-                              return labels.map((label, labelIndex) => {
-                                const isSubjectStart = semesterIndex === 0 && labelIndex === 0;
-                                const isSubjectEnd = semesterIndex === quickSelectedSemesters.length - 1 && labelIndex === labels.length - 1;
-                                const scoreIndex = label.startsWith('TX') ? Number(label.replace('TX', '')) - 1 : (label === 'GK' ? 4 : (label === 'CK' ? 5 : (label === 'ĐTB' ? 6 : 7)));
-                                return (
-                                <th
-                                  key={`quick-col-head-${subject.key}-${semester.key}-${label}`}
-                                  style={{ minWidth: getQuickScoreColumnWidth(scoreIndex), width: getQuickScoreColumnWidth(scoreIndex) }}
-                                  className={`border border-slate-300 px-1 py-1 text-center font-black ${isSubjectStart ? 'border-l-4 border-l-slate-600 ' : ''}${isSubjectEnd ? 'border-r-4 border-r-slate-600 ' : ''}${semester.key === 'hki' ? 'bg-amber-50' : 'bg-sky-50'}`}
-                                >
-                                  {label}
-                                </th>
-                                );
-                              });
-                            })
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {quickScoreStudents.map((student, rowIndex) => {
-                          const studentKey = getQuickScoreStudentKey(student, rowIndex);
-                          const isMailSelected = quickScoreMailStudentIds.has(studentKey);
-                          const isActiveRow = activeQuickScoreRowKey === studentKey;
-                          const rowToneClass = isActiveRow ? 'bg-indigo-50/95' : (isMailSelected ? 'bg-emerald-50/70' : (rowIndex % 2 ? 'bg-white' : 'bg-slate-50/30'));
-                          const nameToneClass = isActiveRow ? 'bg-indigo-50' : (isMailSelected ? 'bg-emerald-50' : 'bg-white');
-                          return (
-                          <tr key={`quick-row-${student.id || rowIndex}`} onClick={() => setActiveQuickScoreRowKey(studentKey)} className={`${rowToneClass} ${isActiveRow ? 'outline outline-2 outline-indigo-300 outline-offset-[-2px]' : ''}`}>
-                            <td className={`sticky left-0 z-[60] min-w-[190px] max-w-[190px] border border-slate-300 px-2 py-1 font-bold whitespace-nowrap overflow-hidden text-ellipsis shadow-[4px_0_0_#ffffff] ${nameToneClass}`}>
-                              <label className="flex min-w-0 items-center gap-2">
-                                <input
-                                  type="checkbox"
-                                  checked={isMailSelected}
-                                  onClick={(event) => event.stopPropagation()}
-                                  onChange={() => toggleQuickScoreMailStudent(studentKey)}
-                                  className="h-4 w-4 shrink-0 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
-                                  title="Chọn gửi phiếu điểm"
-                                />
-                                <span className="truncate">{student.fullName || ''}</span>
-                              </label>
-                            </td>
-                            {quickVisibleScoreColumnsBySubject.map((column, columnIndex) => {
-                              const editKey = getQuickScoreKey(column.semester, column.pageIndex, rowIndex, column.scoreIndex);
-                              const manualValue = getQuickScoreInputValue(column.semester, column.pageIndex, rowIndex, column.scoreIndex);
-                              const fallbackValue = column.scoreIndex === 6
-                                ? getQuickSemesterTermAverage(column.semester, column.pageIndex, rowIndex)
-                                : (column.scoreIndex === 7
-                                  ? getQuickSemesterScoreResult('hkii', column.pageIndex, rowIndex, 7)
-                                  : '');
-                              const draftValue = quickInputDrafts[editKey];
-                              const displayValue = draftValue !== undefined ? draftValue : formatScoreDisplayValue(manualValue || fallbackValue);
-                              const previousColumn = columnIndex > 0 ? quickVisibleScoreColumnsBySubject[columnIndex - 1] : null;
-                              const nextColumn = columnIndex < quickVisibleScoreColumnsBySubject.length - 1 ? quickVisibleScoreColumnsBySubject[columnIndex + 1] : null;
-                              const isSubjectStart = !previousColumn || previousColumn.subjectKey !== column.subjectKey;
-                              const isSubjectEnd = !nextColumn || nextColumn.subjectKey !== column.subjectKey;
-                              const subjectDividerClass = `${isSubjectStart ? 'border-l-4 border-l-slate-600 ' : ''}${isSubjectEnd ? 'border-r-4 border-r-slate-600 ' : ''}`;
-                              const semesterBgClass = column.semester === 'hki' ? 'bg-amber-50/65' : 'bg-sky-50/65';
-                              const scoreTextClass = getQuickScoreTextClass(column.scoreIndex);
-                              const columnWidth = getQuickScoreColumnWidth(column.scoreIndex);
-                              const isQuizScore = quickQuizScoreKeySet.has(editKey);
-                              const parsedDisplayScore = parseScoreNumber(displayValue);
-                              const isLowAverageScore = (column.scoreIndex === 6 || column.scoreIndex === 7) && parsedDisplayScore !== null && parsedDisplayScore < 5;
-                              const readOnlyScoreBgClass = isLowAverageScore ? 'bg-rose-100 text-rose-800 ring-1 ring-inset ring-rose-300' : (isActiveRow ? 'bg-indigo-50/85' : semesterBgClass);
-                              const inputBgClass = isActiveRow ? 'bg-indigo-50' : (manualValue ? 'bg-violet-50/70' : semesterBgClass);
-                              if (!column.editable) {
-                                return (
-                                  <td
-                                    key={`quick-score-${student.id || rowIndex}-${column.id}`}
-                                    style={{ minWidth: columnWidth, width: columnWidth }}
-                                    className={`relative border border-slate-300 px-1 py-0.5 text-center ${scoreTextClass} ${readOnlyScoreBgClass} ${subjectDividerClass}`}
-                                  >
-                                    {displayValue}
-                                    {isQuizScore && <button type="button" title="Điểm từ bài kiểm tra" aria-label="Điểm từ bài kiểm tra" className="absolute right-0 top-0 z-10 h-2.5 w-2.5 rounded-bl-md bg-rose-600" />}
-                                  </td>
-                                );
-                              }
-                              return (
-                                <td
-                                  key={`quick-score-${student.id || rowIndex}-${column.id}`}
-                                  style={{ minWidth: columnWidth, width: columnWidth }}
-                                  className={`relative border border-slate-300 p-0 ${subjectDividerClass}`}
-                                >
-                                  <input
-                                    data-quick-score-input="true"
-                                    data-quick-row={rowIndex}
-                                    data-quick-col={columnIndex}
-                                    disabled={!canWriteCurrentSchoolYear}
-                                    title={!canWriteCurrentSchoolYear ? `Năm học ${activeSchoolYear} đang khóa nhập điểm` : undefined}
-                                    value={displayValue}
-                                    onChange={(event) => {
-                                      const rawDraft = event.target.value;
-                                      const parsedDraft = parseScoreNumber(rawDraft);
-                                      const nextDraft = parsedDraft === null ? rawDraft : (parsedDraft > 10 ? '10' : (parsedDraft < 0 ? '0' : rawDraft));
-                                      setQuickInputDrafts(prev => ({ ...prev, [editKey]: nextDraft }));
-                                    }}
-                                    onKeyDown={(event) => handleQuickScoreInputKeyDown(event, rowIndex, columnIndex)}
-                                    onFocus={() => setActiveQuickScoreRowKey(studentKey)}
-                                    onBlur={async (event) => {
-                                      const next = event.target.value;
-                                      const saved = await saveQuickScoreValue(column.semester, column.pageIndex, rowIndex, column.scoreIndex, next);
-                                      if (saved) {
-                                        setQuickInputDrafts((prev) => {
-                                          const nextDrafts = { ...prev };
-                                          delete nextDrafts[editKey];
-                                          return nextDrafts;
-                                        });
-                                      }
-                                    }}
-                                    placeholder="-"
-                                    className={`w-full h-6 border-0 px-0.5 text-center outline-none disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400 ${scoreTextClass} ${inputBgClass} focus:bg-yellow-50`}
-                                  />
-                                  {isQuizScore && <button type="button" title="Điểm từ bài kiểm tra" aria-label="Điểm từ bài kiểm tra" className="absolute right-0 top-0 z-10 h-2.5 w-2.5 rounded-bl-md bg-rose-600" />}
-                                </td>
-                              );
-                            })}
-                            <td className={`border border-slate-300 px-2 py-0.5 text-center font-black text-slate-700 ${isActiveRow ? 'bg-indigo-50/85' : ''}`}>{getQuickAcademicResult(rowIndex, 'hki')}</td>
-                            <td className={`border border-slate-300 px-2 py-0.5 text-center font-black text-slate-700 ${isActiveRow ? 'bg-indigo-50/85' : ''}`}>{getQuickAcademicResult(rowIndex, 'hkii')}</td>
-                            <td className={`border border-slate-300 px-2 py-0.5 text-center font-black text-slate-700 ${isActiveRow ? 'bg-indigo-50/85' : ''}`}>{getQuickAcademicResult(rowIndex, 'fullYear')}</td>
-                          </tr>
-                          );
-                        })}
-                        {!quickSelectedSemesters.length || !quickSelectedSubjects.length ? (
-                          <tr>
-                            <td colSpan={1 + 3} className="border border-slate-200 px-3 py-4 text-center text-sm font-bold text-slate-500">
-                              Hãy chọn ít nhất 1 học kỳ và 1 môn để mở bảng nhập điểm.
-                            </td>
-                          </tr>
-                        ) : null}
-                        {!quickScoreStudents.length && (
-                          <tr>
-                            <td colSpan={1 + quickVisibleScoreColumnsBySubject.length + 3} className="border border-slate-200 px-3 py-4 text-center text-sm font-bold text-slate-500">
-                              Chưa có danh sách học sinh khối {quickScoreGrade} cho năm học {activeSchoolYear}.
-                            </td>
-                          </tr>
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              </div>
-            </div>
+          {isAdmin && showLearningResultsWorkspace && (
+            <WorkspaceErrorBoundary title="Kết quả học tập" onClose={() => setShowLearningResultsWorkspace(false)}><Suspense fallback={<div className="fixed inset-x-0 top-[114px] sm:top-[84px] bottom-0 z-[120] bg-white flex items-center justify-center font-bold text-violet-700">Đang mở kết quả học tập...</div>}><LearningResultsWorkspace view={{ QUICK_SCORE_SUBJECTS, activeQuickScoreRowKey, activeSchoolYear, allQuickSubjectsVisible, canWriteCurrentSchoolYear, clearVisibleQuickScores, fillMissingQuickScores, formatScoreDisplayValue, getQuickAcademicResult, getQuickScoreColumnWidth, getQuickScoreInputValue, getQuickScoreKey, getQuickScoreStudentKey, getQuickScoreTextClass, getQuickSemesterScoreResult, getQuickSemesterTermAverage, handleQuickScoreInputKeyDown, isAdmin, isSendingQuickScoreMail, openScorebookWorkspace, parseScoreNumber, quickInputDrafts, quickQuizScoreKeySet, quickScoreGrade, quickScoreLockedContext, quickScoreMailSemester, quickScoreMailStudentIds, quickScoreSchoolCode, quickScoreStudents, quickScorebookDocId, quickScorebookEdits, quickScorebookLoaded, quickScorebookSavingKey, quickSelectedSemesters, quickSelectedSubjects, quickSubjectColSpanBySubject, quickVisibleScoreColumnsBySubject, quickVisibleSemesters, quickVisibleSubjects, saveQuickScoreValue, sendQuickScoreReportToStudent, setActiveQuickScoreRowKey, setQuickInputDrafts, setQuickScoreGrade, setQuickScoreLockedContext, setQuickScoreMailSemester, setQuickScoreMailStudentIds, setQuickScoreSchoolCode, setQuickScoreSources, setQuickScorebookEdits, setQuickVisibleSemesters, setQuickVisibleSubjects, setShowLearningResultsWorkspace, showNotification, toggleAllQuickScoreMailStudents, toggleQuickScoreMailStudent, user }} /></Suspense></WorkspaceErrorBoundary>
           )}
           {isAdmin && scorebookGrade && (
             <Suspense fallback={<div className="fixed inset-x-0 top-[114px] sm:top-[84px] bottom-0 z-[140] bg-white flex items-center justify-center text-sm font-black text-violet-700">Đang mở sổ điểm...</div>}>
@@ -7924,6 +7291,7 @@ ${lessonBlocks}`;
                 <ScorebookWorkspace
                 grade={scorebookGrade}
                 initialMode={scorebookInitialMode}
+                initialSchoolCode={quickScoreSchoolCode}
                 currentSchoolYear={activeSchoolYear}
                 principalName={principalName}
                 transcriptStartDates={transcriptStartDates}
@@ -7932,11 +7300,13 @@ ${lessonBlocks}`;
                 transcriptStartSigners={transcriptStartSigners}
                 transcriptEndSigners={transcriptEndSigners}
                 nanTeachers={nanTeachers}
+                tqkTeachers={tqkTeachers}
                 teachingAssignments={teachingAssignments}
                 thdTeachers={thdTeachers}
                 classTeacherAssignments={classTeacherAssignments}
                 students={allStudents}
                 user={user}
+                draftDocuments={retainedScorebooks.current.documents}
                 onSaveSetting={updateGlobalSetting}
                 onGradeChange={setScorebookGrade}
                 onClose={() => setScorebookGrade(null)}
@@ -8115,7 +7485,7 @@ ${lessonBlocks}`;
                         {[
                           { key: 'all', label: 'Tất cả', count: adminCheckMissingMatrix.rows.length },
                           { key: 'missing', label: 'Còn thiếu', count: adminCheckMissingMatrix.rows.filter(row => row.missingCount > 0).length },
-                          { key: 'done', label: 'Đã đủ', count: adminCheckMissingMatrix.rows.filter(row => adminCheckMissingMatrix.columns.length > 0 && row.missingCount === 0).length }
+                          { key: 'done', label: 'Đã đủ', count: adminCheckMissingMatrix.rows.filter(row => row.expectedCount > 0 && row.missingCount === 0).length }
                         ].map(option => (
                           <button
                             key={`admin-check-submission-filter-${option.key}`}
@@ -8163,7 +7533,7 @@ ${lessonBlocks}`;
                                   </td>
                                   {row.cells.map(cell => (
                                     <td key={`quiz-cell-${row.key}-${cell.columnId}`} className="border-r border-slate-100 px-2 py-1.5 text-center">
-                                      {cell.submitted ? (
+                                      {!cell.applicable ? <span className="text-slate-300">—</span> : cell.submitted ? (
                                         <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200" title="Đã làm">
                                           <CheckCircle2 className="h-3.5 w-3.5" />
                                         </span>
@@ -8176,7 +7546,7 @@ ${lessonBlocks}`;
                                   ))}
                                   <td className="px-2 py-2 text-center">
                                     <span className={`inline-flex rounded-full px-2.5 py-0.5 text-[10px] font-semibold ${row.missingCount ? 'bg-rose-100 text-rose-700 ring-1 ring-rose-200' : 'bg-emerald-100 text-emerald-700 ring-1 ring-emerald-200'}`}>
-                                      {row.submittedCount}/{adminCheckMissingMatrix.columns.length}
+                                      {row.submittedCount}/{row.expectedCount}
                                     </span>
                                   </td>
                                 </tr>
@@ -8260,6 +7630,7 @@ ${lessonBlocks}`;
                 snapshot={systemSnapshot}
                 students={allStudents}
                 onRestore={restoreSystemSnapshot}
+                captureSnapshot={buildSystemSnapshot}
                 onClose={() => setShowDataSafetyWorkspace(false)}
                 showNotification={showNotification}
               />
@@ -8289,23 +7660,13 @@ ${lessonBlocks}`;
                     <h3 className="font-black text-slate-900 text-base sm:text-xl uppercase tracking-tight flex items-center gap-2">
                       <Lock className="w-5 h-5 text-slate-700" /> Quản lý mật khẩu
                     </h3>
-                    <div className="text-[10px] sm:text-xs font-bold text-slate-500 truncate">Thiết lập mật khẩu giáo viên, admin và yêu cầu mã học sinh</div>
+                    <div className="text-[10px] sm:text-xs font-bold text-slate-500 truncate">Tạo tài khoản giáo viên theo cơ sở/khối/môn; quản lý mật khẩu Admin, Trần Hưng Đạo và mã học sinh</div>
                   </div>
                   <button type="button" onClick={() => setShowPasswordWorkspace(false)} title="Đóng" className="shrink-0 w-11 h-11 rounded-full bg-rose-600 text-white shadow-lg flex items-center justify-center hover:bg-rose-700">
                     <X className="w-5 h-5" />
                   </button>
                 </div>
-                <div className="grid grid-cols-1 lg:grid-cols-4 gap-3">
-                  <div className="rounded-3xl border border-emerald-100 bg-white p-5 shadow-sm">
-                    <div className="flex justify-between items-start gap-3 mb-4">
-                      <div>
-                        <div className="font-black text-emerald-900 uppercase">Mật khẩu giáo viên</div>
-                        <div className="text-xs text-emerald-700/70 font-bold mt-1">Bật để yêu cầu giáo viên nhập mật khẩu</div>
-                      </div>
-                      <button onClick={toggleTeacherPasswordOnServer} className={`w-12 h-6 rounded-full transition-colors relative shadow-inner flex-shrink-0 ${isTeacherPassEnabled ? 'bg-emerald-500' : 'bg-slate-300'}`}><div className={`w-4 h-4 bg-white rounded-full absolute top-1 transition-transform shadow-md ${isTeacherPassEnabled ? 'left-7' : 'left-1'}`}></div></button>
-                    </div>
-                    {isTeacherPassEnabled ? <><input type="password" placeholder="Mật khẩu giáo viên mới, ít nhất 8 ký tự..." className="w-full bg-white border border-emerald-200 p-3 rounded-xl focus:outline-none focus:border-emerald-500 font-black text-sm shadow-sm" value={teacherPass} onChange={(e) => setTeacherPass(e.target.value)} /><button type="button" onClick={() => saveStaffAccessConfig('teacher')} disabled={isSavingStaffPassword === 'teacher' || teacherPass.length < 8} className="mt-2 h-9 w-full rounded-xl bg-emerald-600 text-xs font-black uppercase text-white disabled:opacity-40">Lưu mật khẩu giáo viên</button></> : <div className="p-3 text-xs font-bold text-slate-400 bg-slate-50 border border-slate-100 rounded-xl text-center">Đang tắt tính năng hỏi mật khẩu</div>}
-                  </div>
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
                   <div className="rounded-3xl border border-rose-100 bg-white p-5 shadow-sm">
                     <div className="flex justify-between items-start gap-3 mb-4">
                       <div>
@@ -8328,7 +7689,7 @@ ${lessonBlocks}`;
                       <div className="px-3 py-1 rounded-full bg-sky-50 text-sky-700 text-[10px] font-black uppercase border border-sky-100">Riêng</div>
                     </div>
                     <input type="password" placeholder="Mật khẩu Trần Hưng Đạo mới, ít nhất 8 ký tự..." className="w-full bg-white border border-sky-200 p-3 rounded-xl focus:outline-none focus:border-sky-500 font-black text-sm shadow-sm" value={thdAdminPass} onChange={(e) => setThdAdminPass(e.target.value)} />
-                    <button type="button" onClick={() => saveStaffAccessConfig('thd')} disabled={isSavingStaffPassword === 'thd' || thdAdminPass.length < 8} className="mt-2 h-9 w-full rounded-xl bg-sky-600 text-xs font-black uppercase text-white disabled:opacity-40">Lưu mật khẩu Trần Hưng Đạo</button>
+                    <button type="button" onClick={saveStaffAccessConfig} disabled={isSavingStaffPassword === 'thd' || thdAdminPass.length < 8} className="mt-2 h-9 w-full rounded-xl bg-sky-600 text-xs font-black uppercase text-white disabled:opacity-40">Lưu mật khẩu Trần Hưng Đạo</button>
                   </div>
                   <div className="rounded-3xl border border-indigo-100 bg-white p-5 shadow-sm">
                     <div className="flex justify-between items-start gap-3 mb-4">
@@ -8336,10 +7697,13 @@ ${lessonBlocks}`;
                         <div className="font-black text-indigo-900 uppercase">Mã học sinh</div>
                         <div className="text-xs text-indigo-700/70 font-bold mt-1">Bật/tắt yêu cầu nhập mã khi vào học</div>
                       </div>
-                      <button onClick={() => updateGlobalSetting('isStudentCodeEnabled', !isStudentCodeEnabled)} className={`w-12 h-6 rounded-full transition-colors relative shadow-inner flex-shrink-0 ${isStudentCodeEnabled ? 'bg-indigo-600' : 'bg-slate-300'}`}><div className={`w-4 h-4 bg-white rounded-full absolute top-1 transition-transform shadow-md ${isStudentCodeEnabled ? 'left-7' : 'left-1'}`}></div></button>
+                      <button onClick={() => updateGlobalSetting('isStudentCodeEnabled', !isStudentCodeEnabled).catch(() => undefined)} className={`w-12 h-6 rounded-full transition-colors relative shadow-inner flex-shrink-0 ${isStudentCodeEnabled ? 'bg-indigo-600' : 'bg-slate-300'}`}><div className={`w-4 h-4 bg-white rounded-full absolute top-1 transition-transform shadow-md ${isStudentCodeEnabled ? 'left-7' : 'left-1'}`}></div></button>
                     </div>
                     <div className="p-3 text-xs font-bold text-slate-500 bg-slate-50 border border-indigo-100 rounded-xl text-center">{isStudentCodeEnabled ? 'Học sinh phải nhập mã để vào học' : 'Học sinh vào học không cần mã'}</div>
                   </div>
+                </div>
+                <div className="rounded-3xl border border-emerald-100 bg-white p-4 shadow-sm sm:p-5">
+                  <Suspense fallback={<div className="p-5 text-sm font-bold text-emerald-700">Đang tải quản lý tài khoản...</div>}><TeacherAccountManager showNotification={showNotification} nanTeachers={nanTeachers} tqkTeachers={tqkTeachers} /></Suspense>
                 </div>
               </div>
             </div>
@@ -8349,9 +7713,10 @@ ${lessonBlocks}`;
               <Suspense fallback={<div className="flex min-h-full items-center justify-center text-sm font-black text-blue-700">Đang mở thời khóa biểu...</div>}>
                 <SimpleScheduleTable
                   currentSchoolYear={activeSchoolYear}
+                  classNamesBySchool={configuredSecondaryClassesBySchool}
                   subjects={SUBJECTS}
                   classTeacherAssignments={classTeacherAssignments}
-                  teachers={nanTeachers}
+                  teachersBySchoolCode={{ NAN: nanTeachers, TQK: tqkTeachers }}
                   principalName={principalName}
                   pcResponsibleName={activePcResponsibleName}
                   user={user}
@@ -8370,6 +7735,7 @@ ${lessonBlocks}`;
                   currentSchoolYear={activeSchoolYear}
                   user={user}
                   students={allStudents}
+                  classOptions={configuredSchoolClasses}
                   subjects={SUBJECTS}
                   onClose={() => setShowAttendanceWorkspace(false)}
                   onOpenDatabase={() => {
@@ -8870,7 +8236,7 @@ ${lessonBlocks}`;
             {!isAdmin && (
               <div className="flex flex-col gap-1.5 sm:gap-3">
                   <div className="grid grid-cols-[1.15fr_1.15fr_0.65fr_0.8fr] gap-1.5 sm:hidden">
-                    <button onClick={() => { clearStoredAdminSession(); setIsAdmin(false); setShowAdminSettingsWorkspace(false); setShowAdminCheckWorkspace(false); setShowPasswordWorkspace(false); setScorebookGrade(null); if (typeof window !== 'undefined' && window.location.hash.toLowerCase().startsWith('#/admin')) window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`); if (isStudentCodeEnabled) { setShowStudentAccessModal(true); setStudentForgotMode(false); setStudentFoundCode(''); } else { setRole('student'); setLoginRole('student'); } }} className="min-w-0 flex h-9 items-center justify-center gap-1 bg-blue-600 px-1 text-white rounded-xl font-black shadow-lg transition-all active:scale-95 sm:h-auto sm:flex-1 sm:gap-2 sm:py-3 sm:px-2 sm:rounded-2xl">
+                    <button onClick={openStudentLogin} className="min-w-0 flex h-9 items-center justify-center gap-1 bg-blue-600 px-1 text-white rounded-xl font-black shadow-lg transition-all active:scale-95 sm:h-auto sm:flex-1 sm:gap-2 sm:py-3 sm:px-2 sm:rounded-2xl">
                        <User className="w-4 h-4 sm:w-5 sm:h-5" />
                        <span className="min-w-0 text-[9px] sm:text-sm uppercase tracking-normal sm:tracking-wider whitespace-nowrap"><span className="sm:hidden">Học sinh</span><span className="hidden sm:inline">Tôi là Học sinh</span></span>
                     </button>
@@ -8883,7 +8249,7 @@ ${lessonBlocks}`;
                   </div>
                   <div className="hidden flex-col gap-3 sm:flex">
                     <div className="flex flex-row justify-center gap-4">
-                      <button onClick={() => { clearStoredAdminSession(); setIsAdmin(false); setShowAdminSettingsWorkspace(false); setShowAdminCheckWorkspace(false); setShowPasswordWorkspace(false); setScorebookGrade(null); if (typeof window !== 'undefined' && window.location.hash.toLowerCase().startsWith('#/admin')) window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`); if (isStudentCodeEnabled) { setShowStudentAccessModal(true); setStudentForgotMode(false); setStudentFoundCode(''); } else { setRole('student'); setLoginRole('student'); } }} className="min-w-0 flex-1 flex items-center justify-center gap-2 bg-blue-600 text-white py-3 px-2 rounded-2xl font-black shadow-lg transition-all active:scale-95">
+                      <button onClick={openStudentLogin} className="min-w-0 flex-1 flex items-center justify-center gap-2 bg-blue-600 text-white py-3 px-2 rounded-2xl font-black shadow-lg transition-all active:scale-95">
                         <User className="w-5 h-5" /><span className="min-w-0 text-sm uppercase tracking-wider whitespace-nowrap">Tôi là Học sinh</span>
                       </button>
                       <button onClick={openTeacherLogin} className="min-w-0 flex-1 flex items-center justify-center gap-2 bg-emerald-50 text-emerald-700 border border-emerald-200 py-3 px-2 rounded-2xl font-black shadow-md transition-all active:scale-95">
@@ -8901,7 +8267,7 @@ ${lessonBlocks}`;
           </div>
         </div>
         
-        {showPasswordModal && <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-in fade-in duration-300"><div className="bg-white rounded-[2.5rem] shadow-2xl max-w-sm w-full p-10 border border-white/20"><div className="flex items-center space-x-3 mb-8"><div className="bg-slate-100 p-3.5 rounded-full"><Lock className="w-6 h-6 text-slate-800" /></div><h3 className="text-2xl font-black text-slate-800">{modalMode === 'admin' ? 'Hệ thống Quản trị' : (modalMode === 'thdAdmin' ? 'Trần Hưng Đạo' : 'Xác thực Giáo viên')}</h3></div><input type="password" placeholder="Nhập mật khẩu truy cập..." className="w-full border-2 border-slate-200 rounded-2xl p-5 focus:outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-50 mb-4 text-lg font-black tracking-widest text-center" value={passwordInput} onChange={(e) => setPasswordInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleLogin()} />{errorMsg && <p className="text-rose-500 text-sm mb-6 font-black text-center">{errorMsg}</p>}<div className="flex space-x-3"><button onClick={() => { setShowPasswordModal(false); setErrorMsg(''); }} className="flex-1 py-4 bg-slate-100 text-slate-700 rounded-2xl font-bold hover:bg-slate-200 transition-colors">Hủy bỏ</button><button onClick={handleLogin} className="flex-1 py-4 bg-blue-600 text-white rounded-2xl font-black shadow-lg hover:bg-blue-700 transition-all">Đăng nhập</button></div></div></div>}
+        {showPasswordModal && <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-in fade-in duration-300"><div className="bg-white rounded-[2.5rem] shadow-2xl max-w-sm w-full p-7 sm:p-10 border border-white/20"><div className="flex items-center space-x-3 mb-6"><div className="bg-slate-100 p-3.5 rounded-full"><Lock className="w-6 h-6 text-slate-800" /></div><h3 className="text-xl sm:text-2xl font-black text-slate-800">{modalMode === 'admin' ? 'Hệ thống Quản trị' : (modalMode === 'thdAdmin' ? 'Trần Hưng Đạo' : 'Đăng nhập Giáo viên')}</h3></div>{modalMode === 'teacher' && <input type="text" aria-label="Tên đăng nhập giáo viên" placeholder="Tên đăng nhập giáo viên" autoComplete="username" className="w-full border-2 border-slate-200 rounded-2xl p-4 focus:outline-none focus:border-emerald-500 focus:ring-4 focus:ring-emerald-50 mb-3 text-base font-bold" value={teacherUsername} onChange={(e) => setTeacherUsername(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleLogin()} />}<input type="password" autoComplete={modalMode === 'teacher' ? 'current-password' : 'current-password'} aria-label="Mật khẩu" placeholder="Nhập mật khẩu..." className="w-full border-2 border-slate-200 rounded-2xl p-4 focus:outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-50 mb-4 text-base font-black tracking-widest text-center" value={passwordInput} onChange={(e) => setPasswordInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleLogin()} />{errorMsg && <p role="alert" className="text-rose-500 text-sm mb-5 font-black text-center">{errorMsg}</p>}<div className="flex space-x-3"><button onClick={cancelLogin} className="flex-1 py-3.5 bg-slate-100 text-slate-700 rounded-2xl font-bold hover:bg-slate-200 transition-colors">Hủy bỏ</button><button onClick={handleLogin} disabled={isLoggingIn} className="flex-1 py-3.5 bg-blue-600 text-white rounded-2xl font-black shadow-lg hover:bg-blue-700 transition-all">Đăng nhập</button></div></div></div>}
         {showStudentAccessModal && (
           <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-in fade-in duration-300">
             <div className="bg-white rounded-[2rem] shadow-2xl max-w-md w-full p-5 sm:p-7 border border-white/20">
@@ -8910,18 +8276,18 @@ ${lessonBlocks}`;
                   <div className="bg-blue-50 p-3 rounded-2xl"><User className="w-6 h-6 text-blue-600" /></div>
                   <div><h3 className="text-lg sm:text-xl font-black text-slate-900 uppercase">Vào học</h3><p className="text-[11px] font-bold text-slate-500 leading-tight">Mã học sinh đã có sẵn chữ HS, em chỉ nhập số phía sau.</p></div>
                 </div>
-                <button type="button" onClick={() => setShowStudentAccessModal(false)} className="p-2 rounded-xl bg-slate-50 text-slate-500 hover:bg-rose-50 hover:text-rose-600"><X className="w-5 h-5" /></button>
+                <button type="button" onClick={cancelLogin} className="p-2 rounded-xl bg-slate-50 text-slate-500 hover:bg-rose-50 hover:text-rose-600"><X className="w-5 h-5" /></button>
               </div>
               {!studentForgotMode ? (
                 <div className="space-y-3">
                   <div className="flex items-stretch rounded-2xl border-2 border-blue-100 bg-white overflow-hidden focus-within:border-blue-500 focus-within:ring-4 focus-within:ring-blue-50">
                     <div className="px-4 flex items-center justify-center bg-blue-50 text-blue-700 font-black text-lg tracking-widest border-r border-blue-100">HS</div>
-                    <input value={studentAccessCode} onChange={(e) => setStudentAccessCode(normalizeStudentAccessSuffix(e.target.value))} onKeyDown={(e) => e.key === 'Enter' && handleStudentCodeLogin()} inputMode="numeric" placeholder="VD: 22601" className="min-w-0 flex-1 p-4 focus:outline-none text-lg font-black tracking-widest text-center text-slate-800" />
+                    <input value={studentAccessCode} onChange={(e) => setStudentAccessCode(normalizeStudentAccessSuffix(e.target.value))} onKeyDown={(e) => e.key === 'Enter' && handleStudentCodeLogin()} inputMode="numeric" aria-label="Mã học sinh" placeholder="VD: 22601" className="min-w-0 flex-1 p-4 focus:outline-none text-lg font-black tracking-widest text-center text-slate-800" />
                   </div>
-                  <button type="button" onClick={handleStudentCodeLogin} className="w-full py-3.5 bg-blue-600 text-white rounded-2xl font-black shadow-lg hover:bg-blue-700 transition-all">Vào học</button>
+                  <button type="button" onClick={handleStudentCodeLogin} disabled={isLoggingIn} className="w-full py-3.5 bg-blue-600 text-white rounded-2xl font-black shadow-lg hover:bg-blue-700 transition-all">Vào học</button>
                   <div className="grid grid-cols-2 gap-2">
                     <button type="button" onClick={() => { setStudentForgotMode(true); setStudentFoundCode(''); }} className="py-2.5 text-[11px] font-black uppercase text-slate-500 hover:text-blue-600">Quên mã?</button>
-                    <button type="button" onClick={() => window.open('https://script.google.com/macros/s/AKfycby6e5ya2k105Oe7i65k9viysIZbHKOF-9CosueiNy1GvnHJbVw1lHB_0eezSxO91ls/exec', '_blank', 'noopener,noreferrer')} className="py-2.5 text-[11px] font-black uppercase text-emerald-600 hover:text-emerald-700">Đăng ký mới</button>
+                    <button type="button" onClick={() => window.open(REGISTRATION_WEB_APP_URL, '_blank', 'noopener,noreferrer')} className="py-2.5 text-[11px] font-black uppercase text-emerald-600 hover:text-emerald-700">Đăng ký mới</button>
                   </div>
                 </div>
               ) : (
@@ -8955,7 +8321,8 @@ ${lessonBlocks}`;
             <AdmissionFormModal
               schoolYear={admissionSchoolYear}
               form={admissionForm}
-              grades={ADMISSION_GRADES}
+              schools={ADMISSION_SCHOOLS}
+              classOptions={admissionClassOptions}
               documents={ADMISSION_DOCUMENTS}
               uniqueProvinces={uniqueProvinces}
               filteredCommunes={filteredCommunes}
@@ -8963,6 +8330,7 @@ ${lessonBlocks}`;
               isSubmitting={isSubmittingAdmission}
               onClose={() => setShowAdmissionForm(false)}
               onFieldChange={updateAdmissionField}
+              onSchoolChange={(schoolKey) => setAdmissionForm(prev => ({ ...prev, schoolKey, targetClass: '' }))}
               onDocumentChange={updateAdmissionDocument}
               onProvinceChange={handleProvinceChange}
               onCommuneChange={handleCommuneChange}
@@ -9005,6 +8373,7 @@ ${lessonBlocks}`;
               currentSchoolYear={currentSchoolYear}
               user={user}
               students={allStudents}
+              classOptions={getSchoolClassesForYear(schoolClassesByYear, currentSchoolYear)}
               currentStudent={activeStudentProfile}
               subjects={SUBJECTS}
               onClose={() => setShowClassOps(false)}
@@ -9015,273 +8384,7 @@ ${lessonBlocks}`;
       )}
 
       {showStudentProfileModal && activeStudentProfile?.id && (
-        <div className="fixed inset-0 z-[115] bg-slate-900/60 backdrop-blur-sm p-3 sm:p-6 flex items-center justify-center">
-          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-4xl max-h-[92vh] overflow-hidden flex flex-col border border-white/20">
-            <div className="px-5 py-4 border-b bg-slate-50 flex items-center justify-between gap-3">
-              <div className="min-w-0">
-                <div className="flex flex-wrap items-center gap-2">
-                  <h3 className="font-black text-slate-900 uppercase truncate">Hồ sơ học sinh</h3>
-                  {activeStudentPendingProfileRequests.length > 0 && (
-                    <span className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-100 px-2.5 py-1 text-[10px] font-black uppercase text-amber-800">
-                      <Clock className="w-3.5 h-3.5" /> Chờ duyệt
-                    </span>
-                  )}
-                </div>
-                <p className="text-xs text-slate-500 font-bold">Em gửi yêu cầu sửa, admin duyệt xong mới cập nhật hồ sơ chính.</p>
-              </div>
-              <button type="button" onClick={() => setShowStudentProfileModal(false)} className="p-2 rounded-xl bg-white border border-slate-200 text-slate-500 hover:text-rose-600">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            <div className="p-4 sm:p-5 overflow-y-auto space-y-4">
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-                {[
-                  ['Mã học sinh', activeStudentProfile.accessCode || ''],
-                  ['Lớp', activeStudentProfile.className || ''],
-                  ['Năm học', activeStudentProfile.schoolYear || currentSchoolYear],
-                  ['Tình trạng', activeStudentProfile.status === 'dropped' ? 'Bỏ học' : 'Đang học']
-                ].map(([label, value]) => (
-                  <label key={label} className="flex flex-col gap-1">
-                    <span className="text-[10px] font-black uppercase text-slate-400">{label}</span>
-                    <input value={value} readOnly className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3 text-sm font-black text-slate-500" />
-                  </label>
-                ))}
-              </div>
-
-              <div className="rounded-2xl border border-amber-100 bg-amber-50 px-4 py-3 text-xs font-bold text-amber-800">
-                {activeStudentPendingProfileRequests.length > 0
-                  ? `Các mục đang chờ admin duyệt${activeStudentPendingProfileFieldLabels.length ? `: ${activeStudentPendingProfileFieldLabels.join(', ')}` : ''}. Em vẫn có thể sửa lại hoặc bổ sung mục khác rồi bấm cập nhật.`
-                  : 'Học sinh sửa thông tin rồi gửi yêu cầu. Admin duyệt xong hồ sơ chính mới thay đổi.'}
-              </div>
-              {activeStudentIsReadOnly && (
-                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs font-black text-slate-600">
-                  {activeStudentReadOnlyReason}
-                </div>
-              )}
-
-              <datalist id="student-profile-province-options">
-                {derivedProvinceOptions.map(item => <option key={item} value={item} />)}
-              </datalist>
-              <datalist id="student-profile-current-ward-options">
-                {currentWardOptions.map(item => <option key={item} value={item} />)}
-              </datalist>
-              <datalist id="student-profile-household-ward-options">
-                {householdWardOptions.map(item => <option key={item} value={item} />)}
-              </datalist>
-              {studentProfileEditableFields.some(field => field.type === 'select') && (
-                <div className="rounded-2xl border border-blue-100 bg-blue-50 px-4 py-3 text-xs font-bold text-blue-800">
-                  Học lực, hạnh kiểm lớp cũ chỉ chọn 3 mức: Tốt, Khá, Đạt. Các cách ghi cũ như Giỏi, Trung bình, Yếu, Chưa đạt sẽ tự quy đổi về 3 mức này.
-                </div>
-              )}
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                {studentProfileEditableFields.map(field => {
-                  const isFieldPending = activeStudentPendingProfileFieldKeys.has(field.key);
-                  const listId = field.key === 'province' || field.key === 'householdProvince'
-                    ? 'student-profile-province-options'
-                    : field.key === 'ward'
-                      ? 'student-profile-current-ward-options'
-                      : field.key === 'householdWard'
-                        ? 'student-profile-household-ward-options'
-                        : undefined;
-                  const placeholder = field.key === 'birthDate'
-                    ? 'dd/mm/yyyy'
-                    : field.key === 'identityCode'
-                      ? '12 số hoặc bé chưa có'
-                      : (field.key === 'ward' || field.key === 'householdWard')
-                        ? 'Chọn tỉnh trước, rồi gõ/chọn phường xã'
-                        : '';
-                  return (
-                    <label key={field.key} className="flex flex-col gap-1">
-                      <span className="flex items-center gap-1 text-[10px] font-black uppercase text-slate-400">
-                        {field.label}
-                        {isFieldPending && <span className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[8px] text-amber-700">Chờ duyệt</span>}
-                      </span>
-                      {field.type === 'select' ? (
-                        <select
-                          value={studentProfileDraft[field.key] || ''}
-                          disabled={activeStudentIsReadOnly}
-                          onChange={(event) => handleStudentProfileFieldChange(field.key, event.target.value)}
-                          className={`rounded-2xl border px-3 py-3 text-sm font-bold text-slate-800 focus:outline-none focus:border-blue-400 ${isFieldPending ? 'border-amber-200 bg-amber-50' : 'border-slate-200 bg-white'}`}
-                        >
-                          <option value="">Chọn</option>
-                          {(field.options || []).map(option => <option key={option} value={option}>{option}</option>)}
-                        </select>
-                      ) : (
-                        <input
-                          value={studentProfileDraft[field.key] || ''}
-                          list={listId}
-                          placeholder={placeholder}
-                          readOnly={activeStudentIsReadOnly}
-                          disabled={activeStudentIsReadOnly}
-                          onChange={(event) => handleStudentProfileFieldChange(field.key, event.target.value)}
-                          className={`rounded-2xl border px-3 py-3 text-sm font-bold text-slate-800 focus:outline-none focus:border-blue-400 ${isFieldPending ? 'border-amber-200 bg-amber-50' : 'border-slate-200 bg-white'}`}
-                        />
-                      )}
-                    </label>
-                  );
-                })}
-              </div>
-
-              <div className="space-y-3">
-                <div className="flex items-center gap-2 text-xs font-black uppercase tracking-widest text-slate-600">
-                  <ImageIcon className="w-4 h-4 text-blue-600" /> Ảnh hồ sơ và giấy tờ
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
-                  {STUDENT_PROFILE_IMAGE_FIELDS.map(field => {
-                    const isFieldPending = activeStudentPendingProfileFieldKeys.has(field.key);
-                    const isTranscript = field.key === 'transcriptUrl';
-                    const hasDocumentOverride = Object.prototype.hasOwnProperty.call(studentProfileDocumentOverrides, field.key);
-                    const currentDocumentUrl = hasDocumentOverride
-                      ? studentProfileDocumentOverrides[field.key]
-                      : (activeStudentPendingProfileChanges[field.key] || activeStudentProfile[field.key] || '');
-                    const currentUrl = currentDocumentUrl;
-                    const previewValue = studentProfileImagePreviews[field.key];
-                    const previewUrls = Array.isArray(previewValue) ? previewValue : (previewValue ? [previewValue] : []);
-                    const previewUrl = previewUrls[0] || getStudentProfileImageUrl(currentUrl);
-                    const embedUrl = previewUrls.length ? '' : getStudentProfileEmbedUrl(currentUrl);
-                    const originalUrls = String(currentUrl || '')
-                      .split(/\s*,\s*|\n+/)
-                      .map(item => item.trim())
-                      .filter(Boolean);
-                    const originalUrl = originalUrls[0] || '';
-                    const selectedFiles = Array.isArray(studentProfileImages[field.key])
-                      ? studentProfileImages[field.key]
-                      : (studentProfileImages[field.key] ? [studentProfileImages[field.key]] : []);
-                    const selectedFile = selectedFiles[0];
-                    const canAddMoreImages = isTranscript;
-                    const hasExistingImage = Boolean(currentUrl);
-                    const showAddMoreImages = canAddMoreImages && (hasExistingImage || selectedFiles.length > 0);
-                    const transcriptPages = isTranscript
-                      ? [
-                          ...originalUrls.map((url, index) => ({
-                            key: `existing-${index}`,
-                            kind: 'existing',
-                            index,
-                            imageUrl: getStudentProfileImageUrl(url),
-                            openUrl: url
-                          })),
-                          ...previewUrls.map((url, index) => ({
-                            key: `selected-${index}`,
-                            kind: 'selected',
-                            index,
-                            imageUrl: url,
-                            openUrl: ''
-                          }))
-                        ]
-                      : [];
-                    return (
-                      <div key={field.key} className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
-                        <div className="mb-2 flex items-center gap-1 text-[10px] font-black uppercase text-slate-500">
-                          {field.label}
-                          {isFieldPending && <span className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[8px] text-amber-700">Chờ duyệt</span>}
-                        </div>
-                        {isTranscript ? (
-                          <div className="aspect-[4/3] rounded-xl overflow-x-auto overflow-y-hidden border border-slate-100 bg-slate-50 flex snap-x snap-mandatory scroll-smooth">
-                            {transcriptPages.length ? (
-                              transcriptPages.map((page, pageIndex) => (
-                                <div key={page.key} className="relative min-w-full h-full snap-center flex items-center justify-center bg-slate-100">
-                                  <img src={page.imageUrl} alt={`${field.label} trang ${pageIndex + 1}`} className="w-full h-full object-contain" />
-                                  <div className="absolute left-2 top-2 rounded-full bg-slate-900/70 px-2 py-1 text-[10px] font-black text-white">
-                                    {pageIndex + 1}/{transcriptPages.length}
-                                  </div>
-                                  {page.openUrl && (
-                                    <a href={page.openUrl} target="_blank" rel="noreferrer" className="absolute bottom-2 right-2 rounded-full bg-white/95 px-2.5 py-1.5 text-[10px] font-black uppercase text-slate-700 shadow-sm">
-                                      Mở
-                                    </a>
-                                  )}
-                                  {!activeStudentIsReadOnly && (
-                                    <button
-                                      type="button"
-                                      onClick={() => page.kind === 'existing'
-                                        ? removeStudentProfileExistingDocumentPage(field.key, page.index)
-                                        : removeStudentProfileSelectedImage(field.key, page.index)}
-                                      className="absolute right-2 top-2 flex h-7 w-7 items-center justify-center rounded-full bg-rose-600 text-white shadow-lg"
-                                      title="Xóa trang này"
-                                    >
-                                      <X className="w-4 h-4" />
-                                    </button>
-                                  )}
-                                </div>
-                              ))
-                            ) : (
-                              <div className="min-w-full h-full flex items-center justify-center text-center px-3 text-[11px] font-bold text-slate-400">
-                                Chưa có ảnh
-                              </div>
-                            )}
-                          </div>
-                        ) : (
-                          <div className="aspect-[4/3] rounded-xl overflow-hidden border border-slate-100 bg-slate-50 flex items-center justify-center">
-                            {embedUrl ? (
-                              <iframe title={field.label} src={embedUrl} className="w-full h-full border-0 bg-white" loading="lazy" />
-                            ) : previewUrl ? (
-                              <img src={previewUrl} alt={field.label} className="w-full h-full object-contain" />
-                            ) : (
-                              <div className="text-center px-3 text-[11px] font-bold text-slate-400">
-                                Chưa có ảnh
-                              </div>
-                            )}
-                          </div>
-                        )}
-                        <div className="mt-3 flex items-center justify-between gap-2">
-                          <label className={`flex-1 cursor-pointer rounded-xl px-3 py-2 text-center text-[10px] font-black uppercase text-white shadow-sm ${isFieldPending ? 'bg-amber-500 hover:bg-amber-600' : 'bg-blue-600 hover:bg-blue-700'}`}>
-                            {selectedFile || hasExistingImage ? 'Đổi ảnh' : 'Chọn ảnh'}
-                            <input
-                              type="file"
-                              accept="image/*"
-                              multiple={canAddMoreImages}
-                              disabled={activeStudentIsReadOnly}
-                              onChange={(event) => {
-                                if (canAddMoreImages) {
-                                  applyStudentProfileImageFiles(field.key, event.target.files, false);
-                                } else {
-                                  handleStudentProfileImageChange(field.key, event.target.files?.[0] || null, field.label);
-                                }
-                                event.target.value = null;
-                              }}
-                              className="hidden"
-                            />
-                          </label>
-                          {showAddMoreImages && (
-                            <label className={`cursor-pointer rounded-xl border px-3 py-2 text-[10px] font-black uppercase ${isFieldPending ? 'border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100' : 'border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100'}`}>
-                              Thêm trang
-                              <input
-                                type="file"
-                                accept="image/*"
-                                multiple
-                                disabled={activeStudentIsReadOnly}
-                                onChange={(event) => { applyStudentProfileImageFiles(field.key, event.target.files, true); event.target.value = null; }}
-                                className="hidden"
-                              />
-                            </label>
-                          )}
-                          {!isTranscript && originalUrls.length === 1 && (
-                            <a href={originalUrl} target="_blank" rel="noreferrer" className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-[10px] font-black uppercase text-slate-600 hover:text-blue-600">
-                              Mở
-                            </a>
-                          )}
-                        </div>
-                        {selectedFile && (
-                          <div className="mt-2 truncate text-[10px] font-bold text-emerald-700">
-                            {selectedFiles.length > 1
-                              ? `Đã chọn: ${selectedFiles.length} ảnh, sẽ lưu từng trang khi gửi`
-                              : `Đã chọn: ${selectedFile.name}`}
-                            {studentProfileImageAppendModes[field.key] && hasExistingImage ? ' (thêm vào học bạ cũ)' : ''}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
-            <div className="p-4 border-t bg-white flex flex-col sm:flex-row justify-end gap-2">
-              <button type="button" onClick={() => setShowStudentProfileModal(false)} className="px-4 py-3 rounded-2xl bg-slate-100 text-slate-700 font-black">Hủy</button>
-              <button type="button" onClick={submitStudentProfileRequest} disabled={isSubmittingProfileRequest || activeStudentIsReadOnly} className="px-5 py-3 rounded-2xl bg-blue-600 text-white font-black shadow-lg disabled:opacity-60 disabled:cursor-not-allowed">
-                {activeStudentIsReadOnly ? 'Chỉ xem hồ sơ' : (isSubmittingProfileRequest ? 'Đang gửi...' : (activeStudentPendingProfileRequests.length > 0 ? 'Cập nhật yêu cầu chờ duyệt' : 'Gửi yêu cầu sửa'))}
-              </button>
-            </div>
-              </div>
-            </div>
+        <WorkspaceErrorBoundary title="Hồ sơ học sinh" onClose={() => setShowStudentProfileModal(false)}><Suspense fallback={<div className="fixed inset-0 z-[115] bg-white flex items-center justify-center font-bold text-blue-700">Đang mở hồ sơ học sinh...</div>}><StudentProfileModal view={{ STUDENT_PROFILE_IMAGE_FIELDS, activeStudentIsReadOnly, activeStudentPendingProfileChanges, activeStudentPendingProfileFieldKeys, activeStudentPendingProfileFieldLabels, activeStudentPendingProfileRequests, activeStudentProfile, activeStudentReadOnlyReason, applyStudentProfileImageFiles, currentSchoolYear, currentWardOptions, derivedProvinceOptions, getStudentProfileEmbedUrl, getStudentProfileImageUrl, handleStudentProfileFieldChange, handleStudentProfileImageChange, householdWardOptions, isSubmittingProfileRequest, removeStudentProfileExistingDocumentPage, removeStudentProfileSelectedImage, setShowStudentProfileModal, studentProfileDocumentOverrides, studentProfileDraft, studentProfileEditableFields, studentProfileImageAppendModes, studentProfileImagePreviews, studentProfileImages, submitStudentProfileRequest }} /></Suspense></WorkspaceErrorBoundary>
           )}
 
           {role === 'teacher' && showQuizComposeWorkspace && (
@@ -9359,6 +8462,7 @@ ${lessonBlocks}`;
                       <button onClick={handleSaveQuiz} disabled={isSavingQuiz} className="bg-emerald-600 text-white px-4 py-2.5 rounded-xl text-[10px] sm:text-xs font-black flex items-center gap-2 shadow-md hover:bg-emerald-700 disabled:opacity-50">{isSavingQuiz ? <Loader2 className="w-4 h-4 animate-spin" /> : (quizSaveSuccess ? <CheckCircle2 className="w-4 h-4" /> : <Save className="w-4 h-4" />)} {isSavingQuiz ? 'Đang lưu...' : 'Lưu bài'}</button>
                     </div>
                   </div>
+                  {SERVER_QUIZ_ENABLED && quizId && <button className="rounded bg-blue-100 px-3 py-2 text-sm text-blue-800" onClick={async () => { try { const result = await requestServerQuiz('studentDocument', {quizId}); setQuizDocStatus({ state: 'success', message: 'Bản học sinh đã bỏ đáp án', url: result.url }); } catch (error) { showNotification(error.message, 'error'); } }}>Tạo bản tài liệu học sinh</button>}
                   {quizDocStatus.message && (
                     <div className={`rounded-xl px-3 py-2 text-[10px] sm:text-xs font-black border flex items-center justify-between gap-3 ${quizDocStatus.state === 'success' ? 'bg-emerald-50 text-emerald-700 border-emerald-100' : quizDocStatus.state === 'error' ? 'bg-rose-50 text-rose-700 border-rose-100' : 'bg-blue-50 text-blue-700 border-blue-100'}`}>
                       <span className="flex items-center gap-2">{quizDocStatus.state === 'loading' && <Loader2 className="w-3.5 h-3.5 animate-spin" />}{quizDocStatus.message}</span>
@@ -9387,7 +8491,7 @@ ${lessonBlocks}`;
         <div className="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center space-x-3 cursor-pointer group flex-shrink-0" onClick={resetNavigationWithClean}>
             <div className="bg-blue-600 p-2 rounded-xl shadow-md group-hover:bg-blue-700 transition-colors"><Library className="w-5 h-5 text-white" /></div>
-            <div className="hidden sm:block leading-tight"><span className="font-black text-lg block tracking-tighter">THCS Nguyễn An Ninh</span><span className="text-[10px] text-blue-600 font-black uppercase tracking-widest">Kho Học Liệu Số</span></div>
+            <div className="hidden sm:block leading-tight"><span className="font-black text-lg block tracking-tighter">{SCHOOL_OPTIONS.find(school => school.code === currentContentSchoolCode)?.name || 'Kho Học Liệu Số'}</span><span className="text-[10px] text-blue-600 font-black uppercase tracking-widest">Kho Học Liệu Số</span></div>
           </div>
           
           <div className="flex flex-1 ml-3 sm:ml-6 mr-3 sm:mr-6 items-center overflow-hidden bg-slate-50/80 rounded-full px-3 py-1.5 border border-slate-200/60 shadow-inner">
@@ -9444,7 +8548,7 @@ ${lessonBlocks}`;
                 </button>
               </>
             ) : null}
-            <button onClick={() => { clearStoredAdminSession(); setIsAdmin(false); setRole(null); setLoginRole(null); setCurrentStudent(null); setShowClassOps(false); setShowAdminSettingsWorkspace(false); setShowAdminCheckWorkspace(false); setShowPasswordWorkspace(false); setScorebookGrade(null); resetNavigationWithClean(); if (typeof window !== 'undefined' && window.location.hash.toLowerCase().startsWith('#/admin')) window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`); }} className="text-[10px] sm:text-xs font-black text-slate-400 hover:text-rose-500 transition-colors uppercase tracking-widest">Thoát</button>
+            <button onClick={handleLogout} className="text-[10px] sm:text-xs font-black text-slate-400 hover:text-rose-500 transition-colors uppercase tracking-widest">Thoát</button>
           </div>
         </div>
       </header>}
@@ -9537,22 +8641,11 @@ ${lessonBlocks}`;
         
         {role && !selectedLesson && !selectedSubject && (
            <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 flex-1 flex flex-col">
-              {SHOW_LEGACY_TEACHER_TABS && role === 'teacher' && (
-                <div className="flex justify-center mb-6">
-                    <div className="bg-white/60 backdrop-blur-md p-1.5 rounded-full flex shadow-sm border border-white">
-                      <button onClick={() => setTeacherTab('giang_day')} className={`px-6 py-2.5 rounded-full text-xs sm:text-sm font-black uppercase tracking-widest transition-all flex items-center gap-2 ${teacherTab === 'giang_day' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-500 hover:text-blue-600 hover:bg-white'}`}>
-                          <BookOpen className="w-4 h-4"/> Giảng Dạy
-                      </button>
-                      <button onClick={() => setTeacherTab('chuyen_mon')} className={`px-6 py-2.5 rounded-full text-xs sm:text-sm font-black uppercase tracking-widest transition-all flex items-center gap-2 ${teacherTab === 'chuyen_mon' ? 'bg-emerald-600 text-white shadow-md' : 'text-slate-500 hover:text-emerald-600 hover:bg-white'}`}>
-                          <Briefcase className="w-4 h-4"/> Chuyên Môn
-                      </button>
-                    </div>
-                </div>
-              )}
+
 
               <div className="hidden sm:flex justify-center mb-8 gap-4 bg-white/60 p-2 rounded-2xl shadow-sm border border-white/50 w-fit mx-auto">
                  <div className="px-4 py-3 text-sm font-black text-slate-400 uppercase tracking-widest flex items-center border-r border-slate-200">Chọn Khối</div>
-                 {GRADES.map(g => (
+                 {navigationGrades.map(g => (
                     <button key={g} onClick={() => { setSelectedGrade(g); setSelectedSubject(null); setIsTextbookExpanded(true); }} className={`px-8 py-3 rounded-xl font-black text-lg transition-all ${selectedGrade === g ? 'bg-blue-600 text-white shadow-lg scale-105' : 'bg-slate-50 text-slate-600 hover:bg-blue-100 hover:text-blue-700'}`}>
                        Khối {g}
                     </button>
@@ -9565,7 +8658,7 @@ ${lessonBlocks}`;
                      <h2 className="text-lg font-black text-slate-800 uppercase tracking-widest">{role === 'teacher' && teacherTab === 'chuyen_mon' ? 'Nghiệp vụ' : 'Khối Lớp'}</h2>
                   </div>
                   <div className="grid grid-cols-2 gap-4 flex-1">
-                     {GRADES.map(grade => (
+                     {navigationGrades.map(grade => (
                          <button key={grade} onClick={() => setSelectedGrade(grade)} className={`bg-white/80 border border-white/60 shadow-xl rounded-3xl p-5 text-center active:scale-95 flex flex-col items-center justify-center min-h-[140px]`}>
                              <div className={`w-16 h-16 mx-auto rounded-full flex items-center justify-center mb-3 shadow-inner border ${role === 'teacher' && teacherTab === 'chuyen_mon' ? 'bg-emerald-50 border-emerald-200 text-emerald-600' : 'bg-blue-50 border-blue-200 text-blue-600'}`}>
                                  <span className="text-3xl font-black drop-shadow-sm">{grade}</span>
@@ -9586,58 +8679,14 @@ ${lessonBlocks}`;
 
                   {selectedGrade && (
                      <div className="flex-1 flex flex-col gap-6 sm:gap-8 animate-in fade-in zoom-in-95 duration-300">
-                        {SHOW_LEGACY_PROFESSIONAL_PANEL && role === 'teacher' && teacherTab === 'chuyen_mon' ? (
-                            <div className="bg-white/80 backdrop-blur-md rounded-[2rem] p-6 sm:p-10 shadow-xl border border-white w-full max-w-4xl mx-auto">
-                               <h2 className="text-2xl font-black text-emerald-900 mb-8 uppercase text-center border-b-2 border-emerald-100 pb-4">Công tác chuyên môn Khối {selectedGrade}</h2>
-                               <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                                  <div className="bg-indigo-50 rounded-[1.5rem] border border-indigo-200 p-6 flex flex-col text-center hover:shadow-lg transition-all group">
-                                     <div className="bg-indigo-600 w-16 h-16 rounded-2xl mx-auto mb-4 flex items-center justify-center text-white shadow-md group-hover:scale-110 transition-transform"><Pencil className="w-8 h-8" /></div>
-                                     <h3 className="font-black text-lg text-indigo-900 uppercase tracking-tight mb-2">Nhập điểm</h3>
-                                     <p className="text-xs text-indigo-700 font-bold mb-4 flex-1">Mở bảng nhập nhanh theo đúng khối và môn đang chọn.</p>
-                                     <select className="mb-4 p-3 rounded-xl border border-indigo-200 bg-white font-bold text-xs focus:outline-none focus:border-indigo-500" onChange={(e) => setPlanSubject(e.target.value)} value={planSubject}>
-                                         <option value="">-- Chọn Môn --</option>
-                                         {SUBJECTS.map(s => <option key={`quick-input-subject-${s}`} value={s}>{s}</option>)}
-                                     </select>
-                                     <button
-                                       type="button"
-                                       onClick={() => openQuickScoreWorkspace({ grade: selectedGrade, subjectName: planSubject, locked: true })}
-                                       disabled={!planSubject}
-                                       className="mt-auto bg-indigo-600 text-white font-black py-3 rounded-xl uppercase tracking-widest text-xs shadow-md disabled:opacity-50 disabled:cursor-not-allowed hover:bg-indigo-700 active:scale-95"
-                                     >
-                                       MỞ NHẬP ĐIỂM
-                                     </button>
-                                  </div>
-                                  <div className="bg-emerald-50 rounded-[1.5rem] border border-emerald-200 p-6 flex flex-col text-center hover:shadow-lg transition-all group">
-                                     <div className="bg-emerald-600 w-16 h-16 rounded-2xl mx-auto mb-4 flex items-center justify-center text-white shadow-md group-hover:scale-110 transition-transform"><Briefcase className="w-8 h-8" /></div>
-                                     <h3 className="font-black text-lg text-emerald-900 uppercase tracking-tight mb-2">Up Kế hoạch Bài Dạy</h3>
-                                     <p className="text-xs text-emerald-700 font-bold mb-6 flex-1">Nộp tài liệu kế hoạch bài dạy của bạn lên kho lưu trữ của tổ chuyên môn.</p>
-                                     <div className="relative">
-                                         <label htmlFor="plan-upload" className="flex flex-col items-center justify-center w-full border-2 border-dashed border-emerald-300 p-4 rounded-xl cursor-pointer hover:bg-emerald-100 transition-colors bg-white">
-                                            <UploadCloud className="w-6 h-6 text-emerald-400 mb-2"/>
-                                            <span className="text-[11px] font-black text-emerald-700 text-center px-2 truncate w-full">{planFile ? planFile.name : "Nhấp/Kéo file vào đây"}</span>
-                                         </label>
-                                         <input id="plan-upload" type="file" className="hidden" onChange={(e) => setPlanFile(e.target.files[0])} />
-                                     </div>
-                                     <select className="mt-4 p-3 rounded-xl border border-emerald-200 bg-white font-bold text-xs focus:outline-none focus:border-emerald-500" onChange={(e) => setPlanSubject(e.target.value)} value={planSubject}>
-                                         <option value="">-- Chọn Môn --</option>
-                                         {SUBJECTS.map(s => <option key={s} value={s}>{s}</option>)}
-                                     </select>
-                                     {planStatus && <div className={`mt-4 p-2 rounded-lg text-[10px] font-black ${planStatus.includes('thành công') ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'}`}>{planStatus}</div>}
-                                     <button onClick={handleTeacherPlanUpload} disabled={isUploadingPlan || !planFile || !planSubject} className="mt-4 bg-emerald-600 text-white font-black py-3 rounded-xl uppercase tracking-widest text-xs shadow-md disabled:opacity-50 hover:bg-emerald-700 active:scale-95 flex justify-center items-center gap-2">
-                                         {isUploadingPlan ? <><Loader2 className="w-4 h-4 animate-spin"/> ĐANG GỬI...</> : "NỘP KẾ HOẠCH BÀI DẠY"}
-                                     </button>
-                                  </div>
-                               </div>
-                            </div>
-                        ) : (
-                            <>
+                        {<>
                                <div className="bg-white/80 backdrop-blur-md rounded-[1.5rem] sm:rounded-[2rem] p-4 sm:p-8 border border-white shadow-xl">
                                   <div className="flex items-center gap-3 mb-4 sm:mb-6 border-b-2 border-blue-100/50 pb-4">
                                      <div className="bg-blue-600 p-2 rounded-xl text-white shadow-md"><BookOpen className="w-5 h-5 sm:w-6 sm:h-6"/></div>
                                      <h2 className="text-base sm:text-2xl font-black text-slate-800 uppercase tracking-widest">Môn dạy</h2>
                                   </div>
                                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3">
-                                     {SUBJECTS.map((s, index) => (
+                                     {navigationSubjects.map((s, index) => (
                                         <button key={s} onClick={() => { setSelectedSubject(s); setPlanSubject(s); setShowLearningResultsWorkspace(false); setQuickScoreLockedContext(null); }} className={`${getSubjectCardStyle(index)} border hover:shadow-md rounded-xl p-3 sm:p-4 flex items-center justify-center transition-all group active:scale-95 text-center h-[58px] sm:h-[66px]`}>
                                            <span className="font-black text-current text-xs sm:text-sm uppercase tracking-tight leading-snug">{getSubjectShortName(s)}</span>
                                         </button>
@@ -9684,8 +8733,7 @@ ${lessonBlocks}`;
                                       </div>
                                   )}
                                </div>
-                            </>
-                        )}
+                            </>}
                      </div>
                   )}
               </div>
@@ -9771,7 +8819,7 @@ ${lessonBlocks}`;
                     {planStatus && <div className={`mt-2 rounded-lg px-3 py-2 text-[10px] font-black ${planStatus.includes('thành công') ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'}`}>{planStatus}</div>}
                   </div>
                 </div>
-                {showLearningResultsWorkspace && quickScoreLockedContext && renderTeacherQuickScorePanel()}
+                {showLearningResultsWorkspace && quickScoreLockedContext && <Suspense fallback={<p className="p-4 text-blue-700">Đang mở bảng điểm...</p>}><TeacherQuickScorePanel scope={{ quickScoreGrade, quickScoreLockedContext, selectedSubject, canWriteCurrentSchoolYear, activeSchoolYear, user }} selection={{ quickVisibleSemesters, setQuickVisibleSemesters, quickSelectedSubjects, quickSelectedSemesters, quickSubjectColSpanBySubject }} draft={{ quickScorebookSavingKey, quickScorebookDocId, quickScorebookEdits, setQuickScorebookEdits, quickInputDrafts, setQuickInputDrafts, quickScorebookLoaded }} actions={{ setShowLearningResultsWorkspace, setQuickScoreLockedContext, showNotification, setActiveQuickScoreRowKey, toggleQuickPriorityStudent, handleQuickScoreInputKeyDown, saveQuickScoreValue }} table={{ quickScoreStudents, getQuickScoreColumnWidth, getQuickScoreStudentKey, quickPriorityStudentIds, activeQuickScoreRowKey, quickVisibleScoreColumnsBySubject, getQuickScoreKey, getQuickScoreInputValue, getQuickSemesterTermAverage, getQuickSemesterScoreResult, formatScoreDisplayValue, getQuickScoreTextClass, quickQuizScoreKeySet, parseScoreNumber, getQuickAcademicResult }} /></Suspense>}
               </div>
             )}
           </div>
@@ -9927,7 +8975,7 @@ ${lessonBlocks}`;
                   </div>
                 ) : (
                   <div ref={studentContentRef} className="lesson-readable-content lesson-editor-viewport p-4 sm:p-10 text-lg sm:text-xl leading-relaxed student-content">
-                    {noteHtml ? <div dangerouslySetInnerHTML={{ __html: noteHtml }} /> : <p className="text-slate-300 font-bold text-center mt-10 sm:mt-20 uppercase tracking-[0.2em]">Chưa có nội dung từ thầy cô.</p>}
+                    {noteHtml ? <div dangerouslySetInnerHTML={{ __html: sanitizeHtml(noteHtml) }} /> : <p className="text-slate-300 font-bold text-center mt-10 sm:mt-20 uppercase tracking-[0.2em]">Chưa có nội dung từ thầy cô.</p>}
                   </div>
                 )}
               </div>
@@ -10209,7 +9257,7 @@ ${lessonBlocks}`;
                               <div
                                 ref={essayPromptRef}
                                 className="rounded-xl border border-amber-100 bg-white p-3 sm:p-4 text-xs sm:text-sm font-bold text-slate-800 leading-relaxed student-content"
-                                dangerouslySetInnerHTML={{ __html: formatEssayPromptHtml(studentEssayText) }}
+                                dangerouslySetInnerHTML={{ __html: sanitizeHtml(formatEssayPromptHtml(studentEssayText)) }}
                               />
                             </div>
                           )}
@@ -10330,7 +9378,7 @@ ${lessonBlocks}`;
                                   {q.displayOptions.map((opt, optIndex) => {
                                     const checked = studentQuizAnswers[q.id] === opt.id;
                                     const submitted = studentSelfQuizSubmitted || activeStudentIsReadOnly;
-                                    const showCorrection = submitted || !!studentQuizResult?.needsRetake;
+                                    const showCorrection = !SERVER_QUIZ_ENABLED && (submitted || !!studentQuizResult?.needsRetake);
                                     const isCorrectOption = opt.id === q.correctOptionId;
                                     const isWrongSelection = showCorrection && checked && !isCorrectOption;
                                     const label = String.fromCharCode(65 + optIndex);
@@ -10369,7 +9417,7 @@ ${lessonBlocks}`;
                       {studentSelfQuizSubmitted && activeSelfQuiz.showScoreAfterSubmit === false && <div className="bg-blue-50 border border-blue-100 rounded-xl p-3 text-center text-blue-700 text-sm font-black">Đã ghi nhận bài làm. Giáo viên sẽ xem điểm trong bảng điểm.</div>}
                     </div>
                   ) : (
-                    <div ref={studentQuizContentRef} className="student-quiz-viewport p-4 sm:p-8 text-base sm:text-lg leading-relaxed student-content"><div dangerouslySetInnerHTML={{ __html: quizHtml }} /></div>
+                    <div ref={studentQuizContentRef} className="student-quiz-viewport p-4 sm:p-8 text-base sm:text-lg leading-relaxed student-content"><div dangerouslySetInnerHTML={{ __html: sanitizeHtml(quizHtml) }} /></div>
                   )
                 )}
               </div>
@@ -10670,9 +9718,9 @@ ${lessonBlocks}`;
                           <label htmlFor="student-file-upload" onPointerDown={markSubmissionFilePickerActive} onClick={markSubmissionFilePickerActive} className={`flex items-center justify-between gap-3 w-full border border-dashed border-sky-300 bg-sky-50/60 hover:bg-sky-50 px-4 py-3 sm:px-5 sm:py-4 rounded-xl transition-colors ${studentEssaySubmitted ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'}`}>
                               <Download className="w-5 h-5 text-sky-500 shrink-0"/>
                               <span className="text-xs sm:text-sm font-black text-sky-800 text-left min-w-0 flex-1 truncate">{submissionFile ? submissionFile.name : "Nhấp vào đây để chọn tệp"}</span>
-                              <span className="hidden sm:inline text-[10px] text-slate-400 font-black uppercase tracking-wider whitespace-nowrap">Hỗ trợ Ảnh, Word, PDF... (Dưới 25MB)</span>
+                              <span className="hidden sm:inline text-[10px] text-slate-400 font-black uppercase tracking-wider whitespace-nowrap">JPG, PNG, WebP, PDF (tối đa 20 MB)</span>
                           </label>
-                          <input id="student-file-upload" type="file" className="hidden" disabled={studentEssaySubmitted || activeStudentIsReadOnly} onClick={markSubmissionFilePickerActive} onChange={(e) => { handleSelectSubmissionFile(e.target.files?.[0]); e.target.value = null; }} />
+                          <input id="student-file-upload" type="file" accept={STUDENT_UPLOAD_ACCEPT} className="hidden" disabled={studentEssaySubmitted || activeStudentIsReadOnly} onClick={markSubmissionFilePickerActive} onChange={(e) => { handleSelectSubmissionFile(e.target.files?.[0]); e.target.value = null; }} />
                        </div>
                        {submissionFile && (
                           <div className="mt-3 rounded-2xl border border-emerald-100 bg-emerald-50 p-3 space-y-3">
@@ -10725,7 +9773,7 @@ ${lessonBlocks}`;
               </button>
             </div>
             <div ref={quickQuizPreviewRef} className="teacher-content p-4 sm:p-7 text-base sm:text-lg leading-relaxed overflow-y-auto">
-              <div dangerouslySetInnerHTML={{ __html: getCurrentQuizContent() }} />
+              <div dangerouslySetInnerHTML={{ __html: sanitizeHtml(getCurrentQuizContent()) }} />
             </div>
           </div>
         </div>
@@ -10885,7 +9933,7 @@ ${lessonBlocks}`;
               {aiError && <div className="bg-rose-50 text-rose-600 p-4 rounded-2xl border-2 border-rose-100 font-black text-center uppercase tracking-widest">{aiError}</div>}
               {aiResponse && (
                 <div className="bg-white border-4 border-emerald-50 rounded-3xl p-4 sm:p-8 shadow-xl">
-                  <div ref={aiResponseContentRef} className="ai-response-content prose prose-lg sm:prose-xl max-w-none font-medium leading-relaxed" dangerouslySetInnerHTML={{ __html: formatAiText(aiResponse) }} />
+                  <div ref={aiResponseContentRef} className="ai-response-content prose prose-lg sm:prose-xl max-w-none font-medium leading-relaxed" dangerouslySetInnerHTML={{ __html: sanitizeHtml(formatAiText(aiResponse)) }} />
                   <div className="mt-6 grid grid-cols-1 sm:flex sm:justify-end gap-3 border-t-4 border-slate-50 pt-6">
                     <button onClick={appendAiToQuickQuiz} className="bg-emerald-600 text-white px-6 py-4 rounded-2xl font-black flex items-center justify-center gap-3 shadow-lg hover:bg-emerald-700 transition-all active:scale-95"><Save className="w-5 h-5" />Phát hỏi đáp nhanh</button>
                     <button onClick={appendAiToQuiz} className="bg-indigo-600 text-white px-6 py-4 rounded-2xl font-black flex items-center justify-center gap-3 shadow-lg hover:bg-indigo-700 transition-all active:scale-95"><CheckCircle2 className="w-5 h-5" />Đưa vào khung đề</button>
@@ -10919,7 +9967,7 @@ ${lessonBlocks}`;
                   <div className="font-black uppercase text-emerald-900">Hỏi đáp nhanh</div>
                   <div className="mt-1 text-sm font-bold text-emerald-700">Chọn đáp án và nộp bài. Cần đạt tối thiểu 8/10 để qua.</div>
                 </div>
-                {role !== 'teacher' && <input value={studentQuizName} onChange={(e) => setStudentQuizName(e.target.value)} placeholder="Nhập họ tên..." className="mb-4 w-full rounded-xl border border-slate-200 px-4 py-3 text-sm font-bold outline-none focus:border-emerald-400" />}
+                {role === 'student' && <input value={studentQuizName} onChange={(e) => setStudentQuizName(e.target.value)} placeholder="Nhập họ tên..." className="mb-4 w-full rounded-xl border border-slate-200 px-4 py-3 text-sm font-bold outline-none focus:border-emerald-400" />}
                 <div className="space-y-3">
                   {viewingQuickQuizQuestions.map((q, qIndex) => (
                     <div key={q.id} className="rounded-2xl border border-slate-200 p-4">
@@ -10927,12 +9975,12 @@ ${lessonBlocks}`;
                       <div className="mt-3 grid grid-cols-1 gap-2">
                         {q.displayOptions.map((opt, optIndex) => {
                           const checked = quickMaterialAnswers[q.id] === opt.id;
-                          const showCorrection = role === 'teacher' || !!quickMaterialResult;
+                          const showCorrection = ['teacher', 'admin'].includes(role) || !SERVER_QUIZ_ENABLED && !!quickMaterialResult;
                           const isCorrectOption = opt.id === q.correctOptionId;
                           const isWrongSelection = showCorrection && checked && !isCorrectOption;
                           return (
                             <label key={opt.id} className={`flex cursor-pointer items-start gap-3 rounded-xl border p-3 text-sm font-bold ${showCorrection && isCorrectOption ? 'border-emerald-300 bg-emerald-50 text-emerald-900' : isWrongSelection ? 'border-rose-300 bg-rose-50 text-rose-900' : checked ? 'border-blue-300 bg-blue-50 text-blue-900' : 'border-slate-200 bg-slate-50 text-slate-700'}`}>
-                              <input type="radio" name={`quick-material-${q.id}`} checked={checked} disabled={role === 'teacher' || (quickMaterialResult && !quickMaterialResult.needsRetake)} onChange={() => { setQuickMaterialAnswers(prev => ({ ...prev, [q.id]: opt.id })); if (quickMaterialResult?.needsRetake) setQuickMaterialResult(null); if (quickMaterialWarning) setQuickMaterialWarning(''); }} className="mt-1" />
+                              <input type="radio" name={`quick-material-${q.id}`} checked={checked} disabled={role !== 'student' || (quickMaterialResult && !quickMaterialResult.needsRetake)} onChange={() => { setQuickMaterialAnswers(prev => ({ ...prev, [q.id]: opt.id })); if (quickMaterialResult?.needsRetake) setQuickMaterialResult(null); if (quickMaterialWarning) setQuickMaterialWarning(''); }} className="mt-1" />
                               <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-xs font-black">{String.fromCharCode(65 + optIndex)}</span>
                               <span className="flex-1 whitespace-pre-wrap">{opt.text}</span>
                               {showCorrection && isCorrectOption && <span className="text-[10px] font-black uppercase text-emerald-700">Đúng</span>}
@@ -10945,8 +9993,9 @@ ${lessonBlocks}`;
                   ))}
                 </div>
                 {quickMaterialWarning && <div className="mt-4 rounded-xl border border-rose-100 bg-rose-50 p-3 text-sm font-black text-rose-700">{quickMaterialWarning}</div>}
+                {SERVER_QUIZ_ENABLED && role !== 'student' && quickServer.response?.migrationRequired && <button className="mt-3 rounded bg-blue-600 px-4 py-2 text-white" onClick={async () => { try { const old = quickServer.response.quiz; await requestServerQuiz('publish', { kind: 'material', quizId: viewingMaterial.id, expectedVersion: null, expectedLegacyUpdatedAt: old.updatedAt ?? null, quiz: { ...old, content: old.sourceContent || '', deliveryMode: 'auto', isPublished: true, publishAt: null } }); quickServer.reload(); showNotification('Đã chuyển đề nhanh sang ngân hàng riêng.'); } catch (error) { showNotification(error.message, 'error'); } }}>Chuyển đề cũ sang máy chủ</button>}
                 {quickMaterialResult && !quickMaterialResult.needsRetake && <div className="mt-4 rounded-xl border border-emerald-100 bg-emerald-50 p-3 text-sm font-black text-emerald-700">Đã qua bài: {formatPointScore(quickMaterialResult.score)}/{formatPointScore(quickMaterialResult.total || 10)}</div>}
-                {role !== 'teacher' && <button type="button" onClick={handleSubmitQuickMaterialQuiz} disabled={isSubmittingQuickMaterial || (quickMaterialResult && !quickMaterialResult.needsRetake)} className="mt-5 w-full rounded-2xl bg-emerald-600 px-5 py-4 text-sm font-black uppercase text-white shadow-lg disabled:opacity-50">{isSubmittingQuickMaterial ? 'Đang nộp...' : quickMaterialResult?.needsRetake ? 'Nộp lại' : 'Nộp hỏi đáp nhanh'}</button>}
+                {role === 'student' && <button type="button" onClick={handleSubmitQuickMaterialQuiz} disabled={isSubmittingQuickMaterial || (quickMaterialResult && !quickMaterialResult.needsRetake)} className="mt-5 w-full rounded-2xl bg-emerald-600 px-5 py-4 text-sm font-black uppercase text-white shadow-lg disabled:opacity-50">{isSubmittingQuickMaterial ? 'Đang nộp...' : quickMaterialResult?.needsRetake ? 'Nộp lại' : 'Nộp hỏi đáp nhanh'}</button>}
               </div>
             )}
             {viewingMaterial.type !== 'quick_quiz' && isYouTubeUrl(viewingMaterial.url) && (

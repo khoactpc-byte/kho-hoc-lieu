@@ -1,6 +1,15 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { parseScoreNumber, calculateSemesterAverage, calculateYearAverage, academicSummary } from '../utils/scorebookCalculations';
+import { saveStudentRecord, deleteStudentRecord, retryStudentSync, retryPendingStudentSync } from '../services/studentMutations';
+import { processRecords } from '../utils/bulkOperations';
+import { stableRecordId } from '../utils/idempotency';
+import { requestJsonp } from '../services/jsonpClient';
+import { REGISTRATION_WEB_APP_URL } from '../config/registration';
+import { findPromotionTarget, promotionSourceVersions } from '../utils/promotionTargets';
+import { studentRowView } from '../utils/studentScoreKeys';
+import { sanitizeHtml } from '../utils/safeHtml';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { addDoc, collection, deleteDoc, doc, onSnapshot, setDoc } from 'firebase/firestore';
+import { collection, deleteDoc, doc, onSnapshot, setDoc } from 'firebase/firestore';
 import {
   ArrowDownAZ,
   ArrowUpDown,
@@ -34,6 +43,8 @@ import {
 } from 'lucide-react';
 import { appId, db } from '../config/firebase';
 import { IMAGE_DRIVE_FOLDER_ID, postAppsScript } from '../utils/helpers';
+import { compareSchoolRosterStudents, getSchoolName, getStudentEntryGrade, getStudentSchoolCode, normalizeSchoolCode, normalizeSchoolYearKey, promoteSchoolClassName, SCHOOL_OPTIONS } from '../utils/schoolClasses';
+import { findDropoutContinuation } from '../utils/studentJourney';
 import scorebookTemplate from '../data/scorebookTemplate.json';
 
 const STUDENT_FIELDS = [
@@ -52,7 +63,11 @@ const STUDENT_FIELDS = [
   { key: 'hometownWard', label: 'Xã quê quán' },
   { key: 'identityCode', label: 'Mã định danh' },
   { key: 'phone', label: 'Số điện thoại' },
-  { key: 'className', label: 'Lớp học', required: true },
+  { key: 'schoolCode', label: 'Cơ sở' },
+  { key: 'classSuffix', label: 'Ký hiệu lớp' },
+  { key: 'entryGrade', label: 'Khối nhập học' },
+  { key: 'grade', label: 'Khối hiện tại' },
+  { key: 'className', label: 'Lớp hiện tại', required: true },
   { key: 'enrollmentYear', label: 'Năm nhập học' },
   { key: 'address', label: 'Số nhà / Khu phố' },
   { key: 'ward', label: 'Xã / Phường' },
@@ -100,6 +115,12 @@ const ADMIN_EDIT_FIELD_ORDER = [
   'hometownWard',
   'identityCode',
   'phone',
+  'schoolName',
+  'schoolCode',
+  'classSuffix',
+  'classHistory',
+  'entryGrade',
+  'grade',
   'className',
   'enrollmentYear',
   'province',
@@ -150,6 +171,8 @@ const DEFAULT_VISIBLE_COLUMNS = [
   'birthProvince',
   'identityCode',
   'phone',
+  'entryGrade',
+  'grade',
   'className',
   'transcriptUrl'
 ];
@@ -161,6 +184,8 @@ const REGISTRATION_DEFAULT_VISIBLE_COLUMNS = [
   'birthProvince',
   'identityCode',
   'phone',
+  'entryGrade',
+  'grade',
   'className',
   'enrollmentYear',
   'transcriptUrl'
@@ -171,6 +196,8 @@ const COMPACT_VISIBLE_COLUMNS = [
   'enrollmentYear',
   'birthDate',
   'gender',
+  'entryGrade',
+  'grade',
   'className'
 ];
 
@@ -196,7 +223,6 @@ const MOBILE_VISIBLE_COLUMNS = [
 
 const EMPTY_FILTER_VALUE = '__EMPTY__';
 const HAS_DOCUMENT_FILTER_VALUE = '__HAS_DOCUMENT__';
-const REGISTRATION_WEB_APP_URL = 'https://script.google.com/macros/s/AKfycby6e5ya2k105Oe7i65k9viysIZbHKOF-9CosueiNy1GvnHJbVw1lHB_0eezSxO91ls/exec';
 const STUDENT_DATA_SHEET_URL = 'https://docs.google.com/spreadsheets/d/1oIGnM9Dw_3bUl8xfTKYE0XKsBvJWHb-J7qvD11fDcMM/edit?gid=0#gid=0';
 const ADDRESS_DIRECTORY_CACHE_KEY = 'khl-address-directory-v2';
 const STUDENT_DB_PREFS_KEY = 'khl-student-db-prefs-v1';
@@ -263,8 +289,20 @@ const HEADER_MAP = {
   'mã định danh': 'identityCode',
   'so dien thoai': 'phone',
   'số điện thoại': 'phone',
+  'khoi': 'entryGrade',
+  'khối': 'entryGrade',
+  'khoi nhap hoc': 'entryGrade',
+  'khối nhập học': 'entryGrade',
+  'khoi hoc': 'entryGrade',
+  'khối học': 'entryGrade',
+  'khoi hien tai': 'grade',
+  'khối hiện tại': 'grade',
+  'lop': 'className',
+  'lớp': 'className',
   'lop hoc': 'className',
   'lớp học': 'className',
+  'lop hien tai': 'className',
+  'lớp hiện tại': 'className',
   'nam nhap hoc': 'enrollmentYear',
   'năm nhập học': 'enrollmentYear',
   'so nha / khu pho': 'address',
@@ -363,6 +401,12 @@ const emptyStudent = {
   gender: '',
   identityCode: '',
   phone: '',
+  schoolName: '',
+  schoolCode: '',
+  classSuffix: '',
+  classHistory: {},
+  entryGrade: '',
+  grade: '',
   className: '',
   enrollmentYear: '',
   address: '',
@@ -458,7 +502,13 @@ const registrationToStudentData = (registration = {}, currentSchoolYear = '') =>
   accessCode: pickText(registration.accessCode, registration.maHocSinh).toUpperCase().replace(/\s/g, ''),
   identityCode: pickText(registration.identityCode, registration.maDinhDanh).replace(/^'/, ''),
   phone: pickText(registration.phone, registration.soDienThoai).replace(/^'/, ''),
-  className: pickText(registration.currentClassName, registration.className, registration.lopHoc),
+  schoolName: pickText(registration.schoolName, registration.coSoDangKy, registration.school),
+  schoolCode: pickText(registration.schoolCode, registration.maCoSo, registration.schoolKey, registration.coSoDangKy),
+  classSuffix: pickText(registration.classSuffix, registration.hauToLop),
+  classHistory: registration.classHistory && typeof registration.classHistory === 'object' ? registration.classHistory : {},
+  entryGrade: pickText(registration.entryGrade, registration.enrollmentGrade, registration.admissionGrade, registration.grade, registration.khoi),
+  grade: pickText(registration.currentGrade, registration.khoiHienTai),
+  className: pickText(registration.currentClassName, registration.lopHienTai, registration.current_class_name, registration.className, registration.lopHoc),
   enrollmentYear: pickText(registration.enrollmentYear, registration.tinhTrangHocSinh, registration.hocTuNam),
   address: pickText(registration.address, registration.soNha),
   ward: pickText(registration.ward, registration.xaPhuong),
@@ -512,11 +562,21 @@ const normalizeStudentRecord = (student = {}, fallbackSchoolYear = '') => {
       normalized.isClassLeader = Boolean(student.isClassLeader);
       return;
     }
+    if (key === 'classHistory') {
+      normalized.classHistory = student.classHistory && typeof student.classHistory === 'object' && !Array.isArray(student.classHistory)
+        ? { ...student.classHistory }
+        : {};
+      return;
+    }
     normalized[key] = safePlainValue(student[key] ?? emptyStudent[key]);
   });
   normalized.id = safePlainValue(student.id);
   normalized.previousStudentId = safePlainValue(student.previousStudentId);
   normalized.schoolYear = safePlainValue(student.schoolYear || fallbackSchoolYear);
+  normalized.schoolCode = getStudentSchoolCode({ ...student, ...normalized });
+  if (normalized.schoolCode !== 'UNKNOWN' || normalizeSchoolCode(student.schoolCode) === 'UNKNOWN') {
+    normalized.schoolName = getSchoolName(normalized.schoolCode);
+  }
   normalized.fullName = formatStudentFullName(normalized.fullName);
   normalized.birthDate = formatDisplayDate(normalized.birthDate);
   normalized.identityCode = normalized.identityCode.replace(/^'/, '');
@@ -524,6 +584,14 @@ const normalizeStudentRecord = (student = {}, fallbackSchoolYear = '') => {
   normalized.fatherPhone = normalized.fatherPhone.replace(/^'/, '');
   normalized.motherPhone = normalized.motherPhone.replace(/^'/, '');
   normalized.accessCode = normalized.accessCode.replace(/\s+/g, '').toUpperCase();
+  normalized.entryGrade = getStudentEntryGrade({
+    ...student,
+    entryGrade: student.entryGrade || normalized.entryGrade,
+    schoolYear: normalized.schoolYear,
+    className: normalized.className,
+    enrollmentYear: normalized.enrollmentYear
+  }, fallbackSchoolYear);
+  normalized.grade = getGradeFromClass(normalized.className) || getGradeFromClass(normalized.grade);
   normalized.status = normalized.status === 'dropped' ? 'dropped' : 'active';
   return normalized;
 };
@@ -574,7 +642,6 @@ const decodeDisplayText = (value) => {
     .replace(/u([0-9a-fA-F]{4})/g, (_, code) => String.fromCharCode(parseInt(code, 16)));
 };
 
-const compactSchoolYearLabel = (schoolYear = '') => String(schoolYear || '').replace(/\s*-\s*/g, '-');
 
 const getGradeFromClass = (className = '') => {
   const match = String(className || '').trim().match(/(?:^|\D)(1[0-2]|[1-9])(?:\D|$)/);
@@ -620,17 +687,9 @@ const getYearStart = (year = '') => {
   return match ? Number(match[0]) : null;
 };
 
-const parseScoreNumber = (value) => {
-  const normalized = String(value ?? '').trim().replace(',', '.');
-  if (!normalized) return null;
-  const number = Number(normalized);
-  return Number.isFinite(number) ? number : null;
-};
 
-const formatScoreNumber = (value) => {
-  if (!Number.isFinite(value)) return '';
-  return (Math.round(value * 10) / 10).toFixed(1);
-};
+
+
 
 const getScorebookEditText = (map = {}, key, fallback = '') => {
   const normalizedKey = String(key || '');
@@ -647,7 +706,8 @@ const getCodePrefix = (student = {}, schoolYear = '') => {
   const currentStart = getYearStart(student.schoolYear || schoolYear);
   const currentGrade = Number(getGradeFromClass(student.className) || 0);
   const yearsPassed = enrollmentStart && currentStart ? Math.max(0, currentStart - enrollmentStart) : 0;
-  const entryGrade = currentGrade ? Math.max(1, currentGrade - yearsPassed) : 0;
+  const entryGrade = Number(getStudentEntryGrade(student, schoolYear))
+    || (currentGrade ? Math.max(1, currentGrade - yearsPassed) : 0);
   const year = getYear2(enrollmentYear);
   const grade = entryGrade || getGradeFromClass(student.className) || '0';
   return `HS${year}${grade}`;
@@ -668,30 +728,7 @@ const nextSequentialCode = (student = {}, existingCodes = new Set(), schoolYear 
   return code;
 };
 
-const assignSequentialCodesByOrder = (studentsForOrder = [], targets = [], existingCodes = new Set(), schoolYear = '') => {
-  const targetSet = new Set(targets);
-  const usedCodes = new Set(existingCodes);
-  const prefixCounts = new Map();
-  const result = new Map();
 
-  [...studentsForOrder].sort(compareClassThenName).forEach(student => {
-    const prefix = getCodePrefix(student, schoolYear);
-    const orderNumber = (prefixCounts.get(prefix) || 0) + 1;
-    prefixCounts.set(prefix, orderNumber);
-    if (!targetSet.has(student)) return;
-
-    let number = orderNumber;
-    let code = `${prefix}${String(number).padStart(2, '0')}`;
-    while (usedCodes.has(code)) {
-      number += 1;
-      code = `${prefix}${String(number).padStart(2, '0')}`;
-    }
-    usedCodes.add(code);
-    result.set(student, code);
-  });
-
-  return result;
-};
 
 const getPreviousSchoolYear = (schoolYear = '') => {
   const years = String(schoolYear || '').match(/\d{4}/g);
@@ -699,13 +736,10 @@ const getPreviousSchoolYear = (schoolYear = '') => {
   return `${Number(years[0]) - 1}-${Number(years[1]) - 1}`;
 };
 
-const promoteClassName = (className = '') => {
-  const text = String(className || '').trim();
-  const match = text.match(/^(\D*)([6-9])(\D?.*)$/);
-  if (!match) return text;
-  const grade = Number(match[2]);
-  if (grade >= 9) return '';
-  return `${match[1]}${grade + 1}${match[3] || ''}`;
+const getNextSchoolYear = (schoolYear = '') => {
+  const years = String(schoolYear || '').match(/\d{4}/g);
+  if (!years || years.length < 2) return '';
+  return `${Number(years[0]) + 1}-${Number(years[1]) + 1}`;
 };
 
 const getStudentIdentity = (student = {}) => (
@@ -714,17 +748,34 @@ const getStudentIdentity = (student = {}) => (
   || `${normalizeSearch(student.fullName)}_${String(student.birthDate || '').trim()}`
 );
 
-const getJourneyResult = (student = {}, prefix = '') => {
-  const grade = getGradeFromClass(student.className);
+const getJourneyResult = (student = {}, prefix = '', grade = getGradeFromClass(student.className)) => {
   const gradeValue = grade ? safePlainValue(student[`${prefix}Lop${grade}`]) : '';
   return gradeValue || safePlainValue(student[prefix]) || '';
 };
 
-const getJourneyYearCell = (student = {}) => ({
-  className: safePlainValue(student.className),
-  conduct: getJourneyResult(student, 'hanhKiem'),
-  academic: getJourneyResult(student, 'hocLuc')
-});
+const getJourneyYearCell = (student = {}, historyRecords = []) => {
+  const grade = getGradeFromClass(student.className);
+  const getYearResult = prefix => {
+    const currentResult = getJourneyResult(student, prefix, grade);
+    if (currentResult || !grade) return currentResult;
+    const field = `${prefix}Lop${grade}`;
+    return [...historyRecords].reverse()
+      .map(record => safePlainValue(record?.[field]))
+      .find(Boolean) || '';
+  };
+  return {
+    className: safePlainValue(student.className),
+    conduct: getYearResult('hanhKiem'),
+    academic: getYearResult('hocLuc')
+  };
+};
+
+const isJourneyRowDropped = (row = {}, yearFilter = '') => {
+  const statusRecord = yearFilter
+    ? row.byYear?.get(yearFilter)
+    : row.records?.[row.records.length - 1];
+  return statusRecord?.status === 'dropped';
+};
 
 const getJourneyClassMatch = (student = {}, filter = 'all') => {
   if (filter === 'all') return true;
@@ -745,16 +796,7 @@ const getJourneyScoreInputValue = (editsMap, semester, pageIndex, rowIndex, scor
   return String(getScorebookEditText(editsMap, `${semester}Score:${pageIndex}:r${rowIndex}:s${scoreIndex}`, '') || '').trim();
 };
 
-const getJourneySemesterTermAverage = (editsMap, semester, pageIndex, rowIndex) => {
-  const txScores = [0, 1, 2, 3]
-    .map(scoreIndex => parseScoreNumber(getJourneyScoreInputValue(editsMap, semester, pageIndex, rowIndex, scoreIndex)))
-    .filter(value => value !== null);
-  const midterm = parseScoreNumber(getJourneyScoreInputValue(editsMap, semester, pageIndex, rowIndex, 4));
-  const final = parseScoreNumber(getJourneyScoreInputValue(editsMap, semester, pageIndex, rowIndex, 5));
-  if (!txScores.length || midterm === null || final === null) return '';
-  const total = txScores.reduce((sum, value) => sum + value, 0) + (2 * midterm) + (3 * final);
-  return formatScoreNumber(total / (txScores.length + 5));
-};
+const getJourneySemesterTermAverage = (editsMap, semester, pageIndex, rowIndex) => { return calculateSemesterAverage(index => getJourneyScoreInputValue(editsMap, semester, pageIndex, rowIndex, index)); };
 
 const getJourneySemesterScoreResult = (editsMap, semester, pageIndex, rowIndex, scoreIndex = semester === 'hkii' ? 7 : 6) => {
   const saved = getJourneyScoreInputValue(editsMap, semester, pageIndex, rowIndex, scoreIndex);
@@ -764,22 +806,24 @@ const getJourneySemesterScoreResult = (editsMap, semester, pageIndex, rowIndex, 
     const hkiAverage = parseScoreNumber(getJourneySemesterScoreResult(editsMap, 'hki', pageIndex, rowIndex, 6));
     const hkiiAverage = parseScoreNumber(getJourneySemesterScoreResult(editsMap, 'hkii', pageIndex, rowIndex, 6));
     if (hkiAverage === null || hkiiAverage === null) return '';
-    return formatScoreNumber((hkiAverage + (2 * hkiiAverage)) / 3);
+    return calculateYearAverage(hkiAverage, hkiiAverage);
   }
   return '';
 };
 
+const getJourneyAcademicSummaryFromScorebook = (editsMap, rowIndex) => { if (rowIndex < 0) return { result: '', complete: false, completedCount: 0, requiredCount: JOURNEY_SCORE_COLUMNS.length };
+ return academicSummary(JOURNEY_SCORE_COLUMNS.filter(column=>column.academic).map(column=>getJourneySemesterScoreResult(editsMap,'hkii',column.sourcePage,rowIndex,7))); };
+
 const getJourneyAcademicResultFromScorebook = (editsMap, rowIndex) => {
-  if (rowIndex < 0) return '';
-  const scores = JOURNEY_SCORE_COLUMNS
-    .filter(column => column.academic)
-    .map(column => parseScoreNumber(getJourneySemesterScoreResult(editsMap, 'hkii', column.sourcePage, rowIndex, 7)))
-    .filter(value => value !== null);
-  if (!scores.length) return '';
-  if (scores.filter(score => score >= 8).length >= 5 && scores.every(score => score >= 6.5)) return 'Tốt';
-  if (scores.filter(score => score >= 6.5).length >= 5 && scores.every(score => score >= 5)) return 'Khá';
-  if (scores.filter(score => score >= 5).length >= 5 && scores.every(score => score >= 3.5)) return 'Đạt';
-  return 'Chưa đạt';
+  return getJourneyAcademicSummaryFromScorebook(editsMap, rowIndex).result;
+};
+
+const getPromotionOutcomeFromAcademicResult = (value = '') => {
+  const normalized = normalizeVietnameseName(value);
+  if (!normalized) return '';
+  if (/(chua dat|chua hoan thanh|khong dat|yeu|kem|o lai)/.test(normalized)) return 'repeat';
+  if (/(tot|kha|dat|hoan thanh|len lop)/.test(normalized)) return 'promote';
+  return '';
 };
 
 const makeAccessCode = (student = {}, existingCodes = new Set()) => {
@@ -957,6 +1001,8 @@ const safeFilePart = (value = '') => String(value || '')
 
 const fieldValueForExport = (student = {}, field = {}) => {
   if (field.key === 'birthDate') return formatDisplayDate(safePlainValue(student[field.key]));
+  if (field.key === 'grade') return getGradeFromClass(student.className) || getGradeFromClass(student.grade);
+  if (field.key === 'entryGrade') return getStudentEntryGrade(student, student.schoolYear);
   return safePlainValue(student[field.key]);
 };
 
@@ -1059,82 +1105,36 @@ const getEditableReportText = (element) => {
     .trim();
 };
 
-const callSheetAction = (action = '', paramsObject = {}) => new Promise((resolve, reject) => {
-  if (typeof document === 'undefined') {
-    resolve(null);
-    return;
+const callSheetAction = async (action = '', paramsObject = {}) => {
+  const response = await postAppsScript({ action: 'registrationAdminAction', registrationAction: action, params: paramsObject });
+  if (response.status !== 'success' || !response.result?.success) {
+    throw new Error(response.message || response.result?.message || 'Không cập nhật được Google Sheet.');
   }
-  const callbackName = `studentSheetSync_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-  const params = new URLSearchParams({
-    action,
-    callback: callbackName,
-    t: String(Date.now())
-  });
-  Object.entries(paramsObject).forEach(([key, value]) => {
-    if (value !== undefined && value !== null) params.set(key, String(value));
-  });
-  const script = document.createElement('script');
-  const cleanup = () => {
-    delete window[callbackName];
-    script.remove();
-  };
-  window[callbackName] = (response = {}) => {
-    cleanup();
-    if (response.success) resolve(response);
-    else reject(new Error(response.message || 'Không cập nhật được Google Sheet.'));
-  };
-  script.onerror = () => {
-    cleanup();
-    reject(new Error('Không gọi được Apps Script để cập nhật Google Sheet.'));
-  };
-  script.src = `${REGISTRATION_WEB_APP_URL}?${params.toString()}`;
-  document.body.appendChild(script);
-});
+  return response.result;
+};
 
-const loadRegistrationDataAction = (action = '', paramsObject = {}) => new Promise((resolve, reject) => {
-  if (typeof document === 'undefined') {
-    resolve({});
-    return;
+const loadRegistrationDataAction = async (action = '', params = {}, options = {}) => {
+  if (['listPending', 'listStudents'].includes(action)) {
+    const response = await postAppsScript({ action: 'registrationAdminAction', registrationAction: action, params }, options);
+    if (response.result?.success !== true) throw new Error(response.result?.message || 'Chưa tải được hồ sơ. Hãy đăng nhập Admin rồi thử lại.');
+    return response.result;
   }
-  const callbackName = `studentAddressData_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-  const params = new URLSearchParams({
-    action,
-    callback: callbackName,
-    t: String(Date.now())
-  });
-  Object.entries(paramsObject).forEach(([key, value]) => {
-    if (value !== undefined && value !== null) params.set(key, String(value));
-  });
-  const script = document.createElement('script');
-  const cleanup = () => {
-    delete window[callbackName];
-    script.remove();
-  };
-  const timeout = window.setTimeout(() => {
-    cleanup();
-    reject(new Error('Không tải được dữ liệu tỉnh/phường.'));
-  }, 9000);
-  window[callbackName] = (response = {}) => {
-    window.clearTimeout(timeout);
-    cleanup();
-    resolve(response || {});
-  };
-  script.onerror = () => {
-    window.clearTimeout(timeout);
-    cleanup();
-    reject(new Error('Không gọi được dữ liệu tỉnh/phường.'));
-  };
-  script.src = `${REGISTRATION_WEB_APP_URL}?${params.toString()}`;
-  document.body.appendChild(script);
-});
+  return requestJsonp(REGISTRATION_WEB_APP_URL, { action, ...params }, options);
+};
 
 const toSheetStudentParams = (student = {}, schoolYear = '') => ({
+  studentRecordId: student.id || '', studentKey: student.studentKey || '', syncRevision: student.syncRevision || '', syncJobId: student.sheetSync?.jobId || '',
   accessCode: student.accessCode || student.studentCode || '',
   identityCode: String(student.identityCode || '').replace(/^'/, ''),
   fullName: student.fullName || '',
   birthDate: formatDisplayDate(student.birthDate || ''),
   gender: student.gender || '',
   phone: String(student.phone || '').replace(/^'/, ''),
+  grade: getGradeFromClass(student.className) || getGradeFromClass(student.grade),
+  schoolName: getSchoolName(getStudentSchoolCode(student)),
+  schoolCode: getStudentSchoolCode(student),
+  classSuffix: String(student.className || '').trim().toUpperCase().match(/^[1-9]([A-Z][A-Z0-9-]*)$/)?.[1] || student.classSuffix || '',
+  classHistory: student.classHistory && typeof student.classHistory === 'object' ? student.classHistory : {},
   className: student.className || '',
   enrollmentYear: student.enrollmentYear || '',
   address: student.address || '',
@@ -1183,6 +1183,16 @@ const toSheetStudentParams = (student = {}, schoolYear = '') => ({
 
 const syncStudentToSheet = (student = {}, schoolYear = '') => callSheetAction('syncStudent', toSheetStudentParams(student, schoolYear));
 
+const loadStudentSheetSummary = async (schoolYear = '') => {
+  const response = await loadRegistrationDataAction('listStudents', { schoolYear });
+  if (response?.success === false) throw new Error(response.message || 'Không đọc được dữ liệu Google Sheet.');
+  const items = Array.isArray(response.items) ? response.items : [];
+  const yearKey = normalizeSchoolYearKey(schoolYear);
+  const exactYearCount = items.filter(item => normalizeSchoolYearKey(item.schoolYear) === yearKey).length;
+  const unassignedYearCount = items.filter(item => !normalizeSchoolYearKey(item.schoolYear)).length;
+  return { exactYearCount, unassignedYearCount, totalRead: items.length };
+};
+
 const STUDENT_DOCUMENTS = [
   { key: 'portraitUrl', label: 'Ảnh thẻ', filename: 'anh_the', accept: 'image/*', multiple: false },
   { key: 'birthCertificateUrl', label: 'Khai sinh', filename: 'khai_sinh', accept: 'image/*,application/pdf', multiple: true },
@@ -1212,6 +1222,7 @@ const SHEET_TO_DATABASE_SYNC_FIELDS = [
   'gender',
   'identityCode',
   'phone',
+  'entryGrade',
   'className',
   'enrollmentYear',
   'address',
@@ -1299,7 +1310,7 @@ const fileToBase64Payload = (file, documentItem = {}, student = {}) => new Promi
   reader.readAsDataURL(file);
 });
 
-export default function HocSinhManager({ students = [], currentSchoolYear, initialTab = 'current', initialTabKey = 0, user, showNotification, onBack, onOpenAttendance, onSendTestResults, onSendMailboxMessages, learningProgressRows = [], onBeforeDangerousAction }) {
+export default function HocSinhManager({ students = [], configuredClassOptions = [], currentSchoolYear, systemSchoolYear = '', initialTab = 'current', initialTabKey = 0, user, showNotification, onBack, onOpenAttendance, onSendTestResults, onSendMailboxMessages, learningProgressRows = [], onBeforeDangerousAction, onStartSchoolYearPromotion, schoolYearPromotionState = null }) {
   const [query, setQuery] = useState('');
   const [studentTab, setStudentTab] = useState(initialTab === 'countStats' ? 'current' : (initialTab || 'current'));
   const [classFilter, setClassFilter] = useState(() => {
@@ -1314,15 +1325,17 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [selectedRegistrationIds, setSelectedRegistrationIds] = useState(new Set());
   const [pendingRegistrations, setPendingRegistrations] = useState([]);
+  const registrationRequestRef = useRef(null);
+  useEffect(() => () => registrationRequestRef.current?.abort(), []);
   const [profileRequests, setProfileRequests] = useState([]);
   const [scorebookEditsByYearGrade, setScorebookEditsByYearGrade] = useState({});
-  const [attendanceDocs, setAttendanceDocs] = useState([]);
   const [isLoadingRegistrations, setIsLoadingRegistrations] = useState(false);
   const [showCodeChoiceModal, setShowCodeChoiceModal] = useState(false);
   const [showFilters, setShowFilters] = useState(false);
   const [columnFilters, setColumnFilters] = useState({});
   const [openFilterKey, setOpenFilterKey] = useState(null);
   const [editing, setEditing] = useState(null);
+  const editingOriginal = useRef(null);
   const [documentViewer, setDocumentViewer] = useState(null);
   const [uploadingDocumentKey, setUploadingDocumentKey] = useState('');
   const [showImport, setShowImport] = useState(false);
@@ -1334,6 +1347,7 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
   const [exportFormat, setExportFormat] = useState('');
   const [excelExportAction, setExcelExportAction] = useState('');
   const [showUtilitiesMenu, setShowUtilitiesMenu] = useState(false);
+  const [schoolYearPromotionPreview, setSchoolYearPromotionPreview] = useState(null);
   const [utilitiesMenuPosition, setUtilitiesMenuPosition] = useState({ top: 0, left: 12, width: 288, maxHeight: 420 });
   const utilitiesButtonRef = useRef(null);
   const [mailComposerStudents, setMailComposerStudents] = useState([]);
@@ -1347,9 +1361,31 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
   const [sharedSheetLink, setSharedSheetLink] = useState('');
   const [missingInfoReport, setMissingInfoReport] = useState('');
   const [addressDirectory, setAddressDirectory] = useState({ provinces: [], communes: {} });
+  const [quickEdit, setQuickEdit] = useState(null);
+  const [quickEditSaving, setQuickEditSaving] = useState(false);
+  const [sheetSyncStatus, setSheetSyncStatus] = useState({
+    phase: 'checking',
+    completed: 0,
+    total: 0,
+    failed: 0,
+    exactYearCount: null,
+    unassignedYearCount: 0
+  });
   const [visibleColumns, setVisibleColumns] = useState(() => {
     const saved = getStudentDbPrefs().visibleColumns;
-    if (Array.isArray(saved) && saved.includes('fullName')) return saved;
+    if (Array.isArray(saved) && saved.includes('fullName')) {
+      if (typeof window !== 'undefined' && window.innerWidth < 640) return saved;
+      const migrated = [...saved];
+      const classIndex = migrated.indexOf('className');
+      const insertBefore = migrated.indexOf('grade') >= 0 ? migrated.indexOf('grade') : classIndex;
+      const insertIndex = insertBefore >= 0 ? insertBefore : migrated.length;
+      if (!migrated.includes('entryGrade')) migrated.splice(insertIndex, 0, 'entryGrade');
+      if (!migrated.includes('grade')) {
+        const nextClassIndex = migrated.indexOf('className');
+        migrated.splice(nextClassIndex >= 0 ? nextClassIndex : migrated.length, 0, 'grade');
+      }
+      return [...new Set(migrated)];
+    }
     if (typeof window !== 'undefined' && window.innerWidth < 640) return MOBILE_VISIBLE_COLUMNS;
     return DEFAULT_VISIBLE_COLUMNS;
   });
@@ -1361,6 +1397,22 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
   );
 
   useEffect(() => {
+    if (studentTab !== 'current') return undefined;
+    let cancelled = false;
+    setSheetSyncStatus(prev => ({ ...prev, phase: 'checking', completed: 0, total: 0, failed: 0 }));
+    loadStudentSheetSummary(currentSchoolYear)
+      .then(summary => {
+        if (cancelled) return;
+        setSheetSyncStatus(prev => ({ ...prev, ...summary, phase: 'idle' }));
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setSheetSyncStatus(prev => ({ ...prev, phase: 'unavailable', exactYearCount: null }));
+      });
+    return () => { cancelled = true; };
+  }, [currentSchoolYear, studentTab]);
+
+  useEffect(() => {
     if (initialTab === 'countStats') {
       setStudentTab('current');
       setShowClassStats(true);
@@ -1369,8 +1421,10 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
     setStudentTab(initialTab || 'current');
   }, [initialTab, initialTabKey]);
 
-  const studentsCollection = collection(db, 'artifacts', appId, 'public', 'data', 'students');
-  const profileRequestsCollection = collection(db, 'artifacts', appId, 'public', 'data', 'student_profile_requests');
+  const profileRequestsCollection = useMemo(
+    () => collection(db, 'artifacts', appId, 'public', 'data', 'student_profile_requests'),
+    []
+  );
   useEffect(() => {
     if (typeof localStorage === 'undefined') return;
     try {
@@ -1404,7 +1458,7 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
         .filter(item => Object.keys(sanitizeStudentChanges(item.changes)).length > 0)
         .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)));
     });
-  }, []);
+  }, [profileRequestsCollection]);
   useEffect(() => {
     const ref = collection(db, 'artifacts', appId, 'public', 'data', 'scorebooks');
     return onSnapshot(ref, snapshot => {
@@ -1413,25 +1467,19 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
         const data = item.data() || {};
         if (String(data.sourceFile || '') !== String(scorebookTemplate.sourceFile || '')) return;
         const gradeKey = String(data.grade || '').trim();
-        const schoolYearKey = compactSchoolYearLabel(data.schoolYear || '');
+        const schoolYearKey = normalizeSchoolYearKey(data.schoolYear || '');
         if (!gradeKey || !schoolYearKey) return;
-        const mapKey = `${schoolYearKey}__${gradeKey}`;
+        const schoolCode = normalizeSchoolCode(data.schoolCode) || normalizeSchoolCode(data.schoolName);
+        if (!schoolCode) return;
+        const mapKey = `${schoolYearKey}__${gradeKey}__${schoolCode}`;
         const existing = nextMap[mapKey];
         if (!existing || Number(data.updatedAt || 0) >= Number(existing.updatedAt || 0)) {
-          nextMap[mapKey] = { edits: data.edits || {}, updatedAt: Number(data.updatedAt || 0) };
+          nextMap[mapKey] = { id: item.id, edits: data.edits || {}, updatedAt: Number(data.updatedAt || 0) };
         }
       });
       setScorebookEditsByYearGrade(nextMap);
     }, () => {
       showNotification?.('Chưa tải được dữ liệu sổ điểm để điền quá trình học.', 'error');
-    });
-  }, [showNotification]);
-  useEffect(() => {
-    const ref = collection(db, 'artifacts', appId, 'public', 'data', 'class_attendance');
-    return onSnapshot(ref, snapshot => {
-      setAttendanceDocs(snapshot.docs.map(item => ({ id: item.id, ...item.data() })));
-    }, () => {
-      showNotification?.('Chưa tải được dữ liệu điểm danh để tính rèn luyện.', 'error');
     });
   }, [showNotification]);
   const previousSchoolYear = useMemo(() => getPreviousSchoolYear(currentSchoolYear), [currentSchoolYear]);
@@ -1512,45 +1560,26 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
       .filter(student => (student.status || 'active') !== 'dropped')
       .forEach(student => {
         const grade = getGradeFromClass(student.className || student.grade || '');
-        const schoolYearKey = compactSchoolYearLabel(student.schoolYear || currentSchoolYear || '');
+        const schoolYearKey = normalizeSchoolYearKey(student.schoolYear || currentSchoolYear || '');
         if (!grade || !schoolYearKey) return;
-        const key = `${schoolYearKey}__${grade}`;
+        const key = `${schoolYearKey}__${grade}__${getStudentSchoolCode(student)}`;
         const list = map.get(key) || [];
         list.push(student);
         map.set(key, list);
       });
     map.forEach((list, key) => {
-      map.set(key, [...list].sort(compareClassThenName).slice(0, 40));
+      map.set(key, [...list].sort(compareSchoolRosterStudents));
     });
     return map;
   }, [safeStudents, currentSchoolYear]);
   const journeyScorebookResults = useMemo(() => {
     const results = new Map();
-    const countAbsences = (student = {}, schoolYear = '', grade = '') => {
-      const studentKey = getJourneyStudentKey(student);
-      return attendanceDocs.reduce((sum, item) => {
-        if (item.schoolYear && compactSchoolYearLabel(item.schoolYear) !== compactSchoolYearLabel(schoolYear)) return sum;
-        const itemGrade = getGradeFromClass(item.className || item.grade || '');
-        if (String(itemGrade || grade) !== String(grade)) return sum;
-        const records = item.records || {};
-        const attendanceRecord = records[student.id]
-          || Object.values(records).find(record => {
-            const recordKey = String(record?.studentId || record?.accessCode || record?.studentAccessCode || '').trim().toUpperCase();
-            const recordNameKey = `${normalizeSearch(record?.studentName || record?.fullName || '')}__${String(record?.birthDate || '').trim()}`;
-            return (student.id && record?.studentId === student.id)
-              || (studentKey && recordKey && studentKey === recordKey)
-              || (studentKey && recordNameKey && studentKey === recordNameKey);
-          });
-        return attendanceRecord?.status === 'CP' || attendanceRecord?.status === 'KP' ? sum + 1 : sum;
-      }, 0);
-    };
-
     safeStudents.forEach(student => {
       const grade = getGradeFromClass(student.className || student.grade || '');
       const schoolYear = student.schoolYear || currentSchoolYear || '';
-      const schoolYearKey = compactSchoolYearLabel(schoolYear);
+      const schoolYearKey = normalizeSchoolYearKey(schoolYear);
       if (!student.id || !grade || !schoolYearKey) return;
-      const yearGradeKey = `${schoolYearKey}__${grade}`;
+      const yearGradeKey = `${schoolYearKey}__${grade}__${getStudentSchoolCode(student)}`;
       const yearRows = journeyStudentsByYearGrade.get(yearGradeKey) || [];
       const selectedKey = getJourneyStudentKey(student);
       const rowIndex = yearRows.findIndex(row => row.id === student.id);
@@ -1558,18 +1587,181 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
       const scorebookEdits = scorebookEditsByYearGrade[yearGradeKey]?.edits || {};
       const hasScorebookData = Object.keys(scorebookEdits).length > 0;
       const academic = hasScorebookData && safeRowIndex >= 0
-        ? getJourneyAcademicResultFromScorebook(scorebookEdits, safeRowIndex)
+        ? getJourneyAcademicResultFromScorebook(studentRowView(scorebookEdits, student, safeRowIndex), safeRowIndex)
         : '';
-      const absenceCount = countAbsences(student, schoolYear, grade);
       results.set(student.id, {
-        academic,
-        conduct: absenceCount < 20 ? 'Tốt' : 'Khá',
-        absenceCount,
-        hasScorebookData
+        academic
       });
     });
     return results;
-  }, [attendanceDocs, currentSchoolYear, journeyStudentsByYearGrade, safeStudents, scorebookEditsByYearGrade]);
+  }, [currentSchoolYear, journeyStudentsByYearGrade, safeStudents, scorebookEditsByYearGrade]);
+
+  const buildSchoolYearPromotionPreview = async () => {
+    const sourceSchoolYear = normalizeSchoolYearKey(systemSchoolYear || currentSchoolYear);
+    const targetSchoolYear = getNextSchoolYear(sourceSchoolYear);
+    const sourceStudents = safeStudents
+      .filter(student => normalizeSchoolYearKey(student.schoolYear || sourceSchoolYear) === sourceSchoolYear);
+    const activeStudents = sourceStudents.filter(student => (student.status || 'active') !== 'dropped');
+    const targetStudents = safeStudents
+      .filter(student => normalizeSchoolYearKey(student.schoolYear || '') === normalizeSchoolYearKey(targetSchoolYear));
+    let previousSheetStudents = [];
+    const previousSourceSchoolYear = getPreviousSchoolYear(sourceSchoolYear);
+    if (previousSourceSchoolYear) {
+      try {
+        const response = await loadRegistrationDataAction('listStudents', { schoolYear: previousSourceSchoolYear });
+        if (response?.success !== false) {
+          previousSheetStudents = (Array.isArray(response.items) ? response.items : [])
+            .filter(row => normalizeSchoolYearKey(row.schoolYear) === normalizeSchoolYearKey(previousSourceSchoolYear))
+            .map(row => normalizeStudentRecord(registrationToStudentData(row, previousSourceSchoolYear), previousSourceSchoolYear));
+        }
+      } catch {
+        previousSheetStudents = [];
+      }
+    }
+
+    const findPreviousSheetStudent = (student) => {
+      const schoolCode = getStudentSchoolCode(student);
+      const sameSchoolRows = previousSheetStudents.filter(item => getStudentSchoolCode(item) === schoolCode);
+      const identityCode = String(student.identityCode || '').replace(/^'/, '').trim();
+      const accessCode = String(student.accessCode || student.studentCode || '').trim().toUpperCase();
+      const fullName = normalizeVietnameseName(student.fullName || '');
+      const birthDate = normalizeBirthDate(student.birthDate || '');
+      if (/^\d{12}$/.test(identityCode)) {
+        const matches = sameSchoolRows.filter(item => String(item.identityCode || '').replace(/^'/, '').trim() === identityCode);
+        if (matches.length === 1) return matches[0];
+      }
+      if (accessCode) {
+        const matches = sameSchoolRows.filter(item => String(item.accessCode || item.studentCode || '').trim().toUpperCase() === accessCode);
+        if (matches.length === 1) return matches[0];
+      }
+      if (fullName && birthDate) {
+        const matches = sameSchoolRows.filter(item => (
+          normalizeVietnameseName(item.fullName || '') === fullName
+          && normalizeBirthDate(item.birthDate || '') === birthDate
+        ));
+        if (matches.length === 1) return matches[0];
+      }
+      return null;
+    };
+
+    const correctedClassByStudentId = new Map();
+    const classRepairs = [];
+    activeStudents.forEach(student => {
+      const grade = getGradeFromClass(student.className || student.grade || '');
+      const classText = String(student.className || '').trim().toUpperCase().replace(/^LỚP\s*/i, '').replace(/\s+/g, '');
+      if (!/^\d$/.test(classText) || !student.id) return;
+      let correctedClassName = '';
+      if (Number(grade) <= 5) {
+        correctedClassName = `${grade}A`;
+      } else {
+        const previousStudent = findPreviousSheetStudent(student);
+        const promotedFromPrevious = promoteSchoolClassName(previousStudent?.className);
+        if (getGradeFromClass(promotedFromPrevious) === grade && /^[1-9][A-Z]/.test(promotedFromPrevious)) {
+          correctedClassName = promotedFromPrevious;
+        }
+      }
+      if (!correctedClassName) return;
+      correctedClassByStudentId.set(student.id, correctedClassName);
+      classRepairs.push({ studentId: student.id, className: correctedClassName, grade });
+    });
+
+    const studentsByGrade = new Map();
+    activeStudents.forEach(student => {
+      const grade = getGradeFromClass(student.className || student.grade || '');
+      if (!grade) return;
+      const schoolCode = getStudentSchoolCode(student);
+      const key = `${schoolCode}__${grade}`;
+      studentsByGrade.set(key, [...(studentsByGrade.get(key) || []), student]);
+    });
+    studentsByGrade.forEach((rows, key) => {
+      studentsByGrade.set(key, [...rows].sort(compareSchoolRosterStudents));
+    });
+
+    const findExistingTargetStudent = student => findPromotionTarget(student, targetStudents);
+
+    const transitions = [];
+    const completions = [];
+    const missingScores = [];
+    const invalidClasses = [];
+    const alreadyPrepared = [];
+    const repeated = [];
+    const promoted = [];
+    const scorebookGuards = new Map();
+
+    activeStudents.forEach(student => {
+      const grade = getGradeFromClass(student.className || student.grade || '');
+      const normalizedClassName = correctedClassByStudentId.get(student.id) || String(student.className || '')
+        .trim()
+        .toUpperCase()
+        .replace(/^LỚP\s*/i, '')
+        .replace(/\s+/g, '');
+      if (!grade || !/^[1-9][A-Z][A-Z0-9-]*$/.test(normalizedClassName)) {
+        invalidClasses.push(student);
+        return;
+      }
+      const existingTargetStudent = findExistingTargetStudent(student);
+
+      const schoolCode = getStudentSchoolCode(student);
+      const rowsInGrade = studentsByGrade.get(`${schoolCode}__${grade}`) || [];
+      const rowIndex = rowsInGrade.findIndex(item => item.id === student.id);
+      const scorebookEdits = scorebookEditsByYearGrade[`${normalizeSchoolYearKey(sourceSchoolYear)}__${grade}__${schoolCode}`]?.edits || {};
+      const scorebookSummary = getJourneyAcademicSummaryFromScorebook(studentRowView(scorebookEdits, student, rowIndex), rowIndex);
+      const storedAcademicResult = getJourneyResult(student, 'hocLuc');
+      const academicResult = storedAcademicResult || scorebookSummary.result;
+      const outcome = getPromotionOutcomeFromAcademicResult(academicResult);
+
+      if (!outcome) {
+        missingScores.push({ student, completedCount: scorebookSummary.completedCount, requiredCount: scorebookSummary.requiredCount });
+        return;
+      }
+
+      const source = storedAcademicResult ? 'ket_qua_da_chot' : 'so_diem';
+      const scorebook = scorebookEditsByYearGrade[`${normalizeSchoolYearKey(sourceSchoolYear)}__${grade}__${schoolCode}`];
+      if (source === 'so_diem' && scorebook?.id) scorebookGuards.set(scorebook.id, scorebook);
+      if (Number(grade) === 9 && outcome === 'promote') {
+        if (existingTargetStudent) { invalidClasses.push(student); return; }
+        completions.push({ student, academicResult, source });
+        promoted.push(student);
+        return;
+      }
+
+      const targetClassName = outcome === 'repeat'
+        ? normalizedClassName
+        : promoteSchoolClassName(normalizedClassName);
+      if (!targetClassName) {
+        invalidClasses.push(student);
+        return;
+      }
+      if (existingTargetStudent) {
+        if (existingTargetStudent.className !== targetClassName) { invalidClasses.push(student); return; }
+        alreadyPrepared.push({ student, targetStudent: existingTargetStudent, sourceClassName: normalizedClassName, targetClassName });
+        return;
+      }
+      const transition = { student, sourceClassName: normalizedClassName, targetClassName, academicResult, outcome, source };
+      transitions.push(transition);
+      if (outcome === 'repeat') repeated.push(transition);
+      else promoted.push(student);
+    });
+
+    return {
+      sourceSchoolYear,
+      targetSchoolYear,
+      sourceVersions: promotionSourceVersions(students, sourceSchoolYear),
+      scorebookGuards: [...scorebookGuards.values()],
+      sourceStudentCount: sourceStudents.length,
+      activeStudentCount: activeStudents.length,
+      droppedStudentCount: sourceStudents.length - activeStudents.length,
+      transitions,
+      completions,
+      classRepairs,
+      missingScores,
+      invalidClasses,
+      alreadyPrepared,
+      repeated,
+      promoted,
+      canExecute: Boolean(targetSchoolYear && activeStudents.length && !missingScores.length && !invalidClasses.length)
+    };
+  };
   const journeyRows = useMemo(() => {
     const needle = normalizeSearch(query);
     const groups = new Map();
@@ -1595,6 +1787,7 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
       });
       const latest = records[records.length - 1] || {};
       const first = records[0] || latest;
+      const dropoutContinuation = findDropoutContinuation([...group.byYear.values()]);
       const matchedRecord = records.find(student =>
         (!journeyYearFilter || student.schoolYear === journeyYearFilter) &&
         getJourneyClassMatch(student, journeyClassFilter)
@@ -1610,8 +1803,10 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
       return {
         key: group.key,
         student: matchedRecord || latest,
+        latestStudent: latest,
         records,
         byYear: group.byYear,
+        dropoutContinuation,
         entryYear: first.enrollmentYear || first.schoolYear || '',
         include: Boolean(matchedRecord),
         searchable
@@ -1626,7 +1821,7 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
     editing?.province,
     editing?.householdProvince
   ]).sort((a, b) => a.localeCompare(b, 'vi', { sensitivity: 'base' })), [addressDirectory.provinces, safeStudents, editing?.province, editing?.householdProvince]);
-  const getWardOptions = (province = '', currentValue = '', household = false) => {
+  const getWardOptions = useCallback((province = '', currentValue = '', household = false) => {
     const provinceName = String(province || '').trim();
     const sheetOptions = addressDirectory.communes[provinceName] || [];
     const studentOptions = safeStudents
@@ -1634,14 +1829,14 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
       .flatMap(student => household ? [student.householdWard, student.ward] : [student.ward, student.householdWard]);
     return uniqueTextItems([...sheetOptions, ...studentOptions, currentValue])
       .sort((a, b) => a.localeCompare(b, 'vi', { sensitivity: 'base' }));
-  };
+  }, [addressDirectory.communes, safeStudents]);
   const editCurrentWardOptions = useMemo(
     () => getWardOptions(editing?.province, editing?.ward, false),
-    [addressDirectory.communes, safeStudents, editing?.province, editing?.ward]
+    [getWardOptions, editing?.province, editing?.ward]
   );
   const editHouseholdWardOptions = useMemo(
     () => getWardOptions(editing?.householdProvince, editing?.householdWard, true),
-    [addressDirectory.communes, safeStudents, editing?.householdProvince, editing?.householdWard]
+    [getWardOptions, editing?.householdProvince, editing?.householdWard]
   );
   const registrationRows = useMemo(
     () => pendingRegistrations.map(item => ({
@@ -1688,11 +1883,20 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
     };
   };
 
+  const loadPendingRegistrationsRef = useRef(loadPendingRegistrations);
+  loadPendingRegistrationsRef.current = loadPendingRegistrations;
+  const autoLoadRegistrationsAttemptedRef = useRef(false);
+
   useEffect(() => {
-    if (studentTab === 'registrations' && !pendingRegistrations.length && !isLoadingRegistrations) {
-      loadPendingRegistrations();
+    if (studentTab !== 'registrations') {
+      autoLoadRegistrationsAttemptedRef.current = false;
+      return;
     }
-  }, [studentTab]);
+    if (!pendingRegistrations.length && !isLoadingRegistrations && !autoLoadRegistrationsAttemptedRef.current) {
+      autoLoadRegistrationsAttemptedRef.current = true;
+      loadPendingRegistrationsRef.current();
+    }
+  }, [studentTab, pendingRegistrations.length, isLoadingRegistrations]);
 
   useEffect(() => {
     setColumnFilters({});
@@ -1718,8 +1922,9 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
     }
   }, [journeyClassFilter, journeyClassOptions]);
 
+  const isEditingStudent = Boolean(editing);
   useEffect(() => {
-    if (!editing || addressDirectory.provinces.length) return;
+    if (!isEditingStudent || addressDirectory.provinces.length) return;
     try {
       const cached = JSON.parse(localStorage.getItem(ADDRESS_DIRECTORY_CACHE_KEY) || 'null');
       if (cached?.provinces?.length) {
@@ -1759,10 +1964,10 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
           .catch(() => {});
       });
     return () => { active = false; };
-  }, [editing, addressDirectory.provinces.length]);
+  }, [isEditingStudent, addressDirectory.provinces.length]);
 
   useEffect(() => {
-    if (!editing) return;
+    if (!isEditingStudent) return;
     const targets = uniqueTextItems([editing.province, editing.householdProvince])
       .filter(province => !Object.prototype.hasOwnProperty.call(addressDirectory.communes, province));
     if (!targets.length) return;
@@ -1787,7 +1992,7 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
           }));
         });
     });
-  }, [editing?.province, editing?.householdProvince, addressDirectory.communes]);
+  }, [isEditingStudent, editing?.province, editing?.householdProvince, addressDirectory.communes]);
   const duplicateRegistrationCount = useMemo(
     () => pendingRegistrations.filter(item => item.duplicateReason).length,
     [pendingRegistrations]
@@ -1795,8 +2000,11 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
 
   const activeSourceRows = studentTab === 'registrations' ? registrationRows : yearStudents;
   const classOptions = useMemo(
-    () => [...new Set(activeSourceRows.map(student => student.className).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'vi')),
-    [activeSourceRows]
+    () => [...new Set([
+      ...(studentTab === 'current' ? configuredClassOptions : []),
+      ...activeSourceRows.map(student => student.className).filter(Boolean)
+    ])].sort((a, b) => a.localeCompare(b, 'vi', { numeric: true, sensitivity: 'base' })),
+    [activeSourceRows, configuredClassOptions, studentTab]
   );
   const activeSelectedIds = studentTab === 'registrations' ? selectedRegistrationIds : selectedIds;
   const selectedClassSet = useMemo(() => new Set(classFilter), [classFilter]);
@@ -1810,9 +2018,12 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
       ? prev.filter(item => item !== className)
       : [...prev, className].sort((a, b) => a.localeCompare(b, 'vi', { numeric: true, sensitivity: 'base' })));
   };
-  const matchesClassFilter = (student) => !classFilter.length || selectedClassSet.has(student.className);
+  const matchesClassFilter = useCallback(
+    (student) => !classFilter.length || selectedClassSet.has(student.className),
+    [classFilter.length, selectedClassSet]
+  );
 
-  const getMissingAcademicResults = (student = {}) => {
+  const getMissingAcademicResults = useCallback((student = {}) => {
     const grade = Number(getGradeFromClass(student.className) || 0);
     if (grade <= 6) return [];
     const maxGrade = Math.min(grade - 1, 9);
@@ -1820,9 +2031,9 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
       .filter(item => item.grade <= maxGrade)
       .filter(item => !safePlainValue(student[item.key]).trim())
       .map(item => item.label);
-  };
+  }, []);
 
-  const getMissingStudentInfo = (student = {}) => {
+  const getMissingStudentInfo = useCallback((student = {}) => {
     const hasStudentPhone = Boolean(safePlainValue(student.phone).trim());
     return [
       ...MISSING_INFO_CHECK_FIELDS.filter(item => {
@@ -1833,7 +2044,7 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
       }).map(item => item.label),
       ...getMissingAcademicResults(student)
     ];
-  };
+  }, [getMissingAcademicResults]);
 
   const openMailboxComposer = (targetStudents = [], category = 'general') => {
     const uniqueStudents = [...new Map((Array.isArray(targetStudents) ? targetStudents : [])
@@ -1914,7 +2125,7 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
     }
   };
 
-  const getStudentIssueFlags = (student = {}) => {
+  const getStudentIssueFlags = useCallback((student = {}) => {
     const missingDocs = STUDENT_DOCUMENTS.some(item => splitDocumentUrls(student[item.key]).length === 0);
     const missingIdentity = !safePlainValue(student.identityCode).trim();
     const missingAcademic = getMissingAcademicResults(student).length > 0;
@@ -1924,19 +2135,19 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
       missingAcademic,
       missingInfo: getMissingStudentInfo(student).length > 0
     };
-  };
+  }, [getMissingAcademicResults, getMissingStudentInfo]);
 
   useEffect(() => {
     setClassFilter(prev => prev.filter(className => classOptions.includes(className)));
   }, [classOptions]);
 
-  const matchesQuickIssueFilter = (student = {}) => {
+  const matchesQuickIssueFilter = useCallback((student = {}) => {
     if (quickIssueFilter === 'all') return true;
     if (quickIssueFilter === 'selected') return activeSelectedIds.has(student.id);
     if (student.status === 'dropped') return false;
     const flags = getStudentIssueFlags(student);
     return Boolean(flags[quickIssueFilter]);
-  };
+  }, [quickIssueFilter, activeSelectedIds, getStudentIssueFlags]);
 
   const filteredStudents = useMemo(() => {
     const needle = normalizeSearch(query);
@@ -1973,7 +2184,7 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
         if (statusCompare !== 0) return statusCompare;
         return sortMode === 'fullName' ? compareVietnameseName(a, b) : compareClassThenName(a, b);
       });
-  }, [activeSourceRows, studentTab, query, classFilter, statusFilter, visibleStudentFields, columnFilters, sortMode, quickIssueFilter, activeSelectedIds]);
+  }, [activeSourceRows, studentTab, query, statusFilter, visibleStudentFields, columnFilters, sortMode, matchesClassFilter, matchesQuickIssueFilter]);
 
   const issueStats = useMemo(() => {
     const rows = activeSourceRows
@@ -1989,7 +2200,7 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
       missingIdentity: activeRows.filter(student => getStudentIssueFlags(student).missingIdentity).length,
       missingAcademic: activeRows.filter(student => getStudentIssueFlags(student).missingAcademic).length
     };
-  }, [activeSourceRows, studentTab, statusFilter, classFilter, activeSelectedIds]);
+  }, [activeSourceRows, studentTab, statusFilter, activeSelectedIds, matchesClassFilter, getStudentIssueFlags]);
   const classStats = useMemo(() => {
     const map = new Map();
     activeSourceRows.forEach(student => {
@@ -2037,8 +2248,72 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
       });
   };
 
-  const openCreate = () => setEditing({ ...emptyStudent, schoolYear: currentSchoolYear, enrollmentYear: String(new Date().getFullYear()) });
-  const openEdit = (student) => setEditing(normalizeStudentRecord({ ...emptyStudent, ...student }, currentSchoolYear));
+  const openCreate = () => { editingOriginal.current = null; setEditing({ ...emptyStudent, schoolYear: currentSchoolYear, enrollmentYear: String(new Date().getFullYear()) }); };
+  const openEdit = (student) => { editingOriginal.current = student; setEditing(normalizeStudentRecord({ ...emptyStudent, ...student }, currentSchoolYear)); };
+  const startQuickEdit = (student, field) => {
+    if (quickEditSaving || studentTab !== 'current' || isImageOnlyView || !student?.id || !field?.key) return;
+    if (DOCUMENT_FIELD_KEYS.has(field.key) || field.key === 'grade') return;
+    if (isReadOnlyStudentRecord(student)) {
+      showNotification?.(readOnlyStudentMessage(student), 'error');
+      return;
+    }
+    setQuickEdit({
+      studentId: student.id,
+      fieldKey: field.key,
+      value: fieldValueForExport(student, field)
+    });
+  };
+  const cancelQuickEdit = () => {
+    if (!quickEditSaving) setQuickEdit(null);
+  };
+  const saveQuickEdit = async (student, field, rawValue) => {
+    if (quickEditSaving || !student?.id || !field?.key) return;
+    let nextValue = safePlainValue(rawValue);
+    if (field.key === 'fullName') nextValue = formatStudentFullName(nextValue);
+    if (field.key === 'birthDate') nextValue = formatDisplayDate(nextValue);
+    if (field.key === 'schoolCode') nextValue = normalizeSchoolCode(nextValue) || 'UNKNOWN';
+    if ((field.key === 'fullName' || field.key === 'className') && !nextValue) {
+      showNotification?.(`${field.label} không được để trống.`, 'error');
+      return;
+    }
+    const currentValue = fieldValueForExport(student, field);
+    if (safePlainValue(currentValue) === nextValue) {
+      setQuickEdit(prev => prev?.studentId === student.id && prev?.fieldKey === field.key ? null : prev);
+      return;
+    }
+    const gradePatch = field.key === 'className' ? { grade: getGradeFromClass(nextValue) } : {};
+    const schoolPatch = field.key === 'schoolCode'
+      ? { schoolCode: nextValue, schoolName: getSchoolName(nextValue) }
+      : {};
+    const patch = {
+      [field.key]: nextValue,
+      ...gradePatch,
+      ...schoolPatch,
+      updatedAt: Date.now(),
+      updatedBy: user?.uid || ''
+    };
+    setQuickEditSaving(true);
+    try {
+      const updatedStudent = await persistStudent({ ...student, ...patch });
+      try {
+        await syncPersistedStudent(updatedStudent);
+        showNotification?.(`Đã sửa ${field.label} và cập nhật Sheet.`);
+      } catch (sheetError) {
+        showNotification?.(`Đã sửa ${field.label} trong database, nhưng Sheet chưa cập nhật: ${sheetError.message}`, 'error');
+      }
+      postAppsScript({
+        action: 'writeAuditLog',
+        auditAction: 'sua_nhanh_ho_so_hoc_sinh',
+        actor: user?.uid || 'Admin',
+        details: { studentId: student.id, fieldKey: field.key, before: currentValue, after: nextValue }
+      }).catch(() => undefined);
+      setQuickEdit(prev => prev?.studentId === student.id && prev?.fieldKey === field.key ? null : prev);
+    } catch (error) {
+      showNotification?.(`Chưa sửa được ${field.label}: ${error.message}`, 'error');
+    } finally {
+      setQuickEditSaving(false);
+    }
+  };
   const closeEdit = () => {
     setEditing(null);
     setDocumentViewer(null);
@@ -2048,6 +2323,14 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
     setEditing(prev => {
       if (!prev) return prev;
       const next = { ...prev, [key]: value };
+      if (key === 'schoolCode') {
+        next.schoolCode = normalizeSchoolCode(value) || 'UNKNOWN';
+        next.schoolName = getSchoolName(next.schoolCode);
+      }
+      if (key === 'className') {
+        next.grade = getGradeFromClass(value);
+        if (!prev.entryGrade) next.entryGrade = getGradeFromClass(value);
+      }
       if (key === 'province' && prev.province !== value) next.ward = '';
       if (key === 'householdProvince' && prev.householdProvince !== value) next.householdWard = '';
       return next;
@@ -2189,16 +2472,8 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
     if (!window.confirm(`Chuẩn hóa ${targets.length} tên học sinh của năm ${currentSchoolYear} sang dạng hoa đầu từ?`)) return;
     setIsSaving(true);
     try {
-      await Promise.all(targets.map(student => setDoc(
-        doc(db, 'artifacts', appId, 'public', 'data', 'students', student.id),
-        {
-          fullName: student.nextName,
-          updatedAt: Date.now(),
-          updatedBy: user?.uid || ''
-        },
-        { merge: true }
-      )));
-      showNotification?.(`Đã chuẩn hóa ${targets.length} tên học sinh.`);
+      const result = await processRecords(targets, student => persistStudent({ ...rawStudents.find(item => item.id === student.id), fullName: student.nextName }));
+      reportStudentBatch(result, 'Chuẩn hóa tên');
     } catch (error) {
       showNotification?.(`Chưa chuẩn hóa được tên học sinh: ${error.message}`, 'error');
     } finally {
@@ -2206,58 +2481,205 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
     }
   };
 
-  const saveStudent = async () => {
-    if (uploadingDocumentKey) {
-      showNotification?.('Đang tải file giấy tờ, chờ xong rồi lưu hồ sơ nhé.', 'error');
+  const backfillCurrentYearStudentGrades = async () => {
+    const rawStudents = Array.isArray(students) ? students : [];
+    const targets = rawStudents
+      .filter(student => String(student.schoolYear || currentSchoolYear) === String(currentSchoolYear))
+      .map(student => ({ student, grade: getGradeFromClass(student.className || student.grade || '') }))
+      .filter(({ student, grade }) => student.id && grade && String(student.grade || '') !== String(grade));
+
+    if (!targets.length) {
+      showNotification?.(`Các hồ sơ năm ${currentSchoolYear} đã có cột Khối chính xác.`);
       return;
     }
-    const editingFullName = safePlainValue(editing?.fullName);
-    const editingClassName = safePlainValue(editing?.className);
-    if (!editingFullName) {
-      showNotification?.('Cần nhập họ tên học sinh.', 'error');
-      return;
-    }
-    if (!editingClassName) {
-      showNotification?.('Cần nhập lớp học.', 'error');
-      return;
-    }
+    if (!window.confirm(`Bổ sung Khối cho ${targets.length} học sinh năm ${currentSchoolYear} trong database và Google Sheet?`)) return;
     setIsSaving(true);
+    setSheetSyncStatus(prev => ({ ...prev, phase: 'syncing', completed: 0, total: targets.length, failed: 0 }));
+    let sheetErrorCount = 0;
+    let completedCount = 0;
     try {
-      const payload = normalizeStudentRecord({
-        ...editing,
-        fullName: editingFullName,
-        className: editingClassName,
-        schoolYear: editing.schoolYear || currentSchoolYear,
-        updatedAt: Date.now(),
-        updatedBy: user?.uid || ''
-      }, currentSchoolYear);
-      if (!payload.accessCode) {
-        const codeMap = assignSequentialCodesByOrder([...yearStudents, payload], [payload], existingCodes, currentSchoolYear);
-        payload.accessCode = codeMap.get(payload) || makeAccessCode(payload, existingCodes);
-      }
-      if (payload.id) {
-        const { id, ...data } = payload;
-        await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'students', id), data, { merge: true });
-      } else {
-        const data = { ...payload };
-        delete data.id;
-        data.createdAt = Date.now();
-        data.createdBy = user?.uid || '';
-        await addDoc(studentsCollection, data);
-      }
+      const outcome = await processRecords(targets, async ({ student, grade }) => {
+        const savedStudent = await persistStudent({ ...student, grade }, { expected: student });
+        try {
+          await syncPersistedStudent(savedStudent);
+        } catch {
+          sheetErrorCount += 1;
+        }
+        return savedStudent;
+      }, progress => { completedCount = progress.completed; setSheetSyncStatus(prev => ({ ...prev, phase: 'syncing', completed: progress.completed, total: targets.length, failed: progress.failed + sheetErrorCount })); });
+      let summary = {};
       try {
-        await syncStudentToSheet(payload, currentSchoolYear);
-        showNotification?.('Đã lưu hồ sơ học sinh và cập nhật Sheet.');
-      } catch (sheetError) {
-        showNotification?.(`Đã lưu Firebase, nhưng Sheet chưa cập nhật: ${sheetError.message}`, 'error');
+        summary = await loadStudentSheetSummary(currentSchoolYear);
+      } catch {
+        summary = {};
       }
-      closeEdit();
+      setSheetSyncStatus(prev => ({
+        ...prev,
+        ...summary,
+        phase: sheetErrorCount || outcome.failed.length ? 'partial' : 'done',
+        completed: targets.length,
+        total: targets.length,
+        failed: sheetErrorCount + outcome.failed.length
+      }));
+      if (sheetErrorCount || outcome.failed.length) {
+        showNotification?.(`Đã bổ sung Khối cho ${outcome.succeeded.length}/${targets.length} hồ sơ; ${outcome.failed.length} hồ sơ chưa lưu và ${sheetErrorCount} dòng Sheet chờ thử lại. ${outcome.failed[0]?.error.message || ''}`, 'error');
+      } else {
+        showNotification?.(`Đã bổ sung Khối cho ${targets.length} hồ sơ trong database và Sheet.`);
+      }
     } catch (error) {
-      showNotification?.(`Chưa lưu được học sinh: ${error.message}`, 'error');
+      setSheetSyncStatus(prev => ({ ...prev, phase: 'partial', completed: completedCount, total: targets.length, failed: Math.max(1, sheetErrorCount) }));
+      showNotification?.(`Chưa bổ sung được cột Khối: ${error.message}`, 'error');
     } finally {
       setIsSaving(false);
     }
   };
+
+  const restoreCurrentYearClassSections = async () => {
+    const getNumericClassName = (className = '') => String(className || '')
+      .trim()
+      .replace(/^lớp\s*/i, '')
+      .replace(/\s+/g, '');
+    const currentNumericStudents = yearStudents.filter(student => /^[1-9]$/.test(getNumericClassName(student.className)));
+    const findPreviousStudent = (student, candidates = [], allowPreviousId = false) => {
+      if (allowPreviousId && student.previousStudentId) {
+        const linked = candidates.find(item => item.id === student.previousStudentId);
+        if (linked) return linked;
+      }
+      const identityCode = String(student.identityCode || '').replace(/^'/, '').trim();
+      if (/^\d{12}$/.test(identityCode)) {
+        const matches = candidates.filter(item => String(item.identityCode || '').replace(/^'/, '').trim() === identityCode);
+        if (matches.length === 1) return matches[0];
+      }
+      const accessCode = String(student.accessCode || student.studentCode || '').trim().toUpperCase();
+      if (accessCode) {
+        const matches = candidates.filter(item => String(item.accessCode || item.studentCode || '').trim().toUpperCase() === accessCode);
+        if (matches.length === 1) return matches[0];
+      }
+      const fullName = normalizeVietnameseName(student.fullName || '');
+      const birthDate = normalizeBirthDate(student.birthDate || '');
+      if (fullName && birthDate) {
+        const matches = candidates.filter(item => (
+          normalizeVietnameseName(item.fullName || '') === fullName
+          && normalizeBirthDate(item.birthDate || '') === birthDate
+        ));
+        if (matches.length === 1) return matches[0];
+      }
+      return null;
+    };
+
+    let previousSheetStudents = [];
+    let sheetSourceError = '';
+    try {
+      const response = await loadRegistrationDataAction('listStudents', { schoolYear: previousSchoolYear });
+      if (response?.success === false) throw new Error(response.message || 'Không đọc được Google Sheet.');
+      previousSheetStudents = (Array.isArray(response.items) ? response.items : [])
+        .filter(row => normalizeSchoolYearKey(row.schoolYear) === normalizeSchoolYearKey(previousSchoolYear))
+        .map(row => normalizeStudentRecord(registrationToStudentData(row, previousSchoolYear), previousSchoolYear));
+    } catch (error) {
+      sheetSourceError = error.message || 'Không đọc được Google Sheet.';
+    }
+
+    const databaseTargets = currentNumericStudents.flatMap(student => {
+      if (!student.id) return [];
+      const previousStudent = findPreviousStudent(student, previousYearStudents, true)
+        || findPreviousStudent(student, previousSheetStudents);
+      const nextClassName = promoteSchoolClassName(previousStudent?.className);
+      if (!nextClassName || !/^[1-9][A-Z]/.test(nextClassName)) return [];
+      if (getGradeFromClass(nextClassName) !== getGradeFromClass(student.className)) return [];
+      return [{ student, nextClassName }];
+    });
+
+    const unresolvedCount = currentNumericStudents.length - databaseTargets.length;
+    if (!databaseTargets.length) {
+      showNotification?.(currentNumericStudents.length
+        ? `Có ${currentNumericStudents.length} hồ sơ lớp số nhưng không ghép chắc chắn được với lớp năm trước trên Sheet; dữ liệu được giữ nguyên.${sheetSourceError ? ` ${sheetSourceError}` : ''}`
+        : `Năm ${currentSchoolYear} không có lớp đang bị mất hậu tố.`);
+      return;
+    }
+    if (!window.confirm(`Khôi phục hậu tố lớp cho ${databaseTargets.length} hồ sơ từ dữ liệu năm ${previousSchoolYear}. ${unresolvedCount ? `${unresolvedCount} hồ sơ không ghép chắc chắn sẽ giữ nguyên. ` : ''}Thao tác này chỉ cập nhật database, giữ nguyên Sheet năm cũ làm nguồn đối chiếu.`)) return;
+
+    setIsSaving(true);
+    try {
+      const outcome = await processRecords(databaseTargets, ({student,nextClassName}) => persistStudent({ ...student, className: nextClassName, grade: getGradeFromClass(nextClassName) }, { expected: student }));
+      reportStudentBatch(outcome, 'Khôi phục hậu tố lớp');
+      postAppsScript({
+        action: 'writeAuditLog',
+        auditAction: 'khoi_phuc_hau_to_lop_tu_nam_truoc',
+        actor: user?.uid || 'Admin',
+        details: { schoolYear: currentSchoolYear, sourceSchoolYear: previousSchoolYear, databaseCount: outcome.succeeded.length, sheetSourceCount: previousSheetStudents.length }
+      }).catch(() => undefined);
+      showNotification?.(
+        `Đã khôi phục ${outcome.succeeded.length} hậu tố lớp từ dữ liệu năm ${previousSchoolYear}.${unresolvedCount ? ` ${unresolvedCount} hồ sơ chưa đủ căn cứ nên được giữ nguyên.` : ''}`
+      );
+    } catch (error) {
+      showNotification?.(`Chưa khôi phục được hậu tố lớp: ${error.message}`, 'error');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const openSchoolYearPromotion = async () => {
+    setIsSaving(true);
+    try {
+      const preview = await buildSchoolYearPromotionPreview();
+      if (!preview.sourceStudentCount) {
+        showNotification?.(`Chưa có học sinh trong năm học hệ thống ${preview.sourceSchoolYear || currentSchoolYear}.`, 'error');
+        return;
+      }
+      if (!preview.targetSchoolYear) {
+        showNotification?.('Năm học hiện tại chưa đúng định dạng để tạo năm học kế tiếp.', 'error');
+        return;
+      }
+      setSchoolYearPromotionPreview(preview);
+    } catch (error) {
+      showNotification?.(`Chưa đọc được dữ liệu để xét lên lớp: ${error.message || 'lỗi không xác định'}`, 'error');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const confirmSchoolYearPromotion = async () => {
+    const preview = schoolYearPromotionPreview;
+    if (!preview?.canExecute || !onStartSchoolYearPromotion) return;
+    if (!window.confirm(`Chuyển năm học từ ${preview.sourceSchoolYear} sang ${preview.targetSchoolYear}? Hệ thống sẽ sao lưu trước, tạo hồ sơ năm mới cho ${preview.transitions.length} học sinh chưa có, cập nhật lịch sử lớp lên Google Sheet và chỉ đổi năm học hệ thống sau khi đồng bộ thành công. Nếu bị gián đoạn, có thể chạy lại để tiếp tục.`)) return;
+    setIsSaving(true);
+    try {
+      const result = await onStartSchoolYearPromotion(preview);
+      setSchoolYearPromotionPreview(null);
+      showNotification?.(`Đã chuyển sang năm ${preview.targetSchoolYear}. ${result?.createdCount ?? preview.transitions.length} hồ sơ được tạo${preview.completions.length ? `, ${preview.completions.length} học sinh hoàn thành lớp 9` : ''}.${(result?.skippedCount || 0) ? ` ${result.skippedCount} hồ sơ đã tồn tại nên không tạo lại.` : ''}`);
+    } catch (error) {
+      showNotification?.(`Chưa chuyển được năm học: ${error.message || 'lỗi không xác định'}`, 'error');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const persistStudent = (student, options = {}) => saveStudentRecord(normalizeStudentRecord(student, currentSchoolYear), { codePrefix: getCodePrefix(student, currentSchoolYear), actor: user?.uid || 'Admin', expected: student.id ? students.find(item => item.id === student.id) : undefined, ...options });
+  const completeRegistrationSync = async (registration, student) => {
+    if (!registration.rowNumber) throw new Error('Thiếu dòng đăng ký; cần đối soát trước khi đánh dấu.');
+    await callSheetAction('markExistingRegistration', { rowNumber: registration.rowNumber, identityCode: student.identityCode || '', fullName: student.fullName || '', birthDate: student.birthDate || '', note: 'Da chuyen vao database. Ma hoc sinh: ' + student.accessCode });
+  };
+  const syncPersistedStudent = student => retryStudentSync(student.id, saved => syncStudentToSheet(saved, saved.schoolYear), { registrationComplete: completeRegistrationSync });
+  const reportStudentBatch = (result, label) => showNotification?.(label + ': ' + result.succeeded.length + '/' + (result.succeeded.length + result.failed.length) + ' hồ sơ thành công, đồng bộ Sheet được xếp hàng.' + (result.failed.length ? ' Còn ' + result.failed.length + ' hồ sơ lỗi: ' + result.failed[0].error.message : ''), result.failed.length ? 'error' : 'success');
+  const retrySheetJobs = async () => {
+    setIsSaving(true);
+    try { const result = await retryPendingStudentSync(yearStudents, saved => syncStudentToSheet(saved, saved.schoolYear), undefined, { registrationComplete: completeRegistrationSync });
+      showNotification?.('Đồng bộ lại: ' + result.succeeded.length + ' thành công; ' + result.failed.length + ' còn lỗi.', result.failed.length ? 'error' : 'success');
+    } finally { setIsSaving(false); }
+  };
+
+  const saveStudent = async () => {
+ if (uploadingDocumentKey) { showNotification?.('Đang tải giấy tờ, chờ xong rồi lưu hồ sơ.', 'error'); return; }
+ if (!safePlainValue(editing?.fullName) || !safePlainValue(editing?.className)) { showNotification?.('Cần nhập họ tên và lớp học.', 'error'); return; }
+ setIsSaving(true);
+ try {
+  const payload = await persistStudent({ ...editing, fullName: safePlainValue(editing.fullName), className: safePlainValue(editing.className), schoolYear: editing.schoolYear || currentSchoolYear }, { allocateCode: !editing.accessCode, expected: editingOriginal.current || undefined });
+  try { await syncPersistedStudent(payload); showNotification?.('Đã lưu hồ sơ và cập nhật Sheet.'); }
+  catch (error) { showNotification?.('Đã lưu hồ sơ; đồng bộ Sheet đang chờ thử lại: ' + error.message, 'error'); }
+  closeEdit();
+ } catch(error) { showNotification?.('Chưa lưu được học sinh: ' + error.message, 'error'); }
+ finally { setIsSaving(false); }
+};
 
   const resolveProfileRequestStudent = (request = {}) => {
     if (!request.studentId) return null;
@@ -2291,40 +2713,21 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
     hideProfileRequestFieldLocally(request.id, fieldKey);
   };
 
-  const approveProfileField = async (request = {}, fieldKey = '') => {
-    if (!request?.id || !request.studentId || !fieldKey) return;
-    const nextValue = safePlainValue(request.changes?.[fieldKey]);
-    setIsSaving(true);
-    try {
-      const studentBefore = resolveProfileRequestStudent(request);
-      if (isReadOnlyStudentRecord(studentBefore)) {
-        showNotification?.(readOnlyStudentMessage(studentBefore), 'error');
-        return;
-      }
-      const nextStudent = { ...(studentBefore || {}), id: request.studentId, [fieldKey]: nextValue };
-      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'students', request.studentId), {
-        [fieldKey]: nextValue,
-        updatedAt: Date.now(),
-        updatedBy: user?.uid || ''
-      }, { merge: true });
-      await updateProfileRequestAfterFieldDecision(request, fieldKey);
-      postAppsScript({ action: 'writeAuditLog', auditAction: 'duyet_mot_truong_ho_so', actor: user?.uid || 'Admin', details: { studentId: request.studentId, fieldKey, before: studentBefore?.[fieldKey] ?? '', after: nextValue } }).catch(() => undefined);
-      if (editing?.id === request.studentId) {
-        setEditing(prev => prev ? ({ ...prev, [fieldKey]: nextValue }) : prev);
-      }
-      try {
-        await syncStudentToSheet(nextStudent, currentSchoolYear);
-      } catch (sheetError) {
-        showNotification?.(`Đã duyệt dòng này, nhưng Sheet chưa cập nhật: ${sheetError.message}`, 'error');
-        return;
-      }
-      showNotification?.(`Đã duyệt: ${STUDENT_FIELD_LABELS[fieldKey] || fieldKey}.`);
-    } catch (error) {
-      showNotification?.(`Chưa duyệt được dòng này: ${error.message}`, 'error');
-    } finally {
-      setIsSaving(false);
-    }
-  };
+  const approveProfileField = async (request={},fieldKey='') => {
+ if(!request.id||!request.studentId||!fieldKey)return;
+ const before=resolveProfileRequestStudent(request);
+ if(isReadOnlyStudentRecord(before)){showNotification?.(readOnlyStudentMessage(before),'error');return;}
+ setIsSaving(true);
+ try {
+  const value=safePlainValue(request.changes?.[fieldKey]); const changes=sanitizeStudentChanges(request.changes);delete changes[fieldKey];
+  const student=await persistStudent({...before,id:request.studentId,[fieldKey]:value,...(fieldKey==='className'?{grade:getGradeFromClass(value)}:{})},{profileDecision:{requestId:request.id,expectedChanges:request.changes,remainingChanges:changes}});
+  hideProfileRequestFieldLocally(request.id,fieldKey);
+  if(editing?.id===student.id)setEditing(prev=>prev?{...prev,[fieldKey]:value}:prev);
+  try{await syncPersistedStudent(student);showNotification?.('Đã duyệt thông tin và đồng bộ Sheet.');}
+  catch(error){showNotification?.('Đã duyệt thông tin; việc đồng bộ được giữ để thử lại: '+error.message,'error');}
+ }catch(error){showNotification?.('Chưa duyệt được thông tin: '+error.message,'error');}
+ finally{setIsSaving(false);}
+};
 
   const rejectProfileField = async (request = {}, fieldKey = '') => {
     if (!request?.id || !fieldKey) return;
@@ -2339,219 +2742,86 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
     }
   };
 
-  const toggleDropout = async (student) => {
-    const nextStatus = student.status === 'dropped' ? 'active' : 'dropped';
-    setIsSaving(true);
-    try {
-      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'students', student.id), {
-        status: nextStatus,
-        updatedAt: Date.now(),
-        updatedBy: user?.uid || ''
-      }, { merge: true });
-      let sheetSynced = true;
-      try {
-        await syncStudentToSheet({ ...student, status: nextStatus }, currentSchoolYear);
-      } catch (sheetError) {
-        sheetSynced = false;
-        showNotification?.(`Firebase đã cập nhật, nhưng Sheet chưa cập nhật: ${sheetError.message}`, 'error');
-      }
-      setStatusFilter('active');
-      if (sheetSynced) {
-        showNotification?.(nextStatus === 'dropped' ? 'Đã đánh dấu học sinh bỏ học và cập nhật Sheet.' : 'Đã đưa học sinh học lại và cập nhật Sheet.');
-      }
-    } catch (error) {
-      showNotification?.(`Chưa cập nhật được: ${error.message}`, 'error');
-    } finally {
-      setIsSaving(false);
-    }
-  };
+  const toggleDropout = async student => {
+ setIsSaving(true);
+ try {
+  const saved=await persistStudent({...student,status:student.status==='dropped'?'active':'dropped'});
+  setStatusFilter('active');
+  try{await syncPersistedStudent(saved);showNotification?.('Đã cập nhật tình trạng và Sheet.');}
+  catch(error){showNotification?.('Tình trạng đã cập nhật; đồng bộ Sheet đang chờ thử lại: '+error.message,'error');}
+ }catch(error){showNotification?.('Chưa cập nhật được: '+error.message,'error');}
+ finally{setIsSaving(false);}
+};
 
-  const removeStudent = async (student) => {
-    if (!window.confirm(`Xóa hồ sơ "${student.fullName}"?`)) return;
-    setIsSaving(true);
-    try {
-      await onBeforeDangerousAction?.('truoc-xoa-hoc-sinh');
-      await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'students', student.id));
-      await postAppsScript({ action: 'writeAuditLog', auditAction: 'xoa_ho_so_hoc_sinh', actor: user?.uid || 'Admin', details: { studentId: student.id, fullName: student.fullName || '' } });
-      showNotification?.('Đã xóa hồ sơ học sinh.');
-    } catch (error) {
-      showNotification?.(`Chưa xóa được: ${error.message}`, 'error');
-    } finally {
-      setIsSaving(false);
-    }
-  };
+  const removeStudent = async student => {
+ if (!window.confirm('Xóa hồ sơ "' + student.fullName + '"? Bản hồ sơ được lưu lại để đối soát.')) return;
+ setIsSaving(true);
+ try {
+  await onBeforeDangerousAction?.('truoc-xoa-hoc-sinh');
+  await deleteStudentRecord(student, user?.uid || 'Admin');
+  showNotification?.('Đã xóa hồ sơ học sinh; bản đối soát được giữ.');
+  try { await postAppsScript({action:'writeAuditLog',auditAction:'xoa_ho_so_hoc_sinh',actor:user?.uid || 'Admin',details:{studentId:student.id}}); }
+  catch(error) { showNotification?.('Hồ sơ đã xóa; nhật ký Sheet chưa ghi được: ' + error.message, 'error'); }
+ } catch(error) { showNotification?.('Chưa xóa được hồ sơ: ' + error.message, 'error'); }
+ finally { setIsSaving(false); }
+};
 
   const removeSelectedStudents = async () => {
-    const targets = yearStudents.filter(student => selectedIds.has(student.id));
-    if (!targets.length) {
-      showNotification?.('Chưa chọn học sinh nào để xóa.', 'error');
-      return;
-    }
-    const ok = window.confirm(`Xóa ${targets.length} học sinh đã chọn khỏi database?\nThao tác này xóa hồ sơ khỏi Firebase, không chỉ ẩn khỏi bảng.`);
-    if (!ok) return;
-    setIsSaving(true);
-    try {
-      await onBeforeDangerousAction?.('truoc-xoa-nhieu-hoc-sinh');
-      await Promise.all(targets.map(student => deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'students', student.id))));
-      await postAppsScript({ action: 'writeAuditLog', auditAction: 'xoa_nhieu_hoc_sinh', actor: user?.uid || 'Admin', details: { count: targets.length, students: targets.map(student => ({ id: student.id, fullName: student.fullName || '' })) } });
-      setSelectedIds(new Set());
-      showNotification?.(`Đã xóa ${targets.length} học sinh đã chọn.`);
-    } catch (error) {
-      showNotification?.(`Chưa xóa được danh sách đã chọn: ${error.message}`, 'error');
-    } finally {
-      setIsSaving(false);
-    }
-  };
+ const targets=yearStudents.filter(student=>selectedIds.has(student.id));
+ if(!targets.length || !window.confirm('Xóa ' + targets.length + ' hồ sơ đã chọn? Bản đối soát được giữ.')) return;
+ setIsSaving(true);
+ try {
+  await onBeforeDangerousAction?.('truoc-xoa-nhieu-hoc-sinh');
+  const result=await processRecords(targets,student=>deleteStudentRecord(student,user?.uid || 'Admin'));
+  setSelectedIds(new Set(result.failed.map(item=>item.record.id)));
+  showNotification?.('Đã xóa ' + result.succeeded.length + '/' + targets.length + ' hồ sơ. ' + (result.failed.length ? result.failed.length + ' hồ sơ lỗi vẫn được chọn để thử tiếp: ' + result.failed[0].error.message : ''),result.failed.length?'error':'success');
+  try { await postAppsScript({action:'writeAuditLog',auditAction:'xoa_nhieu_hoc_sinh',actor:user?.uid || 'Admin',details:{deletedIds:result.succeeded.map(item=>item.record.id),failedIds:result.failed.map(item=>item.record.id)}}); }
+  catch(error) { showNotification?.('Kết quả xóa đã được giữ; nhật ký Sheet chưa ghi được: ' + error.message,'error'); }
+ } catch(error) { showNotification?.('Chưa bắt đầu xóa: ' + error.message,'error'); }
+ finally { setIsSaving(false); }
+};
 
   const generateMissingCodes = async () => {
-    const targets = yearStudents.filter(student => !student.accessCode).sort(compareClassThenName);
-    if (!targets.length) {
-      showNotification?.('Tất cả học sinh trong năm học này đã có mã.');
-      return;
-    }
-    setIsSaving(true);
-    try {
-      const codeMap = assignSequentialCodesByOrder(yearStudents, targets, existingCodes, currentSchoolYear);
-      const codes = new Set(existingCodes);
-      await Promise.all(targets.map(student => {
-        const code = codeMap.get(student) || nextSequentialCode(student, codes, currentSchoolYear);
-        codes.add(code);
-        return setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'students', student.id), {
-          accessCode: code,
-          updatedAt: Date.now(),
-          updatedBy: user?.uid || ''
-        }, { merge: true });
-      }));
-      showNotification?.(`Đã tạo mã cho ${targets.length} học sinh.`);
-    } catch (error) {
-      showNotification?.(`Chưa tạo mã được: ${error.message}`, 'error');
-    } finally {
-      setIsSaving(false);
-    }
-  };
+ const targets=yearStudents.filter(student=>!student.accessCode).sort(compareClassThenName);
+ if(!targets.length){showNotification?.('Tất cả học sinh đã có mã.');return;}
+ setIsSaving(true);
+ try { const result=await processRecords(targets,student=>persistStudent(student,{allocateCode:true})); reportStudentBatch(result,'Cấp mã'); }
+ finally{setIsSaving(false);}
+};
 
   const regenerateAllCodes = async () => {
-    const targets = [...yearStudents].sort(compareClassThenName);
-    if (!targets.length) {
-      showNotification?.('Chưa có học sinh trong năm học này để tạo mã.', 'error');
-      return;
-    }
-    const ok = window.confirm(`Xóa mã cũ và tạo lại mã mới cho ${targets.length} học sinh của năm ${currentSchoolYear}?\nMã mới sẽ theo dạng HS + năm nhập học + khối nhập học + STT, ví dụ HS22601.`);
-    if (!ok) return;
-
-    setIsSaving(true);
-    try {
-      const targetIds = new Set(targets.map(student => student.id));
-      const reservedCodes = new Set(safeStudents.filter(student => !targetIds.has(student.id)).map(student => student.accessCode).filter(Boolean));
-      const codeMap = assignSequentialCodesByOrder(targets, targets, reservedCodes, currentSchoolYear);
-      await Promise.all(targets.map(student => {
-        const code = codeMap.get(student) || nextSequentialCode(student, reservedCodes, currentSchoolYear);
-        reservedCodes.add(code);
-        return setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'students', student.id), {
-          accessCode: code,
-          updatedAt: Date.now(),
-          updatedBy: user?.uid || ''
-        }, { merge: true });
-      }));
-      showNotification?.(`Đã tạo lại mã mới cho ${targets.length} học sinh.`);
-    } catch (error) {
-      showNotification?.(`Chưa tạo lại mã được: ${error.message}`, 'error');
-    } finally {
-      setIsSaving(false);
-    }
-  };
+ const targets=[...yearStudents].sort(compareClassThenName);
+ if(!targets.length || !window.confirm('Cấp mã đăng nhập mới cho ' + targets.length + ' học sinh? Định danh, điểm và bài làm được giữ; mã cũ không cấp cho học sinh khác.'))return;
+ setIsSaving(true);
+ try {await onBeforeDangerousAction?.('truoc-cap-lai-ma-hoc-sinh');const result=await processRecords(targets,student=>persistStudent({...student,accessCode:''},{allocateCode:true}));reportStudentBatch(result,'Cấp lại mã');}
+ finally{setIsSaving(false);}
+};
 
   const syncPreviousYear = async () => {
-    if (!previousSchoolYear) {
-      showNotification?.('Chưa nhận được năm học trước để đồng bộ.', 'error');
-      return;
-    }
-    const sourceStudents = previousYearStudents.filter(student => (student.status || 'active') === 'active');
-    if (!sourceStudents.length) {
-      showNotification?.(`Chưa có dữ liệu năm ${previousSchoolYear} để đồng bộ.`, 'error');
-      return;
-    }
-
-    const currentKeys = new Set(yearStudents.map(getStudentIdentity).filter(Boolean));
-    const candidates = sourceStudents
-      .map(student => ({ student, nextClass: promoteClassName(student.className) }))
-      .filter(item => item.nextClass)
-      .filter(item => !currentKeys.has(getStudentIdentity(item.student)));
-
-    if (!candidates.length) {
-      showNotification?.(`Năm ${currentSchoolYear} đã có đủ dữ liệu từ ${previousSchoolYear}, hoặc lớp 9 đã ra trường.`);
-      return;
-    }
-
-    const ok = window.confirm(`Đồng bộ ${candidates.length} học sinh từ năm ${previousSchoolYear} sang ${currentSchoolYear}?\nLớp 6 lên 7, 7 lên 8, 8 lên 9. Học sinh lớp 9 năm trước sẽ không đưa sang.`);
-    if (!ok) return;
-
-    setIsSaving(true);
-    try {
-      const codes = new Set(existingCodes);
-      await Promise.all(candidates.sort((a, b) => compareClassThenName({ ...a.student, className: a.nextClass }, { ...b.student, className: b.nextClass })).map(({ student, nextClass }) => {
-        const baseData = { ...student };
-        const sourceStudentId = baseData.id;
-        const sourcePreviousStudentId = baseData.previousStudentId;
-        const sourceSyncedFromSchoolYear = baseData.syncedFromSchoolYear;
-        ['id', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy', 'syncedFromSchoolYear', 'previousStudentId'].forEach(key => delete baseData[key]);
-        const payload = {
-          ...baseData,
-          className: nextClass,
-          schoolYear: currentSchoolYear,
-          previousStudentId: sourceStudentId || sourcePreviousStudentId || '',
-          syncedFromSchoolYear: sourceSyncedFromSchoolYear || previousSchoolYear,
-          status: 'active',
-          accessCode: baseData.accessCode || nextSequentialCode({ ...baseData, className: nextClass, schoolYear: currentSchoolYear }, codes, currentSchoolYear),
-          createdAt: Date.now(),
-          updatedAt: Date.now(),
-          createdBy: user?.uid || '',
-          updatedBy: user?.uid || ''
-        };
-        codes.add(payload.accessCode);
-        return addDoc(studentsCollection, payload);
-      }));
-      showNotification?.(`Đã đồng bộ ${candidates.length} học sinh sang năm ${currentSchoolYear}.`);
-    } catch (error) {
-      showNotification?.(`Chưa đồng bộ được: ${error.message}`, 'error');
-    } finally {
-      setIsSaving(false);
-    }
-  };
+ if(!previousSchoolYear){showNotification?.('Chưa nhận được năm học trước.','error');return;}
+ const currentKeys=new Set(yearStudents.map(getStudentIdentity).filter(Boolean));
+ const candidates=previousYearStudents.filter(student=>(student.status||'active')==='active').map(student=>({student,nextClass:promoteSchoolClassName(student.className)})).filter(item=>item.nextClass&&!currentKeys.has(getStudentIdentity(item.student)));
+ if(!candidates.length){showNotification?.('Năm này đã đủ hồ sơ có thể chuyển.');return;}
+ if(!window.confirm('Đồng bộ ' + candidates.length + ' hồ sơ sang ' + currentSchoolYear + '?'))return;
+ setIsSaving(true);
+ try {
+  const result=await processRecords(candidates,({student,nextClass})=>{
+   const data={...student};['id','createdAt','createdBy','updatedAt','updatedBy','sheetSync','syncRevision'].forEach(key=>delete data[key]);
+   return persistStudent({...data,grade:getGradeFromClass(nextClass),className:nextClass,schoolYear:currentSchoolYear,previousStudentId:student.id,syncedFromSchoolYear:previousSchoolYear,status:'active'},{id:stableRecordId('student-year',student.studentKey||student.accessCode||student.id,currentSchoolYear),createOnly:true,allocateCode:!data.accessCode});
+  });reportStudentBatch(result,'Chuyển hồ sơ năm học');
+ }finally{setIsSaving(false);}
+};
 
   const importFromPaste = async () => {
-    const parsed = parseSheetPaste(importText, currentSchoolYear);
-    if (!parsed.length) {
-      showNotification?.('Chưa đọc được dữ liệu. Hãy copy cả hàng tiêu đề từ Google Sheet rồi dán vào.', 'error');
-      return;
-    }
-    setIsSaving(true);
-    try {
-      const sortedParsed = parsed.sort(compareClassThenName);
-      const codeMap = assignSequentialCodesByOrder([...yearStudents, ...sortedParsed], sortedParsed, existingCodes, currentSchoolYear);
-      const codes = new Set(existingCodes);
-      await Promise.all(sortedParsed.map(student => {
-        const accessCode = codeMap.get(student) || nextSequentialCode(student, codes, currentSchoolYear);
-        codes.add(accessCode);
-        return addDoc(studentsCollection, {
-          ...student,
-          accessCode,
-          schoolYear: student.schoolYear || currentSchoolYear,
-          createdAt: Date.now(),
-          updatedAt: Date.now(),
-          createdBy: user?.uid || '',
-          updatedBy: user?.uid || ''
-        });
-      }));
-      showNotification?.(`Đã nhập ${parsed.length} học sinh từ bảng.`);
-      setImportText('');
-      setShowImport(false);
-    } catch (error) {
-      showNotification?.(`Chưa nhập được danh sách: ${error.message}`, 'error');
-    } finally {
-      setIsSaving(false);
-    }
-  };
+ const parsed=parseSheetPaste(importText,currentSchoolYear).sort(compareClassThenName);
+ if(!parsed.length){showNotification?.('Chưa đọc được bảng. Hãy dán cả hàng tiêu đề.','error');return;}
+ setIsSaving(true);
+ try {
+  const result=await processRecords(parsed,student=>persistStudent({...student,schoolYear:student.schoolYear||currentSchoolYear},{allocateCode:true,createOnly:true,id:stableRecordId('import',student.identityCode || (normalizeSearch(student.fullName)+'|'+student.birthDate),student.schoolYear||currentSchoolYear,getStudentSchoolCode(student))}));
+  reportStudentBatch(result,'Nhập hồ sơ');
+  if(!result.failed.length){setImportText('');setShowImport(false);}
+ } finally {setIsSaving(false);}
+};
 
   const prepareExportRows = (mode = 'current') => {
     const selectedRows = filteredStudents.filter(student => activeSelectedIds.has(student.id));
@@ -2705,31 +2975,26 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
     showNotification?.(copied ? 'Đã tạo và copy nội dung thiếu thông tin. Bấm Ctrl+V để dán vào nhóm.' : 'Đã tạo nội dung thiếu thông tin. Thầy copy trong khung bên dưới.');
   };
 
-  const loadPendingRegistrations = () => {
+  async function loadPendingRegistrations() {
+    registrationRequestRef.current?.abort();
+    const controller = new AbortController();
+    registrationRequestRef.current = controller;
     setIsLoadingRegistrations(true);
-    const callbackName = `__studentRegistrations_${Date.now()}`;
-    const script = document.createElement('script');
-    window[callbackName] = (payload) => {
-      const items = Array.isArray(payload) ? payload : (payload?.items || []);
-      const checkedItems = items.map(decorateRegistration);
-      const visibleItems = checkedItems;
+    try {
+      const payload = await loadRegistrationDataAction('listPending', {}, { signal: controller.signal, timeoutMs: 20000 });
+      if (controller.signal.aborted || registrationRequestRef.current !== controller) return;
+      const items = Array.isArray(payload.items) ? payload.items : [];
+      const visibleItems = items.map(decorateRegistration);
       const duplicateCount = visibleItems.filter(item => item.duplicateReason).length;
       setPendingRegistrations(visibleItems);
       setSelectedRegistrationIds(new Set());
-      setIsLoadingRegistrations(false);
-      delete window[callbackName];
-      script.remove();
-      showNotification?.(`Đã tải ${visibleItems.length} hồ sơ mới cần duyệt.${duplicateCount ? ` Có ${duplicateCount} hồ sơ trùng cần thầy xử lý: cập nhật/đã có hoặc xóa.` : ''}`);
-    };
-    script.onerror = () => {
-      setIsLoadingRegistrations(false);
-      delete window[callbackName];
-      script.remove();
-      showNotification?.('Chưa tải được đăng ký mới. Hãy cập nhật Apps Script theo bản mình tạo.', 'error');
-    };
-    script.src = `${REGISTRATION_WEB_APP_URL}?action=listPending&callback=${callbackName}&t=${Date.now()}`;
-    document.body.appendChild(script);
-  };
+      showNotification?.(`Đã tải ${visibleItems.length} hồ sơ mới cần duyệt.${duplicateCount ? ` Có ${duplicateCount} hồ sơ trùng cần xử lý.` : ''}`);
+    } catch (error) {
+      if (!controller.signal.aborted && registrationRequestRef.current === controller) showNotification?.(error.message, 'error');
+    } finally {
+      if (!controller.signal.aborted && registrationRequestRef.current === controller) setIsLoadingRegistrations(false);
+    }
+  }
 
   const syncAllStudentsToSheet = async () => {
     if (!yearStudents.length) {
@@ -2738,17 +3003,40 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
     }
     if (!window.confirm(`Cập nhật ${yearStudents.length} hồ sơ của năm ${currentSchoolYear} lên Google Sheet?`)) return;
     setIsSaving(true);
+    setSheetSyncStatus(prev => ({ ...prev, phase: 'syncing', completed: 0, total: yearStudents.length, failed: 0 }));
     let successCount = 0;
     const errors = [];
     try {
       for (const student of yearStudents) {
         try {
-          await syncStudentToSheet(student, currentSchoolYear);
+          const queued = await persistStudent(student);
+          await syncPersistedStudent(queued);
           successCount += 1;
         } catch (error) {
           errors.push(`${student.fullName || student.accessCode || 'Học sinh'}: ${error.message}`);
         }
+        setSheetSyncStatus(prev => ({
+          ...prev,
+          phase: 'syncing',
+          completed: successCount + errors.length,
+          total: yearStudents.length,
+          failed: errors.length
+        }));
       }
+      let summary = {};
+      try {
+        summary = await loadStudentSheetSummary(currentSchoolYear);
+      } catch {
+        summary = {};
+      }
+      setSheetSyncStatus(prev => ({
+        ...prev,
+        ...summary,
+        phase: errors.length ? 'partial' : 'done',
+        completed: yearStudents.length,
+        total: yearStudents.length,
+        failed: errors.length
+      }));
       if (errors.length) {
         showNotification?.(`Đã cập nhật ${successCount}/${yearStudents.length} hồ sơ. Còn ${errors.length} hồ sơ lỗi, xem Console nếu cần.`, 'error');
         console.warn('Lỗi cập nhật Sheet:', errors);
@@ -2781,6 +3069,7 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
 
       for (const row of sheetRows) {
         const sheetStudent = registrationToStudentData(row, currentSchoolYear);
+        const hasCurrentClassName = isUsefulSheetValue(row.currentClassName || row.lopHienTai || row.current_class_name);
         const accessCode = String(sheetStudent.accessCode || '').trim().toUpperCase();
         const identityCode = String(sheetStudent.identityCode || '').replace(/^'/, '').trim();
         const existing = (accessCode
@@ -2800,20 +3089,24 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
         matchedCount += 1;
         const changes = {};
         SHEET_TO_DATABASE_SYNC_FIELDS.forEach(key => {
-          const nextValue = key === 'birthDate'
+          if (key === 'className' && !hasCurrentClassName) return;
+          const nextValue = key === 'classHistory'
+            ? (sheetStudent.classHistory && typeof sheetStudent.classHistory === 'object' ? sheetStudent.classHistory : {})
+            : key === 'birthDate'
             ? formatDisplayDate(sheetStudent[key] || '')
             : safePlainValue(sheetStudent[key]);
-          if (!isUsefulSheetValue(nextValue)) return;
-          if (safePlainValue(existing[key]) === nextValue) return;
+          if (key !== 'classHistory' && !isUsefulSheetValue(nextValue)) return;
+          if (key === 'classHistory' && JSON.stringify(existing[key] || {}) === JSON.stringify(nextValue)) return;
+          if (key !== 'classHistory' && safePlainValue(existing[key]) === nextValue) return;
           changes[key] = nextValue;
         });
+        const nextClassName = changes.className || existing.className || '';
+        const derivedGrade = getGradeFromClass(nextClassName);
+        const nextGrade = Object.prototype.hasOwnProperty.call(changes, 'grade') ? changes.grade : existing.grade;
+        if (derivedGrade && String(nextGrade || '') !== String(derivedGrade)) changes.grade = derivedGrade;
         if (!Object.keys(changes).length) continue;
         try {
-          await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'students', existing.id), {
-            ...changes,
-            updatedAt: Date.now(),
-            updatedBy: user?.uid || ''
-          }, { merge: true });
+          await persistStudent({ ...existing, ...changes });
           updatedCount += 1;
         } catch (error) {
           errors.push(`${existing.fullName || existing.accessCode || 'Học sinh'}: ${error.message}`);
@@ -2859,11 +3152,7 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
     setIsSaving(true);
     try {
       if (shouldUpdateIdentity) {
-        await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'students', existingStudent.id), {
-          identityCode,
-          updatedAt: Date.now(),
-          updatedBy: user?.uid || ''
-        }, { merge: true });
+        await persistStudent({ ...existingStudent, identityCode });
       }
       await callSheetAction('markExistingRegistration', {
         rowNumber: registration.rowNumber,
@@ -2903,104 +3192,49 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
   };
 
   const approveRegistrations = async (registrations = []) => {
-    const targets = registrations.length ? registrations : pendingRegistrations.filter(item => selectedRegistrationIds.has(item.tempId));
-    if (!targets.length) {
-      showNotification?.('Chưa chọn hồ sơ đăng ký nào.', 'error');
-      return;
-    }
-    const blocked = targets.filter(item => item.duplicateReason || findRegistrationDuplicate(item));
-    const validTargets = targets.filter(item => !(item.duplicateReason || findRegistrationDuplicate(item)));
-    if (!validTargets.length) {
-      showNotification?.('Các hồ sơ đã chọn đều có dấu hiệu trùng. Thầy kiểm tra dòng cảnh báo trước khi chuyển.', 'error');
-      return;
-    }
-    setIsSaving(true);
-    try {
-      const validEntries = validTargets
-        .map(registration => ({
-          registration,
-          student: normalizeStudentRecord(registrationToStudent(registration), currentSchoolYear)
-        }))
-        .filter(item => item.student.fullName && item.student.className)
-        .sort((a, b) => compareClassThenName(a.student, b.student));
-      const invalidCount = validTargets.length - validEntries.length;
-      if (!validEntries.length) {
-        showNotification?.('Ho so dang ky thieu ho ten hoac lop, chua the duyet vao database.', 'error');
-        return;
-      }
-      const newStudents = validEntries.map(item => item.student);
-      const codeMap = assignSequentialCodesByOrder([...yearStudents, ...newStudents], newStudents, existingCodes, currentSchoolYear);
-      const codes = new Set(existingCodes);
-      const approvedEntries = await Promise.all(validEntries.map(async ({ registration, student }) => {
-        const accessCode = codeMap.get(student) || nextSequentialCode(student, codes, currentSchoolYear);
-        const data = { ...student };
-        ['id', 'tempId', 'duplicateReason', 'duplicateStudentName', 'duplicateAccessCode'].forEach(key => delete data[key]);
-        codes.add(accessCode);
-        await addDoc(studentsCollection, {
-          ...data,
-          accessCode,
-          createdAt: Date.now(),
-          updatedAt: Date.now(),
-          createdBy: user?.uid || '',
-          updatedBy: user?.uid || ''
-        });
-        return { registration, student: { ...data, accessCode } };
-      }));
-      const sheetErrors = [];
-      await Promise.all(approvedEntries.map(async ({ registration, student }) => {
-        if (!registration.rowNumber) return;
-        try {
-          await callSheetAction('markExistingRegistration', {
-            rowNumber: registration.rowNumber,
-            identityCode: student.identityCode || registration.identityCode || '',
-            fullName: student.fullName || registration.fullName || '',
-            birthDate: student.birthDate || registration.birthDate || '',
-            note: `Da chuyen vao database. Ma hoc sinh: ${student.accessCode || ''}. PH/HS dung ma nay de bo sung/chinh sua ho so.`
-          });
-        } catch (error) {
-          sheetErrors.push(`${student.fullName || registration.fullName || 'Hoc sinh'}: ${error.message}`);
-        }
-      }));
-      setPendingRegistrations(prev => prev.filter(item => !approvedEntries.some(({ registration }) => safePlainValue(registration.tempId || registration.id) === safePlainValue(item.tempId || item.id))));
-      setSelectedRegistrationIds(new Set());
-      showNotification?.(`Đã duyệt ${newStudents.length} học sinh vào database và đánh dấu Đã có trên Sheet ${approvedEntries.length - sheetErrors.length}/${approvedEntries.length}.${blocked.length ? ` Bỏ qua ${blocked.length} hồ sơ có dấu hiệu trùng.` : ''}${invalidCount ? ` Bo qua ${invalidCount} ho so thieu ho ten hoac lop.` : ''}${sheetErrors.length ? ' Một vài dòng Sheet chưa cập nhật được, tải lại sẽ thấy cảnh báo trùng để xử lý.' : ''}`, sheetErrors.length ? 'error' : 'success');
-      if (sheetErrors.length) console.warn('Lỗi đánh dấu Đã có trên Sheet:', sheetErrors);
-    } catch (error) {
-      showNotification?.(`Chưa duyệt được hồ sơ: ${error.message}`, 'error');
-    } finally {
-      setIsSaving(false);
-    }
-  };
+ const targets=registrations.length?registrations:pendingRegistrations.filter(item=>selectedRegistrationIds.has(item.tempId));
+ if(!targets.length){showNotification?.('Chưa chọn hồ sơ đăng ký.','error');return;}
+ const identityFor=registration=>/^\d{12}$/.test(String(registration.identityCode||''))?registration.identityCode:registration.registrationId||registration.id||registration.tempId;
+ const retry=registration=>yearStudents.some(student=>student.registrationId===identityFor(registration)&&['pending','failed','running'].includes(student.sheetSync?.status));
+ const valid=targets.filter(item=>retry(item)||!(item.duplicateReason||findRegistrationDuplicate(item)));
+ if(!valid.length){showNotification?.('Các hồ sơ có dấu hiệu trùng; cần đối soát trước.','error');return;}
+ setIsSaving(true);
+ try {
+  const result=await processRecords(valid,async registration=>{
+   const input=normalizeStudentRecord(registrationToStudent(registration),currentSchoolYear);
+   if(!input.fullName||!input.className)throw new Error('Thiếu họ tên hoặc lớp.');
+   const identity=identityFor(registration);const targetId=stableRecordId('registration',identity,currentSchoolYear,getStudentSchoolCode(input));
+   ['id','tempId','duplicateReason','duplicateStudentName','duplicateAccessCode'].forEach(key=>delete input[key]);
+   let student=await persistStudent({...input,registrationId:identity},{id:targetId,createOnly:true,allocateCode:true,registration});
+   if(!student.sheetSync?.jobId)student=await persistStudent(student,{registration});
+   return {registration,student};
+  });
+  const synced=new Set(),syncErrors=[];
+  for(const {value:{registration,student}} of result.succeeded){
+   try{await syncPersistedStudent(student);synced.add(safePlainValue(registration.tempId||registration.id));}
+   catch(error){syncErrors.push(error);}
+  }
+  setPendingRegistrations(prev=>prev.filter(item=>!synced.has(safePlainValue(item.tempId||item.id))));
+  setSelectedRegistrationIds(new Set(result.failed.map(item=>item.record.tempId)));
+  showNotification?.('Database: '+result.succeeded.length+'/'+valid.length+' hồ sơ; Sheet: '+synced.size+'/'+result.succeeded.length+'. '+(result.failed.length?'Hồ sơ lỗi vẫn được chọn để thử tiếp. ':'')+(syncErrors.length?'Việc đồng bộ chưa xong được giữ trong hàng đợi.':''),result.failed.length||syncErrors.length?'error':'success');
+ }catch(error){showNotification?.('Duyệt hồ sơ chưa hoàn tất: '+error.message,'error');}
+ finally{setIsSaving(false);}
+};
 
-  const approveProfileRequest = async (request) => {
-    if (!request?.studentId) return;
-    const currentStudent = resolveProfileRequestStudent(request);
-    if (isReadOnlyStudentRecord(currentStudent)) {
-      showNotification?.(readOnlyStudentMessage(currentStudent), 'error');
-      return;
-    }
-    const cleanChanges = sanitizeStudentChanges(request.changes);
-    if (!Object.keys(cleanChanges).length) {
-      showNotification?.('Yeu cau nay khong co thong tin hop le de duyet.', 'error');
-      return;
-    }
-    setIsSaving(true);
-    try {
-      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'students', request.studentId), {
-        ...cleanChanges,
-        updatedAt: Date.now(),
-        updatedBy: user?.uid || ''
-      }, { merge: true });
-      await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'student_profile_requests', request.id));
-      postAppsScript({ action: 'writeAuditLog', auditAction: 'duyet_ho_so_hoc_sinh', actor: user?.uid || 'Admin', details: { studentId: request.studentId, changes: cleanChanges } }).catch(() => undefined);
-      hideProfileRequestFieldLocally(request.id);
-      showNotification?.('Đã duyệt và cập nhật hồ sơ học sinh.');
-    } catch (error) {
-      showNotification?.(`Chưa duyệt được yêu cầu: ${error.message}`, 'error');
-    } finally {
-      setIsSaving(false);
-    }
-  };
+  const approveProfileRequest = async request => {
+ if(!request?.studentId)return;const before=resolveProfileRequestStudent(request);
+ if(isReadOnlyStudentRecord(before)){showNotification?.(readOnlyStudentMessage(before),'error');return;}
+ const changes=sanitizeStudentChanges(request.changes);if(changes.className)changes.grade=getGradeFromClass(changes.className);
+ if(!Object.keys(changes).length){showNotification?.('Yêu cầu không có thông tin hợp lệ.','error');return;}
+ setIsSaving(true);
+ try {
+  const student=await persistStudent({...before,...changes,id:request.studentId},{profileDecision:{requestId:request.id,expectedChanges:request.changes,remainingChanges:{}}});
+  hideProfileRequestFieldLocally(request.id);
+  try{await syncPersistedStudent(student);showNotification?.('Đã duyệt hồ sơ và đồng bộ Sheet.');}
+  catch(error){showNotification?.('Hồ sơ đã cập nhật; đồng bộ Sheet được giữ để thử lại: '+error.message,'error');}
+ }catch(error){showNotification?.('Chưa duyệt được yêu cầu: '+error.message,'error');}
+ finally{setIsSaving(false);}
+};
 
   const rejectProfileRequest = async (request) => {
     if (!request?.id || !window.confirm('Từ chối yêu cầu sửa hồ sơ này?')) return;
@@ -3019,6 +3253,79 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
 
   const editingProfileRequests = editing?.id ? (profileRequestsByStudent.get(editing.id) || []) : [];
   const utilityButtonClass = 'flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-[11px] font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-45 sm:gap-2 sm:rounded-lg sm:px-3 sm:py-2 sm:text-sm sm:font-normal';
+  const renderQuickEditControl = (student, field) => {
+    const value = quickEdit?.value ?? '';
+    const updateValue = (nextValue) => setQuickEdit(prev => prev ? ({ ...prev, value: nextValue }) : prev);
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        cancelQuickEdit();
+      }
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        event.currentTarget.blur();
+      }
+    };
+    const controlClass = 'h-9 w-full min-w-[120px] rounded-lg border border-indigo-400 bg-white px-2 text-xs font-bold text-slate-800 shadow-sm outline-none ring-2 ring-indigo-100 disabled:opacity-60';
+    const sharedProps = {
+      autoFocus: true,
+      value,
+      disabled: quickEditSaving,
+      onChange: event => updateValue(event.target.value),
+      onBlur: event => saveQuickEdit(student, field, event.currentTarget.value),
+      onKeyDown: handleKeyDown,
+      className: controlClass
+    };
+
+    let control;
+    if (field.key === 'schoolCode') {
+      control = <select {...sharedProps}>{SCHOOL_OPTIONS.map(school => <option key={school.code} value={school.code}>{school.name}</option>)}</select>;
+    } else if (field.key === 'className' && configuredClassOptions.length) {
+      control = (
+        <select {...sharedProps}>
+          <option value="">Chọn lớp...</option>
+          {[...new Set([student.className, ...configuredClassOptions].filter(Boolean))].map(className => <option key={className} value={className}>{className}</option>)}
+        </select>
+      );
+    } else if (field.key === 'gender') {
+      control = <select {...sharedProps}>{['', 'Nam', 'Nữ'].map(option => <option key={option || '-'} value={option}>{option || '-'}</option>)}</select>;
+    } else if (ACADEMIC_RESULT_FIELD_KEYS.has(field.key)) {
+      control = <select {...sharedProps}>{ACADEMIC_RESULT_OPTIONS.map(option => <option key={option || '-'} value={option}>{option || '-'}</option>)}</select>;
+    } else {
+      control = <input {...sharedProps} placeholder={field.key === 'birthDate' ? 'dd/mm/yyyy' : field.label} />;
+    }
+
+    return (
+      <div className="relative min-w-[120px]" onClick={event => event.stopPropagation()}>
+        {control}
+        {quickEditSaving && <Loader2 className="pointer-events-none absolute right-2 top-2.5 h-4 w-4 animate-spin text-indigo-600" />}
+      </div>
+    );
+  };
+  const refreshStudentSheetSummary = async () => {
+    setSheetSyncStatus(prev => ({ ...prev, phase: 'checking' }));
+    try {
+      const summary = await loadStudentSheetSummary(currentSchoolYear);
+      setSheetSyncStatus(prev => ({ ...prev, ...summary, phase: 'idle' }));
+    } catch {
+      setSheetSyncStatus(prev => ({ ...prev, phase: 'unavailable', exactYearCount: null }));
+    }
+  };
+  const sheetSyncSuccessCount = Math.max(0, sheetSyncStatus.completed - sheetSyncStatus.failed);
+  const sheetSyncProgressPercent = sheetSyncStatus.total
+    ? Math.round((sheetSyncStatus.completed / sheetSyncStatus.total) * 100)
+    : 0;
+  const sheetStatusText = sheetSyncStatus.phase === 'syncing'
+    ? `Đang tải lên Sheet: ${sheetSyncStatus.completed}/${sheetSyncStatus.total} - thành công ${sheetSyncSuccessCount}${sheetSyncStatus.failed ? `, lỗi ${sheetSyncStatus.failed}` : ''}`
+    : sheetSyncStatus.phase === 'checking'
+      ? 'Đang kiểm tra số lượng trên Google Sheet...'
+      : sheetSyncStatus.phase === 'unavailable'
+        ? 'Chưa đọc được số lượng trên Google Sheet. Bấm nút tải lại để kiểm tra.'
+        : sheetSyncStatus.phase === 'partial'
+          ? `Đã tải ${sheetSyncSuccessCount}/${sheetSyncStatus.total} học sinh - lỗi ${sheetSyncStatus.failed}. Sheet năm này hiện có ${sheetSyncStatus.exactYearCount ?? '?'} dòng.`
+          : sheetSyncStatus.phase === 'done'
+            ? `Đã tải thành công ${sheetSyncSuccessCount}/${sheetSyncStatus.total} học sinh. Sheet năm này hiện có ${sheetSyncStatus.exactYearCount ?? sheetSyncSuccessCount} dòng.`
+            : `Database: ${yearStudents.length} học sinh - Sheet năm này: ${sheetSyncStatus.exactYearCount ?? '?'} dòng${sheetSyncStatus.unassignedYearCount ? ` - ${sheetSyncStatus.unassignedYearCount} dòng cũ chưa gắn năm học` : ''}.`;
   const toggleUtilitiesMenu = () => {
     if (showUtilitiesMenu) {
       setShowUtilitiesMenu(false);
@@ -3170,6 +3477,21 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
                     </button>
                   )}
                   {studentTab === 'current' && (
+                    <button type="button" onClick={() => { setShowUtilitiesMenu(false); backfillCurrentYearStudentGrades(); }} disabled={isSaving || yearStudents.length === 0} className={utilityButtonClass}>
+                      <GraduationCap className="h-4 w-4 text-cyan-700" /> Bổ sung cột Khối
+                    </button>
+                  )}
+                  {studentTab === 'current' && (
+                    <button type="button" onClick={() => { setShowUtilitiesMenu(false); restoreCurrentYearClassSections(); }} disabled={isSaving || yearStudents.length === 0 || !previousSchoolYear} className={utilityButtonClass}>
+                      <GraduationCap className="h-4 w-4 text-indigo-700" /> Khôi phục hậu tố từ Sheet năm trước
+                    </button>
+                  )}
+                  {studentTab === 'current' && (
+                    <button type="button" onClick={() => { setShowUtilitiesMenu(false); openSchoolYearPromotion(); }} disabled={isSaving || !onStartSchoolYearPromotion} className={utilityButtonClass}>
+                      <GraduationCap className="h-4 w-4 text-violet-700" /> Chuyển năm học và lên lớp
+                    </button>
+                  )}
+                  {studentTab === 'current' && (
                     <button type="button" onClick={() => { setShowUtilitiesMenu(false); createMissingInfoReport(); }} className={utilityButtonClass}>
                       <ClipboardCheck className="h-4 w-4 text-orange-600" /> Kiem tra thieu thong tin
                     </button>
@@ -3200,6 +3522,25 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
             <div className="rounded-full bg-rose-100 px-2.5 py-1 text-[10px] font-black uppercase text-rose-700">
               {profileRequests.length} yêu cầu sửa
             </div>
+          </div>
+        )}
+        {studentTab === 'current' && (
+          <div className={`overflow-hidden rounded-lg border bg-white/90 ${sheetSyncStatus.phase === 'partial' || sheetSyncStatus.phase === 'unavailable' ? 'border-amber-200' : 'border-emerald-200'}`}>
+            <div className="flex min-h-8 items-center gap-2 px-2.5 py-1.5 text-[10px] font-bold sm:text-xs">
+              {sheetSyncStatus.phase === 'syncing' || sheetSyncStatus.phase === 'checking'
+                ? <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-cyan-600" />
+                : <FileSpreadsheet className="h-3.5 w-3.5 shrink-0 text-emerald-600" />}
+              <span className="min-w-0 flex-1 text-slate-700">{sheetStatusText}</span>
+              {yearStudents.some(student => ['pending', 'failed', 'running'].includes(student.sheetSync?.status)) && <button type="button" disabled={isSaving} onClick={retrySheetJobs} className="rounded-md bg-amber-100 px-2 py-1 font-bold text-amber-800 disabled:opacity-40">Thử lại đồng bộ ({yearStudents.filter(student => ['pending', 'failed', 'running'].includes(student.sheetSync?.status)).length})</button>}
+              <button type="button" onClick={refreshStudentSheetSummary} disabled={sheetSyncStatus.phase === 'syncing' || sheetSyncStatus.phase === 'checking'} className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100 disabled:opacity-40" title="Kiểm tra lại số lượng trên Sheet">
+                <RefreshCw className="h-3.5 w-3.5" />
+              </button>
+            </div>
+            {sheetSyncStatus.phase === 'syncing' && (
+              <div className="h-1 bg-slate-100">
+                <div className="h-full bg-cyan-500 transition-[width] duration-200" style={{ width: `${sheetSyncProgressPercent}%` }} />
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -3257,6 +3598,71 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
                   )}
                 </tbody>
               </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {schoolYearPromotionPreview && (
+        <div className="fixed inset-0 z-[180] flex items-center justify-center bg-slate-950/50 p-3 backdrop-blur-sm">
+          <div className="flex max-h-[88vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl bg-white shadow-2xl">
+            <div className="flex items-start justify-between gap-3 border-b border-violet-100 bg-violet-50 px-4 py-3">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 text-sm font-black text-violet-950">
+                  <GraduationCap className="h-5 w-5 text-violet-700" /> Chuyển năm học và lên lớp
+                </div>
+                <div className="mt-1 text-xs font-semibold text-violet-800">{schoolYearPromotionPreview.sourceSchoolYear} sang {schoolYearPromotionPreview.targetSchoolYear}</div>
+              </div>
+              <button type="button" onClick={() => !isSaving && setSchoolYearPromotionPreview(null)} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white text-slate-500 shadow-sm hover:bg-rose-600 hover:text-white" title="Đóng" disabled={isSaving}>
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="min-h-0 overflow-y-auto p-4">
+              {schoolYearPromotionState?.sourceSchoolYear === schoolYearPromotionPreview.sourceSchoolYear
+                && schoolYearPromotionState?.targetSchoolYear === schoolYearPromotionPreview.targetSchoolYear && (
+                <div
+                  role="status"
+                  aria-live="polite"
+                  className={`mb-3 rounded-lg border p-3 text-sm font-semibold ${schoolYearPromotionState.status === 'failed' ? 'border-rose-200 bg-rose-50 text-rose-900' : schoolYearPromotionState.status === 'success' ? 'border-emerald-200 bg-emerald-50 text-emerald-900' : 'border-amber-200 bg-amber-50 text-amber-900'}`}
+                >
+                  {schoolYearPromotionState.status === 'failed'
+                    ? `Lần chuyển trước chưa hoàn tất (${schoolYearPromotionState.stage || 'không rõ bước'}): ${schoolYearPromotionState.message || 'Có thể chạy lại để đối soát và tiếp tục.'}`
+                    : schoolYearPromotionState.status === 'success'
+                      ? 'Lần chuyển năm học này đã hoàn tất và được ghi nhận.'
+                      : `Đang ghi nhận trạng thái chuyển năm: ${schoolYearPromotionState.stage || 'đang xử lý'}. Nếu bị gián đoạn, có thể mở lại và chạy để tiếp tục.`}
+                </div>
+              )}
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3"><div className="text-[10px] font-black uppercase text-slate-500">Đang học</div><div className="mt-1 text-xl font-black text-slate-900">{schoolYearPromotionPreview.activeStudentCount}</div></div>
+                <div className="rounded-lg border border-emerald-100 bg-emerald-50 p-3"><div className="text-[10px] font-black uppercase text-emerald-700">Lên lớp</div><div className="mt-1 text-xl font-black text-emerald-800">{schoolYearPromotionPreview.promoted.length - schoolYearPromotionPreview.completions.length}</div></div>
+                <div className="rounded-lg border border-amber-100 bg-amber-50 p-3"><div className="text-[10px] font-black uppercase text-amber-700">Ở lại lớp</div><div className="mt-1 text-xl font-black text-amber-800">{schoolYearPromotionPreview.repeated.length}</div></div>
+                <div className="rounded-lg border border-blue-100 bg-blue-50 p-3"><div className="text-[10px] font-black uppercase text-blue-700">Hoàn thành lớp 9</div><div className="mt-1 text-xl font-black text-blue-800">{schoolYearPromotionPreview.completions.length}</div></div>
+                <div className="rounded-lg border border-slate-200 bg-white p-3"><div className="text-[10px] font-black uppercase text-slate-500">Đã có năm mới</div><div className="mt-1 text-xl font-black text-slate-700">{schoolYearPromotionPreview.alreadyPrepared.length}</div></div>
+                <div className="rounded-lg border border-slate-200 bg-white p-3"><div className="text-[10px] font-black uppercase text-slate-500">Nghỉ/bỏ học</div><div className="mt-1 text-xl font-black text-slate-700">{schoolYearPromotionPreview.droppedStudentCount}</div></div>
+              </div>
+
+              {schoolYearPromotionPreview.missingScores.length > 0 && (
+                <div className="mt-3 rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-900">
+                  Chưa thể chuyển năm: {schoolYearPromotionPreview.missingScores.length} học sinh chưa đủ kết quả cả năm. Hãy chốt đủ điểm hoặc kết quả học tập trước.
+                </div>
+              )}
+              {schoolYearPromotionPreview.invalidClasses.length > 0 && (
+                <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-900">
+                  Có {schoolYearPromotionPreview.invalidClasses.length} học sinh chưa có tên lớp đầy đủ như 6A, 7B. Hãy khôi phục hậu tố lớp trước khi chuyển năm để hệ thống giữ đúng lớp A/B.
+                </div>
+              )}
+              {!schoolYearPromotionPreview.missingScores.length && !schoolYearPromotionPreview.invalidClasses.length && (
+                <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-900">
+                  Tất cả hồ sơ cần chuyển đã có kết quả để xét. Hệ thống sẽ sao lưu, tạo hoặc tiếp tục hồ sơ năm mới còn thiếu, ghi lịch sử lớp lên Google Sheet, rồi mới đổi năm học hệ thống.
+                </div>
+              )}
+              <div className="mt-3 text-xs font-semibold text-slate-500">Lịch sử lớp năm cũ được giữ lại và bổ sung cột năm mới trên Google Sheet. Nếu đồng bộ bị gián đoạn, dữ liệu đã ghi không bị tạo trùng khi chạy lại.</div>
+            </div>
+            <div className="flex flex-wrap justify-end gap-2 border-t border-slate-200 bg-slate-50 px-4 py-3">
+              <button type="button" onClick={() => setSchoolYearPromotionPreview(null)} disabled={isSaving} className="h-9 rounded-md border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-50">Hủy</button>
+              <button type="button" onClick={confirmSchoolYearPromotion} disabled={isSaving || !schoolYearPromotionPreview.canExecute || !onStartSchoolYearPromotion} className={`inline-flex h-9 items-center gap-1.5 rounded-md px-3 text-xs font-semibold ${schoolYearPromotionPreview.canExecute && !isSaving ? 'bg-violet-700 text-white shadow hover:bg-violet-800' : 'cursor-not-allowed bg-slate-200 text-slate-500'}`}>
+                {isSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <GraduationCap className="h-4 w-4" />} {isSaving ? 'Đang chuyển...' : 'Sao lưu và chuyển năm'}
+              </button>
             </div>
           </div>
         </div>
@@ -3344,104 +3750,96 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
             </select>
           </div>
 
-          <div className="shrink-0 px-3 py-2 border-b border-slate-100 bg-slate-50 text-[11px] font-bold text-slate-500">
-            Nhấn đúp vào một dòng để mở hồ sơ học sinh. Mỗi ô năm học ghi lớp, rèn luyện và học tập của năm đó.
+          <div className="shrink-0 px-3 py-1.5 border-b border-slate-100 bg-slate-50 text-center text-[10px] font-bold text-slate-500">
+            Mỗi năm học gồm 3 cột: Lớp, Rèn luyện, HL (học lực). Dấu — nghĩa là chưa có kết quả được lưu. Nhấn đúp vào dòng để sửa hồ sơ.
           </div>
+          {journeyRows.some(row => row.dropoutContinuation) && (
+            <div className="shrink-0 border-b border-amber-200 bg-amber-50 px-3 py-2 text-center text-[11px] font-bold text-amber-900">
+              ⚠ Có {journeyRows.filter(row => row.dropoutContinuation).length} hồ sơ đã đánh dấu nghỉ nhưng vẫn có hồ sơ đang học ở năm sau. Hãy kiểm tra xem học sinh đã tái nhập học chưa.
+            </div>
+          )}
 
           <div className="min-h-0 flex-1 overflow-auto">
-            <table className="w-full text-left text-xs min-w-[1120px]">
+            <table className="mx-auto min-w-[650px] table-fixed border-collapse border border-slate-200 text-left text-xs" style={{ width: Math.max(650, 302 + journeyYearOptions.length * 184) }}>
               <thead className="sticky top-0 bg-white border-b border-slate-100 z-10">
-                <tr className="text-slate-500 uppercase font-black">
-                  <th className="sticky left-0 z-20 bg-white px-4 py-3 min-w-[300px]">Học sinh</th>
-                  <th className="px-4 py-3 min-w-[130px]">Bắt đầu học</th>
-                  <th className="px-4 py-3 min-w-[190px]">Tiến độ học</th>
+                <tr className="text-left text-slate-500 uppercase font-black">
+                  <th rowSpan={2} className="sticky left-0 z-20 w-[230px] border border-slate-200 bg-white px-3 py-2">Học sinh</th>
+                  <th rowSpan={2} className="w-[72px] border border-slate-200 px-1.5 py-2 text-center">Lớp hiện tại</th>
                   {journeyYearOptions.map(year => (
-                    <th key={year} className={`px-4 py-3 min-w-[190px] ${year === journeyYearFilter ? 'bg-blue-50 text-blue-700' : ''}`}>{year}</th>
+                    <th key={year} colSpan={3} className={`border border-slate-200 px-2 py-2 text-center ${year === journeyYearFilter ? 'bg-blue-50 text-blue-700' : ''}`}>{year}</th>
+                  ))}
+                </tr>
+                <tr className="text-center text-[10px] font-semibold uppercase text-slate-500">
+                  {journeyYearOptions.map(year => (
+                    <React.Fragment key={year}>
+                      <th className={`w-[72px] border border-slate-200 px-1.5 py-1.5 ${year === journeyYearFilter ? 'bg-blue-50/70' : ''}`}>Lớp</th>
+                      <th className={`w-[64px] border border-slate-200 px-1.5 py-1.5 ${year === journeyYearFilter ? 'bg-blue-50/70' : ''}`}>Rèn luyện</th>
+                      <th className={`w-[48px] border border-slate-200 px-1.5 py-1.5 ${year === journeyYearFilter ? 'bg-blue-50/70' : ''}`}>HL</th>
+                    </React.Fragment>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {journeyRows.length === 0 ? (
                   <tr>
-                    <td colSpan={journeyYearOptions.length + 3} className="px-4 py-10 text-center text-slate-400 font-bold">
+                    <td colSpan={journeyYearOptions.length * 3 + 2} className="border border-slate-200 px-4 py-10 text-center text-slate-400 font-bold">
                       Chưa có học sinh đúng bộ lọc quá trình học này.
                     </td>
                   </tr>
                 ) : journeyRows.map(row => (
-                  <tr key={row.key} onDoubleClick={() => openEdit(row.student)} className="border-b border-slate-50 hover:bg-blue-50/50 cursor-pointer">
-                    <td className="sticky left-0 bg-white px-4 py-3 align-middle">
-                      <div className="flex items-center gap-3 min-w-0">
-                        <div className="w-12 h-14 rounded-xl bg-indigo-50 border border-indigo-100 overflow-hidden flex items-center justify-center shrink-0">
+                  <tr key={row.key} onDoubleClick={() => openEdit(row.student)} title="Nhấn đúp để sửa hồ sơ" className="border-b border-slate-100 hover:bg-blue-50/50 cursor-pointer">
+                    <td className="sticky left-0 border border-slate-200 bg-white px-3 py-2 align-middle text-left">
+                      <div className="flex min-w-0 items-center gap-2 text-left">
+                        <div className="w-10 h-12 rounded-lg bg-indigo-50 border border-indigo-100 overflow-hidden flex items-center justify-center shrink-0">
                           <DriveImage url={row.student.portraitUrl} alt={row.student.fullName || 'Học sinh'} className="w-full h-full object-contain" fallback={<UserRound className="w-5 h-5 text-indigo-300" />} />
                         </div>
-                        <div className="min-w-0">
-                          <div className="font-black text-slate-900 truncate">{row.student.fullName || 'Chưa có tên'}</div>
-                          <div className="text-[11px] font-bold text-slate-500">Mã: {row.student.accessCode || '-'} · Sinh: {row.student.birthDate || '-'}</div>
-                          <div className="text-[11px] font-bold text-blue-700">Đang xem: lớp {row.student.className || '-'}</div>
+                        <div className="min-w-0 flex-1">
+                          <div className={`font-black truncate ${isJourneyRowDropped(row, journeyYearFilter) ? 'text-rose-700 line-through' : 'text-slate-900'}`}>{row.student.fullName || 'Chưa có tên'}</div>
+                          <div className="text-[10px] font-bold text-slate-500 truncate">Mã HS: {row.student.accessCode || '-'}</div>
+                          <div className="text-[10px] font-bold text-slate-500 truncate">Vào: {row.entryYear || '-'}</div>
                         </div>
                       </div>
                     </td>
-                    <td className="px-4 py-3 align-middle font-black text-slate-700 whitespace-nowrap">{row.entryYear || '-'}</td>
-                    <td className="px-4 py-3 align-middle">
-                      {(() => {
-                        const progress = getStudentLearningProgress(row.student);
-                        const percent = progress?.targetCount ? progress.percent : 0;
-                        return (
-                          <div className="space-y-2">
-                            <div className="flex items-center justify-between gap-2 text-[11px] font-black">
-                              <span className={progress?.targetCount ? 'text-indigo-700' : 'text-slate-400'}>
-                                {progress?.targetCount ? `${percent}%` : 'Chưa có dữ liệu'}
-                              </span>
-                              <button
-                                type="button"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  openMailboxComposer([row.student], 'progress');
-                                }}
-                                disabled={!onSendMailboxMessages}
-                                className="rounded-lg border border-emerald-100 bg-emerald-50 px-2 py-1 text-[10px] font-black text-emerald-700 disabled:opacity-40"
-                              >
-                                Gửi nhắc
-                              </button>
-                            </div>
-                            <div className="h-2 overflow-hidden rounded-full bg-slate-100">
-                              <div className="h-full rounded-full bg-indigo-500" style={{ width: `${Math.max(0, Math.min(100, percent))}%` }} />
-                            </div>
-                            {progress?.targetCount > 0 && (
-                              <div className="text-[10px] font-bold text-slate-500">
-                                Lý thuyết {progress.theoryDoneCount}/{progress.targetCount} · Kiểm tra {progress.quickDoneCount}/{progress.quickTargetCount}
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })()}
+                    <td
+                      className={`border border-slate-200 px-1.5 py-2 align-middle text-center font-bold ${row.latestStudent.status === 'dropped' ? 'text-rose-700 line-through' : 'text-blue-700'}`}
+                      title={row.dropoutContinuation
+                        ? `Đã nghỉ năm ${row.dropoutContinuation.droppedSchoolYear}, nhưng có hồ sơ tiếp tục năm ${row.dropoutContinuation.continuedSchoolYear}, lớp ${row.dropoutContinuation.className || '—'}. Kiểm tra tái nhập học.`
+                        : `Lớp gần nhất: ${row.latestStudent.className || '—'}`}
+                    >
+                      {row.latestStudent.className || '—'}
+                      {row.dropoutContinuation && (
+                        <div className="mt-1 text-[9px] leading-tight font-bold text-rose-700" aria-label="Cần kiểm tra hồ sơ nghỉ nhưng có lớp năm sau">
+                          ⚠ Kiểm tra
+                        </div>
+                      )}
                     </td>
                     {journeyYearOptions.map(year => {
                       const record = row.byYear.get(year);
-                      const cell = getJourneyYearCell(record || {});
+                      const cell = getJourneyYearCell(record || {}, row.records);
                       const scorebookResult = record?.id ? journeyScorebookResults.get(record.id) : null;
-                      const conductResult = cell.conduct || scorebookResult?.conduct || '';
+                      const conductResult = cell.conduct || '';
                       const academicResult = cell.academic || scorebookResult?.academic || '';
                       const isDroppedRecord = record?.status === 'dropped';
                       return (
-                        <td key={year} className={`px-4 py-3 align-top ${year === journeyYearFilter ? 'bg-blue-50/60' : ''}`}>
-                          {record ? (
-                            isDroppedRecord ? (
-                              <div className="space-y-1">
-                                <div className="inline-flex rounded-full bg-rose-50 border border-rose-100 px-2 py-1 font-black text-rose-700">Nghỉ</div>
-                                <div className="text-[11px] font-bold text-slate-500">Lớp {cell.className || '-'}</div>
-                              </div>
-                            ) : (
-                              <div className="space-y-1">
-                                <div className="inline-flex rounded-full bg-white border border-slate-200 px-2 py-1 font-black text-slate-800">Lớp {cell.className || '-'}</div>
-                                <div className="text-[11px] font-bold text-slate-600">Rèn luyện: <b className="text-slate-900">{conductResult || '-'}</b></div>
-                                <div className="text-[11px] font-bold text-slate-600">Học tập: <b className="text-slate-900">{academicResult || '-'}</b></div>
-                              </div>
-                            )
-                          ) : (
-                            <span className="text-slate-300 font-bold">-</span>
-                          )}
-                        </td>
+                        <React.Fragment key={year}>
+                          <td className={`border border-slate-200 px-1.5 py-2 align-middle text-center font-normal ${year === journeyYearFilter ? 'bg-blue-50/60' : ''}`}>
+                            {record ? (
+                              <span className={`block truncate ${isDroppedRecord ? 'text-rose-700 line-through' : 'text-slate-700'}`} title={isDroppedRecord ? `Đã nghỉ · ${cell.className || '—'}` : cell.className || 'Chưa có lớp'}>
+                                {cell.className || '—'}
+                              </span>
+                            ) : <span className="text-slate-300">—</span>}
+                          </td>
+                          <td className={`border border-slate-200 px-1.5 py-2 align-middle text-center font-normal ${year === journeyYearFilter ? 'bg-blue-50/60' : ''}`}>
+                            <span className={conductResult ? 'text-slate-700' : 'text-slate-400'} title={conductResult ? 'Rèn luyện đã lưu trong hồ sơ học sinh' : 'Chưa có đánh giá rèn luyện được lưu'}>
+                              {record ? conductResult || '—' : '—'}
+                            </span>
+                          </td>
+                          <td className={`border border-slate-200 px-1.5 py-2 align-middle text-center font-normal ${year === journeyYearFilter ? 'bg-blue-50/60' : ''}`}>
+                            <span className={academicResult ? 'text-slate-700' : 'text-slate-400'} title={cell.academic ? 'Học lực đã lưu trong hồ sơ học sinh' : scorebookResult?.academic ? 'Học lực tính từ sổ điểm năm học này' : 'Chưa có kết quả học lực được lưu'}>
+                              {record ? academicResult || '—' : '—'}
+                            </span>
+                          </td>
+                        </React.Fragment>
                       );
                     })}
                   </tr>
@@ -3577,7 +3975,7 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
               suppressContentEditableWarning
               onInput={(event) => setMissingInfoReport(getEditableReportText(event.currentTarget))}
               className="max-h-[420px] min-h-[190px] overflow-y-auto rounded-xl border border-orange-100 bg-white p-3 text-sm leading-relaxed text-slate-800 focus:border-orange-300 focus:outline-none focus:ring-2 focus:ring-orange-100"
-              dangerouslySetInnerHTML={{ __html: missingInfoReportToHtml(missingInfoReport) }}
+              dangerouslySetInnerHTML={{ __html: sanitizeHtml(missingInfoReportToHtml(missingInfoReport)) }}
             />
           </div>
         </div>
@@ -3838,11 +4236,22 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
                     </td>
                   </>
                 )}
-                {visibleStudentFields.map(field => (
-                  <td key={field.key} className={`px-4 py-3 align-middle ${isImageOnlyView && DOCUMENT_FIELD_KEYS.has(field.key) ? 'text-center' : ''}`}>
-                    <StudentCell student={student} field={field} isClassLeader={studentTab === 'current' && Boolean(student.isClassLeader)} imagePreview={isImageOnlyView && DOCUMENT_FIELD_KEYS.has(field.key)} compactName={isImageOnlyView} onOpenDocument={DOCUMENT_FIELD_KEYS.has(field.key) ? (row, fieldItem, index) => openStudentDocumentViewer(row, fieldItem, index) : null} onOpenEdit={studentTab === 'registrations' ? (row) => setEditing({ ...emptyStudent, ...row, id: '' }) : openEdit} />
-                  </td>
-                ))}
+                {visibleStudentFields.map(field => {
+                  const isQuickEditing = studentTab === 'current' && quickEdit?.studentId === student.id && quickEdit?.fieldKey === field.key;
+                  const canQuickEdit = studentTab === 'current' && !isImageOnlyView && !DOCUMENT_FIELD_KEYS.has(field.key) && field.key !== 'grade';
+                  return (
+                    <td
+                      key={field.key}
+                      onClick={() => canQuickEdit && startQuickEdit(student, field)}
+                      className={`px-4 py-3 align-middle ${isImageOnlyView && DOCUMENT_FIELD_KEYS.has(field.key) ? 'text-center' : ''} ${canQuickEdit ? 'cursor-text hover:bg-indigo-50 hover:ring-1 hover:ring-inset hover:ring-indigo-100' : ''}`}
+                      title={canQuickEdit ? `Bấm để sửa nhanh ${field.label}` : undefined}
+                    >
+                      {isQuickEditing ? renderQuickEditControl(student, field) : (
+                        <StudentCell student={student} field={field} isClassLeader={studentTab === 'current' && Boolean(student.isClassLeader)} imagePreview={isImageOnlyView && DOCUMENT_FIELD_KEYS.has(field.key)} compactName={isImageOnlyView} onOpenDocument={DOCUMENT_FIELD_KEYS.has(field.key) ? (row, fieldItem, index) => openStudentDocumentViewer(row, fieldItem, index) : null} onOpenEdit={studentTab === 'registrations' ? (row) => setEditing({ ...emptyStudent, ...row, id: '' }) : openEdit} />
+                      )}
+                    </td>
+                  );
+                })}
                 {!isImageOnlyView && (studentTab === 'current' ? (
                   <>
                     <td className="px-4 py-3">
@@ -4088,12 +4497,28 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
                 return (
                   <label key={field.key} className="flex flex-col gap-1">
                     <span className="text-[10px] font-black uppercase text-slate-400">{field.label}{field.required ? ' *' : ''}</span>
-                    {ACADEMIC_RESULT_FIELD_KEYS.has(field.key) ? (
+                    {field.key === 'schoolCode' ? (
+                      <select value={normalizeSchoolCode(editing.schoolCode) || 'UNKNOWN'} onChange={(e) => updateEditingField(field.key, e.target.value)} className="border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-black bg-white focus:outline-none focus:border-indigo-400">
+                        {SCHOOL_OPTIONS.map(school => <option key={school.code} value={school.code}>{school.name}</option>)}
+                      </select>
+                    ) : field.key === 'grade' ? (
+                      <input value={getGradeFromClass(editing.className) || getGradeFromClass(editing.grade)} readOnly className="border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-black bg-slate-50 text-slate-600" title="Khối được tự động xác định từ lớp học" />
+                    ) : field.key === 'className' && configuredClassOptions.length ? (
+                      <select value={editing[field.key] || ''} onChange={(e) => updateEditingField(field.key, e.target.value)} className="border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-black bg-white focus:outline-none focus:border-indigo-400">
+                        <option value="">Chọn lớp...</option>
+                        {[...new Set([editing[field.key], ...configuredClassOptions].filter(Boolean))].map(className => (
+                          <option key={className} value={className}>Lớp {className}</option>
+                        ))}
+                      </select>
+                    ) : ACADEMIC_RESULT_FIELD_KEYS.has(field.key) ? (
                       <select value={editing[field.key] || ''} onChange={(e) => updateEditingField(field.key, e.target.value)} className="border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-black bg-white focus:outline-none focus:border-indigo-400">
                         {ACADEMIC_RESULT_OPTIONS.map(option => <option key={option || '-'} value={option}>{option || '-'}</option>)}
                       </select>
                     ) : (
                       <input value={editing[field.key] || ''} list={listId} placeholder={placeholder} onChange={(e) => updateEditingField(field.key, e.target.value)} className="border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-bold focus:outline-none focus:border-indigo-400" />
+                    )}
+                    {field.key === 'entryGrade' && (
+                      <span className="text-[10px] font-medium text-slate-500">Hồ sơ cũ có thể được ước tính từ năm nhập học; kiểm tra lại nếu học sinh chuyển trường hoặc lưu ban.</span>
                     )}
                   </label>
                 );
@@ -4156,7 +4581,13 @@ export default function HocSinhManager({ students = [], currentSchoolYear, initi
 }
 
 function StudentCell({ student, field, onOpenEdit, onOpenDocument, isClassLeader = false, imagePreview = false, compactName = false }) {
-  const value = field.key === 'birthDate' ? formatDisplayDate(safePlainValue(student[field.key])) : safePlainValue(student[field.key]);
+  const value = field.key === 'birthDate'
+    ? formatDisplayDate(safePlainValue(student[field.key]))
+    : field.key === 'grade'
+      ? (getGradeFromClass(student.className) || getGradeFromClass(student.grade))
+      : field.key === 'schoolCode'
+        ? getSchoolName(getStudentSchoolCode(student))
+      : safePlainValue(student[field.key]);
   const fullName = safePlainValue(student.fullName);
   const schoolYear = safePlainValue(student.schoolYear);
 

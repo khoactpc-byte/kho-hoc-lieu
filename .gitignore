@@ -9,6 +9,7 @@ lerna-debug.log*
 
 node_modules
 .npm-cache
+.test-tools/
 dist
 dist-ssr
 *.local
@@ -20,9 +21,19 @@ dist-ssr
 mat_khau.txt
 src/mat_khau.txt
 cauhinh.json
+.audit-all.json
+.audit-production.json
 
-# Google Apps Script source lives in Apps Script, not GitHub/Netlify
+# Version the Apps Script sources used by the deployed web apps; ignore legacy exports.
 apps-script/
+!apps-script/
+apps-script/*
+!apps-script/code_hoclieu.gs
+!apps-script/dang-ky-hoc-sinh/
+apps-script/dang-ky-hoc-sinh/*
+!apps-script/dang-ky-hoc-sinh/code_dangky.gs
+!apps-script/dang-ky-hoc-sinh/Index.html
+!apps-script/dang-ky-hoc-sinh/appsscript.json
 
 # Editor directories and files
 .vscode/*

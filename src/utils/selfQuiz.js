@@ -1,3 +1,5 @@
+import { sanitizeHtml } from './safeHtml.js';
+
 export const SELF_QUIZ_OPTION_IDS = ['a', 'b', 'c', 'd'];
 
 export const makeId = (prefix = 'id') => `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -51,7 +53,7 @@ export const stripHtmlToText = (html = '') => {
     .replace(/<li[^>]*>/gi, '\n');
   if (typeof document === 'undefined') return source.replace(/<[^>]+>/g, ' ').trim();
   const tmp = document.createElement('div');
-  tmp.innerHTML = source;
+  tmp.innerHTML = sanitizeHtml(source);
   return (tmp.innerText || tmp.textContent || '').trim();
 };
 
@@ -340,17 +342,35 @@ export const buildSelfQuizQuestionsForStudent = (quizData) => {
   }));
 };
 
+export const quizPassingPercent = (value, fallback = 80) => {
+  if (value == null || value === '') return fallback;
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.min(100, Math.max(0, number)) : fallback;
+};
+
+export const isQuickQuizResultPassing = (result, material) => {
+  const percent = Number(result?.percent);
+  return result?.percent != null && result.percent !== '' && Number.isFinite(percent)
+    && percent >= quizPassingPercent(result.passingPercent ?? material?.quizData?.passingPercent);
+};
+
 export const gradeSelfQuizSubmission = ({ quizData, answersByQuestionId, quizId, studentName, grade, subject, lesson, schoolYear, userId }) => {
-  const total = (quizData.questions || []).reduce((sum, q) => sum + (Number(q.points) || 1), 0);
+  const questionPoints = question => {
+    if (question.points == null || question.points === '') return 1;
+    const points = Number(question.points);
+    return Number.isFinite(points) && points >= 0 ? points : 1;
+  };
+  const total = (quizData.questions || []).reduce((sum, q) => sum + questionPoints(q), 0);
   const answers = (quizData.questions || []).map(q => {
-    const selectedOptionId = answersByQuestionId[q.id];
-    const isCorrect = selectedOptionId === q.correctOptionId;
-    const points = Number(q.points) || 1;
+    const selectedOptionId = String(answersByQuestionId?.[q.id] || '');
+    const isCorrect = !!selectedOptionId && selectedOptionId === q.correctOptionId
+      && (q.options || []).some(option => option.id === selectedOptionId);
+    const points = questionPoints(q);
     return {
       questionId: q.id,
-      questionText: q.text,
+      questionText: String(q.text || ''),
       selectedOptionId,
-      correctOptionId: q.correctOptionId,
+      correctOptionId: String(q.correctOptionId || ''),
       isCorrect,
       points,
       earned: isCorrect ? points : 0
@@ -358,26 +378,26 @@ export const gradeSelfQuizSubmission = ({ quizData, answersByQuestionId, quizId,
   });
   const score = answers.reduce((sum, answer) => sum + answer.earned, 0);
   return {
-    quizId,
-    studentName: studentName.trim(),
-    grade: String(grade),
-    subject: String(subject),
-    lesson: String(lesson),
-    schoolYear,
+    quizId: String(quizId || ''),
+    studentName: String(studentName || '').trim(),
+    grade: String(grade || ''),
+    subject: String(subject || ''),
+    lesson: String(lesson || ''),
+    schoolYear: String(schoolYear || ''),
     score,
     total,
     percent: total ? Math.round((score / total) * 100) : 0,
     answers,
     submittedAt: Date.now(),
-    authorId: userId
+    authorId: String(userId || '')
   };
 };
 
 export const filterQuizResultsForContext = (results, { quizId, schoolYear, grade, subject, lesson }) =>
   results
     .filter(result =>
-      String(result.quizId || '') === String(quizId || '') ||
-      (
+      (quizId ? String(result.quizId || '') === String(quizId)
+        : !result.quizId) && (
         String(result.schoolYear || '') === String(schoolYear) &&
         String(result.grade) === String(grade) &&
         String(result.subject) === String(subject) &&

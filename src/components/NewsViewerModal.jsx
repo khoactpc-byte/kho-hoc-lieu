@@ -1,4 +1,4 @@
-import React from 'react';
+import { sanitizeHtml } from '../utils/safeHtml';
 import { Calendar, ClipboardCheck, Pencil, Sparkles, X } from 'lucide-react';
 
 export default function NewsViewerModal({
@@ -31,7 +31,7 @@ export default function NewsViewerModal({
           </div>
         </div>
         <div className="flex-1 overflow-y-auto bg-white p-4 student-content sm:p-8 md:p-10" onErrorCapture={onContentError}>
-          <div dangerouslySetInnerHTML={{ __html: news.content }} />
+          <div dangerouslySetInnerHTML={{ __html: sanitizeHtml(news.content) }} />
           {isAdmissionNews && (
             <div className="mt-6 rounded-2xl border border-sky-100 bg-sky-50 p-4 text-center">
               <div className="mb-3 text-xs font-black uppercase text-sky-800">Đăng ký tuyển sinh năm học {admissionSchoolYear}</div>

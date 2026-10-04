@@ -1,7 +1,7 @@
-import { STAFF_SERVER_SESSION_STORAGE_KEY } from './helpers';
+import { STAFF_SERVER_SESSION_STORAGE_KEY, ADMIN_SERVER_SESSION_STORAGE_KEY } from '../config/sessionKeys';
 
 export const ADMIN_SESSION_STORAGE_KEY = 'khl-admin-session-v1';
-export const ADMIN_SERVER_SESSION_STORAGE_KEY = 'khl-admin-server-session-v1';
+export { ADMIN_SERVER_SESSION_STORAGE_KEY } from '../config/sessionKeys';
 const ADMIN_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 
 export const readStoredAdminSession = () => {

@@ -1,5 +1,8 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { collection, doc, onSnapshot, setDoc } from 'firebase/firestore';
+import { requestPrivateApi } from '../services/serverQuizClient';
+import { SCOPED_AUTH_ENABLED } from '../services/scopedIdentity';
+import { saveAttendanceEntry } from '../services/attendance';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { collection, doc, getDoc, onSnapshot, query, setDoc, where } from 'firebase/firestore';
 import {
   ArrowDown,
   ArrowUp,
@@ -14,6 +17,7 @@ import {
   X
 } from 'lucide-react';
 import { appId, db } from '../config/firebase';
+import { compareSchoolClassNames, DEFAULT_SCHOOL_CODE, getSchoolGrade, getSchoolName, getStudentSchoolCode, normalizeSchoolClassName, normalizeSchoolCode } from '../utils/schoolClasses';
 
 const DAYS = [
   { key: '2', label: 'Thứ 2' },
@@ -33,7 +37,7 @@ const ATTENDANCE_STATUS = [
 const pad2 = (value) => String(value).padStart(2, '0');
 const toDateKey = (date) => `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
 const parseYearStart = (schoolYear = '') => Number(String(schoolYear).match(/\d{4}/)?.[0]) || new Date().getFullYear();
-const getClassName = (student = {}) => String(student.className || '').match(/[1-9]\d*/)?.[0] || String(student.className || '').trim();
+const getClassName = (student = {}) => normalizeSchoolClassName(student.className || student.grade || '');
 const extractDriveFileId = (url = '') => {
   const match = String(url || '').match(/\/file\/d\/([a-zA-Z0-9_-]+)|[?&]id=([a-zA-Z0-9_-]+)/);
   return match ? (match[1] || match[2]) : '';
@@ -68,9 +72,14 @@ const compareVietnameseStudentName = (a = {}, b = {}) => {
     || String(a.fullName || '').localeCompare(String(b.fullName || ''), 'vi', { sensitivity: 'base' });
 };
 const getGivenNameOnly = (fullName = '') => splitVietnameseName(fullName).given || String(fullName || '').trim() || '(Chưa có tên)';
+const getClassFilterLabel = (className = '') => {
+  const normalized = normalizeSchoolClassName(className);
+  const grade = getSchoolGrade(normalized);
+  return normalized === grade ? `Khối ${grade}` : `Lớp ${normalized}`;
+};
 
-const makeDefaultSlots = () => Object.fromEntries(
-  DEFAULT_CLASSES.map(className => [
+const makeDefaultSlots = (classNames = DEFAULT_CLASSES) => Object.fromEntries(
+  (classNames.length ? classNames : DEFAULT_CLASSES).map(className => [
     className,
     Object.fromEntries(DAYS.map(day => [day.key, '']))
   ])
@@ -167,9 +176,14 @@ const copyTextSafely = async (text) => {
   }
 };
 
-const uniqueClassesFrom = (students = [], timetable = {}) => {
-  const classes = new Set([...(timetable.classOrder || DEFAULT_CLASSES), ...students.map(getClassName).filter(Boolean)]);
-  return [...classes].sort((a, b) => Number(a) - Number(b));
+const uniqueClassesFrom = (students = [], timetable = {}, configuredClasses = []) => {
+  const classes = new Set([
+    ...(configuredClasses || []),
+    ...(timetable.classOrder || []),
+    ...students.map(getClassName).filter(Boolean)
+  ]);
+  if (!classes.size) DEFAULT_CLASSES.forEach(className => classes.add(className));
+  return [...classes].sort(compareSchoolClassNames);
 };
 
 function AttendanceAvatar({ student = {} }) {
@@ -194,26 +208,36 @@ function AttendanceAvatar({ student = {} }) {
   );
 }
 
-function AdminAttendanceStaticTable({ currentSchoolYear = '', students = [], user, onClose, onOpenDatabase, showNotification }) {
+function AdminAttendanceStaticTable({ currentSchoolYear = '', students = [], classOptions = [], user, onClose, onOpenDatabase, showNotification }) {
   const today = new Date();
   const months = monthOptionsForSchoolYear(currentSchoolYear);
   const [selectedClasses, setSelectedClasses] = useState([]);
-  const [mobileClassGroup, setMobileClassGroup] = useState('secondary');
+  const [activeGradeFilter, setActiveGradeFilter] = useState('');
   const [selectedMonth, setSelectedMonth] = useState(() => getInitialMonth(months) || { month: today.getMonth() + 1, year: today.getFullYear(), label: `Tháng ${today.getMonth() + 1}/${today.getFullYear()}` });
   const [reportMode, setReportMode] = useState('month');
   const [attendanceDocs, setAttendanceDocs] = useState([]);
+  const attendanceSavesRef = useRef(new Set());
   const [showAttendanceStats, setShowAttendanceStats] = useState(false);
-  const days = reportMode === 'month' ? makeMonthDates(selectedMonth) : [];
+  const days = useMemo(() => reportMode === 'month' ? makeMonthDates(selectedMonth) : [], [reportMode, selectedMonth]);
   const reportMonths = useMemo(() => {
     if (reportMode === 'hk1') return months.filter(item => [9, 10, 11, 12, 1].includes(item.month));
     if (reportMode === 'hk2') return months.filter(item => [2, 3, 4, 5].includes(item.month));
     if (reportMode === 'year') return months;
     return [selectedMonth];
   }, [months, reportMode, selectedMonth]);
-  const classFilters = uniqueClassesFrom(students, {});
+  const classFilters = uniqueClassesFrom(students, {}, classOptions);
+  const gradeFilters = [...new Set(classFilters.map(getSchoolGrade).filter(Boolean))]
+    .sort((left, right) => Number(left) - Number(right));
+  const activeGradeClasses = activeGradeFilter
+    ? classFilters.filter(className => getSchoolGrade(className) === activeGradeFilter)
+    : [];
+  useEffect(() => {
+    setActiveGradeFilter('');
+    setSelectedClasses([]);
+  }, [currentSchoolYear]);
   const rows = normalizeStudents(students, '', currentSchoolYear)
     .filter(student => selectedClasses.length === 0 || selectedClasses.includes(getClassName(student)))
-    .sort((a, b) => (Number(getClassName(a) || 0) - Number(getClassName(b) || 0)) || compareVietnameseStudentName(a, b));
+    .sort((a, b) => compareSchoolClassNames(getClassName(a), getClassName(b)) || compareVietnameseStudentName(a, b));
   const attendanceMap = useMemo(() => {
     const map = new Map();
     attendanceDocs.forEach(item => {
@@ -256,69 +280,46 @@ function AdminAttendanceStaticTable({ currentSchoolYear = '', students = [], use
     return Object.values(base).filter(item => selectedClasses.length === 0 || selectedClasses.includes(item.className));
   }, [classFilters, rowsWithStats, selectedClasses]);
 
-  const classGroups = [
-    { key: 'primary', label: 'Tiểu học', classes: ['1', '2', '3', '4', '5'] },
-    { key: 'secondary', label: 'THCS', classes: ['6', '7', '8', '9'] }
-  ];
-  const selectClassGroup = (group) => {
-    setMobileClassGroup(group.key);
-    setSelectedClasses(group.classes);
-  };
-
   useEffect(() => {
-    const ref = collection(db, 'artifacts', appId, 'public', 'data', 'class_attendance');
+    const ref = query(collection(db, 'artifacts', appId, 'public', 'data', 'class_attendance'), where('schoolYear', '==', currentSchoolYear));
+    setAttendanceDocs([]);
     return onSnapshot(ref, snapshot => {
       setAttendanceDocs(snapshot.docs
-        .map(item => ({ id: item.id, ...item.data() }))
+        .map(item => ({ ...item.data(), id: item.id }))
         .filter(item => String(item.schoolYear || '') === String(currentSchoolYear || '')));
     });
   }, [currentSchoolYear]);
 
-  const toggleClass = (className) => {
-    setSelectedClasses(prev => prev.includes(className) ? prev.filter(item => item !== className) : [...prev, className].sort((a, b) => Number(a) - Number(b)));
+  const selectAllClasses = () => {
+    setActiveGradeFilter('');
+    setSelectedClasses([]);
+  };
+
+  const selectGrade = (grade) => {
+    const classes = classFilters.filter(className => getSchoolGrade(className) === grade);
+    setActiveGradeFilter(grade);
+    setSelectedClasses(classes);
+  };
+
+  const selectSingleClass = (className) => {
+    setActiveGradeFilter(getSchoolGrade(className));
+    setSelectedClasses([className]);
   };
 
   const cycleAttendance = async (row, date) => {
     const dateKey = toDateKey(date);
     const className = row.className;
-    const attendanceId = `${currentSchoolYear}_${dateKey}_K${className}`;
+    const documentId = currentSchoolYear + '_' + dateKey + '_K' + className;
+    const key = documentId + '/' + row.student.id;
+    if (attendanceSavesRef.current.has(key)) return;
+    attendanceSavesRef.current.add(key);
     const current = row.statuses[dateKey] || '';
-    const nextStatus = current === '' ? 'CP' : current === 'CP' ? 'KP' : '';
-    const currentRecords = attendanceMap.get(`${dateKey}__${className}`) || {};
-    const nextRecords = {
-      ...currentRecords,
-      [row.student.id]: {
-        studentId: row.student.id,
-        studentName: row.student.fullName || '',
-        status: nextStatus,
-        updatedAt: Date.now()
-      }
-    };
-    setAttendanceDocs(prev => {
-      const found = prev.some(item => item.id === attendanceId);
-      const nextDoc = {
-        id: attendanceId,
-        schoolYear: currentSchoolYear,
-        className,
-        date: dateKey,
-        records: nextRecords,
-        updatedAt: Date.now(),
-        updatedBy: user?.uid || ''
-      };
-      return found ? prev.map(item => item.id === attendanceId ? { ...item, ...nextDoc } : item) : [...prev, nextDoc];
-    });
     try {
-      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'class_attendance', attendanceId), {
-        schoolYear: currentSchoolYear,
-        className,
-        date: dateKey,
-        records: nextRecords,
-        updatedAt: Date.now(),
-        updatedBy: user?.uid || ''
-      }, { merge: true });
-    } catch (error) {
-      showNotification?.(`Lỗi lưu điểm danh: ${error.message}`, 'error');
-    }
+      await saveAttendanceEntry({ documentId, student: row.student, status: current === '' ? 'CP' : current === 'CP' ? 'KP' : '',
+        expectedEntry: attendanceMap.get(dateKey + '__' + className)?.[row.student.id], schoolYear: currentSchoolYear,
+        schoolCode: getStudentSchoolCode(row.student), className, date: dateKey, authorId: user?.uid });
+    } catch (error) { showNotification?.('Lỗi lưu điểm danh: ' + error.message, 'error'); }
+    finally { attendanceSavesRef.current.delete(key); }
   };
 
   const exportPdf = () => {
@@ -406,28 +407,32 @@ function AdminAttendanceStaticTable({ currentSchoolYear = '', students = [], use
         </div>
       </div>
 
-      <div className="p-3 bg-white border-b border-slate-100 flex flex-wrap items-center gap-2">
-        <div className="hidden sm:flex flex-wrap items-center gap-2">
-          <button type="button" onClick={() => setSelectedClasses([])} className={`px-4 py-2 rounded-xl text-xs font-black uppercase ${selectedClasses.length === 0 ? 'bg-cyan-600 text-white' : 'bg-slate-50 border border-slate-200 text-slate-600'}`}>Tất cả khối</button>
-          {classFilters.map(className => (
-            <button key={className} type="button" onClick={() => toggleClass(className)} className={`px-4 py-2 rounded-xl text-xs font-black uppercase ${selectedClasses.includes(className) ? 'bg-cyan-600 text-white' : 'bg-slate-50 border border-slate-200 text-slate-600'}`}>Khối {className}</button>
-          ))}
-        </div>
-        <div className="sm:hidden w-full space-y-2">
-          <div className="grid grid-cols-2 gap-2">
-            {classGroups.map(group => (
-              <button key={group.key} type="button" onClick={() => selectClassGroup(group)} className={`px-3 py-2 rounded-xl text-[11px] font-black uppercase ${mobileClassGroup === group.key ? 'bg-cyan-600 text-white' : 'bg-slate-50 border border-slate-200 text-slate-600'}`}>
-                {group.label}
+      <div className="p-3 bg-white border-b border-slate-100 flex flex-wrap items-end gap-2">
+        <div className="min-w-0 flex-1 space-y-2">
+          <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
+            <button type="button" onClick={selectAllClasses} className={`px-3 sm:px-4 py-2 rounded-xl text-[11px] sm:text-xs font-black uppercase ${!activeGradeFilter && selectedClasses.length === 0 ? 'bg-cyan-600 text-white' : 'bg-slate-50 border border-slate-200 text-slate-600'}`}>Tất cả</button>
+            {gradeFilters.map(grade => (
+              <button key={`attendance-grade-${grade}`} type="button" onClick={() => selectGrade(grade)} className={`px-3 sm:px-4 py-2 rounded-xl text-[11px] sm:text-xs font-black uppercase ${activeGradeFilter === grade ? 'bg-cyan-600 text-white' : 'bg-slate-50 border border-slate-200 text-slate-600'}`}>
+                Khối {grade}
               </button>
             ))}
           </div>
-          <div className="grid grid-cols-5 gap-1.5">
-            {(classGroups.find(group => group.key === mobileClassGroup)?.classes || []).map(className => (
-              <button key={className} type="button" onClick={() => setSelectedClasses([className])} className={`px-2 py-2 rounded-xl text-[11px] font-black uppercase ${selectedClasses.includes(className) ? 'bg-cyan-600 text-white' : 'bg-slate-50 border border-slate-200 text-slate-600'}`}>
-                Lớp {className}
+          {activeGradeFilter && (
+            <div className="flex flex-wrap items-center gap-1.5 border-t border-slate-100 pt-2">
+              <span className="mr-1 text-[10px] font-black uppercase text-slate-400">Lớp thuộc khối {activeGradeFilter}</span>
+              <button type="button" onClick={() => selectGrade(activeGradeFilter)} className={`px-3 py-1.5 rounded-lg text-[10px] sm:text-[11px] font-black uppercase ${selectedClasses.length === activeGradeClasses.length && activeGradeClasses.every(className => selectedClasses.includes(className)) ? 'bg-indigo-600 text-white' : 'bg-indigo-50 border border-indigo-100 text-indigo-700'}`}>
+                Cả khối
               </button>
-            ))}
-          </div>
+              {activeGradeClasses.map(className => {
+                const isLegacyGrade = normalizeSchoolClassName(className) === activeGradeFilter;
+                return (
+                  <button key={`attendance-class-${className}`} type="button" onClick={() => selectSingleClass(className)} className={`px-3 py-1.5 rounded-lg text-[10px] sm:text-[11px] font-black uppercase ${selectedClasses.length === 1 && selectedClasses[0] === className ? 'bg-cyan-600 text-white' : 'bg-white border border-slate-200 text-slate-600'}`}>
+                    {isLegacyGrade ? 'Chưa chia lớp' : `Lớp ${className}`}
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
         <select value={reportMode === 'month' ? `${selectedMonth.year}-${selectedMonth.month}` : reportMode} onChange={(event) => {
           if (['hk1', 'hk2'].includes(event.target.value)) {
@@ -580,7 +585,7 @@ function AdminAttendanceStaticTable({ currentSchoolYear = '', students = [], use
             <tbody>
               {monthSummary.map(item => (
                 <tr key={item.className} className="border-t border-slate-100">
-                  <td className="px-3 py-2 font-black text-slate-800">Khối {item.className}</td>
+                  <td className="px-3 py-2 font-black text-slate-800">{getClassFilterLabel(item.className)}</td>
                   <td className="px-3 py-2 text-center font-black text-blue-700">{item.students}</td>
                   <td className="px-3 py-2 text-center font-black text-amber-700">{item.cp}</td>
                   <td className="px-3 py-2 text-center font-black text-rose-700">{item.kp}</td>
@@ -602,33 +607,56 @@ function AdminAttendanceStaticTable({ currentSchoolYear = '', students = [], use
   );
 }
 
-export default function ClassOpsManager({
+export default function ClassOpsManager(props) {
+  const mode = props.mode || 'admin';
+  const initialView = props.initialView || 'attendance';
+  if (mode === 'admin' && initialView === 'attendance') {
+    return <AdminAttendanceStaticTable
+      currentSchoolYear={props.currentSchoolYear}
+      students={props.students}
+      classOptions={props.classOptions}
+      user={props.user}
+      onClose={props.onClose}
+      onOpenDatabase={props.onOpenDatabase}
+      showNotification={props.showNotification}
+    />;
+  }
+  return <InteractiveClassOpsManager {...props} />;
+}
+
+function InteractiveClassOpsManager({
   mode = 'admin',
   initialView = 'attendance',
   currentSchoolYear,
+  schoolCode = '',
   user,
   students = [],
+  classOptions = [],
   currentStudent = null,
   subjects = [],
   onClose,
-  onOpenDatabase,
   showNotification
 }) {
   const isAdmin = mode === 'admin';
   const activeView = isAdmin && initialView === 'schedule' ? 'schedule' : 'attendance';
-  if (isAdmin && activeView === 'attendance') {
-    return <AdminAttendanceStaticTable currentSchoolYear={currentSchoolYear} students={students} user={user} onClose={onClose} onOpenDatabase={onOpenDatabase} showNotification={showNotification} />;
-  }
+  const studentSchoolCode = getStudentSchoolCode(currentStudent || {});
+  const activeSchoolCode = normalizeSchoolCode(schoolCode) || (studentSchoolCode === 'UNKNOWN' ? DEFAULT_SCHOOL_CODE : studentSchoolCode);
   const monitorClass = getClassName(currentStudent);
+  const configuredClasses = useMemo(() => {
+    const rows = [...new Set((Array.isArray(classOptions) ? classOptions : []).map(item => normalizeSchoolClassName(item)).filter(Boolean))];
+    return rows.length ? rows.sort(compareSchoolClassNames) : DEFAULT_CLASSES;
+  }, [classOptions]);
   const months = useMemo(() => monthOptionsForSchoolYear(currentSchoolYear), [currentSchoolYear]);
-  const [timetable, setTimetable] = useState({ classOrder: DEFAULT_CLASSES, slots: makeDefaultSlots() });
+  const [monitorStudents, setMonitorStudents] = useState([]);
+  const [timetable, setTimetable] = useState({ classOrder: configuredClasses, slots: makeDefaultSlots(configuredClasses) });
   const [isSavingTimetable, setIsSavingTimetable] = useState(false);
-  const [activeClass, setActiveClass] = useState(monitorClass || DEFAULT_CLASSES[0]);
+  const [activeClass, setActiveClass] = useState(monitorClass || configuredClasses[0]);
   const [selectedMonth, setSelectedMonth] = useState(() => getInitialMonth(months));
   const [selectedDate, setSelectedDate] = useState(() => toDateKey(getFirstSchoolDateInWeek(new Date())));
   const [weekAnchor, setWeekAnchor] = useState(new Date());
   const [records, setRecords] = useState({});
   const [attendanceDocs, setAttendanceDocs] = useState([]);
+  const attendanceSavesRef = useRef(new Set());
   const [statsClass, setStatsClass] = useState('all');
   const [mobileStatsMode, setMobileStatsMode] = useState('week');
   const [profilePreviewStudent, setProfilePreviewStudent] = useState(null);
@@ -652,39 +680,68 @@ export default function ClassOpsManager({
     const firstOfMonth = new Date(selectedMonth.year, selectedMonth.month - 1, 1);
     setWeekAnchor(firstOfMonth);
     setSelectedDate(toDateKey(getFirstSchoolDateInWeek(firstOfMonth, timetable, activeClass)));
-  }, [selectedMonth]);
+  }, [selectedMonth, activeClass, timetable]);
 
   useEffect(() => {
-    const ref = doc(db, 'artifacts', appId, 'public', 'data', 'class_timetables', currentSchoolYear);
-    return onSnapshot(ref, snapshot => {
-      const data = snapshot.exists() ? snapshot.data() : {};
+    if (!SCOPED_AUTH_ENABLED || isAdmin) return undefined;
+    const controller = new AbortController(); let busy = false;
+    const load = async () => { if (busy) return; busy=true; try { const data = await requestPrivateApi('data','classOps',{}, {signal:controller.signal}); if (!controller.signal.aborted) { setMonitorStudents(data.students);setAttendanceDocs(data.attendance);setTimetable(data.timetable);setRecords(data.attendance.find(item=>item.date===selectedDate)?.records||{}); } } catch(error) { if(!controller.signal.aborted) showNotification?.(error.message,'error'); } finally {busy=false;} };
+    void load();const timer=setInterval(()=>{void load();},15000);return()=>{controller.abort();clearInterval(timer);};
+  }, [isAdmin, selectedDate, currentSchoolYear, showNotification]);
+  useEffect(() => {
+    if (SCOPED_AUTH_ENABLED && !isAdmin) return undefined;
+    const ref = doc(db, 'artifacts', appId, 'public', 'data', 'class_timetables', `${currentSchoolYear}_${activeSchoolCode}`);
+    let active = true;
+    const applyTimetable = (data = {}) => {
+      if (!active) return;
+      const classOrder = data.classOrder?.length ? data.classOrder : configuredClasses;
       setTimetable({
-        classOrder: data.classOrder?.length ? data.classOrder : DEFAULT_CLASSES,
-        slots: { ...makeDefaultSlots(), ...(data.slots || {}) }
+        classOrder,
+        slots: { ...makeDefaultSlots(classOrder), ...(data.slots || {}) }
       });
+    };
+    const unsubscribe = onSnapshot(ref, snapshot => {
+      if (snapshot.exists()) {
+        applyTimetable(snapshot.data());
+        return;
+      }
+      if (activeSchoolCode === DEFAULT_SCHOOL_CODE) {
+        getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'class_timetables', currentSchoolYear))
+          .then(legacySnapshot => applyTimetable(legacySnapshot.exists() ? legacySnapshot.data() : {}))
+          .catch(() => applyTimetable());
+        return;
+      }
+      applyTimetable();
     });
-  }, [currentSchoolYear]);
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, [activeSchoolCode, configuredClasses, currentSchoolYear, isAdmin]);
 
   useEffect(() => {
+    if (SCOPED_AUTH_ENABLED && !isAdmin) return undefined;
     if (!activeClass || !selectedDate) return undefined;
     const attendanceId = `${currentSchoolYear}_${selectedDate}_K${activeClass}`;
     const ref = doc(db, 'artifacts', appId, 'public', 'data', 'class_attendance', attendanceId);
     return onSnapshot(ref, snapshot => {
       setRecords(snapshot.exists() ? (snapshot.data().records || {}) : {});
     });
-  }, [activeClass, currentSchoolYear, selectedDate]);
+  }, [activeClass, currentSchoolYear, selectedDate, isAdmin]);
 
   useEffect(() => {
-    const ref = collection(db, 'artifacts', appId, 'public', 'data', 'class_attendance');
+    if (SCOPED_AUTH_ENABLED && !isAdmin) return undefined;
+    const ref = query(collection(db, 'artifacts', appId, 'public', 'data', 'class_attendance'), where('schoolYear', '==', currentSchoolYear));
+    setAttendanceDocs([]);
     return onSnapshot(ref, snapshot => {
       setAttendanceDocs(snapshot.docs
-        .map(item => ({ id: item.id, ...item.data() }))
+        .map(item => ({ ...item.data(), id: item.id }))
         .filter(item => String(item.schoolYear || '') === String(currentSchoolYear || '')));
     });
-  }, [currentSchoolYear]);
+  }, [currentSchoolYear, isAdmin]);
 
-  const classStudents = useMemo(() => normalizeStudents(students, activeClass, currentSchoolYear), [students, activeClass, currentSchoolYear]);
-  const classFilters = useMemo(() => uniqueClassesFrom(students, timetable), [students, timetable]);
+  const classStudents = useMemo(() => normalizeStudents(SCOPED_AUTH_ENABLED && !isAdmin ? monitorStudents : students, activeClass, currentSchoolYear), [students, monitorStudents, isAdmin, activeClass, currentSchoolYear]);
+  const classFilters = useMemo(() => uniqueClassesFrom(students, timetable, configuredClasses), [configuredClasses, students, timetable]);
   const monthDays = useMemo(() => {
     if (!selectedMonth) return [];
     const weekdays = makeMonthDates(selectedMonth);
@@ -719,27 +776,27 @@ export default function ClassOpsManager({
     return normalizeStudents(students, statsClass === 'all' ? '' : statsClass, currentSchoolYear);
   }, [students, statsClass, currentSchoolYear]);
 
-  const getStatsStatus = (student, date) => {
+  const getStatsStatus = useCallback((student, date) => {
     const dateKey = toDateKey(date);
     const className = getClassName(student);
     const dayRecords = attendanceMap.get(`${dateKey}__${className}`);
     if (!dayRecords) return null;
     return dayRecords[student.id]?.status || '';
-  };
+  }, [attendanceMap]);
 
   const statsRows = useMemo(() => statsStudents.map(student => {
     const statuses = Object.fromEntries(statsMonthDays.map(date => [toDateKey(date), getStatsStatus(student, date)]));
     const cp = Object.values(statuses).filter(status => status === 'CP').length;
     const kp = Object.values(statuses).filter(status => status === 'KP').length;
     return { student, statuses, cp, kp, totalAbsent: cp + kp };
-  }), [statsStudents, statsMonthDays, attendanceMap]);
+  }), [statsStudents, statsMonthDays, getStatsStatus]);
 
   const mobileStatsRows = useMemo(() => statsStudents.map(student => {
     const statuses = Object.fromEntries(statsDates.map(date => [toDateKey(date), getStatsStatus(student, date)]));
     const cp = Object.values(statuses).filter(status => status === 'CP').length;
     const kp = Object.values(statuses).filter(status => status === 'KP').length;
     return { student, statuses, cp, kp, totalAbsent: cp + kp };
-  }), [statsStudents, statsDates, attendanceMap]);
+  }), [statsStudents, statsDates, getStatsStatus]);
 
   const statsMonthTotals = useMemo(() => statsRows.reduce((acc, row) => ({
     cp: acc.cp + row.cp,
@@ -773,8 +830,10 @@ export default function ClassOpsManager({
   const saveTimetable = async (next = timetable) => {
     setIsSavingTimetable(true);
     try {
-      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'class_timetables', currentSchoolYear), {
+      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'class_timetables', `${currentSchoolYear}_${activeSchoolCode}`), {
         schoolYear: currentSchoolYear,
+        schoolCode: activeSchoolCode,
+        schoolName: getSchoolName(activeSchoolCode),
         classOrder: next.classOrder,
         slots: next.slots,
         updatedAt: Date.now(),
@@ -803,7 +862,7 @@ export default function ClassOpsManager({
 
   const moveClass = (index, direction) => {
     setTimetable(prev => {
-      const order = [...(prev.classOrder || DEFAULT_CLASSES)];
+      const order = [...(prev.classOrder || configuredClasses)];
       const nextIndex = index + direction;
       if (nextIndex < 0 || nextIndex >= order.length) return prev;
       [order[index], order[nextIndex]] = [order[nextIndex], order[index]];
@@ -812,46 +871,17 @@ export default function ClassOpsManager({
   };
 
   const updateAttendance = async (student, status, dateKey = selectedDate) => {
-    const attendanceId = `${currentSchoolYear}_${dateKey}_K${activeClass}`;
-    const currentRecords = dateKey === selectedDate
-      ? records
-      : (attendanceMap.get(`${dateKey}__${activeClass}`) || {});
-    const nextRecords = {
-      ...currentRecords,
-      [student.id]: {
-        studentId: student.id,
-        studentName: student.fullName || '',
-        status,
-        updatedAt: Date.now()
-      }
-    };
-    if (dateKey === selectedDate) setRecords(nextRecords);
-    setAttendanceDocs(prev => {
-      const nextDoc = {
-        id: attendanceId,
-        schoolYear: currentSchoolYear,
-        className: activeClass,
-        date: dateKey,
-        records: nextRecords,
-        updatedAt: Date.now(),
-        updatedBy: user?.uid || currentStudent?.id || ''
-      };
-      return prev.some(item => item.id === attendanceId)
-        ? prev.map(item => item.id === attendanceId ? { ...item, ...nextDoc } : item)
-        : [...prev, nextDoc];
-    });
+    const documentId = currentSchoolYear + '_' + dateKey + '_K' + activeClass;
+    const key = documentId + '/' + student.id;
+    if (attendanceSavesRef.current.has(key)) return;
+    attendanceSavesRef.current.add(key);
+    const currentRecords = dateKey === selectedDate ? records : (attendanceMap.get(dateKey + '__' + activeClass) || {});
     try {
-      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'class_attendance', attendanceId), {
-        schoolYear: currentSchoolYear,
-        className: activeClass,
-        date: dateKey,
-        records: nextRecords,
-        updatedAt: Date.now(),
-        updatedBy: user?.uid || currentStudent?.id || ''
-      }, { merge: true });
-    } catch (error) {
-      showNotification?.(`Lỗi lưu điểm danh: ${error.message}`, 'error');
-    }
+      await saveAttendanceEntry({ documentId, student, status, expectedEntry: currentRecords[student.id],
+        schoolYear: currentSchoolYear, schoolCode: activeSchoolCode, className: activeClass, date: dateKey,
+        authorId: user?.uid || currentStudent?.id });
+    } catch (error) { showNotification?.('Lỗi lưu điểm danh: ' + error.message, 'error'); }
+    finally { attendanceSavesRef.current.delete(key); }
   };
 
   const statusClass = (statusKey, currentStatus) => {
@@ -929,7 +959,7 @@ export default function ClassOpsManager({
                   </tr>
                 </thead>
                 <tbody>
-                  {(timetable.classOrder || DEFAULT_CLASSES).map((className, index) => (
+                  {(timetable.classOrder || configuredClasses).map((className, index) => (
                     <tr key={className} className="border-t border-slate-100">
                       <td className="px-3 py-3">
                         <div className="flex items-center gap-2">
@@ -966,7 +996,7 @@ export default function ClassOpsManager({
               <div className="grid grid-cols-2 sm:flex gap-2">
                 <select value={statsClass} onChange={(event) => setStatsClass(event.target.value)} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-black">
                   <option value="all">Tất cả khối</option>
-                  {classFilters.map(className => <option key={className} value={className}>Khối {className}</option>)}
+                  {classFilters.map(className => <option key={className} value={className}>{getClassFilterLabel(className)}</option>)}
                 </select>
                 <select value={`${selectedMonth?.year || ''}-${selectedMonth?.month || ''}`} onChange={(event) => {
                   const [year, month] = event.target.value.split('-').map(Number);
@@ -1042,7 +1072,7 @@ export default function ClassOpsManager({
               <div className="grid grid-cols-2 sm:flex gap-2">
                 <select value={statsClass} onChange={(event) => setStatsClass(event.target.value)} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-black">
                   <option value="all">Tất cả khối</option>
-                  {classFilters.map(className => <option key={className} value={className}>Khối {className}</option>)}
+                  {classFilters.map(className => <option key={className} value={className}>{getClassFilterLabel(className)}</option>)}
                 </select>
                 <select value={`${selectedMonth?.year || ''}-${selectedMonth?.month || ''}`} onChange={(event) => {
                   const [year, month] = event.target.value.split('-').map(Number);
@@ -1173,7 +1203,7 @@ export default function ClassOpsManager({
             <div className="grid grid-cols-2 sm:flex gap-2">
               {isAdmin && (
                 <select value={activeClass} onChange={(e) => setActiveClass(e.target.value)} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-black">
-                  {(timetable.classOrder || DEFAULT_CLASSES).map(className => <option key={className} value={className}>Lớp {className}</option>)}
+                  {(timetable.classOrder || configuredClasses).map(className => <option key={className} value={className}>Lớp {className}</option>)}
                 </select>
               )}
               <select value={`${selectedMonth?.year || ''}-${selectedMonth?.month || ''}`} onChange={(e) => {

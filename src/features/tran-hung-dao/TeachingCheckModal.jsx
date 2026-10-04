@@ -340,7 +340,7 @@ export default function TeachingCheckModal({
                 </div>
               )}
             </div>
-          ) : (
+          ) : activeTab === 'subject' ? (
             <div className="rounded-2xl border border-slate-200 overflow-hidden bg-white">
               <table className="w-full border-collapse text-sm">
                 <thead>
@@ -361,26 +361,18 @@ export default function TeachingCheckModal({
                     const isDeduction = row.group === 'deduction';
                     const isEditable = isConcurrent || isDeduction;
 
-                    let sttText = '';
-                    if (row.group === 'regular') {
-                      sttText = index + 1;
-                    } else if (isConcurrent) {
-                      const concurrentIndex = subjectCheckData.rows.filter(r => r.group === 'regular').length;
-                      sttText = index - concurrentIndex + 1;
-                    } else {
-                      const dedIndex = subjectCheckData.rows.filter(r => r.group !== 'deduction').length;
-                      sttText = index - dedIndex + 1;
-                    }
-
-                    let diffText = '-';
-                    if (row.group === 'regular') {
-                      if (row.emptyPrescribed) diffText = '';
-                      else diffText = row.diff !== 0 ? Math.abs(row.diff).toLocaleString('vi-VN') : '-';
-                    } else if (isConcurrent) {
-                      diffText = (row.prescribed - row.actual) !== 0 ? Math.abs(row.prescribed - row.actual).toLocaleString('vi-VN') : '-';
-                    } else {
-                      diffText = '-'; // usually no diff for deductions
-                    }
+                    const concurrentIndex = subjectCheckData.rows.filter(item => item.group === 'regular').length;
+                    const deductionIndex = subjectCheckData.rows.filter(item => item.group !== 'deduction').length;
+                    const sttText = row.group === 'regular'
+                      ? index + 1
+                      : isConcurrent
+                        ? index - concurrentIndex + 1
+                        : index - deductionIndex + 1;
+                    const diffText = row.group === 'regular'
+                      ? (row.emptyPrescribed ? '' : (row.diff !== 0 ? Math.abs(row.diff).toLocaleString('vi-VN') : '-'))
+                      : isConcurrent && row.prescribed !== row.actual
+                        ? Math.abs(row.prescribed - row.actual).toLocaleString('vi-VN')
+                        : '-';
 
                     return (
                       <tr key={`subject-check-${row.id}`} className="hover:bg-amber-50/30 transition-colors">
@@ -483,6 +475,50 @@ export default function TeachingCheckModal({
                   </tr>
                 </tbody>
               </table>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <p className="text-sm text-slate-600">Các tên môn/nhiệm vụ chưa có trong danh mục Trần Hưng Đạo được phát hiện từ bảng phân công. Bổ sung môn ở đây sẽ đưa môn vào danh mục quản trị.</p>
+              {missingSubjects.length === 0 ? (
+                <div className="rounded-2xl border border-dashed border-emerald-200 bg-emerald-50 px-4 py-8 text-center text-sm font-semibold text-emerald-700">Không còn môn nào chưa có trong danh mục.</div>
+              ) : missingSubjects.map(item => {
+                const edit = missingEdits[item.rawName] || {
+                  name: item.rawName,
+                  shortName: item.rawName,
+                  periodsSemester1: '',
+                  periodsSemester2: '',
+                  grades: ['6', '7', '8', '9']
+                };
+                return (
+                  <div key={item.rawName} className="rounded-2xl border border-amber-200 bg-amber-50/40 p-4">
+                    <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                      <div className="text-sm font-black text-slate-800">Phát hiện: {item.rawName}</div>
+                      <span className="rounded-full bg-amber-100 px-2.5 py-1 text-xs font-bold text-amber-800">{item.count} dòng phân công</span>
+                    </div>
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                      <label className="text-xs font-bold text-slate-600">Tên môn
+                        <input value={edit.name} onChange={event => handleUpdateMissingEdit(item.rawName, 'name', event.target.value)} className="mt-1 h-9 w-full rounded-lg border border-slate-200 bg-white px-2 text-sm font-semibold text-slate-800" />
+                      </label>
+                      <label className="text-xs font-bold text-slate-600">Tên viết tắt
+                        <input value={edit.shortName} onChange={event => handleUpdateMissingEdit(item.rawName, 'shortName', event.target.value)} className="mt-1 h-9 w-full rounded-lg border border-slate-200 bg-white px-2 text-sm font-semibold text-slate-800" />
+                      </label>
+                      <label className="text-xs font-bold text-slate-600">Số tiết HK1
+                        <input type="number" min="0" value={edit.periodsSemester1} onChange={event => handleUpdateMissingEdit(item.rawName, 'periodsSemester1', event.target.value)} className="mt-1 h-9 w-full rounded-lg border border-slate-200 bg-white px-2 text-sm font-semibold text-slate-800" />
+                      </label>
+                      <label className="text-xs font-bold text-slate-600">Số tiết HK2
+                        <input type="number" min="0" value={edit.periodsSemester2} onChange={event => handleUpdateMissingEdit(item.rawName, 'periodsSemester2', event.target.value)} className="mt-1 h-9 w-full rounded-lg border border-slate-200 bg-white px-2 text-sm font-semibold text-slate-800" />
+                      </label>
+                    </div>
+                    <div className="mt-3 flex flex-wrap items-center gap-2">
+                      <span className="mr-1 text-xs font-bold text-slate-600">Áp dụng khối:</span>
+                      {['6', '7', '8', '9'].map(grade => (
+                        <button type="button" key={`${item.rawName}-${grade}`} onClick={() => handleToggleMissingGrade(item.rawName, grade)} className={`h-8 rounded-lg border px-3 text-xs font-bold ${edit.grades.includes(grade) ? 'border-sky-300 bg-sky-50 text-sky-800' : 'border-slate-200 bg-white text-slate-500'}`}>{grade}</button>
+                      ))}
+                      <button type="button" onClick={() => handleAddMissingSubjectSubmit(item.rawName)} disabled={!edit.name.trim() || !edit.shortName.trim() || !edit.grades.length} className="ml-auto inline-flex h-9 items-center rounded-lg bg-emerald-600 px-4 text-xs font-black uppercase text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50">Thêm vào danh mục</button>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>

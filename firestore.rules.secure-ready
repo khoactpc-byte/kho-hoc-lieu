@@ -1,43 +1,54 @@
 rules_version = '2';
-
-// Mau quy tac cho giai doan da co Firebase Auth va custom claims.
-// KHONG deploy khi ung dung van chi dung anonymous authentication.
+// Staged migration: deploy after metadata migration and role-matrix testing.
 service cloud.firestore {
   match /databases/{database}/documents {
-    function signedIn() {
-      return request.auth != null;
+    match /artifacts/{appId}/public/data {
+      function lease() { return get(/databases/$(database)/documents/artifacts/$(appId)/server_sessions/$(request.auth.token.get('sessionId', 'invalid'))).data; }
+      function signedIn() { return request.auth != null && request.auth.token.get('appId', '') == appId && lease().get('active', false) && lease().uid == request.auth.uid && lease().expiresAt > request.time.toMillis() && lease().originalExpiresAt > request.time.toMillis(); }
+      function role() { return lease().identity.get('role', ''); }
+      function admin() { return signedIn() && role() == 'admin'; }
+      function staff() { return signedIn() && role() in ['admin', 'teacher', 'thd']; }
+      function settings() { return get(/databases/$(database)/documents/artifacts/$(appId)/public/data/settings/global).data; }
+      function writable(data) { return !settings().get('maintenance', {}).get('active', false) && !settings().get('inputYearLocks', {}).get(data.get('schoolYear', 'UNASSIGNED'), false); }
+      function roster(data) { return signedIn() && role() == 'teacher' && data.get('schoolCode', '') == lease().identity.get('schoolCode', 'UNASSIGNED') && data.get('grade', '') in lease().identity.get('grades', []); }
+      function content(data) { return roster(data) && data.get('subject', '') in lease().identity.get('subjects', []); }
+      function studentContent(data) { return signedIn() && role() == 'student' && data.get('schoolCode', '') == lease().identity.get('schoolCode', 'UNASSIGNED') && data.get('grade', '') == lease().identity.get('grade', 'UNASSIGNED'); }
+      function ownStudent(data, id) { return signedIn() && role() == 'student' && id in lease().identity.get('studentIds', []); }
+      function ownResult(data) { return signedIn() && role() == 'student' && data.get('studentId', '') in lease().identity.get('studentIds', []); }
+      function safeMaterial(data) { return data.get('studentSafe', false) == true; }
+      function safeMaterialWrite(data) { return !data.get('studentSafe', false) || !data.keys().hasAny(['quizData', 'sourceContent', 'quizDocUrl', 'quizDocFileId']) && data.get('type', '') != 'quick_quiz'; }
+      function safeQuiz(data) { return data.get('serverGraded', false) && data.get('schoolYear', '') == lease().identity.get('schoolYear', 'UNASSIGNED'); }
+      match /settings/{settingId} {
+        allow read: if admin() || staff() && (settingId != 'global' || !resource.data.keys().hasAny(['adminPass', 'teacherPass', 'thdAdminPass']));
+        allow write: if signedIn() && !settings().get('maintenance', {}).get('active', false) && (role() == 'admin' || role() == 'thd' && (settingId == 'thdTeachingAssignments' || settingId == 'global' && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['thdTeachingAssignments', 'thdTeachers', 'thdSubjects', 'thdClasses'])));
+        match /{nestedCollection}/{nestedDocument}/{nested=**} {
+          allow read: if staff();
+          allow write: if signedIn() && !settings().get('maintenance', {}).get('active', false) && (role() == 'admin' || role() == 'thd' && settingId == 'thdTeachingAssignments');
+        }
+      }
+      match /students/{studentId} {
+        allow read: if admin() || roster(resource.data) || ownStudent(resource.data, studentId);
+        allow create: if admin() && writable(request.resource.data) && request.resource.data.get('studentKey', '') != '';
+        allow update: if admin() && writable(resource.data) && writable(request.resource.data) && request.resource.data.get('studentKey', '') != '' && (resource.data.get('studentKey', '') == '' || request.resource.data.studentKey == resource.data.studentKey);
+        allow delete: if admin() && writable(resource.data);
+      }
+      match /{collectionName}/{document=**} {
+        allow read: if admin();
+        allow write: if admin() && !(collectionName in ['settings', 'students', 'quiz_results', 'quick_quiz_results', 'scorebooks', 'lesson_quizzes']) && writable(resource == null ? request.resource.data : resource.data) && (request.resource == null || writable(request.resource.data) && (collectionName != 'materials' || safeMaterialWrite(request.resource.data)));
+        allow read: if collectionName == 'materials' && (content(resource.data) || studentContent(resource.data) && safeMaterial(resource.data));
+        allow read: if collectionName == 'lesson_notes' && (content(resource.data) || studentContent(resource.data));
+        allow read: if collectionName == 'lesson_quizzes' && (content(resource.data) || studentContent(resource.data) && safeQuiz(resource.data));
+        allow create: if collectionName in ['materials', 'lesson_notes'] && content(request.resource.data) && writable(request.resource.data) && (collectionName != 'materials' || request.resource.data.get('type', '') != 'quick_quiz' && safeMaterialWrite(request.resource.data));
+        allow update: if collectionName in ['materials', 'lesson_notes'] && content(resource.data) && content(request.resource.data) && writable(resource.data) && writable(request.resource.data) && (collectionName != 'materials' || resource.data.get('type', '') != 'quick_quiz' && request.resource.data.get('type', '') != 'quick_quiz' && safeMaterialWrite(request.resource.data));
+        allow delete: if collectionName in ['materials', 'lesson_notes'] && content(resource.data) && writable(resource.data);
+        allow read: if collectionName in ['scorebooks', 'class_attendance', 'class_timetables', 'class_schedules', 'schedule_publications'] && roster(resource.data);
+        allow read: if collectionName in ['quiz_results', 'quick_quiz_results', 'lesson_progress', 'handwritten_submissions'] && content(resource.data);
+        allow read: if collectionName in ['lesson_progress', 'handwritten_submissions'] && ownResult(resource.data);
+        allow read: if collectionName == 'student_profile_requests' && (roster(resource.data) || signedIn() && role() == 'student' && resource.data.get('studentId', '') == lease().identity.get('studentId', 'UNASSIGNED'));
+        allow read: if collectionName == 'news';
+        // Grades, answer keys and student submissions are written only through APIs.
+      }
     }
-
-    function isAdmin() {
-      return signedIn() && request.auth.token.role == 'admin';
-    }
-
-    function isTeacher() {
-      return signedIn() && request.auth.token.role in ['admin', 'teacher'];
-    }
-
-    function ownsStudent(studentId) {
-      return signedIn() && request.auth.token.role == 'student'
-        && request.auth.token.studentId == studentId;
-    }
-
-    match /artifacts/{appId}/public/data/settings/{document=**} {
-      allow read: if signedIn();
-      allow write: if isAdmin();
-    }
-
-    match /artifacts/{appId}/public/data/students/{studentId} {
-      allow read: if isTeacher() || ownsStudent(studentId);
-      allow write: if isAdmin();
-    }
-
-    match /artifacts/{appId}/public/data/{collectionName}/{document=**} {
-      allow read: if signedIn() && !(collectionName in ['settings', 'students']);
-      allow write: if isTeacher() && !(collectionName in ['settings', 'students']);
-    }
-
-    match /{document=**} {
-      allow read, write: if false;
-    }
+    match /{document=**} { allow read, write: if false; }
   }
 }

@@ -1,9 +1,5 @@
-export const GRADES = ['6', '7', '8', '9'];
-export const SUBJECTS = [
-  'Toán', 'Ngữ Văn', 'Khoa học tự nhiên', 'Lịch sử & Địa Lý', 
-  'Giáo dục công dân', 'Giáo dục địa phương', 'Công nghệ', 'HĐTT'
-];
-export const TOTAL_LESSONS = 35;
+import { ADMIN_SERVER_SESSION_STORAGE_KEY, STAFF_SERVER_SESSION_STORAGE_KEY } from '../config/sessionKeys.js';
+export { GRADES, SUBJECTS, TOTAL_LESSONS } from '../config/learningDomain.js';
 export const SCHOOL_YEARS = Array.from({length: 11}, (_, i) => `${2025 + i}-${2026 + i}`);
 
 export const GOOGLE_API_KEY = 'AIzaSyAQwyUzt2jb8kBh_S4V2_SjuFKZi5K3Mc4';
@@ -31,10 +27,9 @@ export const QUIZ_DRIVE_FOLDER_ID = '1IlstZlmh3uC_PIooSlMfHnZ--HlomM0d';
 export const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbx1cWQpyyoT2adUZIJja40d5rXtlNwaa1PqYiUJndB79SX0Rq2Mt8CBEs53EiBC8HhhRg/exec";
 // This identifies the web client but is not a secret because browser code is public.
 export const APPS_SCRIPT_CLIENT_TOKEN = "NGUYENANNINH_KHOA_2026";
-export const ADMIN_SERVER_SESSION_STORAGE_KEY = 'khl-admin-server-session-v1';
-export const STAFF_SERVER_SESSION_STORAGE_KEY = 'khl-staff-server-session-v1';
+export { ADMIN_SERVER_SESSION_STORAGE_KEY, STAFF_SERVER_SESSION_STORAGE_KEY } from '../config/sessionKeys.js';
 export const BACKGROUND_URL = '/hinh-nen.jpg';
-export const IS_LOCAL_PREVIEW = window.location.protocol === 'file:';
+export const IS_LOCAL_PREVIEW = typeof window !== 'undefined' && window.location.protocol === 'file:';
 
 export const getWeekData = (numStr) => {
   const n = parseInt(numStr);
@@ -50,17 +45,7 @@ export const getWeekDisplayName = (numStr) => {
   return d.isExam ? d.main : `Tuần ${numStr}`;
 };
 
-export const typesetMath = (root) => {
-  if (!root || !window.MathJax?.typesetPromise) return;
-  window.setTimeout(() => {
-    try {
-      window.MathJax.typesetClear?.([root]);
-      window.MathJax.typesetPromise([root]).catch(() => undefined);
-    } catch {
-      return;
-    }
-  }, 0);
-};
+export { typesetMath } from './mathTypesetting.js';
 
 export const removeAccents = (str) => {
   if (!str) return '';
@@ -151,13 +136,16 @@ export const extractDriveFileId = (url) => {
   return match ? match[1] : '';
 };
 
-export const getDriveDisplayName = (name) => String(name || '').replace(/\[.*?\]_/, '').trim();
+export const getDriveDisplayName = (name) => String(name || '').replace(/(?:\[[^\]]*\]_)+/g, '').trim();
 export const getDriveBaseName = (name) => getDriveDisplayName(name).replace(/\.[^/.]+$/, '').trim();
 export const cleanDriveTitle = (name) => getDriveBaseName(name).toLowerCase();
 
 export const normalizeServiceErrorMessage = (message) => {
   const raw = String(message || '').replace(/\s+/g, ' ').trim();
   if (!raw) return 'May chu bao loi khong xac dinh.';
+  if (/<(?:!doctype\s+html|html\b|head\b|body\b|script\b)/i.test(raw)) {
+    return 'Máy chủ Apps Script trả về trang HTML thay vì dữ liệu xác thực. Mật khẩu chưa được xác minh; hãy kiểm tra URL và quyền triển khai Web App.';
+  }
   if (/createStudentListSheet/i.test(raw)) {
     return 'Máy chủ Apps Script chưa có chức năng tạo Google Sheet. Cần cập nhật Apps Script chính và Deploy bản mới.';
   }
@@ -180,20 +168,43 @@ export const normalizeServiceErrorMessage = (message) => {
   return `${raw.slice(0, 897)}...`;
 };
 
-export const postAppsScript = async (payload) => {
+export const postAppsScript = async (payload, { timeoutMs = 120000, signal } = {}) => {
   const sessionPayload = typeof window === 'undefined' ? {} : {
     adminSessionToken: window.sessionStorage.getItem(ADMIN_SERVER_SESSION_STORAGE_KEY) || undefined,
+    studentSessionToken: window.sessionStorage.getItem('khl-student-server-session-v1') || undefined,
     staffSessionToken: window.sessionStorage.getItem(STAFF_SERVER_SESSION_STORAGE_KEY) || undefined
   };
+  if (payload.base64 && !sessionPayload.adminSessionToken && !sessionPayload.staffSessionToken && !payload.uploadPermit) {
+    const padding = payload.base64.endsWith('==') ? 2 : payload.base64.endsWith('=') ? 1 : 0;
+    const permit = await postAppsScript({ action: 'createUploadPermit', folderId: payload.folderId,
+      filename: payload.filename, mimeType: payload.mimeType, bytes: Math.floor(payload.base64.length * 3 / 4) - padding }, { timeoutMs, signal });
+    payload = { ...payload, uploadPermit: permit.uploadPermit };
+  }
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  if (signal?.aborted) throw new DOMException('Yêu cầu đã hủy.', 'AbortError');
+  signal?.addEventListener('abort', abort, { once: true });
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
+  try {
   const resp = await fetch(APPS_SCRIPT_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify({ clientToken: APPS_SCRIPT_CLIENT_TOKEN, ...sessionPayload, ...payload })
+    body: JSON.stringify({ clientToken: APPS_SCRIPT_CLIENT_TOKEN, ...sessionPayload, ...payload }),
+    signal: controller.signal
   });
   const text = await resp.text();
+  if (!resp.ok) throw new Error(`Máy chủ chưa xử lý được yêu cầu (${resp.status}).`);
   let data;
   try { data = JSON.parse(text); }
   catch (e) { throw new Error(normalizeServiceErrorMessage(text || 'May chu Apps Script khong tra JSON.'), { cause: e }); }
   if (data.status === 'error') throw new Error(normalizeServiceErrorMessage(data.message || 'May chu bao loi.'));
   return data;
+  } catch (error) {
+    if (timedOut) throw new Error('Máy chủ phản hồi quá lâu. Yêu cầu ghi có thể đã được xử lý; hãy kiểm tra trạng thái trước khi thử lại.', { cause: error });
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', abort);
+  }
 };

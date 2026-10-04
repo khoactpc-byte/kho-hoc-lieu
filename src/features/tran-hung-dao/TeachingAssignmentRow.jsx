@@ -188,7 +188,7 @@ export default function TeachingAssignmentRow({
                 left: `${classPickerPosition.left}px`,
                 width: `${classPickerPosition.width}px`,
                 maxWidth: 'calc(100vw - 48px)',
-                maxHeight: '360px'
+                maxHeight: 'min(450px, calc(100vh - 16px))'
               }}
             >
               <div className="flex items-center justify-between border-b border-slate-100 bg-white px-3 py-2">
@@ -225,7 +225,7 @@ export default function TeachingAssignmentRow({
                   );
                 })}
               </div>
-              <div data-teaching-own-scroll="true" className="max-h-[310px] overflow-y-auto p-1 overscroll-contain">
+              <div data-teaching-own-scroll="true" className="max-h-[380px] overflow-y-auto p-1 overscroll-contain">
                 {activeAssignmentClasses.map(className => {
                   const checked = getAssignmentClassList(row.className, activeAssignmentClasses).includes(className);
                   return (

@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { addDoc, collection, deleteDoc, doc, getDocs, onSnapshot, setDoc } from 'firebase/firestore';
+import { collection, onSnapshot, query, where } from 'firebase/firestore';
+import { saveSchedulePublication, deleteSchedulePublication } from '../services/schedulePublication';
+import { inferScheduleSemester } from '../utils/scheduleScope';
 import { AlertTriangle, BarChart3, ChevronDown, EyeOff, FileSpreadsheet, FileText, HelpCircle, Save, Send, Sparkles, Trash2, Users, X } from 'lucide-react';
 import { appId, db } from '../config/firebase';
+import { DEFAULT_SCHOOL_CODE, getSchoolClassTeacherAssignments, normalizeSchoolCode, normalizeSchoolYearKey, SCHOOL_OPTIONS } from '../utils/schoolClasses';
 
 const BASE_CLASSES = ['6', '7', '8', '9'];
 const PERIODS = [1, 2, 3, 4, 5];
@@ -34,7 +37,7 @@ const SINGLE_VISIT_SUBJECT_KEYS = new Set(['gdcd', 'congnghe', 'gddp', 'hdtt']);
 const HOMEROOM_PAIR_SUBJECT_KEYS = new Set(['gddp', 'cn']);
 const getCurrentTimestamp = () => Date.now();
 
-const defaultRows = () => BASE_CLASSES.map(className => ({
+const defaultRows = (classNames = BASE_CLASSES) => (classNames.length ? classNames : BASE_CLASSES).map(className => ({
   id: className,
   label: `Lớp ${className}`,
   grades: [className]
@@ -56,7 +59,10 @@ const normalizeSchedule = (schedule = {}, rows = defaultRows()) => {
   return next;
 };
 
-const sortRows = (rows = []) => [...rows].sort((a, b) => Number(a.grades?.[0] || 0) - Number(b.grades?.[0] || 0));
+const sortRows = (rows = []) => [...rows].sort((a, b) => (
+  Number(a.grades?.[0] || 0) - Number(b.grades?.[0] || 0)
+  || String(a.id || '').localeCompare(String(b.id || ''), 'vi', { numeric: true, sensitivity: 'base' })
+));
 const removeAccentsLocal = (value = '') => String(value || '')
   .normalize('NFD')
   .replace(/[\u0300-\u036f]/g, '')
@@ -112,14 +118,6 @@ const displayEditorSubject = (value = '') => {
   return value || '-';
 };
 const getScheduleSemesterMeta = (semester = 'hk1') => SCHEDULE_SEMESTERS.find(item => item.key === semester) || SCHEDULE_SEMESTERS[0];
-const inferScheduleSemester = (semester = '', name = '') => {
-  const direct = String(semester || '').toLowerCase();
-  if (direct.includes('2') || direct.includes('ii')) return 'hk2';
-  if (direct.includes('1') || direct.includes('i')) return 'hk1';
-  const nameKey = removeAccentsLocal(name);
-  if (nameKey.includes('hk2') || nameKey.includes('hoc ky 2') || nameKey.includes('hoc ki 2')) return 'hk2';
-  return 'hk1';
-};
 const stripSemesterPrefix = (name = '') => String(name || '').replace(/^\s*(?:\[?\s*)?HK[12](?:\s*\]?)?\s*[-:]\s*/i, '').trim();
 const withSemesterPrefix = (name = '', semester = 'hk1') => {
   const prefix = getScheduleSemesterMeta(semester).namePrefix;
@@ -283,7 +281,7 @@ const makeScheduleNewsHtml = ({ name, rows, visibleDays, schedule, periodCount =
   </style><div class="schedule-news"><h2>${name}</h2><p>Thời khóa biểu đã được xuất bản.</p><table><thead><tr><th class="schedule-class-head">Lớp</th><th class="schedule-period-head">Tiết</th>${header}</tr></thead><tbody>${body}</tbody></table></div>`;
 };
 
-const makeScheduleExportHtml = ({ name, schoolYear, semesterLabel, rows, visibleDays, schedule, periodCount = 5, principalName = '', pcResponsibleName = '', includePrintButton = false }) => {
+const makeScheduleExportHtml = ({ name, schoolName = 'THCS Nguyễn An Ninh', schoolYear, semesterLabel, rows, visibleDays, schedule, periodCount = 5, principalName = '', pcResponsibleName = '', includePrintButton = false }) => {
   const shownDays = DAYS.filter(day => visibleDays.includes(day.key));
   const normalized = normalizeSchedule(schedule, rows);
   const semesterNumber = getSemesterNumber(semesterLabel);
@@ -367,7 +365,7 @@ const makeScheduleExportHtml = ({ name, schoolYear, semesterLabel, rows, visible
       <td class="doc-right motto"><span class="motto-line">Độc lập - Tự do - Hạnh phúc</span></td>
     </tr>
     <tr>
-      <td class="doc-left school-name"><span class="school-line">TRƯỜNG THCS NGUYỄN AN NINH<span class="school-half-line"></span></span></td>
+      <td class="doc-left school-name"><span class="school-line">TRƯỜNG ${escapeHtml(schoolName)}<span class="school-half-line"></span></span></td>
       <td></td>
     </tr>
   </table>
@@ -401,22 +399,36 @@ const makeScheduleExportHtml = ({ name, schoolYear, semesterLabel, rows, visible
 </html>`;
 };
 
-export default function SimpleScheduleTable({ subjects = [], currentSchoolYear = '', classTeacherAssignments = {}, teachers = [], principalName = '', pcResponsibleName = '', user, onClose, showNotification }) {
+export default function SimpleScheduleTable({ subjects = [], currentSchoolYear = '', classNames = [], classNamesBySchool = {}, classTeacherAssignments = {}, teachers = [], teachersBySchoolCode = {}, principalName = '', pcResponsibleName = '', user, onClose, showNotification }) {
+  const [scheduleSchoolCode, setScheduleSchoolCode] = useState(DEFAULT_SCHOOL_CODE);
+  const selectedSchool = SCHOOL_OPTIONS.find(item => item.code === scheduleSchoolCode) || SCHOOL_OPTIONS[0];
+  const selectedClassNames = classNamesBySchool?.[scheduleSchoolCode] || classNames;
+  const selectedTeachers = teachersBySchoolCode?.[scheduleSchoolCode] || teachers;
+  const configuredClassRows = useMemo(() => defaultRows(
+    [...new Set((Array.isArray(selectedClassNames) ? selectedClassNames : []).map(item => String(item || '').trim()).filter(Boolean))]
+  ), [selectedClassNames]);
   const [savedSchedules, setSavedSchedules] = useState([]);
   const [activeId, setActiveId] = useState('');
   const [scheduleSemester, setScheduleSemester] = useState('hk1');
   const [scheduleName, setScheduleName] = useState(() => defaultScheduleName(currentSchoolYear, 'hk1'));
-  const [classRows, setClassRows] = useState(defaultRows);
+  const [classRows, setClassRows] = useState(() => configuredClassRows);
   const [visibleDays, setVisibleDays] = useState(DAYS.map(day => day.key));
-  const [schedule, setSchedule] = useState(() => makeEmptySchedule(defaultRows()));
+  const [schedule, setSchedule] = useState(() => makeEmptySchedule(configuredClassRows));
   const scheduleRef = useRef(schedule);
   const editorTableRef = useRef(null);
-  const [mergeA, setMergeA] = useState('6');
-  const [mergeB, setMergeB] = useState('7');
+  const [mergeA, setMergeA] = useState(configuredClassRows[0]?.id || '6');
+  const [mergeB, setMergeB] = useState(configuredClassRows[1]?.id || '7');
+  const mergeableClassRows = classRows.filter(row => Array.isArray(row.grades) && row.grades.length === 1);
   const [periodCount, setPeriodCount] = useState(5);
   const [showStats, setShowStats] = useState(false);
   const [validationErrors, setValidationErrors] = useState([]);
   const [isSaving, setIsSaving] = useState(false);
+  const saveInFlightRef = useRef(false);
+  const loadedScheduleRef = useRef(undefined);
+  const draftSaveRef = useRef(null);
+  const saveScopeRef = useRef('');
+  saveScopeRef.current = `${currentSchoolYear}:${scheduleSchoolCode}:${scheduleSemester}:${activeId}`;
+  const previousSchoolCodeRef = useRef(scheduleSchoolCode);
 
   useEffect(() => {
     scheduleRef.current = schedule;
@@ -428,6 +440,27 @@ export default function SimpleScheduleTable({ subjects = [], currentSchoolYear =
     scheduleRef.current = next;
     setSchedule(next);
   };
+
+  useEffect(() => {
+    if (activeId) return;
+    setClassRows(configuredClassRows);
+    applySchedule(prev => normalizeSchedule(prev, configuredClassRows));
+    setMergeA(prev => configuredClassRows.some(row => row.id === prev) ? prev : (configuredClassRows[0]?.id || ''));
+    setMergeB(prev => configuredClassRows.some(row => row.id === prev) ? prev : (configuredClassRows[1]?.id || configuredClassRows[0]?.id || ''));
+  }, [activeId, configuredClassRows]);
+
+  useEffect(() => {
+    if (previousSchoolCodeRef.current === scheduleSchoolCode) return;
+    previousSchoolCodeRef.current = scheduleSchoolCode;
+    loadedScheduleRef.current = undefined;
+    draftSaveRef.current = null;
+    setActiveId('');
+    setClassRows(configuredClassRows);
+    setScheduleName(defaultScheduleName(currentSchoolYear, scheduleSemester));
+    setVisibleDays(DAYS.map(day => day.key));
+    setPeriodCount(5);
+    applySchedule(makeEmptySchedule(configuredClassRows));
+  }, [configuredClassRows, currentSchoolYear, scheduleSchoolCode, scheduleSemester]);
 
   const collectScheduleFromVisibleInputs = () => {
     if (!editorTableRef.current) return scheduleRef.current;
@@ -448,12 +481,14 @@ export default function SimpleScheduleTable({ subjects = [], currentSchoolYear =
 
   const classTeacherAssignmentsForYear = useMemo(() => {
     const source = classTeacherAssignments && typeof classTeacherAssignments === 'object' ? classTeacherAssignments : {};
-    return source.byYear?.[currentSchoolYear] || (!source.byYear ? source : {}) || {};
-  }, [classTeacherAssignments, currentSchoolYear]);
+    const campusSource = source.bySchoolCode?.[scheduleSchoolCode] || source;
+    const schoolYearKey = normalizeSchoolYearKey(currentSchoolYear);
+    return campusSource.byYear?.[schoolYearKey] || (!campusSource.byYear ? campusSource : {}) || {};
+  }, [classTeacherAssignments, currentSchoolYear, scheduleSchoolCode]);
 
   const teacherShortNameByKey = useMemo(() => {
     const map = new Map();
-    (Array.isArray(teachers) ? teachers : []).forEach(teacher => {
+    (Array.isArray(selectedTeachers) ? selectedTeachers : []).forEach(teacher => {
       const name = String(teacher?.name || '').trim();
       const shortName = String(teacher?.shortName || '').trim();
       if (!name) return;
@@ -462,24 +497,24 @@ export default function SimpleScheduleTable({ subjects = [], currentSchoolYear =
       map.set(key, shortName || suggestTeacherShortName(name));
     });
     return map;
-  }, [teachers]);
+  }, [selectedTeachers]);
 
-  const teacherAssignmentsByGrade = useMemo(() => (
-    Object.fromEntries(BASE_CLASSES.map(grade => {
-      const gradeAssignments = classTeacherAssignmentsForYear?.[grade] || {};
+  const teacherAssignmentsByClass = useMemo(() => (
+    Object.fromEntries([...new Set([...BASE_CLASSES, ...configuredClassRows.map(row => row.id)])].map(className => {
+      const gradeAssignments = getSchoolClassTeacherAssignments(classTeacherAssignmentsForYear, className);
       const bySubject = {};
       Object.entries(gradeAssignments).forEach(([subject, assignmentValue]) => {
         const key = subjectKey(subject);
         const teacherName = getSemesterTeacherName(assignmentValue, scheduleSemester);
         if (key && teacherName) bySubject[key] = teacherName;
       });
-      return [grade, bySubject];
+      return [className, bySubject];
     }))
-  ), [classTeacherAssignmentsForYear, scheduleSemester]);
+  ), [classTeacherAssignmentsForYear, configuredClassRows, scheduleSemester]);
 
   const hasTeacherAssignments = useMemo(() => (
-    Object.values(teacherAssignmentsByGrade).some(gradeMap => Object.values(gradeMap || {}).some(Boolean))
-  ), [teacherAssignmentsByGrade]);
+    Object.values(teacherAssignmentsByClass).some(classMap => Object.values(classMap || {}).some(Boolean))
+  ), [teacherAssignmentsByClass]);
 
   const pushUniqueTeacherName = (teacherNames, seenTeacherNames, teacherName) => {
     const cleanName = String(teacherName || '').trim();
@@ -498,29 +533,42 @@ export default function SimpleScheduleTable({ subjects = [], currentSchoolYear =
       .forEach(name => pushUniqueTeacherName(teacherNames, seenTeacherNames, name));
   };
 
-  const getTeacherChoicesForGradeSubject = (grade = '', subjectValue = '') => {
+  const getTeacherChoicesForGradeSubject = (className = '', subjectValue = '') => {
     const key = subjectKey(subjectValue);
-    if (!grade || !key) return [];
-    const gradeAssignments = classTeacherAssignmentsForYear?.[grade] || {};
+    if (!className || !key) return [];
+    const grade = getPrimaryGrade({ id: className, grades: [className] });
+    const gradeAssignments = getSchoolClassTeacherAssignments(classTeacherAssignmentsForYear, className);
     const matchedAssignment = Object.entries(gradeAssignments)
       .find(([subject]) => subjectKey(subject) === key);
-    if (!matchedAssignment) return [];
-
-    const [, assignmentValue] = matchedAssignment;
     const teacherNames = [];
     const seenTeacherNames = new Set();
     const pushValue = value => pushTeacherNamesFromText(teacherNames, seenTeacherNames, value);
-
-    if (assignmentValue && typeof assignmentValue === 'object' && !Array.isArray(assignmentValue)) {
-      const hk1 = String(assignmentValue.hk1 ?? assignmentValue.hki ?? assignmentValue.semester1 ?? assignmentValue.term1 ?? assignmentValue.fullYear ?? '').trim();
-      const hk2 = String(assignmentValue.hk2 ?? assignmentValue.hkii ?? assignmentValue.semester2 ?? assignmentValue.term2 ?? assignmentValue.fullYear ?? '').trim();
-      const fallback = String(assignmentValue.value ?? assignmentValue.teacherName ?? assignmentValue.name ?? '').trim();
-      const orderedValues = scheduleSemester === 'hk2' ? [hk2, hk1, fallback] : [hk1, hk2, fallback];
-      orderedValues.forEach(pushValue);
-    } else {
-      pushValue(assignmentValue);
+    if (matchedAssignment) {
+      const [, assignmentValue] = matchedAssignment;
+      if (assignmentValue && typeof assignmentValue === 'object' && !Array.isArray(assignmentValue)) {
+        const hk1 = String(assignmentValue.hk1 ?? assignmentValue.hki ?? assignmentValue.semester1 ?? assignmentValue.term1 ?? assignmentValue.fullYear ?? '').trim();
+        const hk2 = String(assignmentValue.hk2 ?? assignmentValue.hkii ?? assignmentValue.semester2 ?? assignmentValue.term2 ?? assignmentValue.fullYear ?? '').trim();
+        const fallback = String(assignmentValue.value ?? assignmentValue.teacherName ?? assignmentValue.name ?? '').trim();
+        const orderedValues = scheduleSemester === 'hk2' ? [hk2, hk1, fallback] : [hk1, hk2, fallback];
+        orderedValues.forEach(pushValue);
+      } else {
+        pushValue(assignmentValue);
+      }
     }
 
+    const campusTeachers = (Array.isArray(selectedTeachers) ? selectedTeachers : [])
+      .filter(teacher => {
+        const teacherGrades = Array.isArray(teacher?.grades) ? teacher.grades.map(String) : [];
+        if (teacherGrades.length && !teacherGrades.includes(String(grade))) return false;
+        return String(teacher?.subject || '').split(/[,;/+\n]+/)
+          .some(subject => subjectKey(subject) === key);
+      })
+      .map(teacher => String(teacher?.name || '').trim())
+      .filter(Boolean);
+    if (campusTeachers.length) return [...new Set(campusTeachers)];
+    const allCampusTeacherNames = [...new Set((Array.isArray(selectedTeachers) ? selectedTeachers : [])
+      .map(teacher => String(teacher?.name || '').trim()).filter(Boolean))];
+    if (allCampusTeacherNames.length) return allCampusTeacherNames;
     return teacherNames;
   };
 
@@ -586,7 +634,6 @@ export default function SimpleScheduleTable({ subjects = [], currentSchoolYear =
   };
 
   const schedulesCollection = useMemo(() => collection(db, 'artifacts', appId, 'public', 'data', 'class_schedules'), []);
-  const newsCollection = useMemo(() => collection(db, 'artifacts', appId, 'public', 'data', 'news'), []);
   const scheduleSubjects = useMemo(() => {
     const seen = new Set();
     return [...subjects, ...EXTRA_SUBJECTS].filter(Boolean).filter(subject => {
@@ -625,29 +672,39 @@ export default function SimpleScheduleTable({ subjects = [], currentSchoolYear =
   };
 
   useEffect(() => {
-    return onSnapshot(schedulesCollection, snapshot => {
+    setSavedSchedules([]);
+    return onSnapshot(query(schedulesCollection, where('schoolYear', '==', currentSchoolYear)), { includeMetadataChanges: true }, snapshot => {
+      if (snapshot.metadata.hasPendingWrites) return;
       const items = snapshot.docs
-        .map(item => ({ id: item.id, ...item.data() }))
+        .map(item => ({ ...item.data(), id: item.id }))
         .filter(item => String(item.schoolYear || '') === String(currentSchoolYear || ''))
+        .filter(item => (normalizeSchoolCode(item.schoolCode) || DEFAULT_SCHOOL_CODE) === scheduleSchoolCode)
         .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
       setSavedSchedules(items);
-    });
-  }, [currentSchoolYear, schedulesCollection]);
+    }, error => showNotification?.(`Chưa tải được thời khóa biểu: ${error.message}`, 'error'));
+  }, [currentSchoolYear, scheduleSchoolCode, schedulesCollection, showNotification]);
 
   const loadSchedule = (item) => {
-    const rows = item.classRows?.length ? item.classRows : defaultRows();
+    loadedScheduleRef.current = item;
+    draftSaveRef.current = null;
+    const rows = item.classRows?.length ? item.classRows : configuredClassRows;
+    const mergeableRows = rows.filter(row => Array.isArray(row.grades) && row.grades.length === 1);
     const nextSemester = inferScheduleSemester(item.semester, item.name);
     setActiveId(item.id || '');
     setScheduleSemester(nextSemester);
     setScheduleName(item.name || defaultScheduleName(currentSchoolYear, nextSemester));
     setClassRows(rows);
+    setMergeA(mergeableRows[0]?.id || '');
+    setMergeB(mergeableRows[1]?.id || mergeableRows[0]?.id || '');
     setVisibleDays(item.visibleDays?.length ? item.visibleDays : DAYS.map(day => day.key));
     setPeriodCount(Math.min(5, Math.max(1, Number(item.periodCount || 5))));
     applySchedule(normalizeSchedule(item.schedule || {}, rows));
   };
 
   const newSchedule = (semester = scheduleSemester) => {
-    const rows = defaultRows();
+    loadedScheduleRef.current = undefined;
+    draftSaveRef.current = null;
+    const rows = configuredClassRows;
     setActiveId('');
     setScheduleSemester(semester);
     setScheduleName(withSemesterPrefix(`TKB ${currentSchoolYear || ''} - bản mới`.trim(), semester));
@@ -655,6 +712,11 @@ export default function SimpleScheduleTable({ subjects = [], currentSchoolYear =
     setVisibleDays(DAYS.map(day => day.key));
     setPeriodCount(5);
     applySchedule(makeEmptySchedule(rows));
+  };
+
+  const changeScheduleSchool = (nextValue) => {
+    const nextSchoolCode = normalizeSchoolCode(nextValue) || DEFAULT_SCHOOL_CODE;
+    if (nextSchoolCode !== scheduleSchoolCode) setScheduleSchoolCode(nextSchoolCode);
   };
 
   const changeScheduleSemester = (nextSemester) => {
@@ -710,15 +772,20 @@ export default function SimpleScheduleTable({ subjects = [], currentSchoolYear =
   };
 
   const saveSchedule = async (status = 'draft') => {
+    if (saveInFlightRef.current) return;
+    saveInFlightRef.current = true;
+    const scope = saveScopeRef.current;
     setIsSaving(true);
     try {
       const latestSchedule = collectScheduleFromVisibleInputs();
       const semesterMeta = getScheduleSemesterMeta(scheduleSemester);
       const desiredName = withSemesterPrefix(scheduleName.trim() || `TKB ${currentSchoolYear}`, scheduleSemester);
-      const activeSchedule = savedSchedules.find(item => item.id === activeId);
+      const activeSchedule = loadedScheduleRef.current;
       const shouldForkSchedule = Boolean(activeSchedule && desiredName !== (activeSchedule.name || activeSchedule.id || ''));
       const now = getCurrentTimestamp();
-      const id = activeId && !shouldForkSchedule ? activeId : `tkb_${now}`;
+      const draftKey = `${scope}:${desiredName}`;
+      if (draftSaveRef.current?.key !== draftKey) draftSaveRef.current = { key: draftKey, id: `tkb_${scheduleSchoolCode}_${globalThis.crypto.randomUUID()}` };
+      const id = activeId && !shouldForkSchedule ? activeId : draftSaveRef.current.id;
       const effectiveStatus = status === 'draft' && activeSchedule?.status === 'published' && !shouldForkSchedule ? 'published' : status;
       const normalized = compactScheduleForSave(latestSchedule, classRows, teacherShortNameByKey);
       if (effectiveStatus === 'published') {
@@ -738,6 +805,8 @@ export default function SimpleScheduleTable({ subjects = [], currentSchoolYear =
         semester: scheduleSemester,
         semesterLabel: semesterMeta.label,
         namePrefix: semesterMeta.namePrefix,
+        schoolCode: scheduleSchoolCode,
+        schoolName: selectedSchool.name,
         schoolYear: currentSchoolYear,
         classRows,
         visibleDays: savedVisibleDays,
@@ -747,53 +816,25 @@ export default function SimpleScheduleTable({ subjects = [], currentSchoolYear =
         publishedAt: effectiveStatus === 'published' ? now : null,
         updatedAt: now
       };
-      if (effectiveStatus === 'published') {
-        await Promise.all(savedSchedules
-          .filter(item => item.id !== id && item.status === 'published' && inferScheduleSemester(item.semester, item.name) === scheduleSemester)
-          .map(item => setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'class_schedules', item.id), { status: 'draft', publishedAt: null, updatedAt: now }, { merge: true })));
+      const newsPayload = effectiveStatus === 'published' ? {
+        title: `${selectedSchool.name} · THỜI KHÓA BIỂU ${semesterMeta.label}: ${stripSemesterPrefix(payload.name)}`,
+        content: makeScheduleNewsHtml({ name: `${selectedSchool.name} · ${payload.name}`, rows: classRows, visibleDays: payload.visibleDays, schedule: normalized, periodCount }),
+        updatedAt: now, authorId: user?.uid || '', type: 'class_schedule', scheduleId: id,
+        semester: scheduleSemester, semesterLabel: semesterMeta.label, schoolYear: currentSchoolYear,
+        schoolCode: scheduleSchoolCode, schoolName: selectedSchool.name
+      } : null;
+      await saveSchedulePublication(id, payload, newsPayload, shouldForkSchedule ? undefined : activeSchedule);
+      if (saveScopeRef.current === scope) {
+        loadedScheduleRef.current = { ...(shouldForkSchedule ? {} : activeSchedule), ...payload, id };
+        setActiveId(id);
+        setScheduleName(desiredName);
+        if (JSON.stringify(collectScheduleFromVisibleInputs()) === JSON.stringify(latestSchedule)) applySchedule(normalized);
       }
-      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'class_schedules', id), payload, { merge: true });
-      if (effectiveStatus === 'published') {
-        const title = `THỜI KHÓA BIỂU ${semesterMeta.label}: ${stripSemesterPrefix(payload.name)}`;
-        const content = makeScheduleNewsHtml({ name: payload.name, rows: classRows, visibleDays: payload.visibleDays, schedule: normalized, periodCount });
-        const newsSnapshot = await getDocs(newsCollection);
-        const existingScheduleNews = newsSnapshot.docs.find(item => item.data()?.type === 'class_schedule' && item.data()?.scheduleId === id);
-        const baseNewsPayload = {
-          title,
-          content,
-          updatedAt: now,
-          authorId: user?.uid || '',
-          type: 'class_schedule',
-          scheduleId: id,
-          semester: scheduleSemester,
-          semesterLabel: semesterMeta.label,
-          schoolYear: currentSchoolYear
-        };
-        if (existingScheduleNews) {
-          const existingNewsData = existingScheduleNews.data() || {};
-          await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'news', existingScheduleNews.id), {
-            ...baseNewsPayload,
-            isPinned: existingNewsData.pinSource === 'manual' ? Boolean(existingNewsData.isPinned) : false,
-            pinSource: existingNewsData.pinSource === 'manual' ? 'manual' : 'auto'
-          }, { merge: true });
-        } else {
-          await addDoc(newsCollection, {
-            ...baseNewsPayload,
-            createdAt: now,
-            sortOrder: now,
-            isPinned: false,
-            pinSource: 'auto',
-            isHot: false
-          });
-        }
-      }
-      setActiveId(id);
-      setScheduleName(desiredName);
-      applySchedule(normalized);
       showNotification?.(shouldForkSchedule ? 'Đã lưu thành bản thời khóa biểu mới.' : (effectiveStatus === 'published' ? 'Đã ghim TKB và đưa vào bản tin thường.' : 'Đã lưu thời khóa biểu.'));
     } catch (error) {
       showNotification?.(`Lỗi lưu thời khóa biểu: ${error.message}`, 'error');
     } finally {
+      saveInFlightRef.current = false;
       setIsSaving(false);
     }
   };
@@ -801,10 +842,11 @@ export default function SimpleScheduleTable({ subjects = [], currentSchoolYear =
   const buildCurrentScheduleExport = () => {
     const latestSchedule = collectScheduleFromVisibleInputs();
     const semesterMeta = getScheduleSemesterMeta(scheduleSemester);
-    const name = withSemesterPrefix(scheduleName.trim() || `TKB ${currentSchoolYear}`, scheduleSemester);
+    const name = `${selectedSchool.name} - ${withSemesterPrefix(scheduleName.trim() || `TKB ${currentSchoolYear}`, scheduleSemester)}`;
     const selectedVisibleDays = DAYS.map(day => day.key).filter(dayKey => visibleDays.includes(dayKey));
     return {
       name,
+      schoolName: selectedSchool.name,
       schoolYear: currentSchoolYear,
       semesterLabel: semesterMeta.label,
       principalName,
@@ -848,18 +890,21 @@ export default function SimpleScheduleTable({ subjects = [], currentSchoolYear =
   };
 
   const deleteActiveSchedule = async () => {
-    if (!activeId) return;
-    const activeSchedule = savedSchedules.find(item => item.id === activeId);
+    if (!activeId || saveInFlightRef.current) return;
+    const activeSchedule = loadedScheduleRef.current;
     const scheduleLabel = activeSchedule?.name || scheduleName || 'bản thời khóa biểu này';
-    if (!window.confirm(`Xóa "${scheduleLabel}"? Bản tin/thông báo liên quan nếu có sẽ được giữ nguyên.`)) return;
+    if (!window.confirm(`Xóa "${scheduleLabel}" cùng bản tin thời khóa biểu liên quan?`)) return;
+    const scope = saveScopeRef.current;
+    saveInFlightRef.current = true;
     setIsSaving(true);
     try {
-      await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'class_schedules', activeId));
-      newSchedule();
+      await deleteSchedulePublication(activeId, activeSchedule);
+      if (saveScopeRef.current === scope) newSchedule();
       showNotification?.('Đã xóa thời khóa biểu đã lưu.');
     } catch (error) {
       showNotification?.(`Lỗi xóa thời khóa biểu: ${error.message}`, 'error');
     } finally {
+      saveInFlightRef.current = false;
       setIsSaving(false);
     }
   };
@@ -869,22 +914,28 @@ export default function SimpleScheduleTable({ subjects = [], currentSchoolYear =
   };
 
   const mergeClasses = () => {
-    if (!mergeA || !mergeB || mergeA === mergeB) {
+    const mergeableIds = new Set(mergeableClassRows.map(row => row.id));
+    if (!mergeA || !mergeB || mergeA === mergeB || !mergeableIds.has(mergeA) || !mergeableIds.has(mergeB)) {
       showNotification?.('Chọn 2 lớp khác nhau để ghép.', 'error');
       return;
     }
-    const grades = [mergeA, mergeB].sort((a, b) => Number(a) - Number(b));
+    const grades = [mergeA, mergeB].sort((a, b) => String(a).localeCompare(String(b), 'vi', { numeric: true, sensitivity: 'base' }));
     const id = grades.join('&');
     const row = { id, label: `Lớp ${id}`, grades };
     const nextRows = sortRows([...classRows.filter(item => !item.grades?.some(grade => grades.includes(grade))), row]);
     const sourceSchedule = scheduleRef.current[mergeA] || scheduleRef.current[mergeB] || emptyRow();
     setClassRows(nextRows);
+    const nextMergeableRows = nextRows.filter(item => Array.isArray(item.grades) && item.grades.length === 1);
+    setMergeA(nextMergeableRows[0]?.id || '');
+    setMergeB(nextMergeableRows[1]?.id || nextMergeableRows[0]?.id || '');
     applySchedule(prev => normalizeSchedule({ ...prev, [id]: sourceSchedule }, nextRows));
   };
 
   const resetClasses = () => {
-    const rows = defaultRows();
+    const rows = configuredClassRows;
     setClassRows(rows);
+    setMergeA(rows[0]?.id || '');
+    setMergeB(rows[1]?.id || rows[0]?.id || '');
     applySchedule(prev => normalizeSchedule(prev, rows));
   };
 
@@ -924,7 +975,7 @@ export default function SimpleScheduleTable({ subjects = [], currentSchoolYear =
       ), 0)
     ), 0);
 
-    const rows = classRows?.length ? classRows : defaultRows();
+    const rows = classRows?.length ? classRows : configuredClassRows;
     const lockedSchedule = normalizeSchedule(latestSchedule, rows);
     const allDayKeys = DAYS.map(day => day.key);
     const getLockedSubjectCounts = (row) => {
@@ -960,7 +1011,7 @@ export default function SimpleScheduleTable({ subjects = [], currentSchoolYear =
     const loadPriorityByKey = Object.fromEntries(REQUIRED_LOADS.map((item, index) => [item.key, index]));
     const rawTasks = rows.flatMap((row, rowIndex) => {
       const grade = getPrimaryGrade(row);
-      const teacherMap = teacherAssignmentsByGrade[grade] || {};
+      const teacherMap = teacherAssignmentsByClass[row.id] || teacherAssignmentsByClass[grade] || {};
       return (remainingLoadsByRowId[row.id] || []).flatMap((load, loadIndex) => {
         const teacherName = teacherMap[load.key] || '';
         const teacherKeys = getTeacherKeys(teacherName);
@@ -1341,6 +1392,12 @@ export default function SimpleScheduleTable({ subjects = [], currentSchoolYear =
           <h3 className="mr-1 text-base sm:text-lg font-black text-emerald-950 uppercase whitespace-nowrap">
             <span className="sm:hidden">TKB</span><span className="hidden sm:inline">Thời khóa biểu</span>
           </h3>
+          <label className="inline-flex h-9 items-center gap-2 rounded-lg border border-emerald-100 bg-white px-2.5">
+            <span className="text-[10px] font-black uppercase text-emerald-700">Cơ sở</span>
+            <select value={scheduleSchoolCode} onChange={(event) => changeScheduleSchool(event.target.value)} className="max-w-[190px] bg-transparent text-xs font-black text-slate-800 outline-none">
+              {SCHOOL_OPTIONS.filter(item => item.code !== 'UNKNOWN').map(item => <option key={item.code} value={item.code}>{item.name}</option>)}
+            </select>
+          </label>
           <select value={activeId} onChange={(event) => {
             if (!event.target.value) {
               newSchedule();
@@ -1418,10 +1475,10 @@ export default function SimpleScheduleTable({ subjects = [], currentSchoolYear =
             <Users className="w-4 h-4 text-indigo-600" />
             <span className="text-[10px] font-black uppercase text-slate-500">Ghép</span>
             <select value={mergeA} onChange={(event) => setMergeA(event.target.value)} className="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs font-black outline-none">
-              {BASE_CLASSES.map(item => <option key={item} value={item}>Lớp {item}</option>)}
+              {mergeableClassRows.map(row => <option key={row.id} value={row.id}>{row.label || `Lớp ${row.id}`}</option>)}
             </select>
             <select value={mergeB} onChange={(event) => setMergeB(event.target.value)} className="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs font-black outline-none">
-              {BASE_CLASSES.map(item => <option key={item} value={item}>Lớp {item}</option>)}
+              {mergeableClassRows.map(row => <option key={row.id} value={row.id}>{row.label || `Lớp ${row.id}`}</option>)}
             </select>
             <button type="button" onClick={mergeClasses} className="rounded-md bg-indigo-600 px-2 py-1 text-[10px] font-black uppercase text-white">Ghép</button>
             <button type="button" onClick={resetClasses} className="rounded-md bg-white border border-slate-200 px-2 py-1 text-[10px] font-black uppercase text-slate-500">Tách</button>

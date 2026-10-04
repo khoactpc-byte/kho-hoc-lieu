@@ -12,6 +12,7 @@ export default function ThdTeachingAssignmentsPanel({
   handleDeleteTeachingVersion,
   updateTeachingVersionName,
   handleCreateNewTeachingBatch,
+  isSaving = false,
   handleImportFullPCSheet,
   activeAssignmentClasses = [],
   activeClassPickerIndex,
@@ -122,6 +123,7 @@ export default function ThdTeachingAssignmentsPanel({
         handleDeleteTeachingVersion={handleDeleteTeachingVersion}
         updateTeachingVersionName={updateTeachingVersionName}
         handleCreateNewTeachingBatch={handleCreateNewTeachingBatch}
+        isSaving={isSaving}
         activeTeachingBatch={activeTeachingBatch}
         handleImportFullPCSheet={handleImportFullPCSheet}
         canEditTeachingRows={canEditTeachingRows}
@@ -195,7 +197,7 @@ export default function ThdTeachingAssignmentsPanel({
               const showSummaryRow = hasVisibleTeachingRow ? rowMeta.isGroupEnd : true;
               const isContinuationRow = rowMeta.isContinuation;
               const teacherSequenceNumber = isContinuationRow ? '' : rowMeta.sequenceNumber;
-              const teacherSuggestions = activeTeacherPickerIndex === sourceIndex ? getTeacherSuggestions(row.teacherName) : [];
+              const teacherSuggestions = activeTeacherPickerIndex === sourceIndex ? getTeacherSuggestions(row.teacherName, row) : [];
               const currentGroupBounds = teachingGroupBoundsBySourceIndex.get(sourceIndex) || { start: sourceIndex, end: sourceIndex };
               const canMoveTeacherUp = currentGroupBounds.start > 0;
               const canMoveTeacherDown = currentGroupBounds.end < teachingRowsForSelectedYear.length - 1;

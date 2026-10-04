@@ -29,8 +29,6 @@ export default function ThdTeachingAssignmentsToolbar({
   activeTeachingBatch,
   canEditTeachingRows = false,
   canUseTeachingImport = false,
-  activeTeachingFilterMenuIndex,
-  setActiveTeachingFilterMenuIndex,
   isSaving,
   clearTeachingAssignmentsForYear,
   deleteSelectedTeachingBatch,
@@ -228,6 +226,17 @@ export default function ThdTeachingAssignmentsToolbar({
                 disabled={!canEditTeachingRows}
               />
             </label>
+
+            {canEditTeachingRows && (
+              <button
+                type="button"
+                onClick={handleCreateNewTeachingBatch}
+                disabled={isSaving}
+                className="inline-flex h-8 items-center gap-1.5 rounded-md border border-emerald-200 bg-emerald-50 px-2.5 text-xs font-semibold text-emerald-800 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <PlusCircle className="h-4 w-4" /> Đợt mới
+              </button>
+            )}
 
             {!activeTeachingBatch && (
               <div className="relative">

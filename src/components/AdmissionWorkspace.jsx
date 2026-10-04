@@ -1,4 +1,3 @@
-import React from 'react';
 import { ClipboardCheck, Trash2, X } from 'lucide-react';
 
 export default function AdmissionWorkspace({
@@ -38,6 +37,7 @@ export default function AdmissionWorkspace({
               <thead className="bg-sky-50 text-[11px] uppercase text-sky-900">
                 <tr>
                   <th className="px-4 py-3 font-black">Thời gian</th>
+                  <th className="px-4 py-3 font-black">Cơ sở</th>
                   <th className="px-4 py-3 font-black">Họ và tên</th>
                   <th className="px-4 py-3 font-black">Ngày sinh</th>
                   <th className="px-4 py-3 font-black">Nơi sinh</th>
@@ -52,12 +52,13 @@ export default function AdmissionWorkspace({
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {applications.length === 0 ? (
-                  <tr><td colSpan={10 + documents.length} className="px-4 py-10 text-center text-sm font-bold text-slate-400">Chưa có hồ sơ tuyển sinh.</td></tr>
+                  <tr><td colSpan={11 + documents.length} className="px-4 py-10 text-center text-sm font-bold text-slate-400">Chưa có hồ sơ tuyển sinh.</td></tr>
                 ) : applications.map(item => {
                   const address = parseAddress(item.address);
                   return (
                     <tr key={item.id} className="hover:bg-sky-50/40">
                       <td className="px-4 py-3 text-xs font-bold text-slate-500">{item.createdAt ? new Date(item.createdAt).toLocaleString('vi-VN') : '-'}</td>
+                      <td className="px-4 py-3 font-black text-sky-800">{item.schoolName || (item.classSuffix ? `Cơ sở ${item.classSuffix}` : '-')}</td>
                       <td className="px-4 py-3 font-black text-slate-900">{item.fullName || '-'}</td>
                       <td className="px-4 py-3 font-bold text-slate-700">{formatDate(item.birthDate)}</td>
                       <td className="px-4 py-3 font-bold text-slate-700">{item.birthPlace || '-'}</td>

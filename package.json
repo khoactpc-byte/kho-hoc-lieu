@@ -6,28 +6,47 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "lint": "eslint src/utils/helpers.js --max-warnings=0",
-    "lint:all": "eslint . --max-warnings=0",
+    "lint": "eslint src test netlify scripts/*.mjs *.config.js --max-warnings=0",
+    "lint:all": "npm run lint",
     "test": "node --test test/*.test.js",
-    "check": "npm run lint && npm run build",
-    "preview": "vite preview"
+    "test:rules": "node scripts/test-rules.mjs",
+    "check:syntax": "node scripts/check-syntax.mjs",
+    "check": "npm test && npm run lint && npm run check:syntax && npm run build",
+    "preview": "vite preview",
+    "postinstall": "node scripts/harden-build-dependencies.mjs",
+    "prebuild": "node scripts/harden-build-dependencies.mjs"
   },
   "dependencies": {
+    "dompurify": "^3.4.16",
     "firebase": "^11.6.1",
+    "firebase-admin": "^14.5.0",
     "lucide-react": "^0.300.0",
+    "parse5": "^8.0.1",
     "react": "^18.2.0",
     "react-dom": "^18.2.0"
   },
+  "overrides": {
+    "@grpc/grpc-js": "^1.13.6",
+    "gaxios": {
+      "uuid": "^11.1.1"
+    }
+  },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@vitejs/plugin-react": "^4.2.1",
+    "@firebase/rules-unit-testing": "^4.0.1",
+    "@vitejs/plugin-react": "^4.7.0",
     "autoprefixer": "^10.4.19",
+    "esbuild": "^0.28.2",
     "eslint": "^10.4.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.2",
     "globals": "^17.6.0",
+    "jsdom": "^29.1.1",
     "postcss": "^8.4.38",
-    "tailwindcss": "^3.4.3",
-    "vite": "^5.2.0"
+    "tailwindcss": "^3.4.19",
+    "vite": "^7.3.6"
+  },
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
   }
 }
