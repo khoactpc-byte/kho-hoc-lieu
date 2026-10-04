@@ -140,9 +140,13 @@ export const getDriveDisplayName = (name) => String(name || '').replace(/(?:\[[^
 export const getDriveBaseName = (name) => getDriveDisplayName(name).replace(/\.[^/.]+$/, '').trim();
 export const cleanDriveTitle = (name) => getDriveBaseName(name).toLowerCase();
 
-export const normalizeServiceErrorMessage = (message) => {
+export const normalizeServiceErrorMessage = (message, action = '') => {
   const raw = String(message || '').replace(/\s+/g, ' ').trim();
   if (!raw) return 'May chu bao loi khong xac dinh.';
+  if (['createAdminSession', 'createStaffSession'].includes(action)
+    && /Cần đăng nhập Admin để truy cập dữ liệu học sinh/i.test(raw)) {
+    return 'Máy chủ đăng nhập đang nhận phản hồi từ Script đăng ký học sinh. Cần kiểm tra URL và triển khai đúng Code.gs máy chủ chính.';
+  }
   if (/<(?:!doctype\s+html|html\b|head\b|body\b|script\b)/i.test(raw)) {
     return 'Máy chủ Apps Script trả về trang HTML thay vì dữ liệu xác thực. Mật khẩu chưa được xác minh; hãy kiểm tra URL và quyền triển khai Web App.';
   }
@@ -198,7 +202,7 @@ export const postAppsScript = async (payload, { timeoutMs = 120000, signal } = {
   let data;
   try { data = JSON.parse(text); }
   catch (e) { throw new Error(normalizeServiceErrorMessage(text || 'May chu Apps Script khong tra JSON.'), { cause: e }); }
-  if (data.status === 'error') throw new Error(normalizeServiceErrorMessage(data.message || 'May chu bao loi.'));
+  if (data.status === 'error' || data.success === false) throw new Error(normalizeServiceErrorMessage(data.message || 'May chu bao loi.', payload.action));
   return data;
   } catch (error) {
     if (timedOut) throw new Error('Máy chủ phản hồi quá lâu. Yêu cầu ghi có thể đã được xử lý; hãy kiểm tra trạng thái trước khi thử lại.', { cause: error });

@@ -26,12 +26,14 @@ npm run check
 
 ## Trien khai Apps Script
 
-Ma nguon Apps Script dang duoc quan ly trong Git o `apps-script/`. He thong co hai Web App doc lap:
+Ma nguon hai du an Apps Script duoc giu rieng trong may o `apps-script/`, khong dua len GitHub. File `up-github.bat` loai thu muc nay va cac file `.gs` khoi noi dung cap nhat, giu nguyen ban trong may. He thong co hai Web App doc lap:
 
 - May chu chinh: `apps-script/code_hoclieu.gs`.
 - Dang ky va dong bo du lieu hoc sinh: `apps-script/dang-ky-hoc-sinh/code_dangky.gs` va `Index.html`.
 
 Sau khi cap nhat ma, dong bo dung tep voi dung du an Apps Script, roi vao **Deploy > Manage deployments > Edit > New version > Deploy**. Luu ma ma khong tao ban trien khai moi se khong cap nhat Web App dang chay. Khong tao URL trien khai moi neu ung dung van dung URL hien tai.
+
+Tren may moi, can lay lai bo Apps Script tu ban luu rieng de chay kiem thu/cu phap day du (`npm run check`). Netlify dung `npm run build`, khong can cac tep Apps Script de build website. Viec loai tep khoi lan up moi khong xoa noi dung da co trong lich su GitHub.
 
 Chi tiet nhan dien hai du an, Script Properties va cac buoc kiem tra sau trien khai nam trong [huong dan Apps Script](./HUONG_DAN_CAP_NHAT_APPS_SCRIPT.md). Cau hinh bao mat nam trong [SECURITY_SETUP.md](./SECURITY_SETUP.md).
 

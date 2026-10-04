@@ -1326,6 +1326,7 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
   const [selectedRegistrationIds, setSelectedRegistrationIds] = useState(new Set());
   const [pendingRegistrations, setPendingRegistrations] = useState([]);
   const registrationRequestRef = useRef(null);
+  const registrationMutationRef = useRef(false);
   useEffect(() => () => registrationRequestRef.current?.abort(), []);
   const [profileRequests, setProfileRequests] = useState([]);
   const [scorebookEditsByYearGrade, setScorebookEditsByYearGrade] = useState({});
@@ -2138,7 +2139,10 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
   }, [getMissingAcademicResults, getMissingStudentInfo]);
 
   useEffect(() => {
-    setClassFilter(prev => prev.filter(className => classOptions.includes(className)));
+    setClassFilter(prev => {
+      const next = prev.filter(className => classOptions.includes(className));
+      return next.length === prev.length ? prev : next;
+    });
   }, [classOptions]);
 
   const matchesQuickIssueFilter = useCallback((student = {}) => {
@@ -2976,6 +2980,7 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
   };
 
   async function loadPendingRegistrations() {
+    if (registrationMutationRef.current) return;
     registrationRequestRef.current?.abort();
     const controller = new AbortController();
     registrationRequestRef.current = controller;
@@ -3138,7 +3143,17 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
     });
   };
 
+  const beginRegistrationMutation = () => {
+    if (isSaving || registrationMutationRef.current) return false;
+    registrationMutationRef.current = true;
+    registrationRequestRef.current?.abort();
+    setIsLoadingRegistrations(false);
+    setIsSaving(true);
+    return true;
+  };
+
   const markExistingRegistration = async (registration = {}) => {
+    if (isSaving || registrationMutationRef.current) return;
     const duplicate = findRegistrationDuplicate(registration);
     const existingStudent = duplicate?.student || safeStudents.find(student => student.id === registration.duplicateStudentId);
     if (!existingStudent?.id) {
@@ -3149,7 +3164,7 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
     const shouldUpdateIdentity = /^\d{12}$/.test(identityCode) && identityCode !== String(existingStudent.identityCode || '').replace(/^'/, '').trim();
     if (shouldUpdateIdentity && !window.confirm(`Cập nhật mã định danh mới cho ${existingStudent.fullName || 'học sinh'} rồi đánh dấu dòng đăng ký là Đã có?`)) return;
     if (!shouldUpdateIdentity && !window.confirm('Đánh dấu dòng đăng ký này là Đã có để lần sau không tải lại?')) return;
-    setIsSaving(true);
+    if (!beginRegistrationMutation()) return;
     try {
       if (shouldUpdateIdentity) {
         await persistStudent({ ...existingStudent, identityCode });
@@ -3168,13 +3183,15 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
     } catch (error) {
       showNotification?.(`Chưa xử lý được hồ sơ trùng: ${error.message}`, 'error');
     } finally {
+      registrationMutationRef.current = false;
       setIsSaving(false);
     }
   };
 
   const deletePendingRegistration = async (registration = {}) => {
-    if (!window.confirm(`Xóa dòng đăng ký của ${registration.fullName || 'học sinh này'} khỏi Google Sheet?`)) return;
-    setIsSaving(true);
+    if (isSaving || registrationMutationRef.current) return;
+    if (!window.confirm(`Từ chối hồ sơ của ${registration.fullName || 'học sinh này'}? Hàng đăng ký sẽ bị xóa khỏi Google Sheet. Thao tác này không thể hoàn tác trên website.`)) return;
+    if (!beginRegistrationMutation()) return;
     try {
       await callSheetAction('deleteRegistration', {
         rowNumber: registration.rowNumber,
@@ -3183,22 +3200,24 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
         identityCode: registration.identityCode || ''
       });
       removePendingRegistrationLocally(registration);
-      showNotification?.('Đã xóa dòng đăng ký khỏi Google Sheet.');
+      showNotification?.('Đã từ chối hồ sơ và xóa hàng đăng ký khỏi Google Sheet.');
     } catch (error) {
-      showNotification?.(`Chưa xóa được dòng đăng ký: ${error.message}`, 'error');
+      showNotification?.(`Chưa từ chối được hồ sơ: ${error.message}`, 'error');
     } finally {
+      registrationMutationRef.current = false;
       setIsSaving(false);
     }
   };
 
   const approveRegistrations = async (registrations = []) => {
+ if(isSaving||registrationMutationRef.current)return;
  const targets=registrations.length?registrations:pendingRegistrations.filter(item=>selectedRegistrationIds.has(item.tempId));
  if(!targets.length){showNotification?.('Chưa chọn hồ sơ đăng ký.','error');return;}
  const identityFor=registration=>/^\d{12}$/.test(String(registration.identityCode||''))?registration.identityCode:registration.registrationId||registration.id||registration.tempId;
  const retry=registration=>yearStudents.some(student=>student.registrationId===identityFor(registration)&&['pending','failed','running'].includes(student.sheetSync?.status));
  const valid=targets.filter(item=>retry(item)||!(item.duplicateReason||findRegistrationDuplicate(item)));
  if(!valid.length){showNotification?.('Các hồ sơ có dấu hiệu trùng; cần đối soát trước.','error');return;}
- setIsSaving(true);
+ if(!beginRegistrationMutation())return;
  try {
   const result=await processRecords(valid,async registration=>{
    const input=normalizeStudentRecord(registrationToStudent(registration),currentSchoolYear);
@@ -3218,7 +3237,7 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
   setSelectedRegistrationIds(new Set(result.failed.map(item=>item.record.tempId)));
   showNotification?.('Database: '+result.succeeded.length+'/'+valid.length+' hồ sơ; Sheet: '+synced.size+'/'+result.succeeded.length+'. '+(result.failed.length?'Hồ sơ lỗi vẫn được chọn để thử tiếp. ':'')+(syncErrors.length?'Việc đồng bộ chưa xong được giữ trong hàng đợi.':''),result.failed.length||syncErrors.length?'error':'success');
  }catch(error){showNotification?.('Duyệt hồ sơ chưa hoàn tất: '+error.message,'error');}
- finally{setIsSaving(false);}
+ finally{registrationMutationRef.current=false;setIsSaving(false);}
 };
 
   const approveProfileRequest = async request => {
@@ -3497,7 +3516,7 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
                     </button>
                   )}
                   {studentTab === 'registrations' && (
-                    <button type="button" onClick={() => { setShowUtilitiesMenu(false); loadPendingRegistrations(); }} disabled={isLoadingRegistrations} className={utilityButtonClass}>
+                    <button type="button" onClick={() => { setShowUtilitiesMenu(false); loadPendingRegistrations(); }} disabled={isLoadingRegistrations || isSaving} className={utilityButtonClass}>
                       <RefreshCw className="h-4 w-4 text-emerald-600" /> {isLoadingRegistrations ? 'Dang tai...' : 'Tai moi'}
                     </button>
                   )}
@@ -4198,22 +4217,19 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
                   </div>
                 </th>
               ))}
-              {!isImageOnlyView && (studentTab === 'current' ? (
+              {studentTab === 'current' ? (!isImageOnlyView && (
                 <>
                   <th className="px-4 py-3 text-right min-w-[170px]">Thao tác</th>
                 </>
-              ) : (
-                <>
-                  <th className="px-4 py-3 min-w-[190px]">Kiểm tra</th>
-                  <th className="px-4 py-3 text-right min-w-[280px]">Duyệt</th>
-                </>
-              ))}
+              )) : (
+                <th className="sticky right-0 z-20 w-[240px] min-w-[240px] border-l border-slate-100 bg-white px-3 py-3">Duyệt hồ sơ</th>
+              )}
             </tr>
           </thead>
           <tbody>
             {filteredStudents.length === 0 ? (
               <tr>
-                <td colSpan={visibleStudentFields.length + (isImageOnlyView ? 1 : (studentTab === 'current' ? 4 : 3))} className="px-4 py-10 text-center text-slate-400 font-bold">
+                <td colSpan={visibleStudentFields.length + (studentTab === 'registrations' ? 2 : (isImageOnlyView ? 1 : 4))} className="px-4 py-10 text-center text-slate-400 font-bold">
                   {studentTab === 'current' ? 'Chưa có học sinh trong năm học hoặc bộ lọc này.' : 'Chưa có hồ sơ đăng ký mới cần duyệt trong bộ lọc này.'}
                 </td>
               </tr>
@@ -4252,7 +4268,7 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
                     </td>
                   );
                 })}
-                {!isImageOnlyView && (studentTab === 'current' ? (
+                {studentTab === 'current' ? (!isImageOnlyView && (
                   <>
                     <td className="px-4 py-3">
                       <div className="flex justify-end gap-1.5">
@@ -4288,9 +4304,8 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
                       </div>
                     </td>
                   </>
-                ) : (
-                  <>
-                    <td className="px-4 py-3">
+                )) : (
+                    <td className="sticky right-0 z-[1] border-l border-slate-100 bg-white px-3 py-3">
                       {student.duplicateReason ? (
                         <div className="space-y-1">
                           <span className="inline-flex rounded-full bg-amber-100 text-amber-800 border border-amber-200 px-2 py-1 font-black text-[10px] uppercase">{student.duplicateReason}</span>
@@ -4299,30 +4314,24 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
                       ) : (
                         <span className="inline-flex rounded-full bg-emerald-50 text-emerald-700 border border-emerald-100 px-2 py-1 font-black text-[10px] uppercase">Hồ sơ mới</span>
                       )}
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="flex justify-end gap-1.5">
-                        <button type="button" onClick={() => setEditing({ ...emptyStudent, ...student, id: '' })} title="Xem hồ sơ" className="p-2 rounded-lg bg-white border border-slate-200 text-blue-600 hover:bg-blue-50">
+                      <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                        <button type="button" onClick={() => approveRegistrations([student])} disabled={isSaving || Boolean(student.duplicateReason)} title={student.duplicateReason ? 'Cần đối chiếu hồ sơ trùng trước khi đồng ý' : 'Duyệt hồ sơ và đưa vào danh sách học sinh'} className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-bold text-white hover:bg-emerald-700 disabled:opacity-40">
+                          <CheckCircle2 className="h-3.5 w-3.5" /> Đồng ý
+                        </button>
+                        <button type="button" onClick={() => deletePendingRegistration(student)} disabled={isSaving} title="Từ chối và xóa hàng đăng ký khỏi Google Sheet" className="inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-bold text-rose-700 hover:bg-rose-100 disabled:opacity-40">
+                          <X className="h-3.5 w-3.5" /> Từ chối
+                        </button>
+                        <button type="button" onClick={() => setEditing({ ...emptyStudent, ...student, id: '' })} disabled={isSaving} title="Xem hồ sơ" className="p-2 rounded-lg bg-white border border-slate-200 text-blue-600 hover:bg-blue-50 disabled:opacity-40">
                           <Pencil className="w-4 h-4" />
                         </button>
                         {student.duplicateReason ? (
-                          <>
                             <button type="button" onClick={() => markExistingRegistration(student)} disabled={isSaving} className="px-3 py-2 rounded-xl bg-amber-50 text-amber-700 border border-amber-100 font-black uppercase text-[10px] disabled:opacity-40">
                               Cập nhật/Đã có
                             </button>
-                            <button type="button" onClick={() => deletePendingRegistration(student)} disabled={isSaving} className="px-3 py-2 rounded-xl bg-rose-50 text-rose-700 border border-rose-100 font-black uppercase text-[10px] disabled:opacity-40">
-                              Xóa Sheet
-                            </button>
-                          </>
-                        ) : (
-                          <button type="button" onClick={() => approveRegistrations([student])} className="px-3 py-2 rounded-xl bg-emerald-50 text-emerald-700 border border-emerald-100 font-black uppercase text-[10px]">
-                            Chuyển sang
-                          </button>
-                        )}
+                        ) : null}
                       </div>
                     </td>
-                  </>
-                ))}
+                )}
               </tr>
             ))}
           </tbody>

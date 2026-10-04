@@ -24,16 +24,9 @@ cauhinh.json
 .audit-all.json
 .audit-production.json
 
-# Version the Apps Script sources used by the deployed web apps; ignore legacy exports.
-apps-script/
-!apps-script/
-apps-script/*
-!apps-script/code_hoclieu.gs
-!apps-script/dang-ky-hoc-sinh/
-apps-script/dang-ky-hoc-sinh/*
-!apps-script/dang-ky-hoc-sinh/code_dangky.gs
-!apps-script/dang-ky-hoc-sinh/Index.html
-!apps-script/dang-ky-hoc-sinh/appsscript.json
+# Keep both Apps Script projects and legacy .gs exports local.
+/apps-script/
+*.gs
 
 # Editor directories and files
 .vscode/*

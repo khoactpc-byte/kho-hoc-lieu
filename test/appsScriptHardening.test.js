@@ -163,6 +163,39 @@ test('registration writes reject GET and resolve student identity instead of a s
   assert.equal(context.getRegistrationRowNumber_({ getLastRow: () => 10 }, { rowNumber: 3 }), 0);
 });
 
+test('registration rejection deletes the matching Sheet row under lock after indexes shift, and refuses ambiguous identities', () => {
+  const context = vm.createContext({ ContentService: { createTextOutput: output, MimeType: { JAVASCRIPT: 'js' } } });
+  vm.runInContext(registrationSource, context);
+  const row = (name, identity) => {
+    const result = Array(56).fill('');
+    result[1] = name; result[2] = '08/06/2020'; result[4] = identity;
+    return result;
+  };
+  const rows = [row('Nguyễn Văn An', '095201094267'), row('Lê Thị Bình', '095201094268'), row('Trần Văn Chi', '095201094269')];
+  const deleted = [];
+  let locked = false;
+  const sheet = {
+    getLastRow: () => rows.length + 1, getLastColumn: () => 56,
+    getRange: () => ({ getValues: () => rows }),
+    deleteRow: position => { assert.equal(locked, true); deleted.push(rows.splice(position - 2, 1)[0][4]); }
+  };
+  context.SpreadsheetApp = { openById: () => ({ getSheetByName: () => sheet }), flush: () => {} };
+  context.LockService = { getScriptLock: () => ({ waitLock: () => { locked = true; }, releaseLock: () => { locked = false; } }) };
+  context.requireRegistrationAdmin_ = () => {};
+  context.ensureExtraHeaders_ = () => {};
+  const reject = params => JSON.parse(context.doPost({ postData: { contents: JSON.stringify({ action: 'deleteRegistration', ...params }) } }).value);
+  assert.equal(reject({ rowNumber: 2, identityCode: '095201094267' }).success, true);
+  assert.equal(reject({ rowNumber: 4, identityCode: '095201094269' }).success, true, 'the second rejection must resolve the shifted row');
+  assert.deepEqual(deleted, ['095201094267', '095201094269']);
+  assert.equal(rows[0][4], '095201094268');
+  assert.equal(reject({ rowNumber: 2, identityCode: '095201094267' }).success, false, 'a repeated rejection must not delete the next row');
+  rows.push(row('Lê Thị Bình', '095201094268'));
+  assert.equal(reject({ rowNumber: 2, identityCode: '095201094268' }).success, false);
+  assert.equal(reject({ rowNumber: 2 }).success, false, 'a row index without identity is not authority to delete');
+  assert.equal(deleted.length, 2);
+  assert.equal(locked, false);
+});
+
 test('mailbox restore stops before any write when the mandatory safety backup fails', () => {
   const { context } = mainContext();
   let writes = 0;

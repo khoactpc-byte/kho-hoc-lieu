@@ -2,6 +2,8 @@
 
 Hệ thống hiện có **2 dự án Google Apps Script đang sử dụng**. Không dán tất cả file vào chung một dự án.
 
+Theo lựa chọn bảo mật ngày 05/10/2026, hai bộ mã nguồn trong `apps-script/` và các tệp `.gs` được giữ riêng trên máy, không đưa nội dung lên GitHub. File `up-github.bat` đã được chỉnh để loại chúng khỏi các lần cập nhật; cần tự sao lưu bộ mã này và cập nhật trực tiếp trên Google Apps Script. Các bản mã từng đưa lên GitHub trước đó vẫn còn trong lịch sử Git; lượt chỉnh này không viết lại lịch sử.
+
 ## Bản mã nguồn hoàn thiện ngày 04/10/2026
 
 | Dự án | Phiên bản cần thấy sau triển khai |
@@ -46,6 +48,7 @@ File này xử lý:
 Script Properties cần có:
 
 - `APP_CLIENT_TOKEN`: phải giống `APPS_SCRIPT_CLIENT_TOKEN` trong `src/utils/helpers.js`.
+- `APP_REGISTRATION_WEB_APP_URL`: URL `/exec` của **dự án đăng ký học sinh** ở mục 2; máy chủ chính cần thuộc tính này để đọc/đồng bộ dữ liệu Sheet.
 - `APP_ADMIN_PASSWORD`: mật khẩu Admin.
 - `APP_THD_PASSWORD`: mật khẩu Trần Hưng Đạo.
 - `APP_GEMINI_API_KEY`: không bắt buộc nếu đang dùng danh sách key trong sheet `key gemini`.
@@ -116,7 +119,27 @@ Trong dự án đăng ký, tạo Script Property:
 
 Mã đăng ký dùng hai property này để hỏi máy chủ chính xác thực phiên Admin trước khi đọc danh sách học sinh hoặc ghi/xóa dữ liệu. Manifest dự án đăng ký cũng cần scope `script.external_request`; sau khi cập nhật mã/manifest, hãy cấp quyền UrlFetchApp nếu Google yêu cầu rồi mới triển khai bản mới. Form đăng ký công khai và danh mục địa chỉ vẫn hoạt động không cần phiên Admin.
 
-Nếu chưa tạo property, form dùng giá trị dự phòng `2025-2026`. Máy chủ vẫn kiểm tra lại năm học khi nhận hồ sơ, nên không thể lách bằng cách sửa dữ liệu trên trình duyệt.
+Nếu chưa tạo `CURRENT_SCHOOL_YEAR`, form dùng giá trị dự phòng `2025-2026`. Máy chủ vẫn kiểm tra lại năm học khi nhận hồ sơ, nên không thể lách bằng cách sửa dữ liệu trên trình duyệt.
+
+### Đã vào Admin nhưng báo “Chưa cấu hình APP_REGISTRATION_WEB_APP_URL”
+
+Trong **dự án máy chủ chính**, vào Project Settings → Script Properties → Edit script properties → Add script property, nhập (nếu chưa có thuộc tính nào, chọn Add script property trực tiếp):
+
+- Property: `APP_REGISTRATION_WEB_APP_URL`.
+- Value: `https://script.google.com/macros/s/AKfycby6e5ya2k105Oe7i65k9viysIZbHKOF-9CosueiNy1GvnHJbVw1lHB_0eezSxO91ls/exec`.
+
+Lưu thuộc tính rồi tải lại danh sách trên website. Mã đọc Script Properties trong từng yêu cầu nên thay giá trị này không cần tạo phiên bản mã mới.
+
+Đối chiếu kết nối hai chiều: máy chủ chính dùng `APP_REGISTRATION_WEB_APP_URL` trỏ sang đăng ký; dự án đăng ký dùng `APP_MAIN_WEB_APP_URL` trỏ về máy chủ chính và `APP_CLIENT_TOKEN` trùng máy chủ chính. Dùng URL `/exec` hiện hành, không thêm query `?action=version` vào thuộc tính.
+
+### Báo “Chưa cấu hình xác thực giữa hai Apps Script”
+
+Thông báo này xuất phát từ **dự án đăng ký học sinh** khi `APP_MAIN_WEB_APP_URL` hoặc `APP_CLIENT_TOKEN` trống. Trong Project Settings → Script Properties của dự án đăng ký, thêm hoặc sửa cả hai:
+
+- `APP_MAIN_WEB_APP_URL`: `https://script.google.com/macros/s/AKfycbx1cWQpyyoT2adUZIJja40d5rXtlNwaa1PqYiUJndB79SX0Rq2Mt8CBEs53EiBC8HhhRg/exec`.
+- `APP_CLIENT_TOKEN`: sao chép giá trị từ cùng thuộc tính trong dự án máy chủ chính. Frontend hiện dùng `NGUYENANNINH_KHOA_2026`; cả ba nơi phải trùng nhau. Đây là mã nhận diện ứng dụng công khai, không phải mật khẩu Admin hay token phiên đăng nhập.
+
+Lưu thuộc tính rồi tải lại website. Không cần triển khai phiên bản mã mới nếu chỉ thay Script Properties. Nếu sau đó báo không xác thực được phiên, kiểm tra URL máy chủ chính, quyền `script.external_request` và cấp quyền UrlFetchApp theo mục trên.
 
 Cấu trúc cố định mà mã đang đọc trong sheet `Data` là:
 
@@ -126,6 +149,12 @@ Cấu trúc cố định mà mã đang đọc trong sheet `Data` là:
 - `BE` trở đi: các cột lịch sử năm học, ví dụ `2025-2026`, `2026-2027`.
 
 Khi chuyển năm học trên website, mã sẽ ghi lớp cũ vào cột năm cũ và lớp mới vào cột năm mới. Không cần tự di chuyển các cột lịch sử; nếu thêm năm mới, mã sẽ tự tạo cột ở cuối.
+
+### Nút Đồng ý / Từ chối hồ sơ đăng ký
+
+Website đã bổ sung cột **Duyệt hồ sơ** cố định bên phải, vẫn hiện khi xem chỉ ảnh. **Đồng ý** tạo hồ sơ học sinh trong database, đồng bộ Sheet rồi đánh dấu đăng ký đã xử lý. **Từ chối** hỏi xác nhận, xóa hàng đăng ký trong Sheet bằng endpoint đã có và chỉ gỡ dòng khỏi giao diện khi máy chủ báo thành công. Hồ sơ trùng phải đối chiếu trước khi đồng ý; vẫn có thể từ chối.
+
+Thay đổi nút duyệt chỉ cần cập nhật website (có thể dùng `up-github.bat`); không cần thay mã hai dự án Apps Script nếu đang dùng các bản nêu trong hướng dẫn này. Hai dự án Apps Script tiếp tục chỉ lưu trong máy, không được uploader đẩy lên GitHub.
 
 ## 3. Các file không cần dán
 
@@ -146,6 +175,18 @@ Không dán các file này vào `Code.gs`, vì có thể trùng tên hàm và l�
 3. So sánh URL Web App với hai URL ở trên.
 4. URL có đoạn `AKfycbx1...` là **máy chủ chính**.
 5. URL có đoạn `AKfycby6...` là **đăng ký và dữ liệu học sinh**.
+
+### Nhập mật khẩu Admin nhưng báo “Cần đăng nhập Admin để truy cập dữ liệu học sinh”
+
+Thông báo này xuất phát từ máy chủ đăng ký, không phải kết quả kiểm tra mật khẩu Admin. Ngày 05/10/2026, kiểm tra công khai hai URL đang cấu hình cho thấy **cả URL máy chủ chính cũng trả version `2026-10-04-location-cache-v7`**. Tại thời điểm kiểm tra, endpoint đăng nhập đang chạy mã đăng ký học sinh.
+
+1. Mở đúng dự án có deployment URL `AKfycbx1...` của **máy chủ chính**. Trong `Code.gs`, thay nội dung bằng file `apps-script/code_hoclieu.gs` trong máy. Kiểm tra dự án không có thêm tệp `.gs` khác định nghĩa lại `doGet`/`doPost` từ mã đăng ký.
+2. Giữ Script Property `APP_ADMIN_PASSWORD` là mật khẩu Admin đang dùng; không dán mật khẩu vào mã nguồn. Nếu property này chưa có, đặt tại Project Settings → Script Properties.
+3. Lưu rồi **Deploy → Manage deployments → Edit đúng deployment URL hiện tại → New version → Deploy**, chạy với tài khoản sở hữu đã cấp quyền.
+4. Mở URL `/exec` máy chủ chính. Kết quả đúng là `KET NOI MAY CHU THANH CONG. Version: 2026-10-04-review-v8`. Nếu thêm `?action=version` mà vẫn nhận JSON version `location-cache-v7`, URL đó vẫn chạy mã đăng ký.
+5. Tải lại website rồi đăng nhập. Dự án đăng ký `AKfycby6...` tiếp tục dùng `code_dangky.gs` và `Index.html` riêng.
+
+Frontend đã có thông báo phân biệt lỗi triển khai này với mật khẩu sai; cần cập nhật website để áp dụng. Frontend không tự chuyển mật khẩu sang URL khác để thử đăng nhập.
 
 ## 5. Cách cập nhật và triển khai
 

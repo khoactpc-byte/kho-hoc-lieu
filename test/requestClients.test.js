@@ -50,3 +50,18 @@ test('Apps Script client propagates cancellation, bounds response-body waits and
     await assert.rejects(postAppsScript({}), /Denied/);
   } finally { globalThis.fetch = originalFetch; }
 });
+
+test('a login reaching the registration endpoint reports deployment mismatch while ordinary authorization and password errors stay distinct', async () => {
+  const originalFetch = globalThis.fetch;
+  const missingSession = 'Cần đăng nhập Admin để truy cập dữ liệu học sinh.';
+  let calls = 0;
+  try {
+    globalThis.fetch = async () => { calls++; return { ok: true, text: async () => JSON.stringify({ success: false, message: missingSession }) }; };
+    await assert.rejects(postAppsScript({ action: 'createAdminSession', password: 'fixture-password' }), /triển khai đúng Code.gs máy chủ chính/);
+    await assert.rejects(postAppsScript({ action: 'createStaffSession', role: 'teacher', password: 'fixture-password' }), /Script đăng ký học sinh/);
+    await assert.rejects(postAppsScript({ action: 'registrationAdminAction' }), error => error.message === missingSession);
+    globalThis.fetch = async () => { calls++; return { ok: true, text: async () => JSON.stringify({ status: 'error', message: 'Mat khau admin khong chinh xac.' }) }; };
+    await assert.rejects(postAppsScript({ action: 'createAdminSession', password: 'fixture-password' }), /Mat khau admin khong chinh xac/);
+    assert.equal(calls, 4, 'the client must not forward or retry a password to a different endpoint');
+  } finally { globalThis.fetch = originalFetch; }
+});
