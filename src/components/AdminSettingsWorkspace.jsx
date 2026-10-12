@@ -2120,6 +2120,7 @@ export default function AdminSettingsWorkspace({
   thdTeachingAssignments,
   subjects,
   grades,
+  educationLevel = '',
   initialPanel = 'general',
   onSaveSetting,
   showNotification
@@ -2179,7 +2180,7 @@ export default function AdminSettingsWorkspace({
   const teachingImportFileRef = useRef(null);
   const teachingAssignmentPanelRef = useRef(null);
   const teachingAssignmentScrollRef = useRef(null);
-  const activePanel = initialPanel || 'general';
+  const activePanel = educationLevel === 'primary' && initialPanel === 'teachingAssignments' ? 'classTeachers' : (initialPanel || 'general');
   const isTqkTeachersPanel = activePanel === 'tqkTeachers';
   const schoolTeachersDraft = isTqkTeachersPanel ? tqkTeachersDraft : teachersDraft;
   const setSchoolTeachersDraft = updater => (isTqkTeachersPanel ? setTqkTeachersDraft : setTeachersDraft)(updater);
@@ -2389,14 +2390,14 @@ export default function AdminSettingsWorkspace({
   ), [thdClassesDraft]);
 
   const schoolClassOptions = useMemo(() => (
-    getSchoolTeachingAssignmentClassesForYear(schoolClassesByYear, selectedSchoolYear, ['6', '7', '8', '9'])
+    getSchoolTeachingAssignmentClassesForYear(schoolClassesByYear, selectedSchoolYear, grades)
       .map(normalizeClassName)
       .filter(Boolean)
       .sort(compareManagedClasses)
-  ), [schoolClassesByYear, selectedSchoolYear]);
+  ), [schoolClassesByYear, selectedSchoolYear, grades]);
   const activeAssignmentClasses = isThdTeachingPanel
     ? thdClassOptions
-    : (schoolClassOptions.length ? schoolClassOptions : ASSIGNMENT_CLASSES);
+    : (schoolClassOptions.length ? schoolClassOptions : ASSIGNMENT_CLASSES.filter(className => grades.map(String).includes(getGradeFromManagedClassName(className))));
   const classTeacherScopes = useMemo(() => (
     schoolClassOptions.length ? schoolClassOptions : grades.map(String)
   ), [schoolClassOptions, grades]);
@@ -3634,7 +3635,7 @@ export default function AdminSettingsWorkspace({
 
   const loadClassTeachersFromTeachingAssignments = () => {
     const yearSubjects = classSubjects(subjects);
-    const nextYearMap = {};
+    const nextYearMap = { ...(assignmentsDraft?.byYear?.[effectiveSchoolYearKey] || (!assignmentsDraft?.byYear ? assignmentsDraft : {})) };
     classTeacherScopes.forEach(className => {
       nextYearMap[String(className)] = Object.fromEntries(yearSubjects.map(subject => [subject, { hk1: '', hk2: '' }]));
     });
@@ -5427,7 +5428,8 @@ export default function AdminSettingsWorkspace({
         ...prevObj,
         byYear: {
           ...(prevObj.byYear || {}),
-          [effectiveSchoolYearKey]: {}
+          [effectiveSchoolYearKey]: Object.fromEntries(Object.entries(prevObj.byYear?.[effectiveSchoolYearKey] || (!prevObj.byYear ? prevObj : {}))
+            .filter(([className]) => !classTeacherScopes.includes(className)))
         }
       };
     });
@@ -5536,6 +5538,7 @@ export default function AdminSettingsWorkspace({
                       </select>
                       <button type="button" onClick={addNextSchoolYear} title="Thêm năm học kế tiếp" className="w-12 rounded-xl bg-blue-600 text-white text-xl font-black shadow-sm hover:bg-blue-700">+</button>
                     </div>
+                    <div className="mt-2 text-xs font-normal text-slate-500">Lưu năm hệ thống sẽ đồng bộ sang biểu mẫu đăng ký. Học sinh chỉ đăng ký được năm này; chọn năm ở thanh admin chỉ đổi năm đang xem.</div>
                   </label>
                   <label className="block">
                     <div className="text-xs font-black uppercase text-blue-900 mb-2">Họ tên giám đốc</div>
@@ -5769,6 +5772,7 @@ export default function AdminSettingsWorkspace({
 
             {activePanel === 'classes' && (
               <SchoolClassesPanel
+                allowedGrades={grades}
                 selectedSchoolYear={selectedSchoolYear}
                 classesByYear={schoolClassesByYear}
                 onSaveSetting={onSaveSetting}

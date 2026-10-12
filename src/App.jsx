@@ -1,5 +1,6 @@
 import { useWorkspaceCollections } from './hooks/useWorkspaceCollections';
 import { useSessionLease } from './hooks/useSessionLease';
+import { usePendingRegistrationCount } from './hooks/usePendingRegistrationCount';
 import { useQuickQuizSession } from './hooks/useQuickQuizSession';
 import { useStudentLearningData } from './hooks/useStudentLearningData';
 import { QUICK_SCORE_SUBJECTS, SCOREBOOK_SOURCE_FILE } from './config/scorebookDomain';
@@ -17,8 +18,10 @@ import { stableRecordId } from './utils/idempotency';
 import { vietnamDateKey } from './utils/vietnamDate';
 import { requestJsonp } from './services/jsonpClient';
 import { createAsyncScope } from './utils/asyncScope';
+import { PROFILE_REQUEST_PENDING_MESSAGE } from './utils/profileRequestPolicy';
 import { readFileBase64, studentUploadMime, STUDENT_UPLOAD_ACCEPT } from './utils/fileUpload';
 import { findPromotionTarget, assertPromotionPreviewCurrent } from './utils/promotionTargets';
+import { grade9CompletionFields, THCS_COMPLETED_CLASS } from './utils/studentCompletion';
 import { applyStudentTransitions } from './services/studentTransitions';
 import { beginPromotionJob, recordPromotionStage, finalizePromotionJob, failPromotionJob } from './services/schoolYearPromotion';
 import { studentEditKey, studentScoreIdentity } from './utils/studentScoreKeys';
@@ -31,6 +34,8 @@ import { normalizeNumericScore } from './utils/scoreValues';
 import { draftPatch } from './utils/documentDraft';
 import { REGISTRATION_WEB_APP_URL } from './config/registration';
 import React, { lazy, Suspense, useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import PasswordWorkspace from './components/PasswordWorkspace';
+import LearningSubjectPanel from './components/LearningSubjectPanel';
 import { 
   BookOpen, User, GraduationCap, Lock, ChevronRight, ChevronLeft, 
   FileText, Link as LinkIcon, MonitorPlay, Plus, Trash2, Home, 
@@ -46,6 +51,7 @@ import { collection, onSnapshot, addDoc, deleteDoc, doc, setDoc, updateDoc, getD
 import { signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
 import { auth, db, appId } from './config/firebase';
 const TeacherAccountManager = lazy(() => import('./components/TeacherAccountManager'));
+const TextbookFoldersPanel = lazy(() => import('./components/TextbookFoldersPanel'));
 const TeacherQuickScorePanel = lazy(() => import('./components/TeacherQuickScorePanel'));
 import { 
   GRADES, SUBJECTS, TOTAL_LESSONS, SCHOOL_YEARS, 
@@ -84,7 +90,9 @@ import {
   readStoredAdminSession,
   writeStoredAdminSession
 } from './utils/adminSession';
-import { compareSchoolRosterStudents, createDefaultSchoolClassesByGrade, DEFAULT_SCHOOL_CODE, getSchoolClassesForCampus, getSchoolClassesForYear, getStudentSchoolCode, normalizeSchoolCode, normalizeSchoolYearKey, SCHOOL_OPTIONS } from './utils/schoolClasses';
+import { compareSchoolRosterStudents, createDefaultSchoolClassesByGrade, DEFAULT_SCHOOL_CODE, getSchoolClassesForCampus, getSchoolClassesForYear, getStudentEntryGrade, getStudentSchoolCode, normalizeSchoolCode, normalizeSchoolYearKey, SCHOOL_OPTIONS } from './utils/schoolClasses';
+import { belongsToEducationLevel, educationGrades, educationRoute, parseEducationRoute } from './utils/educationLevels';
+import { PRIMARY_SUBJECTS, primarySubjectsForGrade } from './utils/primaryAcademic';
 import { contentBelongsToCampus, teacherHasContentScope } from './utils/teacherAccess';
 const STUDENT_MAILBOX_DRIVE_URL = 'https://drive.google.com/drive/u/0/folders/1mdDD9kK_s_o2YytkUbqM0MH-T9HR9XXE';
 const STUDENT_MAILBOX_AUTO_READ_KEY = 'khohoclieu-student-mailbox-auto-read';
@@ -213,6 +221,7 @@ const HocSinhManager = lazy(() => import('./components/HocSinhManager'));
 const StudentProfileModal = lazy(() => import('./components/StudentProfileModal'));
 const LearningResultsWorkspace = lazy(() => import('./components/LearningResultsWorkspace'));
 const ScorebookWorkspace = lazy(() => import('./components/ScorebookWorkspace'));
+const PrimaryAcademicWorkspace = lazy(() => import('./components/PrimaryAcademicWorkspace'));
 const AdminSettingsWorkspace = lazy(() => import('./components/AdminSettingsWorkspace'));
 const AdminDataSafetyWorkspace = lazy(() => import('./components/AdminDataSafetyWorkspace'));
 const ClassOpsManager = lazy(() => import('./components/ClassOpsManager'));
@@ -653,6 +662,7 @@ function App() {
   const [thdSubjects, setThdSubjects] = useState([]);
   const [thdClasses, setThdClasses] = useState({});
   const [schoolClassesByYear, setSchoolClassesByYear] = useState({});
+  const [textbookFolders, setTextbookFolders] = useState(TEXTBOOK_FOLDERS);
   const [classTeacherAssignments, setClassTeacherAssignments] = useState({});
   const [teachingAssignments, setTeachingAssignments] = useState({});
   const [thdTeachingAssignments, setThdTeachingAssignments] = useState({});
@@ -810,6 +820,7 @@ function App() {
   const [studentProfileRequests, setStudentProfileRequests] = useState([]);
   const [currentStudent, setCurrentStudent] = useState(null);
   const [showStudentProfileModal, setShowStudentProfileModal] = useState(false);
+  const [isOpeningStudentProfile, setIsOpeningStudentProfile] = useState(false);
   const [studentProfileDraft, setStudentProfileDraft] = useState({});
   const [studentProfileImages, setStudentProfileImages] = useState({});
   const [studentProfileImagePreviews, setStudentProfileImagePreviews] = useState({});
@@ -908,22 +919,40 @@ function App() {
   }, [adminSchoolYear, currentSchoolYear, extraSchoolYears]);
   const adminSelectedSchoolYear = adminSchoolYear || currentSchoolYear || schoolYearOptions[0] || '';
   const activeSchoolYear = isAdmin ? adminSelectedSchoolYear : currentSchoolYear;
+  const adminEducationLevel = adminModule === 'primary' ? 'primary' : 'thcs';
+  const adminGrades = educationGrades(adminEducationLevel);
+  const adminSubjects = useMemo(() => adminEducationLevel === 'primary' ? PRIMARY_SUBJECTS.map(subject => subject.label) : SUBJECTS, [adminEducationLevel]);
+  useEffect(() => {
+    setAdminCheckGrade('all');
+    setAdminCheckSubject('all');
+    if (isAdmin && ['primary', 'thcs'].includes(adminModule)) {
+      setSelectedGrade(previous => adminGrades.includes(String(previous)) ? previous : adminGrades[0]);
+      setSelectedSubject(previous => adminSubjects.includes(previous) ? previous : null);
+      setSelectedLesson(null);
+    }
+  }, [adminEducationLevel, adminGrades, adminModule, adminSubjects, isAdmin]);
+  const ActiveScorebookWorkspace = adminEducationLevel === 'primary' ? PrimaryAcademicWorkspace : ScorebookWorkspace;
+  const educationStudents = useMemo(() => allStudents.filter(student => belongsToEducationLevel(student, adminEducationLevel)), [allStudents, adminEducationLevel]);
   const configuredSchoolClasses = useMemo(
     () => getSchoolClassesForYear(schoolClassesByYear, activeSchoolYear),
     [activeSchoolYear, schoolClassesByYear]
   );
+  const configuredEducationClasses = useMemo(() => {
+    const configured = getSchoolClassesForYear(schoolClassesByYear, activeSchoolYear, educationGrades(adminEducationLevel));
+    return configured.length ? configured : educationGrades(adminEducationLevel).flatMap(grade => createDefaultSchoolClassesByGrade()[grade]);
+  }, [schoolClassesByYear, activeSchoolYear, adminEducationLevel]);
   const configuredSecondaryClasses = useMemo(
-    () => getSchoolClassesForYear(schoolClassesByYear, activeSchoolYear, ['6', '7', '8', '9']),
-    [activeSchoolYear, schoolClassesByYear]
+    () => getSchoolClassesForYear(schoolClassesByYear, activeSchoolYear, educationGrades(adminEducationLevel)),
+    [activeSchoolYear, schoolClassesByYear, adminEducationLevel]
   );
   const configuredSecondaryClassesBySchool = useMemo(() => Object.fromEntries(
     SCHOOL_OPTIONS.filter(school => school.code !== 'UNKNOWN').map(school => {
       const campusClasses = getSchoolClassesForCampus(configuredSecondaryClasses, school.code);
       const defaults = Object.values(createDefaultSchoolClassesByGrade()).flat()
         .filter(className => getSchoolClassesForCampus([className], school.code).length > 0);
-      return [school.code, campusClasses.length ? campusClasses : defaults.filter(className => ['6', '7', '8', '9'].includes(getGradeFromClassName(className)))];
+      return [school.code, campusClasses.length ? campusClasses : defaults.filter(className => educationGrades(adminEducationLevel).includes(getGradeFromClassName(className)))];
     })
-  ), [configuredSecondaryClasses]);
+  ), [configuredSecondaryClasses, adminEducationLevel]);
   const admissionSchoolYear = useMemo(() => {
     return normalizeAdmissionSchoolYear(extractSchoolYearFromText(viewingNews?.title || '', activeSchoolYear), activeSchoolYear);
   }, [viewingNews, activeSchoolYear]);
@@ -938,7 +967,8 @@ function App() {
   const currentSchoolYearKey = useMemo(() => normalizeSchoolYearKey(activeSchoolYear), [activeSchoolYear]);
   const currentAdmissionApplications = useMemo(() => (
     admissionApplications.filter(item => !item.schoolYear || String(item.schoolYear) === String(activeSchoolYear || ''))
-  ), [admissionApplications, activeSchoolYear]);
+      .filter(item => !['primary', 'thcs'].includes(adminModule) || belongsToEducationLevel(item, adminModule))
+  ), [admissionApplications, activeSchoolYear, adminModule]);
   const activePcResponsibleName = pcResponsibleByYear?.[currentSchoolYearKey]
     || pcResponsibleByYear?.[normalizeSchoolYearKey(currentSchoolYear)]
     || Object.values(pcResponsibleByYear || {}).find(Boolean)
@@ -980,8 +1010,11 @@ function App() {
     });
   }, [role, loginRole, teacherProfile, currentContentSchoolCode]);
   const currentTeacherHasScope = teacherCanUseScope(selectedGrade, selectedSubject);
-  const navigationGrades = useMemo(() => role === 'teacher' ? (teacherProfile?.grades || []) : GRADES, [role, teacherProfile]);
-  const navigationSubjects = useMemo(() => role === 'teacher' ? (teacherProfile?.subjects || []) : SUBJECTS, [role, teacherProfile]);
+  const studentNavigationGrade = getGradeFromClassName(activeStudentProfile?.className || currentStudent?.className || '');
+  const navigationGrades = useMemo(() => role === 'teacher' ? (teacherProfile?.grades || []) : isAdmin ? adminGrades
+    : Number(studentNavigationGrade) >= 1 && Number(studentNavigationGrade) <= 5 ? educationGrades('primary') : GRADES, [role, teacherProfile, isAdmin, adminGrades, studentNavigationGrade]);
+  const navigationSubjects = useMemo(() => role === 'teacher' ? (teacherProfile?.subjects || []) : Number(selectedGrade) >= 1 && Number(selectedGrade) <= 5
+    ? primarySubjectsForGrade(selectedGrade).map(subject => subject.label) : SUBJECTS, [role, teacherProfile, selectedGrade]);
   const noteSchoolCode = role === 'student' || role === 'teacher' ? currentContentSchoolCode : DEFAULT_SCHOOL_CODE;
   const noteCampusPrefix = noteSchoolCode === 'NAN' ? '' : `${noteSchoolCode}_`;
   const quizCampusPrefix = noteSchoolCode === 'NAN' ? '' : `${noteSchoolCode}_`;
@@ -1033,12 +1066,12 @@ function App() {
     }), {})
   ), [activeStudentPendingProfileRequests]);
   const studentProfileEditableFields = useMemo(() => {
-    const grade = String(activeStudentProfile?.className || currentStudent?.className || '').match(/[1-9]\d*/)?.[0] || '';
+    const entryGrade = getStudentEntryGrade(activeStudentProfile || currentStudent || {}, currentSchoolYear);
     return [
       ...STUDENT_PROFILE_EDIT_FIELDS,
-      ...getPreviousStudentResultFields(grade)
+      ...getPreviousStudentResultFields(entryGrade)
     ];
-  }, [activeStudentProfile?.className, currentStudent?.className]);
+  }, [activeStudentProfile, currentStudent, currentSchoolYear]);
   useEffect(() => {
     if (!showStudentProfileModal || !activeStudentProfile) return;
     setStudentProfileDraft(Object.fromEntries(studentProfileEditableFields.map(field => [
@@ -1100,6 +1133,7 @@ function App() {
   useEffect(() => {
     setIsLoadingStudentMailbox(false);
     setIsSubmittingProfileRequest(false);
+    setIsOpeningStudentProfile(false);
   }, [studentRequestScopeKey]);
   const mailboxAutoReadStorageKey = useMemo(() => `${STUDENT_MAILBOX_AUTO_READ_KEY}-${activeStudentIdentityKey}`, [activeStudentIdentityKey]);
   useEffect(() => {
@@ -1131,7 +1165,7 @@ function App() {
     const timer = setInterval(() => setNowMs(Date.now()), 10000);
     return () => clearInterval(timer);
   }, []);
-  useEffect(() => { if (role && !selectedGrade && window.innerWidth >= 640 && !selectedLesson && !selectedSubject) { setSelectedGrade('6'); setIsTextbookExpanded(true); } }, [role, selectedGrade, selectedLesson, selectedSubject]);
+  useEffect(() => { if (role && !selectedGrade && window.innerWidth >= 640 && !selectedLesson && !selectedSubject) { setSelectedGrade(navigationGrades[0] || '6'); setIsTextbookExpanded(true); } }, [role, selectedGrade, selectedLesson, selectedSubject, navigationGrades]);
 
   const showNotification = useCallback((message, type = 'success') => {
     if (notificationTimeoutRef.current) {
@@ -1583,6 +1617,27 @@ function App() {
 
 
 
+  const openStudentProfileEditor = async () => {
+    if (!activeStudentProfile?.id || isOpeningStudentProfile) return;
+    if (activeStudentPendingProfileRequests.length) {
+      showNotification(PROFILE_REQUEST_PENDING_MESSAGE, 'error');
+      return;
+    }
+    const request = studentRequestScopeRef.current.begin('profile-open');
+    if (!request) return;
+    setIsOpeningStudentProfile(true);
+    try {
+      const { assertNoPendingProfileRequest } = await import('./services/profileRequestGate');
+      if (!studentRequestScopeRef.current.isCurrent(request)) return;
+      await assertNoPendingProfileRequest(activeStudentProfile.id);
+      if (studentRequestScopeRef.current.isCurrent(request)) setShowStudentProfileModal(true);
+    } catch (error) {
+      if (studentRequestScopeRef.current.isCurrent(request)) showNotification(error.message, 'error');
+    } finally {
+      if (studentRequestScopeRef.current.finish(request)) setIsOpeningStudentProfile(false);
+    }
+  };
+
   const submitStudentProfileRequest = async () => {
     const { submitStudentProfileChange } = await import('./services/studentProfileRequests');
     return submitStudentProfileChange({ activeStudentProfile, isSubmittingProfileRequest, activeStudentIsReadOnly, showNotification, activeStudentReadOnlyReason, studentRequestScopeRef, setIsSubmittingProfileRequest, STUDENT_PROFILE_IMAGE_FIELDS, studentProfileImages, studentProfileDocumentOverrides, activeStudentPendingProfileChanges, studentProfileImageAppendModes, studentProfileEditableFields, normalizeStudentResultRating, studentProfileDraft, activeStudentPendingProfileRequests, currentSchoolYear, setShowStudentProfileModal, IMAGE_DRIVE_FOLDER_ID });
@@ -1658,6 +1713,7 @@ function App() {
     setIsUploadingPlan(false);
     setShowStudentWorkReview(false);
     setIsSubmittingProfileRequest(false);
+    setIsOpeningStudentProfile(false);
     setIsSubmittingSelfQuiz(false);
     setIsSubmittingQuickMaterial(false);
     setShowStudentProfileModal(false);
@@ -1761,6 +1817,7 @@ function App() {
       if (Array.isArray(data.thdSubjects)) setThdSubjects(data.thdSubjects);
       if (data.thdClasses && typeof data.thdClasses === 'object') setThdClasses(data.thdClasses);
       if (data.schoolClassesByYear && typeof data.schoolClassesByYear === 'object') setSchoolClassesByYear(data.schoolClassesByYear);
+      if (data.textbookFolders && typeof data.textbookFolders === 'object') setTextbookFolders({ ...TEXTBOOK_FOLDERS, ...data.textbookFolders });
       if (data.classTeacherAssignments && typeof data.classTeacherAssignments === 'object') setClassTeacherAssignments(data.classTeacherAssignments);
       if (data.teachingAssignments && typeof data.teachingAssignments === 'object') setTeachingAssignments(data.teachingAssignments);
       setAdminSettingsLoaded(true);
@@ -1787,7 +1844,18 @@ function App() {
     { quiz: showQuizComposeWorkspace || showQuizWorkWorkspace || showStudentWorkReview, learning: showLearningResultsWorkspace,
       review: showAdminCheckWorkspace || showStudentDatabase, attendance: showAttendanceWorkspace, scorebook: Boolean(scorebookGrade) }, showNotification);
 
-  useEffect(() => { setStudentProfileRequestCount(studentProfileRequests.filter(item => (item.status || 'pending') === 'pending').length); }, [studentProfileRequests]);
+  useEffect(() => { setStudentProfileRequestCount(studentProfileRequests.filter(item => (item.status || 'pending') === 'pending'
+    && belongsToEducationLevel(allStudents.find(student => student.id === item.studentId) || item, adminEducationLevel)).length); }, [studentProfileRequests, allStudents, adminEducationLevel]);
+  const pendingRegistrationNotice = usePendingRegistrationCount(
+    Boolean(user && isAdmin && adminSettingsLoaded && adminSessionToken && adminAccessScope !== 'thd' && ['primary', 'thcs'].includes(adminModule)),
+    `${user?.uid || ''}:${adminSessionToken}`, adminEducationLevel
+  );
+  const registrationBadge = pendingRegistrationNotice.count ? String(pendingRegistrationNotice.count)
+    : pendingRegistrationNotice.error ? '!' : pendingRegistrationNotice.loaded ? '' : '…';
+  const registrationBadgeTitle = pendingRegistrationNotice.error
+    ? 'Chưa cập nhật được số hồ sơ đăng ký mới. Vui lòng mở Đăng ký mới để tải lại.'
+    : pendingRegistrationNotice.loaded ? `${pendingRegistrationNotice.count} hồ sơ đăng ký mới chờ duyệt` : 'Đang kiểm tra hồ sơ đăng ký mới';
+  const pendingStudentActionCount = pendingRegistrationNotice.count + studentProfileRequestCount;
   useStudentLearningData(scopedIdentity, `${serverQuizSession?.result?.submittedAt || ''}:${quickMaterialResult?.submittedAt || ''}`,
     setAllQuizResults, setAllQuickQuizResults, setCurrentSchoolYear, setInputYearLocks, showNotification);
 
@@ -1982,8 +2050,8 @@ function App() {
   }, [allQuizResults, allHandwrittenSubmissions, activeSchoolYear, quickScoreGrade, findQuickScoreStudentRowIndex, getQuickScoreKey, quickScoreSources]);
 
   const quizScoreSubject = useMemo(() => (
-    QUICK_SCORE_SUBJECTS.find(subject => subject.key === getQuickSubjectKeyFromName(selectedSubject)) || null
-  ), [selectedSubject]);
+    educationGrades('primary').includes(String(selectedGrade)) ? null : QUICK_SCORE_SUBJECTS.find(subject => subject.key === getQuickSubjectKeyFromName(selectedSubject)) || null
+  ), [selectedSubject, selectedGrade]);
 
   const quizScoreSemester = useMemo(() => (Number(selectedLesson || 1) <= 18 ? 'hki' : 'hkii'), [selectedLesson]);
 
@@ -2235,6 +2303,13 @@ function App() {
 
   const openQuickScoreWorkspace = useCallback(({ grade, subjectName, subjectKey, locked = false } = {}) => {
     const nextGrade = String(grade || quickScoreGrade || GRADES?.[0] || '6');
+    if (educationGrades('primary').includes(nextGrade)) {
+      setShowLearningResultsWorkspace(false);
+      setQuickScoreLockedContext(null);
+      setScorebookInitialMode('scorebook');
+      setScorebookGrade(nextGrade);
+      return;
+    }
     const resolvedSubjectKey = subjectKey || getQuickSubjectKeyFromName(subjectName);
     const resolvedSubject = QUICK_SCORE_SUBJECTS.find(subject => subject.key === resolvedSubjectKey);
     if (locked && !resolvedSubject) {
@@ -2271,14 +2346,13 @@ function App() {
   }, [showNotification]);
 
   const openAdminQuickScore = useCallback((stage = 'thcs') => {
-    const nextGrade = stage === 'primary' ? '1' : '6';
-    openQuickScoreWorkspace({ grade: nextGrade, locked: false });
     if (stage === 'primary') {
-      setQuickVisibleSubjects(QUICK_SCORE_SUBJECTS.reduce((acc, subject) => ({
-        ...acc,
-        [subject.key]: subject.key === 'toan' || subject.key === 'ngu_van'
-      }), {}));
+      setShowLearningResultsWorkspace(false);
+      setScorebookInitialMode('scorebook');
+      setScorebookGrade('1');
+      return;
     }
+    openQuickScoreWorkspace({ grade: '6', locked: false });
   }, [openQuickScoreWorkspace]);
 
   const openScorebookWorkspace = useCallback((mode = 'scorebook', gradeValue = '6') => {
@@ -2340,19 +2414,21 @@ function App() {
 
   const getAdminRouteHref = useCallback((route) => {
     const nextRoute = String(route || '').startsWith('/') ? route : `/${route || ''}`;
-    return `#/admin${nextRoute}`;
-  }, []);
+    return `#/admin${educationRoute(nextRoute, adminModule)}`;
+  }, [adminModule]);
 
   const openAdminRoute = useCallback((route) => {
     const cleanedRoute = String(route || '')
       .replace(/^#\/admin/i, '')
       .replace(/^\/?admin/i, '');
-    const path = cleanedRoute.startsWith('/') ? cleanedRoute : `/${cleanedRoute}`;
+    const fullPath = cleanedRoute.startsWith('/') ? cleanedRoute : `/${cleanedRoute}`;
+    const { level: routeLevel, path } = parseEducationRoute(fullPath, adminModule);
     if (adminAccessScope === 'thd' && !path.startsWith('/tran-hung-dao')) {
       runAdminMenuAction(() => openAdminSettingsPanel('thdTeachingAssignments'));
       if (typeof window !== 'undefined') window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}#/admin/tran-hung-dao/assignments`);
       return false;
     }
+    if (['primary', 'thcs'].includes(routeLevel)) setAdminModule(routeLevel);
     const routeAction = {
       '/settings/general': () => openAdminSettingsPanel('general'),
       '/settings/classes': () => openAdminSettingsPanel('classes'),
@@ -2370,7 +2446,7 @@ function App() {
       '/students/admissions': () => setShowAdmissionWorkspace(true),
       '/students/journey': () => openStudentDatabaseTab('journey'),
       '/students/profile-requests': () => openStudentDatabaseTab('profileRequests'),
-      '/input/score': () => openAdminQuickScore(adminModule === 'primary' ? 'primary' : 'thcs'),
+      '/input/score': () => openAdminQuickScore(routeLevel === 'primary' ? 'primary' : 'thcs'),
       '/primary/input/score': () => {
         setAdminModule('primary');
         openAdminQuickScore('primary');
@@ -2389,12 +2465,10 @@ function App() {
         setShowAttendanceWorkspace(true);
       },
       '/scorebook': () => {
-        setAdminModule('thcs');
-        openScorebookWorkspace('scorebook', '6');
+        openScorebookWorkspace('scorebook', routeLevel === 'primary' ? '1' : '6');
       },
       '/transcript': () => {
-        setAdminModule('thcs');
-        openScorebookWorkspace('transcript', '6');
+        openScorebookWorkspace('transcript', routeLevel === 'primary' ? '1' : '6');
       },
       '/utilities/textbooks': () => setIsAdminTextbookExpanded(true),
       '/utilities/check': () => setShowAdminCheckWorkspace(true),
@@ -2455,7 +2529,7 @@ function App() {
   const adminModules = useMemo(() => ([
     {
       key: 'primary',
-      label: 'Quản lý giáo dục TH',
+      label: 'Quản lý giáo dục Tiểu học',
       shortLabel: 'Tiểu học',
       grades: ['1', '2', '3', '4', '5']
     },
@@ -2556,10 +2630,11 @@ function App() {
         label: 'Hồ sơ học sinh',
         desc: `Học sinh lớp ${gradeText}.`,
         icon: GraduationCap,
-        badge: studentProfileRequestCount ? `${studentProfileRequestCount}` : '',
+        badge: pendingStudentActionCount ? String(pendingStudentActionCount) : registrationBadge,
+        badgeTitle: `${registrationBadgeTitle}; ${studentProfileRequestCount} yêu cầu sửa chờ duyệt`,
         children: [
           { key: 'student-list', label: 'Danh sách học sinh', href: getAdminRouteHref('/students/current'), action: () => openStudentDatabaseTab('current') },
-          { key: 'registrations', label: 'Đăng ký mới', href: getAdminRouteHref('/students/registrations'), action: () => openStudentDatabaseTab('registrations') },
+          { key: 'registrations', label: 'Đăng ký mới', href: getAdminRouteHref('/students/registrations'), action: () => openStudentDatabaseTab('registrations'), badge: registrationBadge, badgeTitle: registrationBadgeTitle },
           { key: 'admissions', label: 'Tuyển sinh', href: getAdminRouteHref('/students/admissions'), action: () => setShowAdmissionWorkspace(true), badge: currentAdmissionApplications.length ? `${currentAdmissionApplications.length}` : '' },
           { key: 'journey', label: 'Quá trình học', href: getAdminRouteHref('/students/journey'), action: () => openStudentDatabaseTab('journey') },
           { key: 'profile-requests', label: 'Yêu cầu sửa', href: getAdminRouteHref('/students/profile-requests'), action: () => openStudentDatabaseTab('profileRequests'), badge: studentProfileRequestCount ? `${studentProfileRequestCount}` : '' }
@@ -2574,8 +2649,8 @@ function App() {
           { key: 'score', label: 'Nhập điểm', href: getAdminRouteHref(isPrimary ? '/primary/input/score' : '/thcs/input/score'), action: () => openAdminQuickScore(isPrimary ? 'primary' : 'thcs') },
           { key: 'attendance', label: 'Nhập điểm danh', href: getAdminRouteHref(isPrimary ? '/primary/input/attendance' : '/thcs/input/attendance'), action: () => setShowAttendanceWorkspace(true) },
           { key: 'learning-progress', label: 'Tiến độ học', href: getAdminRouteHref('/students/journey'), action: () => openStudentDatabaseTab('journey') },
-          { key: 'scorebook', label: 'Sổ điểm', pending: isPrimary, href: isPrimary ? '' : getAdminRouteHref('/scorebook'), action: isPrimary ? null : () => openScorebookWorkspace('scorebook', '6') },
-          { key: 'transcript', label: 'Học bạ', pending: isPrimary, href: isPrimary ? '' : getAdminRouteHref('/transcript'), action: isPrimary ? null : () => openScorebookWorkspace('transcript', '6') }
+          { key: 'scorebook', label: 'Sổ điểm', href: getAdminRouteHref('/scorebook'), action: () => openScorebookWorkspace('scorebook', isPrimary ? '1' : '6') },
+          { key: 'transcript', label: 'Học bạ', href: getAdminRouteHref('/transcript'), action: () => openScorebookWorkspace('transcript', isPrimary ? '1' : '6') }
         ]
       },
       {
@@ -2592,7 +2667,7 @@ function App() {
         ]
       }
     ];
-  }, [adminAccessScope, adminModule, currentAdmissionApplications.length, getAdminRouteHref, openAdminQuickScore, openAdminSettingsPanel, openNoticeHome, openScorebookWorkspace, openStudentDatabaseTab, showNotification, studentProfileRequestCount]);
+  }, [adminAccessScope, adminModule, currentAdmissionApplications.length, getAdminRouteHref, openAdminQuickScore, openAdminSettingsPanel, openNoticeHome, openScorebookWorkspace, openStudentDatabaseTab, showNotification, studentProfileRequestCount, pendingStudentActionCount, registrationBadge, registrationBadgeTitle]);
 
   const { saveQuickScoreValue, fillMissingQuickScores, clearVisibleQuickScores } = useQuickScoreActions({
     user, canWrite: canWriteCurrentSchoolYear, schoolYear: activeSchoolYear || '', grade: quickScoreGrade,
@@ -2940,6 +3015,7 @@ function App() {
       if (key === 'thdSubjects') setThdSubjects(Array.isArray(value) ? value : []);
       if (key === 'thdClasses') setThdClasses(value && typeof value === 'object' ? value : {});
       if (key === 'schoolClassesByYear') setSchoolClassesByYear(value && typeof value === 'object' ? value : {});
+      if (key === 'textbookFolders') setTextbookFolders({ ...TEXTBOOK_FOLDERS, ...value });
       if (key === 'classTeacherAssignments') setClassTeacherAssignments(value && typeof value === 'object' ? value : {});
       if (['inputYearLocks', 'schoolYear', 'isStudentCodeEnabled'].includes(key)) {
         postAppsScript({ action: 'writeAuditLog', auditAction: 'doi_thiet_lap_quan_trong', actor: user?.uid || 'Admin', details: { key, after: value } }).catch(() => undefined);
@@ -3230,7 +3306,8 @@ function App() {
         try {
           await createSafetyBackup('Trước khi xóa danh sách tuyển sinh');
           const result = await getDocs(collection(db, 'artifacts', appId, 'public', 'data', 'admission_applications'));
-          const currentYearDocs = result.docs.filter(item => item.data()?.schoolYear === activeSchoolYear);
+          const currentYearDocs = result.docs.filter(item => item.data()?.schoolYear === activeSchoolYear
+            && (!['primary', 'thcs'].includes(adminModule) || belongsToEducationLevel(item.data(), adminModule)));
           await Promise.all(currentYearDocs.map(item => deleteDoc(item.ref)));
           showNotification(`Đã xóa danh sách tuyển sinh năm ${activeSchoolYear}.`);
         } catch (error) {
@@ -3331,6 +3408,7 @@ function App() {
     }
     const targetStudents = latestStudents
       .filter(student => normalizeSchoolYearKey(student.schoolYear || '') === targetSchoolYear);
+    assertPromotionPreviewCurrent(preview.targetVersions, targetStudents, targetSchoolYear);
     const findTargetRecord = student => findPromotionTarget(student, targetStudents);
 
     const plannedTransitions = (Array.isArray(preview.transitions) ? preview.transitions : [])
@@ -3343,6 +3421,7 @@ function App() {
         if (!student) return null;
         const targetStudent = findTargetRecord(student);
         return {
+          ...item,
           student,
           targetStudent,
           sourceClassName: item?.sourceClassName || student.className || '',
@@ -3357,10 +3436,19 @@ function App() {
       if (!targetClassName) return;
       transitionsByStudentId.set(item.student.id, { ...item, targetStudent, targetClassName });
     });
-    const transitions = [...transitionsByStudentId.values()];
     const completions = (Array.isArray(preview.completions) ? preview.completions : [])
       .map(item => ({ ...item, student: sourceStudentsById.get(item?.student?.id) }))
       .filter(item => item.student && item.student.status !== 'dropped');
+    completions.forEach(item => {
+      const completionFields = grade9CompletionFields(item, sourceSchoolYear, targetSchoolYear);
+      const latestTarget = findTargetRecord(item.student);
+      if (latestTarget && ![item.sourceClassName, THCS_COMPLETED_CLASS].includes(latestTarget.className)) {
+        throw new Error(`Lớp hiện tại của ${item.student.fullName || item.student.id} không còn khớp bản xem trước.`);
+      }
+      transitionsByStudentId.set(item.student.id, { ...item, completionFields,
+        targetStudent: latestTarget, targetClassName: THCS_COMPLETED_CLASS, outcome: 'complete' });
+    });
+    const transitions = [...transitionsByStudentId.values()];
     const pendingTransitions = transitions.filter(item => !findTargetRecord(item.student));
     const skippedCount = transitions.length - pendingTransitions.length;
     const sourcePatches = new Map();
@@ -3372,13 +3460,18 @@ function App() {
         grade: item.grade || getGradeFromClassName(item.className)
       });
     });
-    completions.forEach(item => {
+    transitions.forEach(item => {
       const current = sourcePatches.get(item.student.id) || {};
+      const grade = getGradeFromClassName(item.sourceClassName || item.student.className);
       sourcePatches.set(item.student.id, {
         ...current,
-        hocLucLop9: item.student.hocLucLop9 || item.academicResult || '',
-        completionStatus: 'completed_grade_9',
-        completionSchoolYear: sourceSchoolYear
+        ...(item.annualResults || {}),
+        ...(item.classHistory ? { classHistory: item.classHistory } : {}),
+        ...(item.academicResult ? { [`hocLucLop${grade}`]: item.academicResult } : {}),
+        ...(item.conductResult ? { [`hanhKiemLop${grade}`]: item.conductResult } : {}),
+        ...(item.outcome === 'complete'
+          ? { hocLucLop9: item.completionFields.hocLucLop9, hanhKiemLop9: item.completionFields.hanhKiemLop9 }
+          : item.completionFields || {})
       });
     });
 
@@ -3395,13 +3488,17 @@ function App() {
           ref: doc(studentsRef, stableRecordId('promotion', item.student.studentKey || item.student.accessCode || id, targetSchoolYear, getStudentSchoolCode(item.student))),
           data: {
             ...studentData,
+            ...(sourcePatches.get(id) || {}),
+            ...(item.completionFields || {}),
             studentKey: item.student.studentKey || item.student.accessCode || item.student.id,
             className: item.targetClassName,
             grade: getGradeFromClassName(item.targetClassName),
+            ...(item.outcome === 'complete' ? { status: 'completed', isClassLeader: false } : {}),
             schoolYear: targetSchoolYear,
             previousStudentId: id,
             classHistory: {
               ...(studentData.classHistory && typeof studentData.classHistory === 'object' ? studentData.classHistory : {}),
+              ...(sourcePatches.get(id)?.classHistory || {}),
               [sourceSchoolYear]: sourceClassName,
               [targetSchoolYear]: item.targetClassName
             },
@@ -3412,6 +3509,7 @@ function App() {
               targetClassName: item.targetClassName,
               outcome: item.outcome || 'promote',
               academicResult: item.academicResult || '',
+              conductResult: item.conductResult || '',
               source: item.source || '',
               processedAt: Date.now()
             },
@@ -3422,10 +3520,22 @@ function App() {
           }
         };
       }),
-      ...transitions.filter(item => item.targetStudent).map(item => ({
+      ...transitions.filter(item => item.targetStudent && item.outcome !== 'complete').map(item => ({
         type: 'verify', ref: doc(studentsRef, item.targetStudent.id),
         expected: latestStudentDataById.get(item.targetStudent.id),
         sourceRef: doc(studentsRef, item.student.id), expectedSource: latestStudentDataById.get(item.student.id)
+      })),
+      ...transitions.filter(item => item.targetStudent && item.outcome === 'complete').map(item => ({
+        type: 'patch', ref: doc(studentsRef, item.targetStudent.id),
+        expected: latestStudentDataById.get(item.targetStudent.id),
+        sourceRef: doc(studentsRef, item.student.id), expectedSource: latestStudentDataById.get(item.student.id),
+        data: { ...item.completionFields, className: THCS_COMPLETED_CLASS, grade: '', status: 'completed', isClassLeader: false,
+          classHistory: { ...(item.student.classHistory || {}), ...(item.targetStudent.classHistory || {}), ...(item.classHistory || {}),
+            [sourceSchoolYear]: item.sourceClassName || item.student.className, [targetSchoolYear]: THCS_COMPLETED_CLASS },
+          promotion: { sourceSchoolYear, targetSchoolYear, sourceClassName: item.sourceClassName || item.student.className,
+            targetClassName: THCS_COMPLETED_CLASS, outcome: 'complete', academicResult: item.academicResult,
+            conductResult: item.conductResult, source: item.source, processedAt: Date.now() },
+          updatedAt: Date.now(), updatedBy: user.uid }
       })),
       ...[...sourcePatches.entries()].map(([studentId, patch]) => ({
         type: 'patch',
@@ -3437,6 +3547,7 @@ function App() {
             ...(sourceStudentsById.get(studentId)?.classHistory && typeof sourceStudentsById.get(studentId).classHistory === 'object'
               ? sourceStudentsById.get(studentId).classHistory
               : {}),
+            ...(patch.classHistory && typeof patch.classHistory === 'object' ? patch.classHistory : {}),
             [sourceSchoolYear]: patch.className || sourceStudentsById.get(studentId)?.className || ''
           },
           updatedAt: Date.now(),
@@ -3469,27 +3580,12 @@ function App() {
           sourceClassName: sourcePatch.className || item.sourceClassName || student.className || '',
           targetSchoolYear,
           targetClassName: item.targetClassName,
+          ...(sourcePatches.get(student.id) || {}),
+          ...(item.outcome === 'complete' ? { completionStatus: 'completed_grade_9', graduationYear: item.completionFields.graduationYear } : {}),
           schoolName: student.schoolName || '',
           schoolCode: student.schoolCode || '',
           classSuffix: student.classSuffix || ''
         });
-      });
-      completions.forEach(item => {
-        const student = item.student;
-        const sourcePatch = sourcePatches.get(student.id) || {};
-        if (!sheetHistoryByStudentId.has(student.id)) {
-          sheetHistoryByStudentId.set(student.id, {
-            identityCode: student.identityCode || '',
-            accessCode: student.accessCode || student.studentCode || '',
-            fullName: student.fullName || '',
-            birthDate: student.birthDate || '',
-            sourceSchoolYear,
-            sourceClassName: sourcePatch.className || student.className || '',
-            schoolName: student.schoolName || '',
-            schoolCode: student.schoolCode || '',
-            classSuffix: student.classSuffix || ''
-          });
-        }
       });
 
       await syncRegistrationSchoolYearClasses([...sheetHistoryByStudentId.values()], job,
@@ -3501,7 +3597,7 @@ function App() {
       promotionStage = 'finalize';
       await recordPromotionStage(job, promotionStage);
       const { extraSchoolYears: nextExtraSchoolYears, schoolClassesByYear: nextClassesByYear } =
-        await finalizePromotionJob(job, transitions.map(item => item.targetClassName));
+        await finalizePromotionJob(job, transitions.map(item => item.targetClassName).filter(className => className !== THCS_COMPLETED_CLASS));
       setCurrentSchoolYear(targetSchoolYear);
       setExtraSchoolYears(nextExtraSchoolYears);
       setSchoolClassesByYear(nextClassesByYear);
@@ -3599,7 +3695,7 @@ function App() {
   useEffect(() => {
     let active = true;
     const controller = new AbortController();
-    const folderId = TEXTBOOK_FOLDERS[selectedGrade];
+    const folderId = textbookFolders[selectedGrade];
     setTextbookFiles([]);
     if (!folderId) return undefined;
     setIsLoadingTextbooks(true);
@@ -3608,7 +3704,7 @@ function App() {
       .catch(error => { if (active && error.name !== 'AbortError') setTextbookFiles([]); })
       .finally(() => { if (active) setIsLoadingTextbooks(false); });
     return () => { active = false; controller.abort(); };
-  }, [selectedGrade]);
+  }, [selectedGrade, textbookFolders]);
 
   useEffect(() => { driveRequestRef.current += 1; return () => { driveRequestRef.current += 1; }; }, [role, selectedGrade, selectedSubject, currentContentSchoolCode]);
 
@@ -6252,6 +6348,7 @@ ${lessonBlocks}`;
   const adminCheckUploadRows = useMemo(() => {
     const yearMatches = (item = {}) => !item.schoolYear || String(item.schoolYear) === String(activeSchoolYear || '');
     const filterContext = (item = {}) => (
+      belongsToEducationLevel(item, adminEducationLevel) &&
       (adminCheckGrade === 'all' || String(item.grade || '') === String(adminCheckGrade)) &&
       (adminCheckSubject === 'all' || String(item.subject || '') === String(adminCheckSubject))
     );
@@ -6321,7 +6418,7 @@ ${lessonBlocks}`;
         if (gradeCompare) return gradeCompare;
         return String(a.subject).localeCompare(String(b.subject), 'vi', { sensitivity: 'base' });
       });
-  }, [allMaterials, allNotes, allQuizzes, activeSchoolYear, adminCheckGrade, adminCheckSubject, isQuizVisibleForStudents]);
+  }, [allMaterials, allNotes, allQuizzes, activeSchoolYear, adminCheckGrade, adminCheckSubject, isQuizVisibleForStudents, adminEducationLevel]);
   const adminCheckUploadTotals = useMemo(() => (
     adminCheckUploadRows.reduce((total, row) => ({
       groups: total.groups + 1,
@@ -6332,7 +6429,7 @@ ${lessonBlocks}`;
     }), { groups: 0, materialCount: 0, noteCount: 0, quizCount: 0, lessonCount: 0 })
   ), [adminCheckUploadRows]);
   const adminQuizTracking = useMemo(() => {
-    const gradeList = adminCheckGrade === 'all' ? GRADES : [String(adminCheckGrade)];
+    const gradeList = adminCheckGrade === 'all' ? adminGrades : [String(adminCheckGrade)].filter(grade => adminGrades.includes(grade));
     const quizzes = allQuizzes.filter(quiz => gradeList.includes(String(quiz.grade || ''))
       && (adminCheckSubject === 'all' || String(quiz.subject || '') === String(adminCheckSubject)));
     const students = gradeList.flatMap(grade => getScorebookStudentsForGrade(grade)).sort((a, b) => {
@@ -6349,7 +6446,7 @@ ${lessonBlocks}`;
       || String(a.subject).localeCompare(String(b.subject), 'vi', { sensitivity: 'base' }) || Number(a.lesson || 0) - Number(b.lesson || 0));
     tracking.rows = tracking.rows.map(row => ({ ...row, cells: tracking.columns.map(column => row.cells.find(cell => cell.columnId === column.id)) }));
     return tracking;
-  }, [allQuizzes, allQuizResults, allHandwrittenSubmissions, activeSchoolYear, quickScoreSchoolCode, adminCheckGrade, adminCheckSubject, getScorebookStudentsForGrade, isQuizVisibleForStudents]);
+  }, [allQuizzes, allQuizResults, allHandwrittenSubmissions, activeSchoolYear, quickScoreSchoolCode, adminCheckGrade, adminCheckSubject, getScorebookStudentsForGrade, isQuizVisibleForStudents, adminGrades]);
   const adminCheckMissingQuizRows = useMemo(() => [...adminQuizTracking.columns].sort((a, b) => b.missingCount - a.missingCount), [adminQuizTracking]);
   const adminCheckMissingTotals = useMemo(() => adminCheckMissingQuizRows.reduce((total, row) => ({
     quizCount: total.quizCount + 1, expectedCount: total.expectedCount + row.expectedCount,
@@ -6361,7 +6458,7 @@ ${lessonBlocks}`;
     return true;
   }) }), [adminQuizTracking, adminCheckSubmissionFilter]);
   const adminCheckLearningRows = useMemo(() => {
-    const gradeList = adminCheckGrade === 'all' ? GRADES : [String(adminCheckGrade)];
+    const gradeList = adminCheckGrade === 'all' ? adminGrades : [String(adminCheckGrade)].filter(grade => adminGrades.includes(grade));
     const studentsById = new Map(gradeList.flatMap(grade => getScorebookStudentsForGrade(grade)).map(student => [student.id, student]));
     const getWorkKey = item => studentWorkKey(item, studentsById);
     const contentPairs = new Map();
@@ -6456,7 +6553,7 @@ ${lessonBlocks}`;
       if (gradeCompare) return gradeCompare;
       return getGivenNameSortKey(a.student.fullName).localeCompare(getGivenNameSortKey(b.student.fullName), 'vi', { sensitivity: 'base' });
     });
-  }, [allMaterials, allNotes, allLessonProgress, allQuickQuizResults, activeSchoolYear, quickScoreSchoolCode, adminCheckGrade, adminCheckSubject, getScorebookStudentsForGrade]);
+  }, [allMaterials, allNotes, allLessonProgress, allQuickQuizResults, activeSchoolYear, quickScoreSchoolCode, adminCheckGrade, adminCheckSubject, getScorebookStudentsForGrade, adminGrades]);
   const adminCheckLearningTotals = useMemo(() => {
     const rowsWithTargets = adminCheckLearningRows.filter(row => row.targetCount > 0);
     const averagePercent = rowsWithTargets.length
@@ -6881,6 +6978,13 @@ ${lessonBlocks}`;
                       const nextModule = event.target.value;
                         runAdminMenuAction(() => {
                           setAdminModule(nextModule);
+                          setAdminCheckGrade('all');
+                          setAdminCheckSubject('all');
+                          window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
+                          if (['primary', 'thcs'].includes(nextModule)) {
+                            window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}#/admin/${nextModule}/students/current`);
+                            openStudentDatabaseTab('current');
+                          }
                           if (nextModule === 'thd') openAdminSettingsPanel('thdTeachingAssignments');
                           if (nextModule === 'notice') openNoticeHome('list');
                           if (nextModule === 'admission') setShowAdmissionWorkspace(true);
@@ -6938,7 +7042,7 @@ ${lessonBlocks}`;
                         <summary className="list-none h-7 cursor-pointer rounded-md border border-blue-100 bg-white px-2 text-[11px] font-semibold text-slate-800 hover:border-blue-300 hover:bg-blue-50 inline-flex items-center gap-1 sm:h-8 sm:px-2.5 sm:text-xs sm:gap-1.5">
                           <ItemIcon className="h-4 w-4 text-blue-600" />
                           {item.label}
-                          {item.badge && <span className="rounded-full bg-rose-100 px-1.5 py-0.5 text-[9px] text-rose-600">{item.badge}</span>}
+                          {item.badge && <span title={item.badgeTitle} aria-label={item.badgeTitle} className="rounded-full bg-rose-100 px-1.5 py-0.5 text-[9px] text-rose-600">{item.badge}</span>}
                           <ChevronDown className="h-3.5 w-3.5 text-slate-500" />
                         </summary>
                         <div className="fixed left-3 right-3 top-[114px] z-[300] grid grid-cols-2 gap-1 rounded-lg border border-slate-200 bg-white p-1.5 shadow-xl sm:absolute sm:left-0 sm:right-auto sm:top-full sm:block sm:w-44">
@@ -6947,7 +7051,7 @@ ${lessonBlocks}`;
                             const childContent = (
                               <>
                                 <span>{child.label}</span>
-                                {child.badge && <span className="shrink-0 rounded-full bg-rose-100 px-1.5 py-0.5 text-[9px] text-rose-600">{child.badge}</span>}
+                                {child.badge && <span title={child.badgeTitle} aria-label={child.badgeTitle} className="shrink-0 rounded-full bg-rose-100 px-1.5 py-0.5 text-[9px] text-rose-600">{child.badge}</span>}
                               </>
                             );
                             return child.href ? (
@@ -7193,21 +7297,8 @@ ${lessonBlocks}`;
                     <X className="h-5 w-5" />
                   </button>
                 </div>
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                  {GRADES.map(g => (
-                    <a
-                      key={`admin-textbook-drive-${g}`}
-                      href={`https://drive.google.com/drive/folders/${TEXTBOOK_FOLDERS[g]}?usp=drive_link`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="rounded-2xl border border-emerald-200 bg-emerald-50/70 p-5 text-center shadow-sm transition-all hover:border-emerald-500 hover:bg-emerald-100 hover:shadow-md"
-                    >
-                      <Folder className="mx-auto mb-3 h-8 w-8 text-emerald-500" />
-                      <div className="text-sm font-black uppercase text-emerald-900">SGK lớp {g}</div>
-                      <div className="mt-1 text-[11px] font-bold text-emerald-700/70">Mở Drive trong tab mới</div>
-                    </a>
-                  ))}
-                </div>
+                <Suspense fallback={<p>Đang mở kho SGK…</p>}><TextbookFoldersPanel key={adminEducationLevel} grades={adminGrades} folders={textbookFolders}
+                  onSave={value => updateGlobalSetting('textbookFolders', value)} showNotification={showNotification} /></Suspense>
               </div>
             </div>
           )}
@@ -7218,6 +7309,7 @@ ${lessonBlocks}`;
             <Suspense fallback={<div className="fixed inset-x-0 top-[114px] sm:top-[84px] bottom-0 z-[120] bg-white flex items-center justify-center text-sm font-black text-blue-700">Đang mở cài đặt...</div>}>
               <AdminSettingsWorkspace
                 key={adminSettingsInitialPanel}
+                educationLevel={adminEducationLevel}
                 currentSchoolYear={currentSchoolYear}
                 adminSchoolYear={adminSelectedSchoolYear}
                 schoolYears={schoolYearOptions}
@@ -7240,8 +7332,8 @@ ${lessonBlocks}`;
                 classTeacherAssignments={classTeacherAssignments}
                 teachingAssignments={teachingAssignments}
                 thdTeachingAssignments={thdTeachingAssignments}
-                subjects={SUBJECTS}
-                grades={GRADES}
+                subjects={adminSubjects}
+                grades={adminGrades}
                 initialPanel={adminSettingsInitialPanel}
                 onSaveSetting={updateGlobalSetting}
                 showNotification={showNotification}
@@ -7254,13 +7346,17 @@ ${lessonBlocks}`;
               <div className="w-full h-full min-h-0 max-w-none mx-auto">
                 <Suspense fallback={<div className="rounded-3xl border border-indigo-100 bg-indigo-50 p-4 text-xs font-black text-indigo-700">Đang mở database học sinh...</div>}>
                   <HocSinhManager
+                    key={adminEducationLevel}
                     students={allStudents}
-                    configuredClassOptions={configuredSchoolClasses}
+                    educationLevel={adminEducationLevel}
+                    configuredClassOptions={configuredEducationClasses}
                     currentSchoolYear={activeSchoolYear}
                     systemSchoolYear={currentSchoolYear}
                     initialTab={studentDatabaseInitialTab}
                     initialTabKey={studentDatabaseOpenKey}
                     user={user}
+                    onPendingRegistrationsLoaded={pendingRegistrationNotice.replaceRegistrations}
+                    onRegistrationsResolved={pendingRegistrationNotice.removeRegistrations}
                     showNotification={showNotification}
                     onSendTestResults={sendStudentTestResults}
                     onSendMailboxMessages={sendGeneratedStudentMailboxMessages}
@@ -7279,7 +7375,7 @@ ${lessonBlocks}`;
             </div>
           )}
           {isAdmin && showLearningResultsWorkspace && (
-            <WorkspaceErrorBoundary title="Kết quả học tập" onClose={() => setShowLearningResultsWorkspace(false)}><Suspense fallback={<div className="fixed inset-x-0 top-[114px] sm:top-[84px] bottom-0 z-[120] bg-white flex items-center justify-center font-bold text-violet-700">Đang mở kết quả học tập...</div>}><LearningResultsWorkspace view={{ QUICK_SCORE_SUBJECTS, activeQuickScoreRowKey, activeSchoolYear, allQuickSubjectsVisible, canWriteCurrentSchoolYear, clearVisibleQuickScores, fillMissingQuickScores, formatScoreDisplayValue, getQuickAcademicResult, getQuickScoreColumnWidth, getQuickScoreInputValue, getQuickScoreKey, getQuickScoreStudentKey, getQuickScoreTextClass, getQuickSemesterScoreResult, getQuickSemesterTermAverage, handleQuickScoreInputKeyDown, isAdmin, isSendingQuickScoreMail, openScorebookWorkspace, parseScoreNumber, quickInputDrafts, quickQuizScoreKeySet, quickScoreGrade, quickScoreLockedContext, quickScoreMailSemester, quickScoreMailStudentIds, quickScoreSchoolCode, quickScoreStudents, quickScorebookDocId, quickScorebookEdits, quickScorebookLoaded, quickScorebookSavingKey, quickSelectedSemesters, quickSelectedSubjects, quickSubjectColSpanBySubject, quickVisibleScoreColumnsBySubject, quickVisibleSemesters, quickVisibleSubjects, saveQuickScoreValue, sendQuickScoreReportToStudent, setActiveQuickScoreRowKey, setQuickInputDrafts, setQuickScoreGrade, setQuickScoreLockedContext, setQuickScoreMailSemester, setQuickScoreMailStudentIds, setQuickScoreSchoolCode, setQuickScoreSources, setQuickScorebookEdits, setQuickVisibleSemesters, setQuickVisibleSubjects, setShowLearningResultsWorkspace, showNotification, toggleAllQuickScoreMailStudents, toggleQuickScoreMailStudent, user }} /></Suspense></WorkspaceErrorBoundary>
+            <WorkspaceErrorBoundary title="Kết quả học tập" onClose={() => setShowLearningResultsWorkspace(false)}><Suspense fallback={<div className="fixed inset-x-0 top-[114px] sm:top-[84px] bottom-0 z-[120] bg-white flex items-center justify-center font-bold text-violet-700">Đang mở kết quả học tập...</div>}><LearningResultsWorkspace grades={adminGrades} view={{ QUICK_SCORE_SUBJECTS, activeQuickScoreRowKey, activeSchoolYear, allQuickSubjectsVisible, canWriteCurrentSchoolYear, clearVisibleQuickScores, fillMissingQuickScores, formatScoreDisplayValue, getQuickAcademicResult, getQuickScoreColumnWidth, getQuickScoreInputValue, getQuickScoreKey, getQuickScoreStudentKey, getQuickScoreTextClass, getQuickSemesterScoreResult, getQuickSemesterTermAverage, handleQuickScoreInputKeyDown, isAdmin, isSendingQuickScoreMail, openScorebookWorkspace, parseScoreNumber, quickInputDrafts, quickQuizScoreKeySet, quickScoreGrade, quickScoreLockedContext, quickScoreMailSemester, quickScoreMailStudentIds, quickScoreSchoolCode, quickScoreStudents, quickScorebookDocId, quickScorebookEdits, quickScorebookLoaded, quickScorebookSavingKey, quickSelectedSemesters, quickSelectedSubjects, quickSubjectColSpanBySubject, quickVisibleScoreColumnsBySubject, quickVisibleSemesters, quickVisibleSubjects, saveQuickScoreValue, sendQuickScoreReportToStudent, setActiveQuickScoreRowKey, setQuickInputDrafts, setQuickScoreGrade, setQuickScoreLockedContext, setQuickScoreMailSemester, setQuickScoreMailStudentIds, setQuickScoreSchoolCode, setQuickScoreSources, setQuickScorebookEdits, setQuickVisibleSemesters, setQuickVisibleSubjects, setShowLearningResultsWorkspace, showNotification, toggleAllQuickScoreMailStudents, toggleQuickScoreMailStudent, user }} /></Suspense></WorkspaceErrorBoundary>
           )}
           {isAdmin && scorebookGrade && (
             <Suspense fallback={<div className="fixed inset-x-0 top-[114px] sm:top-[84px] bottom-0 z-[140] bg-white flex items-center justify-center text-sm font-black text-violet-700">Đang mở sổ điểm...</div>}>
@@ -7288,8 +7384,11 @@ ${lessonBlocks}`;
                 title={scorebookInitialMode === 'transcript' ? 'Màn Học bạ đang lỗi' : 'Màn Sổ điểm đang lỗi'}
                 onClose={() => setScorebookGrade(null)}
               >
-                <ScorebookWorkspace
+                <ActiveScorebookWorkspace
+                key={adminEducationLevel}
                 grade={scorebookGrade}
+                allowedGrades={adminGrades}
+                canWrite={canWriteCurrentSchoolYear}
                 initialMode={scorebookInitialMode}
                 initialSchoolCode={quickScoreSchoolCode}
                 currentSchoolYear={activeSchoolYear}
@@ -7372,7 +7471,7 @@ ${lessonBlocks}`;
                     <div className="text-[10px] font-black uppercase text-slate-500 px-1">{activeSchoolYear}</div>
                     <div className="flex flex-wrap justify-end gap-1.5">
                       <div className="flex flex-wrap gap-1 rounded-lg border border-slate-200 bg-slate-50 p-0.5">
-                        {['all', ...GRADES].map(gradeValue => (
+                        {['all', ...adminGrades].map(gradeValue => (
                           <button
                             key={`admin-check-grade-button-${gradeValue}`}
                             type="button"
@@ -7385,7 +7484,7 @@ ${lessonBlocks}`;
                       </div>
                       <select value={adminCheckSubject} onChange={(event) => setAdminCheckSubject(event.target.value)} className="h-8 min-w-[150px] rounded-lg border border-slate-200 bg-white px-2 text-[11px] font-black text-slate-700 outline-none focus:border-amber-400">
                         <option value="all">Tất cả môn</option>
-                        {SUBJECTS.map(subject => <option key={`admin-check-subject-${subject}`} value={subject}>{subject}</option>)}
+                        {adminSubjects.map(subject => <option key={`admin-check-subject-${subject}`} value={subject}>{subject}</option>)}
                       </select>
                     </div>
                   </div>
@@ -7653,68 +7752,35 @@ ${lessonBlocks}`;
             </Suspense>
           )}
           {isAdmin && showPasswordWorkspace && (
-            <div className="fixed inset-x-0 top-[114px] sm:top-[84px] bottom-0 z-[120] bg-slate-100/95 backdrop-blur-md overflow-y-auto p-2 sm:p-3">
-              <div className="w-full max-w-none mx-auto space-y-3">
-                <div className="sticky top-0 z-10 rounded-3xl border border-slate-200 bg-white/95 px-4 sm:px-6 py-4 shadow-lg backdrop-blur flex items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <h3 className="font-black text-slate-900 text-base sm:text-xl uppercase tracking-tight flex items-center gap-2">
-                      <Lock className="w-5 h-5 text-slate-700" /> Quản lý mật khẩu
-                    </h3>
-                    <div className="text-[10px] sm:text-xs font-bold text-slate-500 truncate">Tạo tài khoản giáo viên theo cơ sở/khối/môn; quản lý mật khẩu Admin, Trần Hưng Đạo và mã học sinh</div>
-                  </div>
-                  <button type="button" onClick={() => setShowPasswordWorkspace(false)} title="Đóng" className="shrink-0 w-11 h-11 rounded-full bg-rose-600 text-white shadow-lg flex items-center justify-center hover:bg-rose-700">
-                    <X className="w-5 h-5" />
-                  </button>
-                </div>
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
-                  <div className="rounded-3xl border border-rose-100 bg-white p-5 shadow-sm">
-                    <div className="flex justify-between items-start gap-3 mb-4">
-                      <div>
-                        <div className="font-black text-rose-900 uppercase">Mật khẩu admin</div>
-                        <div className="text-xs text-rose-700/70 font-bold mt-1">Bật/tắt cửa quản trị</div>
-                      </div>
-                      <div className="px-3 py-1 rounded-full bg-rose-50 text-rose-700 text-[10px] font-black uppercase border border-rose-100">Đã khóa</div>
-                    </div>
-                    <input type="password" placeholder="Mật khẩu admin mới (ít nhất 8 ký tự)..." className="w-full bg-white border border-rose-200 p-3 rounded-xl focus:outline-none focus:border-rose-500 font-black text-sm shadow-sm" value={newAdminPassword} onChange={(e) => setNewAdminPassword(e.target.value)} />
-                    <button type="button" onClick={saveAdminServerPassword} disabled={isSavingAdminPassword || newAdminPassword.length < 8} className="mt-2 inline-flex h-9 w-full items-center justify-center gap-1.5 rounded-xl bg-rose-600 px-3 text-xs font-black uppercase text-white disabled:opacity-40">
-                      {isSavingAdminPassword ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />} Đổi mật khẩu máy chủ
-                    </button>
-                  </div>
-                  <div className="rounded-3xl border border-sky-100 bg-white p-5 shadow-sm">
-                    <div className="flex justify-between items-start gap-3 mb-4">
-                      <div>
-                        <div className="font-black text-sky-900 uppercase">Mật khẩu Trần Hưng Đạo</div>
-                        <div className="text-xs text-sky-700/70 font-bold mt-1">Chỉ vào khu Trần Hưng Đạo</div>
-                      </div>
-                      <div className="px-3 py-1 rounded-full bg-sky-50 text-sky-700 text-[10px] font-black uppercase border border-sky-100">Riêng</div>
-                    </div>
-                    <input type="password" placeholder="Mật khẩu Trần Hưng Đạo mới, ít nhất 8 ký tự..." className="w-full bg-white border border-sky-200 p-3 rounded-xl focus:outline-none focus:border-sky-500 font-black text-sm shadow-sm" value={thdAdminPass} onChange={(e) => setThdAdminPass(e.target.value)} />
-                    <button type="button" onClick={saveStaffAccessConfig} disabled={isSavingStaffPassword === 'thd' || thdAdminPass.length < 8} className="mt-2 h-9 w-full rounded-xl bg-sky-600 text-xs font-black uppercase text-white disabled:opacity-40">Lưu mật khẩu Trần Hưng Đạo</button>
-                  </div>
-                  <div className="rounded-3xl border border-indigo-100 bg-white p-5 shadow-sm">
-                    <div className="flex justify-between items-start gap-3 mb-4">
-                      <div>
-                        <div className="font-black text-indigo-900 uppercase">Mã học sinh</div>
-                        <div className="text-xs text-indigo-700/70 font-bold mt-1">Bật/tắt yêu cầu nhập mã khi vào học</div>
-                      </div>
-                      <button onClick={() => updateGlobalSetting('isStudentCodeEnabled', !isStudentCodeEnabled).catch(() => undefined)} className={`w-12 h-6 rounded-full transition-colors relative shadow-inner flex-shrink-0 ${isStudentCodeEnabled ? 'bg-indigo-600' : 'bg-slate-300'}`}><div className={`w-4 h-4 bg-white rounded-full absolute top-1 transition-transform shadow-md ${isStudentCodeEnabled ? 'left-7' : 'left-1'}`}></div></button>
-                    </div>
-                    <div className="p-3 text-xs font-bold text-slate-500 bg-slate-50 border border-indigo-100 rounded-xl text-center">{isStudentCodeEnabled ? 'Học sinh phải nhập mã để vào học' : 'Học sinh vào học không cần mã'}</div>
-                  </div>
-                </div>
-                <div className="rounded-3xl border border-emerald-100 bg-white p-4 shadow-sm sm:p-5">
-                  <Suspense fallback={<div className="p-5 text-sm font-bold text-emerald-700">Đang tải quản lý tài khoản...</div>}><TeacherAccountManager showNotification={showNotification} nanTeachers={nanTeachers} tqkTeachers={tqkTeachers} /></Suspense>
-                </div>
-              </div>
+            <div className="fixed inset-x-0 top-[130px] sm:top-[84px] bottom-0 z-[120] overflow-hidden bg-slate-100 p-0 sm:p-2">
+              <PasswordWorkspace
+                newAdminPassword={newAdminPassword}
+                onAdminPasswordChange={setNewAdminPassword}
+                onSaveAdminPassword={saveAdminServerPassword}
+                isSavingAdminPassword={isSavingAdminPassword}
+                staffPassword={thdAdminPass}
+                onStaffPasswordChange={setThdAdminPass}
+                onSaveStaffPassword={saveStaffAccessConfig}
+                isSavingStaffPassword={isSavingStaffPassword === 'thd'}
+                isStudentCodeEnabled={isStudentCodeEnabled}
+                onToggleStudentCode={() => updateGlobalSetting('isStudentCodeEnabled', !isStudentCodeEnabled).catch(() => undefined)}
+                onClose={() => setShowPasswordWorkspace(false)}
+              >
+                <Suspense fallback={<div className="password-panel p-3 text-sm text-slate-500">Đang tải quản lý tài khoản...</div>}>
+                  <TeacherAccountManager key={adminEducationLevel} grades={adminGrades} subjects={[...adminSubjects, 'Chủ nhiệm']} showNotification={showNotification} nanTeachers={nanTeachers} tqkTeachers={tqkTeachers} />
+                </Suspense>
+              </PasswordWorkspace>
             </div>
           )}
           {isAdmin && adminModule !== 'notice' && showScheduleWorkspace && (
-            <div className="fixed inset-x-0 top-[114px] sm:top-[84px] bottom-0 z-[120] bg-slate-100/95 backdrop-blur-md overflow-y-auto p-0">
+            <div className="fixed inset-x-0 top-[130px] sm:top-[84px] bottom-0 z-[120] bg-slate-100 overflow-hidden p-0 sm:p-2">
               <Suspense fallback={<div className="flex min-h-full items-center justify-center text-sm font-black text-blue-700">Đang mở thời khóa biểu...</div>}>
                 <SimpleScheduleTable
+                  key={adminEducationLevel}
+                  educationLevel={adminEducationLevel}
                   currentSchoolYear={activeSchoolYear}
                   classNamesBySchool={configuredSecondaryClassesBySchool}
-                  subjects={SUBJECTS}
+                  subjects={adminSubjects}
                   classTeacherAssignments={classTeacherAssignments}
                   teachersBySchoolCode={{ NAN: nanTeachers, TQK: tqkTeachers }}
                   principalName={principalName}
@@ -7727,16 +7793,17 @@ ${lessonBlocks}`;
             </div>
           )}
           {isAdmin && adminModule !== 'notice' && showAttendanceWorkspace && (
-            <div className="fixed inset-x-0 top-[114px] sm:top-[84px] bottom-0 z-[120] bg-slate-100/95 backdrop-blur-md overflow-y-auto p-0">
+            <div className="fixed inset-x-0 top-[130px] sm:top-[84px] bottom-0 z-[120] bg-slate-100 overflow-hidden p-0 sm:p-2">
               <Suspense fallback={<div className="flex min-h-full items-center justify-center text-sm font-black text-emerald-700">Đang mở điểm danh...</div>}>
                 <ClassOpsManager
+                  key={adminEducationLevel}
                   mode="admin"
                   initialView="attendance"
                   currentSchoolYear={activeSchoolYear}
                   user={user}
-                  students={allStudents}
-                  classOptions={configuredSchoolClasses}
-                  subjects={SUBJECTS}
+                  students={educationStudents}
+                  classOptions={configuredEducationClasses}
+                  subjects={adminSubjects}
                   onClose={() => setShowAttendanceWorkspace(false)}
                   onOpenDatabase={() => {
                     setShowAttendanceWorkspace(false);
@@ -8345,7 +8412,15 @@ ${lessonBlocks}`;
   }
 
   return (
-    <div className="min-h-screen flex flex-col text-slate-800 font-sans relative" style={focusBackgroundStyle}><MainBackground />
+    <div className={`min-h-screen flex flex-col text-slate-800 font-sans relative ${role === 'student' ? 'student-portal' : ''}`} style={focusBackgroundStyle}><MainBackground />
+      {role === 'teacher' && educationGrades('primary').includes(String(scorebookGrade)) && <WorkspaceErrorBoundary title="Sổ điểm tiểu học" onClose={() => setScorebookGrade(null)}>
+        <Suspense fallback={<div className="fixed inset-0 z-[140] bg-white p-8">Đang mở sổ điểm tiểu học…</div>}>
+          <PrimaryAcademicWorkspace grade={scorebookGrade} allowedGrades={(teacherProfile?.grades || []).filter(grade => educationGrades('primary').includes(String(grade)))}
+            allowedSubjects={teacherProfile?.subjects || []} lockedSchool initialSchoolCode={currentContentSchoolCode} currentSchoolYear={activeSchoolYear}
+            canWrite={canWriteCurrentSchoolYear} students={allStudents} user={user} draftDocuments={retainedScorebooks.current.documents}
+            principalName={principalName} onGradeChange={setScorebookGrade} onClose={() => setScorebookGrade(null)} showNotification={showNotification} />
+        </Suspense>
+      </WorkspaceErrorBoundary>}
       <style>{`
         .rich-editor { min-height: 150px; outline: none; }
         .rich-editor:empty:before { content: attr(data-placeholder); color: #94a3b8; pointer-events: none; display: block; }
@@ -8366,7 +8441,7 @@ ${lessonBlocks}`;
       `}</style>
 
       {showClassOps && role === 'student' && activeStudentProfile?.isClassLeader && (
-        <div className="fixed inset-0 z-[120] bg-slate-100/95 backdrop-blur-md overflow-y-auto p-2 sm:p-4">
+        <div className="student-attendance-overlay fixed inset-0 z-[120] bg-slate-100 overflow-hidden sm:p-3">
           <Suspense fallback={<div className="rounded-3xl border border-emerald-100 bg-emerald-50 p-4 text-xs font-black text-emerald-700">Đang mở điểm danh...</div>}>
             <ClassOpsManager
               mode="monitor"
@@ -8384,7 +8459,7 @@ ${lessonBlocks}`;
       )}
 
       {showStudentProfileModal && activeStudentProfile?.id && (
-        <WorkspaceErrorBoundary title="Hồ sơ học sinh" onClose={() => setShowStudentProfileModal(false)}><Suspense fallback={<div className="fixed inset-0 z-[115] bg-white flex items-center justify-center font-bold text-blue-700">Đang mở hồ sơ học sinh...</div>}><StudentProfileModal view={{ STUDENT_PROFILE_IMAGE_FIELDS, activeStudentIsReadOnly, activeStudentPendingProfileChanges, activeStudentPendingProfileFieldKeys, activeStudentPendingProfileFieldLabels, activeStudentPendingProfileRequests, activeStudentProfile, activeStudentReadOnlyReason, applyStudentProfileImageFiles, currentSchoolYear, currentWardOptions, derivedProvinceOptions, getStudentProfileEmbedUrl, getStudentProfileImageUrl, handleStudentProfileFieldChange, handleStudentProfileImageChange, householdWardOptions, isSubmittingProfileRequest, removeStudentProfileExistingDocumentPage, removeStudentProfileSelectedImage, setShowStudentProfileModal, studentProfileDocumentOverrides, studentProfileDraft, studentProfileEditableFields, studentProfileImageAppendModes, studentProfileImagePreviews, studentProfileImages, submitStudentProfileRequest }} /></Suspense></WorkspaceErrorBoundary>
+        <WorkspaceErrorBoundary title="Hồ sơ học sinh" onClose={() => setShowStudentProfileModal(false)}><Suspense fallback={<div className="fixed inset-0 z-[115] bg-white flex items-center justify-center font-bold text-blue-700">Đang mở hồ sơ học sinh...</div>}><StudentProfileModal view={{ studentHistoryRecords: allStudents, studentAttendance: attendanceDocs, STUDENT_PROFILE_IMAGE_FIELDS, activeStudentIsReadOnly, activeStudentPendingProfileChanges, activeStudentPendingProfileFieldKeys, activeStudentPendingProfileFieldLabels, activeStudentPendingProfileRequests, activeStudentProfile, activeStudentReadOnlyReason, applyStudentProfileImageFiles, currentSchoolYear, currentWardOptions, derivedProvinceOptions, getStudentProfileEmbedUrl, getStudentProfileImageUrl, handleStudentProfileFieldChange, handleStudentProfileImageChange, householdWardOptions, isSubmittingProfileRequest, removeStudentProfileExistingDocumentPage, removeStudentProfileSelectedImage, setShowStudentProfileModal, studentProfileDocumentOverrides, studentProfileDraft, studentProfileEditableFields, studentProfileImageAppendModes, studentProfileImagePreviews, studentProfileImages, submitStudentProfileRequest }} /></Suspense></WorkspaceErrorBoundary>
           )}
 
           {role === 'teacher' && showQuizComposeWorkspace && (
@@ -8487,14 +8562,14 @@ ${lessonBlocks}`;
         </div>
       )}
 
-      {!hideMainHeaderForWorkspace && <header className="bg-white/80 backdrop-blur-md border-b sticky top-0 z-40 shadow-sm">
+      {!hideMainHeaderForWorkspace && <header className="student-portal-header bg-white/80 backdrop-blur-md border-b sticky top-0 z-40 shadow-sm">
         <div className="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center space-x-3 cursor-pointer group flex-shrink-0" onClick={resetNavigationWithClean}>
             <div className="bg-blue-600 p-2 rounded-xl shadow-md group-hover:bg-blue-700 transition-colors"><Library className="w-5 h-5 text-white" /></div>
             <div className="hidden sm:block leading-tight"><span className="font-black text-lg block tracking-tighter">{SCHOOL_OPTIONS.find(school => school.code === currentContentSchoolCode)?.name || 'Kho Học Liệu Số'}</span><span className="text-[10px] text-blue-600 font-black uppercase tracking-widest">Kho Học Liệu Số</span></div>
           </div>
           
-          <div className="flex flex-1 ml-3 sm:ml-6 mr-3 sm:mr-6 items-center overflow-hidden bg-slate-50/80 rounded-full px-3 py-1.5 border border-slate-200/60 shadow-inner">
+          <div className="student-header-news flex flex-1 ml-3 sm:ml-6 mr-3 sm:mr-6 items-center overflow-hidden bg-slate-50/80 rounded-full px-3 py-1.5 border border-slate-200/60 shadow-inner">
              <Sparkles className="w-3.5 h-3.5 text-blue-500 mr-2 flex-shrink-0 animate-pulse" />
              <marquee direction="left" scrollamount="4" className="text-[10px] sm:text-[11px] font-black uppercase tracking-[0.2em] w-full pt-0.5 whitespace-nowrap flex items-center h-full">
                {loginRole === 'teacher' ? (
@@ -8534,8 +8609,8 @@ ${lessonBlocks}`;
                     </span>
                   )}
                 </button>
-                <button type="button" onClick={() => activeStudentProfile?.id && setShowStudentProfileModal(true)} className="relative flex items-center space-x-1.5 sm:space-x-2.5 bg-blue-50 px-3 py-1.5 sm:px-4 sm:py-2 rounded-full border shadow-sm border-blue-100 hover:bg-blue-100 transition-colors">
-                  <User className="w-4 h-4 sm:w-4.5 sm:h-4.5 text-blue-600" />
+                <button type="button" onClick={openStudentProfileEditor} disabled={isOpeningStudentProfile} title="Sửa thông tin" className="relative flex items-center space-x-1.5 sm:space-x-2.5 bg-blue-50 px-3 py-1.5 sm:px-4 sm:py-2 rounded-full border shadow-sm border-blue-100 hover:bg-blue-100 transition-colors disabled:opacity-60">
+                  {isOpeningStudentProfile ? <Loader2 className="w-4 h-4 animate-spin text-blue-600" /> : <User className="w-4 h-4 sm:w-4.5 sm:h-4.5 text-blue-600" />}
                   <span className="text-[11px] sm:text-sm font-black text-blue-800">
                     <span className="sm:hidden">{getStudentDisplayName(activeStudentProfile?.fullName, true)}</span>
                     <span className="hidden sm:inline">{getStudentDisplayName(activeStudentProfile?.fullName)}</span>
@@ -8615,9 +8690,9 @@ ${lessonBlocks}`;
       )}
       
       <main className="max-w-6xl mx-auto px-4 py-4 sm:py-8 flex-1 w-full relative z-10 flex flex-col">
-        <div className={`flex flex-nowrap items-center text-[clamp(9px,2.35vw,11px)] sm:text-xs font-black text-slate-400 ${selectedLesson && role === 'teacher' ? 'mb-2' : 'mb-2 sm:mb-8'} bg-white/80 backdrop-blur-md px-2.5 sm:px-6 py-2 sm:py-4 rounded-xl sm:rounded-2xl shadow-sm border border-white/60 uppercase tracking-wide sm:tracking-widest shrink-0 overflow-hidden`}>
+        <div className={`student-learning-navigation flex flex-nowrap items-center text-[clamp(9px,2.35vw,11px)] sm:text-xs font-black text-slate-400 ${selectedLesson && role === 'teacher' ? 'mb-2' : 'mb-2 sm:mb-8'} bg-white/80 backdrop-blur-md px-2.5 sm:px-6 py-2 sm:py-4 rounded-xl sm:rounded-2xl shadow-sm border border-white/60 uppercase tracking-wide sm:tracking-widest shrink-0 overflow-hidden`}>
             <button onClick={resetNavigationWithClean} className="hover:text-blue-600 flex items-center transition-colors whitespace-nowrap flex-shrink-0" title="Trang chủ"><Home className="w-3.5 h-3.5 sm:w-4 sm:h-4 mr-0 sm:mr-2" /> <span className="hidden sm:inline">{'Trang ch\u1ee7'}</span></button>
-            {selectedGrade && <><ChevronRight className="w-3 h-3 sm:w-4 sm:h-4 mx-0.5 sm:mx-2 opacity-30 flex-shrink-0" /><div className="relative flex-shrink-0"><select value={selectedGrade} onChange={(e) => { setSelectedGrade(e.target.value); setIsTextbookExpanded(true); }} className="appearance-none bg-emerald-50 text-emerald-700 border border-emerald-100 pl-1.5 pr-5 sm:pl-2 sm:pr-7 py-0.5 rounded-md sm:rounded-lg whitespace-nowrap font-black focus:outline-none focus:ring-2 focus:ring-emerald-100 cursor-pointer">{GRADES.map(g => <option key={g} value={g}>{'Kh\u1ed1i ' + g}</option>)}</select><ChevronDown className="pointer-events-none absolute right-1 sm:right-2 top-1/2 -translate-y-1/2 w-3 h-3 opacity-60" /></div></>}
+            {selectedGrade && <><ChevronRight className="w-3 h-3 sm:w-4 sm:h-4 mx-0.5 sm:mx-2 opacity-30 flex-shrink-0" /><div className="relative flex-shrink-0"><select value={selectedGrade} onChange={(e) => { setSelectedGrade(e.target.value); setIsTextbookExpanded(true); }} className="appearance-none bg-emerald-50 text-emerald-700 border border-emerald-100 pl-1.5 pr-5 sm:pl-2 sm:pr-7 py-0.5 rounded-md sm:rounded-lg whitespace-nowrap font-black focus:outline-none focus:ring-2 focus:ring-emerald-100 cursor-pointer">{navigationGrades.map(g => <option key={g} value={g}>{'Kh\u1ed1i ' + g}</option>)}</select><ChevronDown className="pointer-events-none absolute right-1 sm:right-2 top-1/2 -translate-y-1/2 w-3 h-3 opacity-60" /></div></>}
             {selectedSubject && <><ChevronRight className="w-3 h-3 sm:w-4 sm:h-4 mx-0.5 sm:mx-2 opacity-30 flex-shrink-0" /><button onClick={() => setSelectedLesson(null)} className="bg-sky-50 text-sky-700 border border-sky-100 px-1.5 sm:px-2 py-0.5 rounded-md sm:rounded-lg whitespace-nowrap truncate min-w-0 max-w-[82px] sm:max-w-none">{selectedSubject}</button></>}
             {role === 'student' && activeStudentProfile?.isClassLeader && !selectedLesson && (
               <button type="button" onClick={() => setShowClassOps(true)} className="ml-auto sm:ml-3 bg-emerald-600 text-white px-2.5 sm:px-3 py-1.5 rounded-lg sm:rounded-xl whitespace-nowrap flex items-center gap-1.5 shadow-sm">
@@ -8678,23 +8753,12 @@ ${lessonBlocks}`;
                   )}
 
                   {selectedGrade && (
-                     <div className="flex-1 flex flex-col gap-6 sm:gap-8 animate-in fade-in zoom-in-95 duration-300">
+                     <div className="student-learning-panels flex-1 flex flex-col gap-6 sm:gap-8 animate-in fade-in zoom-in-95 duration-300">
                         {<>
-                               <div className="bg-white/80 backdrop-blur-md rounded-[1.5rem] sm:rounded-[2rem] p-4 sm:p-8 border border-white shadow-xl">
-                                  <div className="flex items-center gap-3 mb-4 sm:mb-6 border-b-2 border-blue-100/50 pb-4">
-                                     <div className="bg-blue-600 p-2 rounded-xl text-white shadow-md"><BookOpen className="w-5 h-5 sm:w-6 sm:h-6"/></div>
-                                     <h2 className="text-base sm:text-2xl font-black text-slate-800 uppercase tracking-widest">Môn dạy</h2>
-                                  </div>
-                                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3">
-                                     {navigationSubjects.map((s, index) => (
-                                        <button key={s} onClick={() => { setSelectedSubject(s); setPlanSubject(s); setShowLearningResultsWorkspace(false); setQuickScoreLockedContext(null); }} className={`${getSubjectCardStyle(index)} border hover:shadow-md rounded-xl p-3 sm:p-4 flex items-center justify-center transition-all group active:scale-95 text-center h-[58px] sm:h-[66px]`}>
-                                           <span className="font-black text-current text-xs sm:text-sm uppercase tracking-tight leading-snug">{getSubjectShortName(s)}</span>
-                                        </button>
-                                     ))}
-                                  </div>
-                               </div>
+                               <LearningSubjectPanel role={role} subjects={navigationSubjects} getShortName={getSubjectShortName} getCardStyle={getSubjectCardStyle}
+                                 onSelect={subject => { setSelectedSubject(subject); setPlanSubject(subject); setShowLearningResultsWorkspace(false); setQuickScoreLockedContext(null); }} />
 
-                               <div className="bg-white/70 backdrop-blur-md rounded-[1.5rem] sm:rounded-[2rem] p-4 sm:p-8 border border-white/60 shadow-xl shrink-0">
+                               <div className="student-textbook-panel bg-white/70 backdrop-blur-md rounded-[1.5rem] sm:rounded-[2rem] p-4 sm:p-8 border border-white/60 shadow-xl shrink-0">
                                   <button onClick={() => setIsTextbookExpanded(!isTextbookExpanded)} className="w-full flex justify-between items-center focus:outline-none group">
                                     <div className="flex flex-col items-start gap-1">
                                         <div className="flex items-center gap-2 sm:gap-4">
@@ -8704,7 +8768,7 @@ ${lessonBlocks}`;
                                         <p className="text-[9px] sm:text-xs font-bold text-emerald-800/60 uppercase tracking-widest ml-4 sm:ml-7 mt-0.5">Nhấn vào để chọn sách xem</p>
                                     </div>
                                     <div className="flex items-center gap-2">
-                                        {isAdmin && <a href={`https://drive.google.com/drive/folders/${TEXTBOOK_FOLDERS[selectedGrade]}?usp=drive_link`} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="hidden sm:flex bg-emerald-500 text-white px-4 py-2 rounded-xl font-black items-center space-x-2 text-xs shadow-md hover:bg-emerald-600 transition-all"><Folder className="w-4 h-4" /><span>KHO DRIVE SGK</span></a>}
+                                        {isAdmin && textbookFolders[selectedGrade] && <a href={`https://drive.google.com/drive/folders/${textbookFolders[selectedGrade]}?usp=drive_link`} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="hidden sm:flex bg-emerald-500 text-white px-4 py-2 rounded-xl font-black items-center space-x-2 text-xs shadow-md hover:bg-emerald-600 transition-all"><Folder className="w-4 h-4" /><span>KHO DRIVE SGK</span></a>}
                                         <div className="bg-slate-100 p-1.5 sm:p-2 rounded-full group-hover:bg-slate-200 transition-colors">
                                             {isTextbookExpanded ? <ChevronUp className="w-4 h-4 sm:w-5 sm:h-5 text-slate-500"/> : <ChevronDown className="w-4 h-4 sm:w-5 sm:h-5 text-slate-500"/>}
                                         </div>
@@ -8713,7 +8777,7 @@ ${lessonBlocks}`;
 
                                   {isTextbookExpanded && (
                                       <div className="mt-4 sm:mt-8 pt-4 sm:pt-0 border-t sm:border-0 border-slate-100/50 animate-in slide-in-from-top-2 duration-300">
-                                          {isAdmin && <a href={`https://drive.google.com/drive/folders/${TEXTBOOK_FOLDERS[selectedGrade]}?usp=drive_link`} target="_blank" rel="noopener noreferrer" className="sm:hidden mb-4 bg-emerald-500 text-white px-4 py-2.5 rounded-xl font-black flex justify-center items-center space-x-2 text-xs shadow-md hover:bg-emerald-600 transition-all w-full"><Folder className="w-4 h-4" /><span>MỞ KHO DRIVE SGK</span></a>}
+                                          {isAdmin && textbookFolders[selectedGrade] && <a href={`https://drive.google.com/drive/folders/${textbookFolders[selectedGrade]}?usp=drive_link`} target="_blank" rel="noopener noreferrer" className="sm:hidden mb-4 bg-emerald-500 text-white px-4 py-2.5 rounded-xl font-black flex justify-center items-center space-x-2 text-xs shadow-md hover:bg-emerald-600 transition-all w-full"><Folder className="w-4 h-4" /><span>MỞ KHO DRIVE SGK</span></a>}
                                           {isLoadingTextbooks ? <div className="text-center py-10 flex flex-col items-center gap-3"><Loader2 className="w-8 h-8 animate-spin text-emerald-500" /><p className="font-black text-slate-400 uppercase text-xs tracking-widest">Đang tải...</p></div> : (
                                           <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-3 sm:gap-4">
                                               {sortedTextbooks.map((f) => (

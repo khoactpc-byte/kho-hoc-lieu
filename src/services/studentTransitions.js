@@ -5,6 +5,7 @@ import { promotionGlobalRef, requirePromotionLease, writePromotionCheckpoint } f
 
 // All reads precede writes. Existing target records are never overwritten by retries.
 export async function applyStudentTransitions(operations, job, scorebookGuards = []) {
+  const version = value => Number(value?.toMillis?.() ?? value) || 0;
   const records = name => collection(db, 'artifacts', appId, 'public', 'data', name);
   let created = 0;
   for (let offset = 0; offset < Math.max(operations.length, 1); offset += 100) {
@@ -24,7 +25,7 @@ export async function applyStudentTransitions(operations, job, scorebookGuards =
       scorebooks.forEach((snapshot, index) => {
         const data = snapshot.data();
         const guard = scorebookGuards[index];
-        if (!data || Number(data.updatedAt || 0) !== guard.updatedAt || !sameData(data.edits || {}, guard.edits)) {
+        if (!data || version(data.updatedAt) !== version(guard.updatedAt) || !sameData(data.edits || {}, guard.edits)) {
           throw new Error('Điểm học tập đã thay đổi từ lúc xem trước. Hãy đối soát lại trước khi chuyển năm.');
         }
       });

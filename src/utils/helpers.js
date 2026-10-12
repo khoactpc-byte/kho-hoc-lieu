@@ -142,6 +142,7 @@ export const cleanDriveTitle = (name) => getDriveBaseName(name).toLowerCase();
 
 export const normalizeServiceErrorMessage = (message, action = '') => {
   const raw = String(message || '').replace(/\s+/g, ' ').trim();
+  const isRegistrationAction = ['registrationAdminAction', 'syncStudent', 'listStudents', 'listPending', 'markExistingRegistration', 'markDropout', 'syncSchoolYearClasses', 'syncCurrentSchoolYear'].includes(action);
   if (!raw) return 'May chu bao loi khong xac dinh.';
   if (['createAdminSession', 'createStaffSession'].includes(action)
     && /Cần đăng nhập Admin để truy cập dữ liệu học sinh/i.test(raw)) {
@@ -159,13 +160,25 @@ export const normalizeServiceErrorMessage = (message, action = '') => {
   if (/khong dung action hoac thieu base64/i.test(raw)) {
     return 'Máy chủ Apps Script chưa hỗ trợ thao tác xuất này. Cần cập nhật Apps Script chính và Deploy bản mới.';
   }
-  if (/Authorization is required|permission|SpreadsheetApp|UrlFetchApp|DriveApp/i.test(raw) && /PDF|Spreadsheet|UrlFetch|Drive/i.test(raw)) {
-    return 'Apps Script chua duoc cap quyen tao PDF/luu Drive. Hay mo Apps Script, chay/deploy lai va bam Cho phep quyen.';
+  // Naming a service in an error is not evidence that its OAuth permissions are missing.
+  if (/Authorization is required|(?:do not|don't|does not) have permission|insufficient permissions|permission denied|PERMISSION_DENIED|access denied|không có quyền|chưa được cấp quyền/i.test(raw)) {
+    if (/SpreadsheetApp|auth\/spreadsheets/i.test(raw)) {
+      return 'Máy chủ Apps Script chưa có quyền truy cập Google Sheet. Chủ dự án cần kiểm tra quyền truy cập Sheet và cấp lại quyền nếu được Google yêu cầu.';
+    }
+    if (/UrlFetchApp|auth\/script\.external_request/i.test(raw)) {
+      return 'Máy chủ Apps Script chưa có quyền kết nối dịch vụ bên ngoài. Chủ dự án cần cấp quyền kết nối cho Apps Script đang báo lỗi.';
+    }
+    if (/DriveApp|auth\/drive/i.test(raw)) {
+      return 'Máy chủ Apps Script chưa có quyền truy cập Google Drive. Chủ dự án cần kiểm tra quyền truy cập Drive.';
+    }
+    if (action === 'createStudentListPdf' && /PDF|DocumentApp|auth\/documents/i.test(raw)) {
+      return 'Apps Script chưa có quyền tạo PDF. Chủ dự án cần kiểm tra quyền Google Docs và Drive.';
+    }
   }
-  if (/429|quota|RESOURCE_EXHAUSTED|rate limit|GenerateRequestsPer|exceeded your current quota/i.test(raw)) {
+  if (!isRegistrationAction && /429|quota|RESOURCE_EXHAUSTED|rate limit|GenerateRequestsPer|exceeded your current quota/i.test(raw)) {
     return 'Gemini dang het han muc su dung. Hay doi API key con quota, nang/gia han billing trong Google AI Studio, hoac thu lai sau it phut.';
   }
-  if (/API key not valid|PERMISSION_DENIED|forbidden|403/i.test(raw)) {
+  if (!isRegistrationAction && /API key not valid|PERMISSION_DENIED|forbidden|403/i.test(raw)) {
     return 'Gemini chua nhan API key hoac API key khong co quyen su dung. Hay kiem tra lai API key trong Apps Script.';
   }
   if (raw.length <= 900) return raw;
@@ -201,7 +214,7 @@ export const postAppsScript = async (payload, { timeoutMs = 120000, signal } = {
   if (!resp.ok) throw new Error(`Máy chủ chưa xử lý được yêu cầu (${resp.status}).`);
   let data;
   try { data = JSON.parse(text); }
-  catch (e) { throw new Error(normalizeServiceErrorMessage(text || 'May chu Apps Script khong tra JSON.'), { cause: e }); }
+  catch (e) { throw new Error(normalizeServiceErrorMessage(text || 'May chu Apps Script khong tra JSON.', payload.action), { cause: e }); }
   if (data.status === 'error' || data.success === false) throw new Error(normalizeServiceErrorMessage(data.message || 'May chu bao loi.', payload.action));
   return data;
   } catch (error) {

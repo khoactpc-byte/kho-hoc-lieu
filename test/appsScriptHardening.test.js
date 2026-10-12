@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { createHmac } from 'node:crypto';
 import vm from 'node:vm';
 
 const mainSource = readFileSync(new URL('../apps-script/code_hoclieu.gs', import.meta.url), 'utf8');
@@ -18,6 +19,26 @@ function mainContext() {
   });
   vm.runInContext(mainSource, context);
   return { context, cache };
+}
+
+function installTeacherPasswordUtilities(context, pepper = 'fixture-pepper-địa-phương') {
+  const calls = [];
+  const signedBytes = bytes => Array.from(bytes, byte => byte > 127 ? byte - 256 : byte);
+  context.getTeacherPasswordPepper_ = () => pepper;
+  context.Utilities.Charset = { UTF_8: 'UTF-8' };
+  context.Utilities.newBlob = text => ({ getBytes: () => signedBytes(Buffer.from(text, 'utf8')) });
+  context.Utilities.computeHmacSha256Signature = (...args) => {
+    const [value, key, charset] = args;
+    const strings = typeof value === 'string' && typeof key === 'string';
+    const bytes = Array.isArray(value) && Array.isArray(key);
+    if (!((strings && args.length === 3 && charset === 'UTF-8') || (bytes && args.length === 2))) {
+      throw new Error('Unsupported Apps Script HMAC signature: use (String, String, Charset) or (Byte[], Byte[])');
+    }
+    calls.push(strings ? 'string' : 'bytes');
+    const digest = createHmac('sha256', Buffer.from(key, 'utf8')).update(Buffer.from(value, 'utf8')).digest();
+    return signedBytes(digest);
+  };
+  return { calls, pepper };
 }
 
 test('both Apps Script sources parse, including their POST endpoints', () => {
@@ -152,6 +173,69 @@ test('teacher accounts accept six-character passwords, hash them and keep the ex
   assert.equal(rows.length, 1);
 });
 
+test('teacher password hashing uses valid Apps Script overloads and preserves raw digest bytes across rounds', () => {
+  const { context } = mainContext();
+  const { calls, pepper } = installTeacherPasswordUtilities(context);
+  const salt = 'fixture-salt';
+  const password = 'Mật khẩu thử 🔒';
+  let expected = createHmac('sha256', pepper).update(salt + ':' + password, 'utf8').digest();
+  for (let round = 0; round < 2000; round++) expected = createHmac('sha256', pepper).update(expected).digest();
+  const actual = context.hashTeacherPassword_(salt, password);
+  assert.equal(actual, expected.toString('hex'));
+  assert.match(actual, /^[a-f0-9]{64}$/);
+  assert.equal(calls.length, 2001);
+  assert.equal(calls[0], 'string');
+  assert.equal(calls.slice(1).every(type => type === 'bytes'), true);
+  assert.equal(context.hashTeacherPassword_(salt, password), actual);
+  assert.notEqual(context.hashTeacherPassword_('other-salt', password), actual);
+  assert.notEqual(context.hashTeacherPassword_(salt, 'other-password'), actual);
+});
+
+test('teacher account creation, password retention, password reset and login use the real hash function', () => {
+  const { context, cache } = mainContext();
+  installTeacherPasswordUtilities(context);
+  const rows = [];
+  let locked = false;
+  cache.set('staff-session:admin', 'admin');
+  cache.set('staff-session-version:admin', '1');
+  cache.set('staff-session-expiry:admin', String(Date.now() + 3600000));
+  context.LockService = { getScriptLock: () => ({ waitLock: () => { locked = true; }, releaseLock: () => { locked = false; } }) };
+  context.getTeacherAccountsSheet_ = () => ({
+    getLastRow: () => rows.length + 1,
+    getRange: position => ({ getValues: () => rows, setValues: values => { assert.equal(locked, true); rows[position - 2] = values[0]; } }),
+    appendRow: row => { assert.equal(locked, true); rows.push(row); }
+  });
+  context.appendAuditLog_ = () => {};
+  const data = { adminSessionToken: 'admin', username: 'teacher_fixture', fullName: 'Giáo viên thử nghiệm', password: '123456', schoolCode: 'NAN', grades: ['9'], subjects: ['Giáo dục địa phương', 'Chủ nhiệm'] };
+  const created = JSON.parse(context.saveTeacherAccount_(data).value);
+  assert.equal(created.status, 'success');
+  assert.equal(locked, false);
+  assert.equal(rows.length, 1);
+  assert.match(rows[0][7], /^[a-f0-9]{64}$/);
+  assert.notEqual(rows[0][7], data.password);
+  const login = password => JSON.parse(context.createTeacherAccountSession_({ username: data.username, password }).value);
+  const firstSession = login(data.password);
+  assert.equal(firstSession.status, 'success');
+  assert.equal(firstSession.teacherProfile.teacherId, created.account.id);
+  assert.deepEqual(firstSession.teacherProfile.grades, ['9']);
+  assert.throws(() => login('wrong-password'), /mật khẩu không đúng/);
+  const previousHash = rows[0][7], previousSalt = rows[0][6];
+  context.saveTeacherAccount_({ ...data, id: created.account.id, password: '', fullName: 'Giáo viên cập nhật' });
+  assert.equal(rows[0][7], previousHash);
+  assert.equal(rows[0][6], previousSalt);
+  assert.equal(login(data.password).teacherProfile.fullName, 'Giáo viên cập nhật');
+  context.saveTeacherAccount_({ ...data, id: created.account.id, password: 'Mật khẩu mới 🔒' });
+  assert.notEqual(rows[0][7], previousHash);
+  assert.notEqual(rows[0][6], previousSalt);
+  assert.throws(() => login(data.password), /mật khẩu không đúng/);
+  assert.equal(login('Mật khẩu mới 🔒').status, 'success');
+  assert.throws(() => context.requireStaffSession_({ staffSessionToken: firstSession.staffSessionToken }));
+  rows[0][8] = false;
+  assert.throws(() => login('Mật khẩu mới 🔒'), /tài khoản đã bị khóa/);
+  assert.equal(rows.length, 1);
+  assert.equal(locked, false);
+});
+
 test('registration writes reject GET and resolve student identity instead of a stale row number', () => {
   const context = vm.createContext({ ContentService: { createTextOutput: output, MimeType: { JAVASCRIPT: 'js' } } });
   vm.runInContext(registrationSource, context);
@@ -247,8 +331,9 @@ test('public registration locks append and metadata together and rechecks identi
   context.ensureExtraHeaders_ = () => {};
   context.hasExistingIdentity_ = () => locked && duplicateInsideLock;
   context.saveFiles_ = context.saveHocBaFiles_ = () => '';
+  context.getBirthPlaceProvince = province => ({ success: true, province, districts: ['Huyện 1'], communesByDistrict: { [province + '|||Huyện 1']: ['Xã 1'] } });
   context.writeRegistrationSchoolMeta_ = context.writeSchoolYearClass_ = (_sheet, rowNumber) => { assert.equal(locked, true); assert.equal(rowNumber, rows); };
-  const form = { coSoHoc: 'nguyen-an-ninh', tinhTrangHocSinh: '2025-2026', lopHoc: '6A', maDinhDanh: '123456789012', hoVaTen: 'An' };
+  const form = { coSoHoc: 'nguyen-an-ninh', tinhTrangHocSinh: '2025-2026', lopHoc: '6A', maDinhDanh: '123456789012', hoVaTen: 'An', birthProvince: 'Tỉnh A', birthDistrict: 'Huyện 1', birthWard: 'Xã 1' };
   assert.equal(context.processForm(form, {}).success, true);
   assert.equal(rows, 2);
   assert.equal(locked, false);

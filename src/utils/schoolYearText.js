@@ -11,6 +11,19 @@ export function extractSchoolYearFromText(text, fallback) {
 }
 
 export const getSchoolYearStart = (schoolYear = '') => Number(String(schoolYear || '').match(/20\d{2}/)?.[0] || 0);
+
+export function assertStudentSchoolYear({ schoolYear = '', enrollmentYear = '' } = {}) {
+  const current = getSchoolYearStart(schoolYear);
+  const entry = getSchoolYearStart(enrollmentYear);
+  if (current && entry && current < entry) {
+    throw new Error(`Năm học hồ sơ ${schoolYear} không được trước năm nhập học ${enrollmentYear}. Hãy đối chiếu lại năm học.`);
+  }
+}
+
+export function registrationSchoolYear(registration = {}, fallback = '') {
+  return [registration.schoolYear, registration.enrollmentYear, registration.tinhTrangHocSinh, registration.hocTuNam, fallback]
+    .map(value => String(value || '').trim()).find(Boolean) || '';
+}
 export const normalizeAdmissionSchoolYear = (candidate = '', fallback = '') => (
   getSchoolYearStart(candidate) && getSchoolYearStart(fallback) && getSchoolYearStart(candidate) < getSchoolYearStart(fallback)
     ? fallback : (candidate || fallback)

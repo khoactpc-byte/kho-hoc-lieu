@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
 import { studentEditKey } from '../src/utils/studentScoreKeys.js';
 import { processRecords } from '../src/utils/bulkOperations.js';
+import { SCOREBOOK_SOURCE_FILE, QUICK_SCORE_SUBJECTS } from '../src/config/scorebookDomain.js';
 
 test('student allocation, immutable identity, durable sync and partial operations', async t => {
   const directory = await mkdtemp(resolve('node_modules/.student-mutations-test-'));
@@ -48,6 +49,36 @@ test('student allocation, immutable identity, durable sync and partial operation
       builder.onLoad({ filter: /.*/, namespace: 'fixture' }, args => ({ contents: args.path === 'config' ? 'export const db={}, appId="fixture";' : `const mock=globalThis.__studentMutations; export const {${Object.keys(mock).join(',')}}=mock;`, loader: 'js' }));
     } }] });
     const service = await import(pathToFileURL(outfile));
+    await t.test('a reviewed promotion checks the prior record and full scorebook inside the save transaction', async () => {
+      reset();
+      const source = { ...record('An'), id: 'source', studentKey: 'HS25601', accessCode: 'HS25601', className: '6A', entryGrade: '6', enrollmentYear: '2025-2026', schoolYear: '2025-2026' };
+      const target = { ...source, id: 'target', previousStudentId: 'source', schoolYear: '2026-2027' };
+      const book = { id: 'book', schoolYear: '2025-2026', schoolCode: 'NAN', grade: '6', sourceFile: SCOREBOOK_SOURCE_FILE,
+        edits: Object.fromEntries(QUICK_SCORE_SUBJECTS.map(subject => [studentEditKey(`custom:hkiiScore:${subject.pageIndex}:r0:s7`, source), '7'])) };
+      const { id: sourceId, ...sourceData } = source;
+      const { id: targetId, ...targetData } = target;
+      const { id: bookId, ...bookData } = book;
+      data.set(`${root}/students/${sourceId}`, sourceData); data.set(`${root}/students/${targetId}`, targetData); data.set(`${root}/scorebooks/${bookId}`, bookData);
+      const input = { ...target, className: '7A', grade: '7', promotion: { outcome: 'promote' } };
+      const options = { expected: target, academicDecision: { source, scorebook: book } };
+      data.set(`${root}/scorebooks/book`, { ...bookData, edits: {} });
+      await assert.rejects(service.saveStudentRecord(input, options), /điểm năm trước vừa thay đổi/);
+      assert.equal(data.get(`${root}/students/target`).className, '6A');
+      data.set(`${root}/scorebooks/book`, bookData);
+      await assert.rejects(service.saveStudentRecord({ ...input, className: '8A' }, options), /không đủ hoặc không khớp/);
+      const saved = await service.saveStudentRecord(input, options);
+      assert.equal(saved.className, '7A'); assert.equal(saved.entryGrade, '6');
+      assert.equal(saved.sheetSync.status, 'pending');
+    });
+    await t.test('a student cannot be saved into a year before enrollment', async () => {
+      reset();
+      const before = clone([...data]);
+      await assert.rejects(service.saveStudentRecord({ ...record('An'), schoolYear: '2025-2026', enrollmentYear: '2026-2027' }, { allocateCode: true, codePrefix: 'HS269' }), /trước năm nhập học/);
+      assert.deepEqual([...data], before, 'reject before allocating a code, creating a student or queuing a Sheet job');
+      data.set(`${root}/students/old`, { ...record('An'), accessCode: 'HS001', enrollmentYear: '2026-2027' });
+      await assert.rejects(service.saveStudentRecord({ ...record('An'), id: 'old', accessCode: 'HS001', schoolYear: '2025-2026' }), /trước năm nhập học/);
+      assert.equal(data.get(`${root}/students/old`).schoolYear, '2026-2027');
+    });
     await t.test('two administrators allocate distinct codes, but an explicit collision fails', async () => {
       reset(); const options = { codePrefix: 'HS266', allocateCode: true };
       const [a, b] = await Promise.all([service.saveStudentRecord(record('An'), options), service.saveStudentRecord(record('Bình'), options)]);
@@ -85,6 +116,31 @@ test('student allocation, immutable identity, durable sync and partial operation
       data.set(`${root}/settings/global`, { maintenance: { active: true } });
       await assert.rejects(service.deleteStudentRecord(student), /bảo trì/);
       await assert.rejects(service.saveStudentRecord({ ...student, phone: '0456' }), /bảo trì/);
+    });
+    await t.test('multiple profile requests commit once per student and a stale request prevents every write', async () => {
+      reset(); const student = await service.saveStudentRecord({ ...record('An'), accessCode: 'HS001' });
+      const older = { portraitUrl: 'old.jpg', phone: '123' }, newer = { portraitUrl: 'new.jpg' };
+      data.set(`${root}/student_profile_requests/old`, { studentId: student.id, changes: older });
+      data.set(`${root}/student_profile_requests/new`, { studentId: student.id, changes: newer });
+      const decisions = [
+        { requestId: 'old', expectedChanges: older, remainingChanges: {} },
+        { requestId: 'new', expectedChanges: newer, remainingChanges: {} }
+      ];
+      const before = structuredClone([...data]);
+      await assert.rejects(service.saveStudentRecord({ ...student, phone: '123', portraitUrl: 'new.jpg' }, {
+        profileDecisions: [decisions[0], { ...decisions[1], expectedChanges: { portraitUrl: 'stale.jpg' } }]
+      }), /vừa thay đổi/);
+      assert.deepEqual([...data], before);
+      const saved = await service.saveStudentRecord({ ...student, phone: '123', portraitUrl: 'new.jpg' }, { profileDecisions: decisions });
+      assert.equal(saved.portraitUrl, 'new.jpg');
+      assert.equal(saved.phone, '123');
+      assert.equal(saved.accessCode, student.accessCode);
+      assert.equal(saved.studentKey, student.studentKey);
+      assert.equal(saved.syncRevision, student.syncRevision + 1);
+      assert.equal(data.has(`${root}/student_profile_requests/old`), false);
+      assert.equal(data.has(`${root}/student_profile_requests/new`), false);
+      assert.equal([...data.keys()].filter(key => key.startsWith(`${root}/student_sync_jobs/`)).length, 2, 'only one new Sheet job for both requests');
+      await assert.rejects(service.saveStudentRecord(saved, { profileDecisions: decisions }), /vừa thay đổi/);
     });
     await t.test('partial deletion lists successful and failed IDs and archives the committed record', async () => {
       reset(); const student = await service.saveStudentRecord({ ...record('An'), accessCode: 'HS001' });

@@ -4,8 +4,9 @@ import { appId, db } from '../config/firebase';
 import { hasLegacyRowEdits, migrateLegacyRowEdits } from '../utils/studentScoreKeys';
 import { SCOPED_AUTH_ENABLED } from '../services/scopedIdentity';
 import { requestPrivateApi } from '../services/serverQuizClient';
+import LegacyScorebookPreview from './LegacyScorebookPreview';
 
-export default function ScorebookMigrationNotice({ docId, edits, students, user, showNotification, onMigrated }) {
+export default function ScorebookMigrationNotice({ docId, edits, students, user, showNotification, onMigrated, scoreSubjects, reviewSubjects }) {
   const [preview, setPreview] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -53,17 +54,24 @@ export default function ScorebookMigrationNotice({ docId, edits, students, user,
     } catch (error) { showNotification?.(`Chưa chuyển dữ liệu: ${error.message}`, 'error'); }
     finally { migrating.current = false; setBusy(false); }
   };
-  return <div className="my-3 rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950 print:hidden">
-    <p className="font-bold">Điểm cũ cần đối chiếu danh sách học sinh trước khi hiển thị hoặc sửa.</p>
+  return <div className="scorebook-toolbar shrink-0 border-b border-amber-200 bg-amber-50 px-3 py-2 text-xs font-normal text-amber-950 print:hidden">
+    <p>Điểm cũ vẫn còn, cần đối chiếu đúng thứ tự học sinh để hiển thị trong học bạ.</p>
     <p>Điểm đã nhập vẫn được giữ. Chỉ chuyển khi xác nhận đúng thứ tự học sinh tại thời điểm nhập điểm.</p>
-    <button type="button" onClick={() => setPreview(!preview)} className="mt-2 rounded border bg-white px-3 py-2">{preview ? 'Đóng đối chiếu' : 'Xem danh sách đối chiếu'}</button>
-    {preview && <div className="mt-3">
-      <ol className="max-h-56 list-inside list-decimal overflow-auto bg-white p-2">
+    <button type="button" onClick={() => setPreview(!preview)} className="mt-1 rounded border bg-white px-2 py-1.5">{preview ? 'Đóng đối chiếu' : 'Xem điểm cũ và đối chiếu'}</button>
+    {preview && <div className="mt-2 max-h-[55vh] overflow-auto">
+      <LegacyScorebookPreview key={docId} edits={edits} students={students} scoreSubjects={scoreSubjects} reviewSubjects={reviewSubjects} />
+      <details className="my-2">
+        <summary className="cursor-pointer">Toàn bộ danh sách đối chiếu ({students.length} học sinh)</summary>
+      <ol className="mt-1 max-h-36 list-inside list-decimal overflow-auto bg-white p-2">
         {students.map((student, index) => <li key={student.id || index}>{student.fullName} · {student.className} · {student.accessCode || student.id}</li>)}
       </ol>
+      </details>
+      <details className="my-2">
+        <summary className="cursor-pointer">Dùng danh sách đối chiếu khác (nâng cao)</summary>
       <label className="mt-2 block">Nếu danh sách cũ khác danh sách trên, dán danh sách JSON đã đối chiếu (id/accessCode/studentKey) theo đúng thứ tự:
         <textarea value={rosterJson} onChange={event => { setRosterJson(event.target.value); setConfirmed(false); }} className="mt-1 w-full rounded border bg-white p-2" rows={3} />
       </label>
+      </details>
       <label className="my-2 block"><input type="checkbox" checked={confirmed} onChange={event => setConfirmed(event.target.checked)} /> Tôi đã đối chiếu đúng thứ tự học sinh với dữ liệu điểm cũ.</label>
       <button type="button" onClick={migrate} disabled={!confirmed || busy} className="rounded bg-amber-700 px-3 py-2 text-white disabled:opacity-50">{busy ? 'Đang chuyển...' : 'Gắn điểm với mã học sinh'}</button>
     </div>}

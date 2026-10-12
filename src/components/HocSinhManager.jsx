@@ -1,15 +1,26 @@
 import { parseScoreNumber, calculateSemesterAverage, calculateYearAverage, academicSummary } from '../utils/scorebookCalculations';
 import { saveStudentRecord, deleteStudentRecord, retryStudentSync, retryPendingStudentSync } from '../services/studentMutations';
 import { processRecords } from '../utils/bulkOperations';
+import { assertStudentSchoolYear, registrationSchoolYear } from '../utils/schoolYearText';
+import { approveProfileRequestGroups, groupProfileRequests } from '../utils/profileRequestBatch';
 import { stableRecordId } from '../utils/idempotency';
 import { requestJsonp } from '../services/jsonpClient';
+import { fetchPendingRegistrations } from '../services/pendingRegistrations';
 import { REGISTRATION_WEB_APP_URL } from '../config/registration';
 import { findPromotionTarget, promotionSourceVersions } from '../utils/promotionTargets';
+import { provinceFilterKey, provinceFilterLabel, provinceOptionLabel } from '../utils/provinceLabels';
 import { studentRowView } from '../utils/studentScoreKeys';
+import { studentAcademicContexts, studentCenterAcademicResults, scorebookYearSummary } from '../utils/studentAcademicResults';
+import { isGraduatedStudent, mergeStudentClassHistory, THCS_COMPLETED_CLASS } from '../utils/studentCompletion';
+import { resolveScorebookDocument } from '../utils/scorebookArchive';
+import { buildStudentYearReconciliation, reconciledStudentRecord, restoreClassesFromPriorRoster, sheetClassConflict } from '../utils/studentYearReconciliation';
+import StudentYearReconciliation from './StudentYearReconciliation';
+import StudentSheetImportStatus from './StudentSheetImportStatus';
+import { sameData } from '../utils/dataEquality';
 import { sanitizeHtml } from '../utils/safeHtml';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { collection, deleteDoc, doc, onSnapshot, setDoc } from 'firebase/firestore';
+import { collection, deleteDoc, doc, getDocsFromServer, onSnapshot, query as firestoreQuery, setDoc, where } from 'firebase/firestore';
 import {
   ArrowDownAZ,
   ArrowUpDown,
@@ -46,6 +57,14 @@ import { IMAGE_DRIVE_FOLDER_ID, postAppsScript } from '../utils/helpers';
 import { compareSchoolRosterStudents, getSchoolName, getStudentEntryGrade, getStudentSchoolCode, normalizeSchoolCode, normalizeSchoolYearKey, promoteSchoolClassName, SCHOOL_OPTIONS } from '../utils/schoolClasses';
 import { findDropoutContinuation } from '../utils/studentJourney';
 import scorebookTemplate from '../data/scorebookTemplate.json';
+import StudentProfileSections from './StudentProfileSections';
+import StudentProfileHistory from './StudentProfileHistory';
+import StudentFilterDropdown from './StudentFilterDropdown';
+import StudentUtilitiesMenu from './StudentUtilitiesMenu';
+import { belongsToEducationLevel, educationLabel } from '../utils/educationLevels';
+import { buildStudentProfileHistory } from '../utils/studentProfileHistory';
+import ProfileChangeTable from './ProfileChangeTable';
+import { STUDENT_PROFILE_SECTIONS, studentProfileSection } from '../utils/studentProfileLayout';
 
 const STUDENT_FIELDS = [
   { key: 'fullName', label: 'Họ và tên', required: true, sticky: true },
@@ -162,6 +181,53 @@ const ACADEMIC_RESULT_FIELD_KEYS = new Set([
   'hanhKiemLop9'
 ]);
 const ACADEMIC_RESULT_OPTIONS = ['', 'Tốt', 'Khá', 'Đạt'];
+
+const STUDENT_LEFT_ALIGNED_FIELDS = new Set([
+  'fullName', 'birthPlaceName', 'fatherName', 'motherName',
+  'birthProvince', 'birthRegistrationProvince', 'hometownProvince', 'province', 'householdProvince'
+]);
+const STUDENT_COLUMN_WIDTHS = {
+  fullName: 200,
+  birthDate: 94,
+  gender: 68,
+  birthProvince: 152,
+  birthDistrict: 136,
+  birthWard: 144,
+  birthPlaceName: 176,
+  birthRegistrationProvince: 152,
+  birthRegistrationDistrict: 144,
+  birthRegistrationWard: 144,
+  hometownProvince: 152,
+  hometownDistrict: 136,
+  hometownWard: 144,
+  identityCode: 110,
+  phone: 102,
+  schoolCode: 192,
+  classSuffix: 76,
+  entryGrade: 88,
+  grade: 80,
+  className: 108,
+  enrollmentYear: 96,
+  address: 192,
+  ward: 144,
+  province: 152,
+  householdAddress: 192,
+  householdWard: 144,
+  householdProvince: 152,
+  fatherName: 176,
+  fatherBirthYear: 84,
+  fatherJob: 128,
+  fatherPhone: 102,
+  motherName: 176,
+  motherBirthYear: 84,
+  motherJob: 128,
+  motherPhone: 102,
+  temporaryStatus: 120,
+  transport: 68
+};
+
+const studentColumnWidth = field => STUDENT_COLUMN_WIDTHS[field.key]
+  || (field.type === 'link' ? 104 : ACADEMIC_RESULT_FIELD_KEYS.has(field.key) ? 88 : 128);
 
 const DEFAULT_VISIBLE_COLUMNS = [
   'fullName',
@@ -405,6 +471,7 @@ const emptyStudent = {
   schoolCode: '',
   classSuffix: '',
   classHistory: {},
+  dropoutPreviousClassName: '',
   entryGrade: '',
   grade: '',
   className: '',
@@ -494,7 +561,9 @@ const isUsefulSheetValue = (value = '') => {
   return !normalized.startsWith('#') && normalized !== 'N/A' && normalized !== 'NA' && normalized !== 'NULL' && normalized !== 'UNDEFINED';
 };
 
-const registrationToStudentData = (registration = {}, currentSchoolYear = '') => ({
+const registrationToStudentData = (registration = {}, currentSchoolYear = '') => {
+  const isDropped = String(registration.status || '').toLowerCase() === 'dropped' || Boolean(pickText(registration.dropoutYear));
+  return ({
   ...emptyStudent,
   fullName: formatStudentFullName(pickText(registration.fullName, registration.hoVaTen)),
   birthDate: formatDisplayDate(pickText(registration.birthDate, registration.ngaySinh)),
@@ -506,9 +575,12 @@ const registrationToStudentData = (registration = {}, currentSchoolYear = '') =>
   schoolCode: pickText(registration.schoolCode, registration.maCoSo, registration.schoolKey, registration.coSoDangKy),
   classSuffix: pickText(registration.classSuffix, registration.hauToLop),
   classHistory: registration.classHistory && typeof registration.classHistory === 'object' ? registration.classHistory : {},
+  graduationYear: pickText(registration.graduationYear),
+  completionStatus: pickText(registration.completionStatus),
+  completionSchoolYear: pickText(registration.completionSchoolYear),
   entryGrade: pickText(registration.entryGrade, registration.enrollmentGrade, registration.admissionGrade, registration.grade, registration.khoi),
-  grade: pickText(registration.currentGrade, registration.khoiHienTai),
-  className: pickText(registration.currentClassName, registration.lopHienTai, registration.current_class_name, registration.className, registration.lopHoc),
+  grade: isDropped ? '' : pickText(registration.currentGrade, registration.khoiHienTai),
+  className: isDropped ? '' : pickText(registration.currentClassName, registration.lopHienTai, registration.current_class_name, registration.className, registration.lopHoc),
   enrollmentYear: pickText(registration.enrollmentYear, registration.tinhTrangHocSinh, registration.hocTuNam),
   address: pickText(registration.address, registration.soNha),
   ward: pickText(registration.ward, registration.xaPhuong),
@@ -551,9 +623,10 @@ const registrationToStudentData = (registration = {}, currentSchoolYear = '') =>
   hanhKiemLop8: pickText(registration.hanhKiemLop8),
   hocLucLop9: pickText(registration.hocLucLop9),
   hanhKiemLop9: pickText(registration.hanhKiemLop9),
-  status: 'active',
-  schoolYear: currentSchoolYear
-});
+  status: isGraduatedStudent(registration) ? 'completed' : isDropped ? 'dropped' : 'active',
+  schoolYear: registrationSchoolYear(registration, currentSchoolYear)
+  });
+};
 
 const normalizeStudentRecord = (student = {}, fallbackSchoolYear = '') => {
   const normalized = { ...student };
@@ -591,8 +664,16 @@ const normalizeStudentRecord = (student = {}, fallbackSchoolYear = '') => {
     className: normalized.className,
     enrollmentYear: normalized.enrollmentYear
   }, fallbackSchoolYear);
-  normalized.grade = getGradeFromClass(normalized.className) || getGradeFromClass(normalized.grade);
-  normalized.status = normalized.status === 'dropped' ? 'dropped' : 'active';
+  normalized.status = isGraduatedStudent(normalized) ? 'completed' : normalized.status === 'dropped' ? 'dropped' : 'active';
+  if (normalized.status === 'dropped') {
+    normalized.dropoutPreviousClassName ||= normalized.className || Object.entries(normalized.classHistory)
+      .find(([year]) => normalizeSchoolYearKey(year) === normalizeSchoolYearKey(normalized.schoolYear))?.[1] || '';
+    normalized.className = '';
+    Object.keys(normalized.classHistory).forEach(year => {
+      if (normalizeSchoolYearKey(year) === normalizeSchoolYearKey(normalized.schoolYear)) delete normalized.classHistory[year];
+    });
+  }
+  normalized.grade = ['completed', 'dropped'].includes(normalized.status) ? '' : getGradeFromClass(normalized.className) || getGradeFromClass(normalized.grade);
   return normalized;
 };
 
@@ -602,13 +683,14 @@ const hasGrade9CompletionResult = (student = {}) => (
 
 const isReadOnlyStudentRecord = (student = {}) => (
   Boolean(student) && (
-    String(student.status || '').toLowerCase() === 'dropped' || hasGrade9CompletionResult(student)
+    String(student.status || '').toLowerCase() === 'dropped' || isGraduatedStudent(student) || hasGrade9CompletionResult(student)
   )
 );
 
 const readOnlyStudentMessage = (student = {}) => (
   student?.status === 'dropped'
     ? 'Học sinh đã bỏ học nên hồ sơ chỉ xem, không duyệt chỉnh sửa nữa.'
+    : isGraduatedStudent(student) ? 'Học sinh đã tốt nghiệp THCS nên hồ sơ chỉ xem.'
     : 'Học sinh đã có kết quả lớp 9 nên hồ sơ chỉ xem, không duyệt chỉnh sửa nữa.'
 );
 
@@ -815,7 +897,8 @@ const getJourneyAcademicSummaryFromScorebook = (editsMap, rowIndex) => { if (row
  return academicSummary(JOURNEY_SCORE_COLUMNS.filter(column=>column.academic).map(column=>getJourneySemesterScoreResult(editsMap,'hkii',column.sourcePage,rowIndex,7))); };
 
 const getJourneyAcademicResultFromScorebook = (editsMap, rowIndex) => {
-  return getJourneyAcademicSummaryFromScorebook(editsMap, rowIndex).result;
+  const summary = getJourneyAcademicSummaryFromScorebook(editsMap, rowIndex);
+  return summary.complete ? summary.result : '';
 };
 
 const getPromotionOutcomeFromAcademicResult = (value = '') => {
@@ -1006,20 +1089,19 @@ const fieldValueForExport = (student = {}, field = {}) => {
   return safePlainValue(student[field.key]);
 };
 
-const buildExportTitle = ({ currentSchoolYear, classFilter, statusFilter, columnFilters, query, selectedCount, visibleFields }) => {
+const buildExportTitle = ({ currentSchoolYear, gradeFilter, classFilter, statusFilter, columnFilters, query, selectedCount, visibleFields }) => {
   const parts = ['DANH SÁCH HỌC SINH'];
-  if (Array.isArray(classFilter) && classFilter.length) {
+  if (gradeFilter?.length) parts.push(`KHỐI ${gradeFilter.join(', ')}`);
+  if (classFilter?.length) {
     parts.push(`LỚP ${classFilter.join(', ').toUpperCase()}`);
-  } else if (classFilter && classFilter !== 'all') {
-    parts.push(`LỚP ${String(classFilter).toUpperCase()}`);
   }
   parts.push(`NĂM HỌC ${currentSchoolYear}`);
-  if (statusFilter !== 'all') parts.push(statusFilter === 'dropped' ? 'BỎ HỌC' : 'ĐANG HỌC');
-  Object.entries(columnFilters || {}).forEach(([key, value]) => {
-    if (!value) return;
+  if (statusFilter?.length) parts.push(statusFilter.map(value => value === 'dropped' ? 'BỎ HỌC' : 'ĐANG HỌC').join(', '));
+  Object.entries(columnFilters || {}).forEach(([key, values]) => {
+    if (!values?.length) return;
     const field = visibleFields.find(item => item.key === key) || STUDENT_FIELDS.find(item => item.key === key);
     const label = field?.label || key;
-    const displayValue = value === EMPTY_FILTER_VALUE ? 'TRỐNG' : (value === HAS_DOCUMENT_FILTER_VALUE ? 'CÓ' : value);
+    const displayValue = values.map(getColumnFilterOptionLabel).join(', ');
     parts.push(`${label}: ${displayValue}`);
   });
   if (query) parts.push(`TÌM: ${query}`);
@@ -1031,6 +1113,22 @@ const getColumnFilterOptionLabel = (option) => {
   if (option === EMPTY_FILTER_VALUE) return '(Trống)';
   if (option === HAS_DOCUMENT_FILTER_VALUE) return 'Có';
   return option;
+};
+
+const studentColumnFilterValue = (student, key) => {
+  if (DOCUMENT_FIELD_KEYS.has(key)) {
+    return splitDocumentUrls(student[key]).length > 0 ? HAS_DOCUMENT_FILTER_VALUE : EMPTY_FILTER_VALUE;
+  }
+  const value = String(fieldValueForExport(student, { key }) ?? '').trim();
+  return value ? (key === 'birthProvince' ? provinceFilterLabel(value) : value) : EMPTY_FILTER_VALUE;
+};
+
+const matchesColumnFilter = (student, key, values) => {
+  if (values == null) return true;
+  const value = studentColumnFilterValue(student, key);
+  return values.some(selected => key === 'birthProvince' && value !== EMPTY_FILTER_VALUE && selected !== EMPTY_FILTER_VALUE
+    ? provinceFilterKey(value) === provinceFilterKey(selected)
+    : value === selected);
 };
 
 const copyTextToClipboard = async (text = '') => {
@@ -1114,7 +1212,8 @@ const callSheetAction = async (action = '', paramsObject = {}) => {
 };
 
 const loadRegistrationDataAction = async (action = '', params = {}, options = {}) => {
-  if (['listPending', 'listStudents'].includes(action)) {
+  if (action === 'listPending') return { success: true, items: await fetchPendingRegistrations(options) };
+  if (action === 'listStudents') {
     const response = await postAppsScript({ action: 'registrationAdminAction', registrationAction: action, params }, options);
     if (response.result?.success !== true) throw new Error(response.result?.message || 'Chưa tải được hồ sơ. Hãy đăng nhập Admin rồi thử lại.');
     return response.result;
@@ -1177,6 +1276,9 @@ const toSheetStudentParams = (student = {}, schoolYear = '') => ({
   hocLucLop9: student.hocLucLop9 || '',
   hanhKiemLop9: student.hanhKiemLop9 || '',
   status: student.status || 'active',
+  graduationYear: student.graduationYear || '',
+  completionStatus: student.completionStatus || '',
+  completionSchoolYear: student.completionSchoolYear || '',
   schoolYear: schoolYear || student.schoolYear || '',
   dropoutYear: student.status === 'dropped' ? (schoolYear || student.schoolYear || '') : ''
 });
@@ -1217,6 +1319,8 @@ const MISSING_INFO_CHECK_FIELDS = [
 ];
 
 const SHEET_TO_DATABASE_SYNC_FIELDS = [
+  'schoolCode',
+  'schoolName',
   'fullName',
   'birthDate',
   'gender',
@@ -1277,8 +1381,8 @@ const QUICK_ISSUE_FILTERS = [
   { key: 'all', label: 'Tất cả' },
   { key: 'missingInfo', label: 'Thiếu hồ sơ' },
   { key: 'missingDocs', label: 'Thiếu ảnh' },
-  { key: 'missingIdentity', label: 'Thiếu mã ĐD' },
-  { key: 'missingAcademic', label: 'Thiếu HL/HK' },
+  { key: 'missingIdentity', label: 'Thiếu mã định danh' },
+  { key: 'missingAcademic', label: 'Thiếu học lực / hạnh kiểm' },
   { key: 'selected', label: 'Đã chọn' }
 ];
 
@@ -1310,38 +1414,57 @@ const fileToBase64Payload = (file, documentItem = {}, student = {}) => new Promi
   reader.readAsDataURL(file);
 });
 
-export default function HocSinhManager({ students = [], configuredClassOptions = [], currentSchoolYear, systemSchoolYear = '', initialTab = 'current', initialTabKey = 0, user, showNotification, onBack, onOpenAttendance, onSendTestResults, onSendMailboxMessages, learningProgressRows = [], onBeforeDangerousAction, onStartSchoolYearPromotion, schoolYearPromotionState = null }) {
+export default function HocSinhManager({ students = [], educationLevel = '', configuredClassOptions = [], currentSchoolYear, systemSchoolYear = '', initialTab = 'current', initialTabKey = 0, user, showNotification, onBack, onOpenAttendance, onSendTestResults, onSendMailboxMessages, learningProgressRows = [], onBeforeDangerousAction, onStartSchoolYearPromotion, schoolYearPromotionState = null, onPendingRegistrationsLoaded, onRegistrationsResolved }) {
   const [query, setQuery] = useState('');
+  const [showSearch, setShowSearch] = useState(false);
+  const searchButtonRef = useRef(null);
   const [studentTab, setStudentTab] = useState(initialTab === 'countStats' ? 'current' : (initialTab || 'current'));
+  const [gradeFilter, setGradeFilter] = useState(null);
   const [classFilter, setClassFilter] = useState(() => {
     const saved = getStudentDbPrefs().classFilter;
-    return Array.isArray(saved) ? saved.map(String).filter(Boolean) : [];
+    return Array.isArray(saved) && saved.length ? saved.map(String).filter(Boolean) : null;
   });
   const [journeyYearFilter, setJourneyYearFilter] = useState(currentSchoolYear || '');
   const [journeyClassFilter, setJourneyClassFilter] = useState('all');
-  const [statusFilter, setStatusFilter] = useState('active');
+  const [statusFilter, setStatusFilter] = useState(['active']);
   const [quickIssueFilter, setQuickIssueFilter] = useState(() => getStudentDbPrefs().quickIssueFilter || 'all');
   const [sortMode, setSortMode] = useState('className');
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [selectedRegistrationIds, setSelectedRegistrationIds] = useState(new Set());
-  const [pendingRegistrations, setPendingRegistrations] = useState([]);
+  const [allPendingRegistrations, setPendingRegistrations] = useState([]);
   const registrationRequestRef = useRef(null);
   const registrationMutationRef = useRef(false);
   useEffect(() => () => registrationRequestRef.current?.abort(), []);
-  const [profileRequests, setProfileRequests] = useState([]);
+  const [allProfileRequests, setProfileRequests] = useState([]);
   const [scorebookEditsByYearGrade, setScorebookEditsByYearGrade] = useState({});
+  const [academicScorebooks, setAcademicScorebooks] = useState([]);
+  const [academicScorebooksReady, setAcademicScorebooksReady] = useState(false);
+  const [yearReconciliation, setYearReconciliation] = useState(null);
+  const [yearReconciliationProgress, setYearReconciliationProgress] = useState('');
+  const yearReconciliationLock = useRef(false);
+  const [sheetImportStatus, setSheetImportStatus] = useState(null);
+  const sheetImportLock = useRef(false);
   const [isLoadingRegistrations, setIsLoadingRegistrations] = useState(false);
   const [showCodeChoiceModal, setShowCodeChoiceModal] = useState(false);
   const [showFilters, setShowFilters] = useState(false);
   const [columnFilters, setColumnFilters] = useState({});
   const [openFilterKey, setOpenFilterKey] = useState(null);
+  const [quickEditEnabled, setQuickEditEnabled] = useState(false);
   const [editing, setEditing] = useState(null);
+  const [profileReadOnly, setProfileReadOnly] = useState(false);
   const editingOriginal = useRef(null);
+  const [profileAttendance, setProfileAttendance] = useState([]);
+  const [profileAttendanceState, setProfileAttendanceState] = useState('loading');
+  const [profileAttendanceScope, setProfileAttendanceScope] = useState('');
+  const [profileAttendanceRetry, setProfileAttendanceRetry] = useState(0);
+  const profileOpen = Boolean(editing);
+  const [avatarStudent, setAvatarStudent] = useState(null);
+  const [showPortraits, setShowPortraits] = useState(false);
   const [documentViewer, setDocumentViewer] = useState(null);
   const [uploadingDocumentKey, setUploadingDocumentKey] = useState('');
   const [showImport, setShowImport] = useState(false);
   const [showColumns, setShowColumns] = useState(false);
-  const [showClassPicker, setShowClassPicker] = useState(false);
+  const [showDocumentPreviews, setShowDocumentPreviews] = useState(false);
   const [showClassStats, setShowClassStats] = useState(false);
   const [showExportChoice, setShowExportChoice] = useState(false);
   const [sendingTestResultStudentId, setSendingTestResultStudentId] = useState('');
@@ -1349,7 +1472,7 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
   const [excelExportAction, setExcelExportAction] = useState('');
   const [showUtilitiesMenu, setShowUtilitiesMenu] = useState(false);
   const [schoolYearPromotionPreview, setSchoolYearPromotionPreview] = useState(null);
-  const [utilitiesMenuPosition, setUtilitiesMenuPosition] = useState({ top: 0, left: 12, width: 288, maxHeight: 420 });
+  const [utilitiesMenuPosition, setUtilitiesMenuPosition] = useState({ top: 0, left: 12, width: 360, maxHeight: 420 });
   const utilitiesButtonRef = useRef(null);
   const [mailComposerStudents, setMailComposerStudents] = useState([]);
   const [mailCategory, setMailCategory] = useState('general');
@@ -1364,8 +1487,9 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
   const [addressDirectory, setAddressDirectory] = useState({ provinces: [], communes: {} });
   const [quickEdit, setQuickEdit] = useState(null);
   const [quickEditSaving, setQuickEditSaving] = useState(false);
+  useEffect(() => setOpenFilterKey(null), [studentTab]);
   const [sheetSyncStatus, setSheetSyncStatus] = useState({
-    phase: 'checking',
+    phase: 'idle',
     completed: 0,
     total: 0,
     failed: 0,
@@ -1392,26 +1516,16 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
   });
   const [importText, setImportText] = useState('');
   const [isSaving, setIsSaving] = useState(false);
+  const profileBatchLock = useRef(false);
+  const [profileBatchStatus, setProfileBatchStatus] = useState(null);
+  const [sheetRetryStatus, setSheetRetryStatus] = useState(null);
   const safeStudents = useMemo(
     () => (Array.isArray(students) ? students : []).map(student => normalizeStudentRecord(student, currentSchoolYear)),
     [students, currentSchoolYear]
   );
-
-  useEffect(() => {
-    if (studentTab !== 'current') return undefined;
-    let cancelled = false;
-    setSheetSyncStatus(prev => ({ ...prev, phase: 'checking', completed: 0, total: 0, failed: 0 }));
-    loadStudentSheetSummary(currentSchoolYear)
-      .then(summary => {
-        if (cancelled) return;
-        setSheetSyncStatus(prev => ({ ...prev, ...summary, phase: 'idle' }));
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setSheetSyncStatus(prev => ({ ...prev, phase: 'unavailable', exactYearCount: null }));
-      });
-    return () => { cancelled = true; };
-  }, [currentSchoolYear, studentTab]);
+  const scopedStudents = useMemo(() => safeStudents.filter(student => belongsToEducationLevel(student, educationLevel)), [safeStudents, educationLevel]);
+  const pendingRegistrations = useMemo(() => allPendingRegistrations.filter(item => belongsToEducationLevel(registrationToStudentData(item, currentSchoolYear), educationLevel)), [allPendingRegistrations, educationLevel, currentSchoolYear]);
+  const profileRequests = useMemo(() => allProfileRequests.filter(request => belongsToEducationLevel(safeStudents.find(student => student.id === request.studentId) || request, educationLevel)), [allProfileRequests, safeStudents, educationLevel]);
 
   useEffect(() => {
     if (initialTab === 'countStats') {
@@ -1463,9 +1577,12 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
   useEffect(() => {
     const ref = collection(db, 'artifacts', appId, 'public', 'data', 'scorebooks');
     return onSnapshot(ref, snapshot => {
+      setAcademicScorebooks(snapshot.docs.map(item => ({ ...item.data(), id: item.id })));
+      setAcademicScorebooksReady(true);
       const nextMap = {};
       snapshot.docs.forEach(item => {
         const data = item.data() || {};
+        if (data.campusNormalization?.archivedTo) return;
         if (String(data.sourceFile || '') !== String(scorebookTemplate.sourceFile || '')) return;
         const gradeKey = String(data.grade || '').trim();
         const schoolYearKey = normalizeSchoolYearKey(data.schoolYear || '');
@@ -1480,13 +1597,14 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
       });
       setScorebookEditsByYearGrade(nextMap);
     }, () => {
+      setAcademicScorebooksReady(false);
       showNotification?.('Chưa tải được dữ liệu sổ điểm để điền quá trình học.', 'error');
     });
   }, [showNotification]);
   const previousSchoolYear = useMemo(() => getPreviousSchoolYear(currentSchoolYear), [currentSchoolYear]);
   const yearStudents = useMemo(
-    () => safeStudents.filter(student => String(student.schoolYear || currentSchoolYear) === String(currentSchoolYear)),
-    [safeStudents, currentSchoolYear]
+    () => scopedStudents.filter(student => String(student.schoolYear || currentSchoolYear) === String(currentSchoolYear)),
+    [scopedStudents, currentSchoolYear]
   );
   const learningProgressByStudent = useMemo(() => {
     const map = new Map();
@@ -1513,18 +1631,18 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
   };
   const previousYearStudents = useMemo(
     () => previousSchoolYear
-      ? safeStudents.filter(student => String(student.schoolYear || '') === String(previousSchoolYear))
+      ? scopedStudents.filter(student => String(student.schoolYear || '') === String(previousSchoolYear))
       : [],
-    [safeStudents, previousSchoolYear]
+    [scopedStudents, previousSchoolYear]
   );
   const visibleStudentFields = useMemo(
-    () => STUDENT_FIELDS.filter(field => visibleColumns.includes(field.key)),
-    [visibleColumns]
+    () => STUDENT_FIELDS.filter(field => visibleColumns.includes(field.key) && !(educationLevel === 'primary' && ACADEMIC_RESULT_FIELD_KEYS.has(field.key))),
+    [visibleColumns, educationLevel]
   );
   const isImageOnlyView = useMemo(
-    () => visibleColumns.length === IMAGE_ONLY_VISIBLE_COLUMNS.length
+    () => showDocumentPreviews && visibleColumns.length === IMAGE_ONLY_VISIBLE_COLUMNS.length
       && IMAGE_ONLY_VISIBLE_COLUMNS.every(key => visibleColumns.includes(key)),
-    [visibleColumns]
+    [showDocumentPreviews, visibleColumns]
   );
   const profileRequestsByStudent = useMemo(() => {
     const map = new Map();
@@ -1539,8 +1657,8 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
   const existingCodes = useMemo(() => new Set(safeStudents.map(student => student.accessCode).filter(Boolean)), [safeStudents]);
   const editFieldMap = useMemo(() => new Map(STUDENT_FIELDS.map(field => [field.key, field])), []);
   const adminEditFields = useMemo(
-    () => ADMIN_EDIT_FIELD_ORDER.map(key => editFieldMap.get(key)).filter(Boolean),
-    [editFieldMap]
+    () => ADMIN_EDIT_FIELD_ORDER.map(key => editFieldMap.get(key)).filter(field => field && !(educationLevel === 'primary' && ACADEMIC_RESULT_FIELD_KEYS.has(field.key))),
+    [editFieldMap, educationLevel]
   );
   const journeyYearOptions = useMemo(
     () => uniqueTextItems([...safeStudents.map(student => student.schoolYear), currentSchoolYear])
@@ -1549,12 +1667,12 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
   );
   const journeyClassOptions = useMemo(() => {
     const classes = uniqueTextItems(
-      safeStudents
+      scopedStudents
         .filter(student => !journeyYearFilter || student.schoolYear === journeyYearFilter)
         .map(student => student.className)
     ).sort((a, b) => a.localeCompare(b, 'vi', { numeric: true, sensitivity: 'base' }));
     return classes.map(className => ({ value: className, label: `Lop ${className}` }));
-  }, [safeStudents, journeyYearFilter]);
+  }, [scopedStudents, journeyYearFilter]);
   const journeyStudentsByYearGrade = useMemo(() => {
     const map = new Map();
     safeStudents
@@ -1573,6 +1691,34 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
     });
     return map;
   }, [safeStudents, currentSchoolYear]);
+  const showCenterResultColumns = studentTab === 'journey' || (studentTab === 'current' && visibleColumns.some(key => ACADEMIC_RESULT_FIELD_KEYS.has(key)));
+  const profileAttendanceYears = useMemo(() => {
+    const years = new Set();
+    if (showCenterResultColumns) {
+      safeStudents.forEach(student => studentAcademicContexts(student, safeStudents, systemSchoolYear || currentSchoolYear)
+        .forEach(record => years.add(record.schoolYear)));
+    }
+    if (editing) {
+      buildStudentProfileHistory({ student: editing, original: editingOriginal.current || editing, records: safeStudents,
+        currentSchoolYear: systemSchoolYear || currentSchoolYear })
+        .filter(row => row.current || row.schoolYear < (systemSchoolYear || currentSchoolYear))
+        .forEach(row => years.add(row.schoolYear));
+    }
+    return JSON.stringify([...years].sort());
+  }, [showCenterResultColumns, safeStudents, editing, systemSchoolYear, currentSchoolYear]);
+  const attendanceReadyForResults = profileAttendanceState === 'ready' && profileAttendanceScope === profileAttendanceYears;
+  const loadedResultAttendanceYears = useMemo(() => new Set(JSON.parse(profileAttendanceScope || '[]')), [profileAttendanceScope]);
+  const centerAcademicByStudent = useMemo(() => new Map(safeStudents.map(student => [student.id, studentCenterAcademicResults({
+    student, records: safeStudents, scorebooks: academicScorebooks, currentSchoolYear: systemSchoolYear || currentSchoolYear,
+    attendance: profileAttendance, attendanceReady: attendanceReadyForResults, attendanceYears: loadedResultAttendanceYears
+  })])), [safeStudents, academicScorebooks, systemSchoolYear, currentSchoolYear, profileAttendance, attendanceReadyForResults, loadedResultAttendanceYears]);
+  const yearStudentsWithResults = useMemo(() => yearStudents.map(student => ({
+    ...student, ...centerAcademicByStudent.get(student.id)?.fields
+  })), [yearStudents, centerAcademicByStudent]);
+  const editingCenterResults = useMemo(() => studentCenterAcademicResults({
+    student: editing, records: safeStudents, scorebooks: academicScorebooks, currentSchoolYear: systemSchoolYear || currentSchoolYear,
+    attendance: profileAttendance, attendanceReady: attendanceReadyForResults, attendanceYears: loadedResultAttendanceYears
+  }), [editing, safeStudents, academicScorebooks, systemSchoolYear, currentSchoolYear, profileAttendance, attendanceReadyForResults, loadedResultAttendanceYears]);
   const journeyScorebookResults = useMemo(() => {
     const results = new Map();
     safeStudents.forEach(student => {
@@ -1591,32 +1737,65 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
         ? getJourneyAcademicResultFromScorebook(studentRowView(scorebookEdits, student, safeRowIndex), safeRowIndex)
         : '';
       results.set(student.id, {
-        academic
+        academic: centerAcademicByStudent.get(student.id)?.fields[`hocLucLop${grade}`] || (Number(grade) < 6 ? academic : ''),
+        conduct: centerAcademicByStudent.get(student.id)?.fields[`hanhKiemLop${grade}`] || ''
       });
     });
     return results;
-  }, [currentSchoolYear, journeyStudentsByYearGrade, safeStudents, scorebookEditsByYearGrade]);
+  }, [currentSchoolYear, journeyStudentsByYearGrade, safeStudents, scorebookEditsByYearGrade, centerAcademicByStudent]);
+  const profileHistoryRows = useMemo(() => editing ? buildStudentProfileHistory({
+    student: { ...editing, ...editingCenterResults.fields }, original: editingOriginal.current || editing, records: safeStudents,
+    currentSchoolYear: systemSchoolYear || currentSchoolYear, attendance: profileAttendance, academicResults: journeyScorebookResults
+  }) : [], [editing, editingCenterResults, safeStudents, systemSchoolYear, currentSchoolYear, profileAttendance, journeyScorebookResults]);
+  useEffect(() => {
+    if (!profileOpen && !showCenterResultColumns) return;
+    setProfileAttendance([]);
+    setProfileAttendanceState('loading');
+    const years = JSON.parse(profileAttendanceYears);
+    if (!years.length) { setProfileAttendanceState('ready'); setProfileAttendanceScope(profileAttendanceYears); return; }
+    // Load only the years needed by the open profile or visible annual-result columns.
+    const base = collection(db, 'artifacts', appId, 'public', 'data', 'class_attendance');
+    const batches = Array.from({ length: Math.ceil(years.length / 30) }, (_, index) => years.slice(index * 30, index * 30 + 30));
+    const loaded = new Map();
+    let failed = false;
+    const subscriptions = batches.map((batch, index) => onSnapshot(firestoreQuery(base, where('schoolYear', 'in', batch)), snapshot => {
+      loaded.set(index, snapshot.docs.map(item => ({ ...item.data(), id: item.id })));
+      if (failed || loaded.size !== batches.length) return;
+      setProfileAttendance([...loaded.values()].flat());
+      setProfileAttendanceState('ready');
+      setProfileAttendanceScope(profileAttendanceYears);
+    }, () => { failed = true; setProfileAttendanceState('error'); }));
+    return () => subscriptions.forEach(unsubscribe => unsubscribe());
+  }, [profileOpen, showCenterResultColumns, profileAttendanceRetry, profileAttendanceYears]);
 
-  const buildSchoolYearPromotionPreview = async () => {
-    const sourceSchoolYear = normalizeSchoolYearKey(systemSchoolYear || currentSchoolYear);
+  const buildSchoolYearPromotionPreview = async (scope = '') => {
+    if (!academicScorebooksReady) throw new Error('Chưa tải xong sổ điểm. Hãy đợi tải xong rồi xét lớp.');
+    const sourceSchoolYear = normalizeSchoolYearKey(scope === 'graduation'
+      ? getPreviousSchoolYear(systemSchoolYear || currentSchoolYear) : systemSchoolYear || currentSchoolYear);
     const targetSchoolYear = getNextSchoolYear(sourceSchoolYear);
     const sourceStudents = safeStudents
       .filter(student => normalizeSchoolYearKey(student.schoolYear || sourceSchoolYear) === sourceSchoolYear);
-    const activeStudents = sourceStudents.filter(student => (student.status || 'active') !== 'dropped');
+    const activeStudents = sourceStudents.filter(student => !['dropped', 'completed'].includes(student.status)
+      && (scope !== 'graduation' || getGradeFromClass(student.className) === '9'));
+    const attendanceCollection = collection(db, 'artifacts', appId, 'public', 'data', 'class_attendance');
+    const attendanceSnapshot = await getDocsFromServer(firestoreQuery(
+      attendanceCollection, where('schoolYear', '==', sourceSchoolYear)));
+    const resultAttendance = attendanceSnapshot.docs.map(item => ({ ...item.data(), id: item.id }));
     const targetStudents = safeStudents
       .filter(student => normalizeSchoolYearKey(student.schoolYear || '') === normalizeSchoolYearKey(targetSchoolYear));
     let previousSheetStudents = [];
     const previousSourceSchoolYear = getPreviousSchoolYear(sourceSchoolYear);
     if (previousSourceSchoolYear) {
       try {
-        const response = await loadRegistrationDataAction('listStudents', { schoolYear: previousSourceSchoolYear });
-        if (response?.success !== false) {
-          previousSheetStudents = (Array.isArray(response.items) ? response.items : [])
-            .filter(row => normalizeSchoolYearKey(row.schoolYear) === normalizeSchoolYearKey(previousSourceSchoolYear))
-            .map(row => normalizeStudentRecord(registrationToStudentData(row, previousSourceSchoolYear), previousSourceSchoolYear));
+        // One row per student: fetch all rows so classHistory columns remain available even when BA points to a newer year.
+        const response = await loadRegistrationDataAction('listStudents');
+        if (response?.success !== true || !Array.isArray(response.items)) {
+          throw new Error(response?.message || 'Google Sheet không trả về danh sách học sinh.');
         }
-      } catch {
-        previousSheetStudents = [];
+        previousSheetStudents = response.items
+          .map(row => normalizeStudentRecord(registrationToStudentData(row, previousSourceSchoolYear), previousSourceSchoolYear));
+      } catch (error) {
+        throw new Error(`Không đọc được lịch sử lớp trên Google Sheet để đối chiếu: ${error.message || 'lỗi không xác định'}`, { cause: error });
       }
     }
 
@@ -1645,6 +1824,23 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
       return null;
     };
 
+    const classHistoryByStudentId = new Map();
+    const studentsWithSheetHistory = new Map();
+    activeStudents.forEach(student => {
+      const previousSheetStudent = findPreviousSheetStudent(student);
+      const classHistory = mergeStudentClassHistory(student.classHistory, previousSheetStudent?.classHistory);
+      classHistoryByStudentId.set(student.id, classHistory);
+      studentsWithSheetHistory.set(student.id, { ...student, classHistory });
+    });
+    const resultSchoolYears = [...new Set(activeStudents.flatMap(student =>
+      studentAcademicContexts(studentsWithSheetHistory.get(student.id), safeStudents, sourceSchoolYear).map(record => record.schoolYear)
+    ))].filter(year => year && year !== sourceSchoolYear);
+    for (let offset = 0; offset < resultSchoolYears.length; offset += 30) {
+      const years = resultSchoolYears.slice(offset, offset + 30);
+      const snapshot = await getDocsFromServer(firestoreQuery(attendanceCollection, where('schoolYear', 'in', years)));
+      resultAttendance.push(...snapshot.docs.map(item => ({ ...item.data(), id: item.id })));
+    }
+
     const correctedClassByStudentId = new Map();
     const classRepairs = [];
     activeStudents.forEach(student => {
@@ -1656,7 +1852,8 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
         correctedClassName = `${grade}A`;
       } else {
         const previousStudent = findPreviousSheetStudent(student);
-        const promotedFromPrevious = promoteSchoolClassName(previousStudent?.className);
+        const previousClassName = previousStudent?.classHistory?.[previousSourceSchoolYear] || previousStudent?.className;
+        const promotedFromPrevious = promoteSchoolClassName(previousClassName);
         if (getGradeFromClass(promotedFromPrevious) === grade && /^[1-9][A-Z]/.test(promotedFromPrevious)) {
           correctedClassName = promotedFromPrevious;
         }
@@ -1683,6 +1880,7 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
     const transitions = [];
     const completions = [];
     const missingScores = [];
+    const missingConduct = [];
     const invalidClasses = [];
     const alreadyPrepared = [];
     const repeated = [];
@@ -1705,10 +1903,13 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
       const schoolCode = getStudentSchoolCode(student);
       const rowsInGrade = studentsByGrade.get(`${schoolCode}__${grade}`) || [];
       const rowIndex = rowsInGrade.findIndex(item => item.id === student.id);
-      const scorebookEdits = scorebookEditsByYearGrade[`${normalizeSchoolYearKey(sourceSchoolYear)}__${grade}__${schoolCode}`]?.edits || {};
-      const scorebookSummary = getJourneyAcademicSummaryFromScorebook(studentRowView(scorebookEdits, student, rowIndex), rowIndex);
+      const resolution = resolveScorebookDocument(academicScorebooks, { schoolYear: sourceSchoolYear, grade, schoolCode, sourceFile: scorebookTemplate.sourceFile });
+      const scorebook = resolution.needsSelection ? null : resolution.document;
+      const scorebookEdits = scorebook?.edits || {};
+      const scorebookSummary = Number(grade) >= 6 ? scorebookYearSummary(scorebookEdits, student)
+        : getJourneyAcademicSummaryFromScorebook(studentRowView(scorebookEdits, student, rowIndex), rowIndex);
       const storedAcademicResult = getJourneyResult(student, 'hocLuc');
-      const academicResult = storedAcademicResult || scorebookSummary.result;
+      const academicResult = scorebookSummary.complete ? scorebookSummary.result : Number(grade) < 6 ? storedAcademicResult : '';
       const outcome = getPromotionOutcomeFromAcademicResult(academicResult);
 
       if (!outcome) {
@@ -1716,12 +1917,29 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
         return;
       }
 
-      const source = storedAcademicResult ? 'ket_qua_da_chot' : 'so_diem';
-      const scorebook = scorebookEditsByYearGrade[`${normalizeSchoolYearKey(sourceSchoolYear)}__${grade}__${schoolCode}`];
-      if (source === 'so_diem' && scorebook?.id) scorebookGuards.set(scorebook.id, scorebook);
+      const source = scorebookSummary.complete ? 'so_diem' : 'ket_qua_da_chot';
+      if (source === 'so_diem' && scorebook?.id) scorebookGuards.set(scorebook.id, {
+        ...scorebook,
+        updatedAt: Number(scorebook.updatedAt?.toMillis?.() ?? scorebook.updatedAt) || 0
+      });
+      const annualResultSummary = studentCenterAcademicResults({ student: studentsWithSheetHistory.get(student.id), records: safeStudents,
+        scorebooks: academicScorebooks, currentSchoolYear: sourceSchoolYear, attendance: resultAttendance,
+        attendanceReady: true, attendanceYears: new Set([...resultSchoolYears, sourceSchoolYear]) });
+      const annualResults = annualResultSummary.fields;
+      new Set(Object.values(annualResultSummary.sources).map(result => result.scorebookId).filter(Boolean)).forEach(id => {
+        const resultBook = academicScorebooks.find(item => item.id === id);
+        if (resultBook) scorebookGuards.set(id, { ...resultBook,
+          updatedAt: Number(resultBook.updatedAt?.toMillis?.() ?? resultBook.updatedAt) || 0 });
+      });
+      const conductResult = annualResults[`hanhKiemLop${grade}`]
+        || getJourneyResult(student, 'hanhKiem', grade);
       if (Number(grade) === 9 && outcome === 'promote') {
-        if (existingTargetStudent) { invalidClasses.push(student); return; }
-        completions.push({ student, academicResult, source });
+        if (!conductResult) { missingConduct.push(student); return; }
+        if ((existingTargetStudent && ![normalizedClassName, THCS_COMPLETED_CLASS].includes(existingTargetStudent.className))
+          || existingTargetStudent?.promotion?.outcome === 'repeat') { invalidClasses.push(student); return; }
+        completions.push({ student, sourceClassName: normalizedClassName, targetClassName: THCS_COMPLETED_CLASS,
+          targetStudent: existingTargetStudent, classHistory: classHistoryByStudentId.get(student.id), academicResult, conductResult, annualResults,
+          graduationYear: sourceSchoolYear.slice(5), source });
         promoted.push(student);
         return;
       }
@@ -1735,19 +1953,24 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
       }
       if (existingTargetStudent) {
         if (existingTargetStudent.className !== targetClassName) { invalidClasses.push(student); return; }
-        alreadyPrepared.push({ student, targetStudent: existingTargetStudent, sourceClassName: normalizedClassName, targetClassName });
+        alreadyPrepared.push({ student, targetStudent: existingTargetStudent, classHistory: classHistoryByStudentId.get(student.id),
+          sourceClassName: normalizedClassName, targetClassName, academicResult, conductResult, annualResults, outcome, source });
         return;
       }
-      const transition = { student, sourceClassName: normalizedClassName, targetClassName, academicResult, outcome, source };
+      const transition = { student, classHistory: classHistoryByStudentId.get(student.id), sourceClassName: normalizedClassName,
+        targetClassName, academicResult, conductResult, annualResults, outcome, source };
       transitions.push(transition);
       if (outcome === 'repeat') repeated.push(transition);
       else promoted.push(student);
     });
 
     return {
+      scope,
       sourceSchoolYear,
       targetSchoolYear,
       sourceVersions: promotionSourceVersions(students, sourceSchoolYear),
+      targetVersions: promotionSourceVersions(students.filter(student =>
+        normalizeSchoolYearKey(student.schoolYear || '') === targetSchoolYear), targetSchoolYear),
       scorebookGuards: [...scorebookGuards.values()],
       sourceStudentCount: sourceStudents.length,
       activeStudentCount: activeStudents.length,
@@ -1756,17 +1979,20 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
       completions,
       classRepairs,
       missingScores,
+      missingConduct,
       invalidClasses,
       alreadyPrepared,
       repeated,
       promoted,
-      canExecute: Boolean(targetSchoolYear && activeStudents.length && !missingScores.length && !invalidClasses.length)
+      canExecute: Boolean(targetSchoolYear && activeStudents.length && (scope === 'graduation'
+        ? transitions.length + completions.length + alreadyPrepared.length > 0
+        : !missingScores.length && !invalidClasses.length))
     };
   };
   const journeyRows = useMemo(() => {
     const needle = normalizeSearch(query);
     const groups = new Map();
-    safeStudents.forEach(student => {
+    scopedStudents.forEach(student => {
       if (!student.fullName && !student.identityCode) return;
       const key = getStudentIdentity(student) || student.id || `${student.fullName}_${student.schoolYear}`;
       const group = groups.get(key) || { key, records: [], byYear: new Map() };
@@ -1815,7 +2041,7 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
     })
       .filter(row => (!journeyYearFilter || row.include) && (!needle || row.searchable.includes(needle)))
       .sort((a, b) => compareClassThenName(a.student, b.student));
-  }, [safeStudents, query, journeyYearFilter, journeyClassFilter]);
+  }, [scopedStudents, query, journeyYearFilter, journeyClassFilter]);
   const addressProvinceOptions = useMemo(() => uniqueTextItems([
     ...addressDirectory.provinces,
     ...safeStudents.flatMap(student => [student.province, student.householdProvince]),
@@ -1839,20 +2065,7 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
     () => getWardOptions(editing?.householdProvince, editing?.householdWard, true),
     [getWardOptions, editing?.householdProvince, editing?.householdWard]
   );
-  const registrationRows = useMemo(
-    () => pendingRegistrations.map(item => ({
-      ...registrationToStudentData(item, currentSchoolYear),
-      id: safePlainValue(item.tempId),
-      tempId: safePlainValue(item.tempId),
-      rowNumber: safePlainValue(item.rowNumber),
-      duplicateReason: safePlainValue(item.duplicateReason),
-      duplicateStudentId: safePlainValue(item.duplicateStudentId),
-      duplicateStudentName: safePlainValue(item.duplicateStudentName),
-      duplicateAccessCode: safePlainValue(item.duplicateAccessCode)
-    })),
-    [pendingRegistrations, currentSchoolYear]
-  );
-  const findRegistrationDuplicate = (registration = {}) => {
+  const findRegistrationDuplicate = useCallback((registration = {}) => {
     const identityCode = String(registration.identityCode || registration.maDinhDanh || '').replace(/^'/, '').trim();
     if (/^\d{12}$/.test(identityCode)) {
       const byIdentity = safeStudents.find(student => String(student.identityCode || '').replace(/^'/, '').trim() === identityCode);
@@ -1869,10 +2082,14 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
       if (byNameBirth) return { student: byNameBirth, reason: 'Trùng họ tên + ngày sinh' };
     }
     return null;
-  };
+  }, [safeStudents]);
 
-  const decorateRegistration = (item = {}, index = 0) => {
+  const registrationIdentity = registration => /^\d{12}$/.test(String(registration.identityCode || ''))
+    ? registration.identityCode
+    : registration.registrationId || registration.id || registration.tempId;
+  const decorateRegistration = useCallback((item = {}, index = 0) => {
     const duplicate = findRegistrationDuplicate(item);
+    const identity = registrationIdentity(item);
     return {
       ...item,
       tempId: safePlainValue(item.id || item.rowNumber || `${pickText(item.identityCode, item.fullName) || 'row'}_${index}`),
@@ -1880,9 +2097,29 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
       duplicateReason: duplicate?.reason || '',
       duplicateStudentId: duplicate?.student?.id || '',
       duplicateStudentName: duplicate?.student?.fullName || '',
-      duplicateAccessCode: duplicate?.student?.accessCode || ''
+      duplicateAccessCode: duplicate?.student?.accessCode || '',
+      registrationSyncPending: yearStudents.some(student => student.registrationId === identity && ['pending', 'failed', 'running'].includes(student.sheetSync?.status))
     };
-  };
+  }, [findRegistrationDuplicate, yearStudents]);
+  // Student snapshots can arrive after the Sheet response or change while this list stays open.
+  const reviewedRegistrations = useMemo(
+    () => pendingRegistrations.map(decorateRegistration),
+    [pendingRegistrations, decorateRegistration]
+  );
+  const registrationRows = useMemo(
+    () => reviewedRegistrations.map(item => ({
+      ...registrationToStudentData(item, currentSchoolYear),
+      id: safePlainValue(item.tempId),
+      tempId: safePlainValue(item.tempId),
+      rowNumber: safePlainValue(item.rowNumber),
+      duplicateReason: safePlainValue(item.duplicateReason),
+      duplicateStudentId: safePlainValue(item.duplicateStudentId),
+      duplicateStudentName: safePlainValue(item.duplicateStudentName),
+      duplicateAccessCode: safePlainValue(item.duplicateAccessCode),
+      registrationSyncPending: item.registrationSyncPending
+    })),
+    [reviewedRegistrations, currentSchoolYear]
+  );
 
   const loadPendingRegistrationsRef = useRef(loadPendingRegistrations);
   loadPendingRegistrationsRef.current = loadPendingRegistrations;
@@ -1902,9 +2139,9 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
   useEffect(() => {
     setColumnFilters({});
     setOpenFilterKey(null);
-    setClassFilter([]);
-    setShowClassPicker(false);
-    setStatusFilter(studentTab === 'current' ? 'active' : 'all');
+    setGradeFilter(null);
+    setClassFilter(null);
+    setStatusFilter(studentTab === 'current' ? ['active'] : null);
     if (studentTab === 'registrations') {
       const compact = typeof window !== 'undefined' && window.innerWidth < 640;
       setVisibleColumns(compact ? MOBILE_VISIBLE_COLUMNS : REGISTRATION_DEFAULT_VISIBLE_COLUMNS);
@@ -1995,39 +2232,51 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
     });
   }, [isEditingStudent, editing?.province, editing?.householdProvince, addressDirectory.communes]);
   const duplicateRegistrationCount = useMemo(
-    () => pendingRegistrations.filter(item => item.duplicateReason).length,
-    [pendingRegistrations]
+    () => reviewedRegistrations.filter(item => item.duplicateReason && !item.registrationSyncPending).length,
+    [reviewedRegistrations]
   );
 
-  const activeSourceRows = studentTab === 'registrations' ? registrationRows : yearStudents;
+  const activeSourceRows = studentTab === 'registrations' ? registrationRows : yearStudentsWithResults;
   const classOptions = useMemo(
     () => [...new Set([
-      ...(studentTab === 'current' ? configuredClassOptions : []),
+      ...(studentTab === 'current' ? configuredClassOptions.filter(className => belongsToEducationLevel({ className }, educationLevel)) : []),
       ...activeSourceRows.map(student => student.className).filter(Boolean)
     ])].sort((a, b) => a.localeCompare(b, 'vi', { numeric: true, sensitivity: 'base' })),
-    [activeSourceRows, configuredClassOptions, studentTab]
+    [activeSourceRows, configuredClassOptions, studentTab, educationLevel]
   );
   const activeSelectedIds = studentTab === 'registrations' ? selectedRegistrationIds : selectedIds;
-  const selectedClassSet = useMemo(() => new Set(classFilter), [classFilter]);
-  const classFilterLabel = useMemo(() => {
-    if (!classFilter.length) return 'Tất cả lớp';
-    if (classFilter.length === 1) return `Lớp ${classFilter[0]}`;
-    return `${classFilter.length} lớp`;
-  }, [classFilter]);
-  const toggleClassFilter = (className) => {
-    setClassFilter(prev => prev.includes(className)
-      ? prev.filter(item => item !== className)
-      : [...prev, className].sort((a, b) => a.localeCompare(b, 'vi', { numeric: true, sensitivity: 'base' })));
-  };
+  const selectedClassSet = useMemo(() => new Set(classFilter || []), [classFilter]);
+  const selectedGradeSet = useMemo(() => new Set(gradeFilter || []), [gradeFilter]);
+  const gradeOptions = useMemo(() => [...new Set([
+    ...classOptions.map(className => getGradeFromClass(className)),
+    ...activeSourceRows.map(student => getGradeFromClass(student.className) || getGradeFromClass(student.grade))
+  ].filter(Boolean))].sort((a, b) => Number(a) - Number(b)), [classOptions, activeSourceRows]);
+  const filteredClassOptions = useMemo(
+    () => classOptions.filter(className => gradeFilter == null || selectedGradeSet.has(getGradeFromClass(className))),
+    [classOptions, gradeFilter, selectedGradeSet]
+  );
   const matchesClassFilter = useCallback(
-    (student) => !classFilter.length || selectedClassSet.has(student.className),
-    [classFilter.length, selectedClassSet]
+    (student) => (gradeFilter == null || selectedGradeSet.has(getGradeFromClass(student.className) || getGradeFromClass(student.grade)))
+      && (classFilter == null || selectedClassSet.has(student.className)),
+    [gradeFilter, classFilter, selectedGradeSet, selectedClassSet]
+  );
+  const changeGradeFilter = (values) => {
+    setGradeFilter(values);
+    setClassFilter(previous => {
+      if (previous == null || !previous.length || values == null) return previous;
+      const valid = previous.filter(className => values.includes(getGradeFromClass(className)));
+      return valid.length ? valid : null;
+    });
+  };
+  const matchesStatusFilter = useCallback(
+    student => studentTab === 'registrations' || statusFilter == null || statusFilter.includes(student.status || 'active'),
+    [studentTab, statusFilter]
   );
 
   const getMissingAcademicResults = useCallback((student = {}) => {
     const grade = Number(getGradeFromClass(student.className) || 0);
     if (grade <= 6) return [];
-    const maxGrade = Math.min(grade - 1, 9);
+    const maxGrade = Math.min(grade - 1, Number(getStudentEntryGrade(student, student.schoolYear)) - 1, 9);
     return ACADEMIC_RESULT_CHECK_FIELDS
       .filter(item => item.grade <= maxGrade)
       .filter(item => !safePlainValue(student[item.key]).trim())
@@ -2140,6 +2389,7 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
 
   useEffect(() => {
     setClassFilter(prev => {
+      if (prev == null) return prev;
       const next = prev.filter(className => classOptions.includes(className));
       return next.length === prev.length ? prev : next;
     });
@@ -2156,20 +2406,11 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
   const filteredStudents = useMemo(() => {
     const needle = normalizeSearch(query);
     return [...activeSourceRows
-      .filter(student => studentTab === 'registrations' || statusFilter === 'all' || (student.status || 'active') === statusFilter)
+      .filter(matchesStatusFilter)
       .filter(matchesClassFilter)
       .filter(matchesQuickIssueFilter)
       .filter(student => visibleStudentFields.every(field => {
-        const filterValue = columnFilters[field.key];
-        if (!filterValue) return true;
-        if (DOCUMENT_FIELD_KEYS.has(field.key)) {
-          const hasDocument = splitDocumentUrls(student[field.key]).length > 0;
-          if (filterValue === HAS_DOCUMENT_FILTER_VALUE) return hasDocument;
-          if (filterValue === EMPTY_FILTER_VALUE) return !hasDocument;
-          return false;
-        }
-        if (filterValue === EMPTY_FILTER_VALUE) return !String(student[field.key] || '').trim();
-        return String(student[field.key] || '') === filterValue;
+        return matchesColumnFilter(student, field.key, columnFilters[field.key]);
       }))
       .filter(student => {
         if (!needle) return true;
@@ -2188,11 +2429,11 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
         if (statusCompare !== 0) return statusCompare;
         return sortMode === 'fullName' ? compareVietnameseName(a, b) : compareClassThenName(a, b);
       });
-  }, [activeSourceRows, studentTab, query, statusFilter, visibleStudentFields, columnFilters, sortMode, matchesClassFilter, matchesQuickIssueFilter]);
+  }, [activeSourceRows, query, visibleStudentFields, columnFilters, sortMode, matchesClassFilter, matchesStatusFilter, matchesQuickIssueFilter]);
 
   const issueStats = useMemo(() => {
     const rows = activeSourceRows
-      .filter(student => studentTab === 'registrations' || statusFilter === 'all' || (student.status || 'active') === statusFilter)
+      .filter(matchesStatusFilter)
       .filter(matchesClassFilter);
     const activeRows = rows.filter(student => student.status !== 'dropped');
     const selectedRows = rows.filter(student => activeSelectedIds.has(student.id));
@@ -2204,7 +2445,7 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
       missingIdentity: activeRows.filter(student => getStudentIssueFlags(student).missingIdentity).length,
       missingAcademic: activeRows.filter(student => getStudentIssueFlags(student).missingAcademic).length
     };
-  }, [activeSourceRows, studentTab, statusFilter, activeSelectedIds, matchesClassFilter, getStudentIssueFlags]);
+  }, [activeSourceRows, activeSelectedIds, matchesClassFilter, matchesStatusFilter, getStudentIssueFlags]);
   const classStats = useMemo(() => {
     const map = new Map();
     activeSourceRows.forEach(student => {
@@ -2223,26 +2464,13 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
 
   const getFilterOptions = (fieldKey) => {
     const source = activeSourceRows
-      .filter(student => studentTab === 'registrations' || statusFilter === 'all' || (student.status || 'active') === statusFilter)
+      .filter(matchesStatusFilter)
       .filter(matchesClassFilter)
       .filter(student => Object.entries(columnFilters).every(([key, value]) => {
-        if (!value || key === fieldKey) return true;
-        if (DOCUMENT_FIELD_KEYS.has(key)) {
-          const hasDocument = splitDocumentUrls(student[key]).length > 0;
-          if (value === HAS_DOCUMENT_FILTER_VALUE) return hasDocument;
-          if (value === EMPTY_FILTER_VALUE) return !hasDocument;
-          return true;
-        }
-        if (value === EMPTY_FILTER_VALUE) return !String(student[key] || '').trim();
-        return String(student[key] || '') === value;
+        if (value == null || key === fieldKey || !visibleColumns.includes(key)) return true;
+        return matchesColumnFilter(student, key, value);
       }));
-    return [...new Set(source.map(student => {
-      if (DOCUMENT_FIELD_KEYS.has(fieldKey)) {
-        return splitDocumentUrls(student[fieldKey]).length > 0 ? HAS_DOCUMENT_FILTER_VALUE : EMPTY_FILTER_VALUE;
-      }
-      const value = String(student[fieldKey] || '').trim();
-      return value || EMPTY_FILTER_VALUE;
-    }))]
+    return [...new Set([...source.map(student => studentColumnFilterValue(student, fieldKey)), ...(columnFilters[fieldKey] || [])])]
       .sort((a, b) => {
         if (a === HAS_DOCUMENT_FILTER_VALUE) return -1;
         if (b === HAS_DOCUMENT_FILTER_VALUE) return 1;
@@ -2251,12 +2479,17 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
         return String(a).localeCompare(String(b), 'vi', { numeric: true, sensitivity: 'base' });
       });
   };
+  const getDropdownFilterOptions = (fieldKey, filterKey) => (
+    openFilterKey === filterKey ? getFilterOptions(fieldKey) : (columnFilters[fieldKey] || [])
+  ).map(option => ({ value: option, label: getColumnFilterOptionLabel(option) }));
 
-  const openCreate = () => { editingOriginal.current = null; setEditing({ ...emptyStudent, schoolYear: currentSchoolYear, enrollmentYear: String(new Date().getFullYear()) }); };
-  const openEdit = (student) => { editingOriginal.current = student; setEditing(normalizeStudentRecord({ ...emptyStudent, ...student }, currentSchoolYear)); };
+  const openCreate = () => { setProfileReadOnly(false); editingOriginal.current = null; setEditing({ ...emptyStudent, schoolYear: currentSchoolYear, enrollmentYear: String(new Date().getFullYear()) }); };
+  const openEdit = (student) => { const original = students.find(item => item.id === student.id) || student; setProfileReadOnly(false); editingOriginal.current = original; setEditing(normalizeStudentRecord({ ...emptyStudent, ...original }, currentSchoolYear)); };
+  const openView = (student) => { const original = students.find(item => item.id === student.id) || student; setProfileReadOnly(true); editingOriginal.current = original; setEditing(normalizeStudentRecord({ ...emptyStudent, ...original }, currentSchoolYear)); };
   const startQuickEdit = (student, field) => {
-    if (quickEditSaving || studentTab !== 'current' || isImageOnlyView || !student?.id || !field?.key) return;
+    if (!quickEditEnabled || quickEditSaving || studentTab !== 'current' || isImageOnlyView || !student?.id || !field?.key) return;
     if (DOCUMENT_FIELD_KEYS.has(field.key) || field.key === 'grade') return;
+    if (centerAcademicByStudent.get(student.id)?.sources[field.key]) return;
     if (isReadOnlyStudentRecord(student)) {
       showNotification?.(readOnlyStudentMessage(student), 'error');
       return;
@@ -2285,7 +2518,11 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
       setQuickEdit(prev => prev?.studentId === student.id && prev?.fieldKey === field.key ? null : prev);
       return;
     }
-    const gradePatch = field.key === 'className' ? { grade: getGradeFromClass(nextValue) } : {};
+    const gradePatch = field.key === 'className' ? {
+      grade: getGradeFromClass(nextValue),
+      classHistory: { ...Object.fromEntries(studentAcademicContexts(student, safeStudents, currentSchoolYear)
+        .map(record => [record.schoolYear, record.className])), ...student.classHistory, [student.schoolYear || currentSchoolYear]: nextValue }
+    } : {};
     const schoolPatch = field.key === 'schoolCode'
       ? { schoolCode: nextValue, schoolName: getSchoolName(nextValue) }
       : {};
@@ -2320,10 +2557,12 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
   };
   const closeEdit = () => {
     setEditing(null);
+    setProfileReadOnly(false);
     setDocumentViewer(null);
     setUploadingDocumentKey('');
   };
   const updateEditingField = (key, value) => {
+    if (profileReadOnly) return;
     setEditing(prev => {
       if (!prev) return prev;
       const next = { ...prev, [key]: value };
@@ -2399,7 +2638,7 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
   };
   const filteredIds = useMemo(
     () => filteredStudents
-      .filter(student => !(studentTab === 'registrations' && student.duplicateReason))
+      .filter(student => !(studentTab === 'registrations' && student.duplicateReason && !student.registrationSyncPending))
       .map(student => student.id)
       .filter(Boolean),
     [filteredStudents, studentTab]
@@ -2437,7 +2676,6 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
     setColumnFilters({});
     setOpenFilterKey(null);
     setShowFilters(false);
-    setShowClassPicker(false);
   };
 
   const updateVisibleColumns = (fieldKey) => {
@@ -2461,6 +2699,7 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
   const normalizeCurrentYearStudentNames = async () => {
     const rawStudents = Array.isArray(students) ? students : [];
     const targets = rawStudents
+      .filter(student => belongsToEducationLevel(student, educationLevel))
       .filter(student => String(student.schoolYear || currentSchoolYear) === String(currentSchoolYear))
       .map(student => {
         const currentName = safePlainValue(student.fullName);
@@ -2488,6 +2727,7 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
   const backfillCurrentYearStudentGrades = async () => {
     const rawStudents = Array.isArray(students) ? students : [];
     const targets = rawStudents
+      .filter(student => belongsToEducationLevel(student, educationLevel))
       .filter(student => String(student.schoolYear || currentSchoolYear) === String(currentSchoolYear))
       .map(student => ({ student, grade: getGradeFromClass(student.className || student.grade || '') }))
       .filter(({ student, grade }) => student.id && grade && String(student.grade || '') !== String(grade));
@@ -2622,10 +2862,10 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
     }
   };
 
-  const openSchoolYearPromotion = async () => {
+  const openSchoolYearPromotion = async (scope = '') => {
     setIsSaving(true);
     try {
-      const preview = await buildSchoolYearPromotionPreview();
+      const preview = await buildSchoolYearPromotionPreview(scope);
       if (!preview.sourceStudentCount) {
         showNotification?.(`Chưa có học sinh trong năm học hệ thống ${preview.sourceSchoolYear || currentSchoolYear}.`, 'error');
         return;
@@ -2643,14 +2883,22 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
   };
 
   const confirmSchoolYearPromotion = async () => {
-    const preview = schoolYearPromotionPreview;
+      const preview = schoolYearPromotionPreview;
     if (!preview?.canExecute || !onStartSchoolYearPromotion) return;
-    if (!window.confirm(`Chuyển năm học từ ${preview.sourceSchoolYear} sang ${preview.targetSchoolYear}? Hệ thống sẽ sao lưu trước, tạo hồ sơ năm mới cho ${preview.transitions.length} học sinh chưa có, cập nhật lịch sử lớp lên Google Sheet và chỉ đổi năm học hệ thống sau khi đồng bộ thành công. Nếu bị gián đoạn, có thể chạy lại để tiếp tục.`)) return;
+    const transitionCount = preview.transitions.length;
+    const pendingReviewCount = preview.missingScores.length + preview.missingConduct.length + preview.invalidClasses.length;
+    const description = preview.scope === 'graduation'
+      ? `Xét lớp 9 năm ${preview.sourceSchoolYear}: ${preview.completions.length} học sinh TNTHCS năm ${preview.sourceSchoolYear.slice(5)}, ${transitionCount} hồ sơ ở lại lớp. ${pendingReviewCount} hồ sơ thiếu dữ liệu hoặc cần đối chiếu sẽ giữ nguyên.`
+      : `Xét năm ${preview.sourceSchoolYear} sang ${preview.targetSchoolYear}: ${transitionCount} hồ sơ lên lớp/lưu ban, ${preview.completions.length} hồ sơ TNTHCS năm ${preview.sourceSchoolYear.slice(5)}.`;
+    if (!window.confirm(`${description} Hệ thống sẽ sao lưu rồi ghi web và Google Sheet. Lớp và kết quả năm cũ được giữ. Bạn hãy hoàn tất chỉnh sửa Sheet trước khi xác nhận.`)) return;
     setIsSaving(true);
     try {
       const result = await onStartSchoolYearPromotion(preview);
       setSchoolYearPromotionPreview(null);
-      showNotification?.(`Đã chuyển sang năm ${preview.targetSchoolYear}. ${result?.createdCount ?? preview.transitions.length} hồ sơ được tạo${preview.completions.length ? `, ${preview.completions.length} học sinh hoàn thành lớp 9` : ''}.${(result?.skippedCount || 0) ? ` ${result.skippedCount} hồ sơ đã tồn tại nên không tạo lại.` : ''}`);
+      const resultMessage = preview.scope === 'graduation'
+        ? `Đã xét lớp 9: ${preview.completions.length} học sinh TNTHCS, ${preview.transitions.length} hồ sơ ở lại lớp.`
+        : `Đã chuyển sang năm ${preview.targetSchoolYear}. ${result?.createdCount ?? preview.transitions.length} hồ sơ năm mới được cập nhật${preview.completions.length ? `, gồm ${preview.completions.length} hồ sơ TNTHCS` : ''}.`;
+      showNotification?.(`${resultMessage}${pendingReviewCount ? ` ${pendingReviewCount} hồ sơ thiếu dữ liệu hoặc cần đối chiếu vẫn được giữ nguyên.` : ''}${(result?.skippedCount || 0) ? ` ${result.skippedCount} hồ sơ đã tồn tại nên không tạo lại.` : ''}`);
     } catch (error) {
       showNotification?.(`Chưa chuyển được năm học: ${error.message || 'lỗi không xác định'}`, 'error');
     } finally {
@@ -2658,7 +2906,12 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
     }
   };
 
-  const persistStudent = (student, options = {}) => saveStudentRecord(normalizeStudentRecord(student, currentSchoolYear), { codePrefix: getCodePrefix(student, currentSchoolYear), actor: user?.uid || 'Admin', expected: student.id ? students.find(item => item.id === student.id) : undefined, ...options });
+  const persistStudent = (student, options = {}) => {
+    if (!belongsToEducationLevel(student, educationLevel)) return Promise.reject(new Error(`Chọn lớp thuộc cấp ${educationLabel(educationLevel)} trước khi lưu hồ sơ.`));
+    const centerResults = studentCenterAcademicResults({ student, records: safeStudents, scorebooks: academicScorebooks,
+      currentSchoolYear: systemSchoolYear || currentSchoolYear, attendance: profileAttendance, attendanceReady: attendanceReadyForResults, attendanceYears: loadedResultAttendanceYears });
+    return saveStudentRecord(normalizeStudentRecord({ ...student, ...centerResults.fields }, currentSchoolYear), { codePrefix: getCodePrefix(student, currentSchoolYear), actor: user?.uid || 'Admin', expected: student.id ? students.find(item => item.id === student.id) : undefined, ...options });
+  };
   const completeRegistrationSync = async (registration, student) => {
     if (!registration.rowNumber) throw new Error('Thiếu dòng đăng ký; cần đối soát trước khi đánh dấu.');
     await callSheetAction('markExistingRegistration', { rowNumber: registration.rowNumber, identityCode: student.identityCode || '', fullName: student.fullName || '', birthDate: student.birthDate || '', note: 'Da chuyen vao database. Ma hoc sinh: ' + student.accessCode });
@@ -2666,13 +2919,23 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
   const syncPersistedStudent = student => retryStudentSync(student.id, saved => syncStudentToSheet(saved, saved.schoolYear), { registrationComplete: completeRegistrationSync });
   const reportStudentBatch = (result, label) => showNotification?.(label + ': ' + result.succeeded.length + '/' + (result.succeeded.length + result.failed.length) + ' hồ sơ thành công, đồng bộ Sheet được xếp hàng.' + (result.failed.length ? ' Còn ' + result.failed.length + ' hồ sơ lỗi: ' + result.failed[0].error.message : ''), result.failed.length ? 'error' : 'success');
   const retrySheetJobs = async () => {
+    if (isSaving) return;
     setIsSaving(true);
-    try { const result = await retryPendingStudentSync(yearStudents, saved => syncStudentToSheet(saved, saved.schoolYear), undefined, { registrationComplete: completeRegistrationSync });
-      showNotification?.('Đồng bộ lại: ' + result.succeeded.length + ' thành công; ' + result.failed.length + ' còn lỗi.', result.failed.length ? 'error' : 'success');
+    const total = yearStudents.filter(student => ['pending', 'failed', 'running'].includes(student.sheetSync?.status)).length;
+    setSheetRetryStatus({ phase: 'running', completed: 0, total, succeeded: 0, failed: 0 });
+    try { const result = await retryPendingStudentSync(yearStudents, saved => syncStudentToSheet(saved, saved.schoolYear), progress => setSheetRetryStatus({ ...progress, phase: 'running' }), { registrationComplete: completeRegistrationSync });
+      const firstFailure = result.failed[0];
+      const failureMessage = firstFailure ? (firstFailure.record.fullName || 'Học sinh') + (firstFailure.record.accessCode ? ' (' + firstFailure.record.accessCode + ')' : '') + ': ' + firstFailure.error.message : '';
+      setSheetRetryStatus({ phase: 'done', completed: total, total, succeeded: result.succeeded.length, failed: result.failed.length, error: failureMessage });
+      showNotification?.('Đồng bộ lại: ' + result.succeeded.length + ' thành công; ' + result.failed.length + ' còn lỗi.' + (result.failed.length ? ' ' + result.failed[0].error.message : ''), result.failed.length ? 'error' : 'success');
+    } catch (error) {
+      setSheetRetryStatus(current => ({ ...current, phase: 'done', error: error.message }));
+      showNotification?.('Chưa đồng bộ được Sheet: ' + error.message, 'error');
     } finally { setIsSaving(false); }
   };
 
   const saveStudent = async () => {
+  if (profileReadOnly) return;
  if (uploadingDocumentKey) { showNotification?.('Đang tải giấy tờ, chờ xong rồi lưu hồ sơ.', 'error'); return; }
  if (!safePlainValue(editing?.fullName) || !safePlainValue(editing?.className)) { showNotification?.('Cần nhập họ tên và lớp học.', 'error'); return; }
  setIsSaving(true);
@@ -2749,9 +3012,22 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
   const toggleDropout = async student => {
  setIsSaving(true);
  try {
-  const saved=await persistStudent({...student,status:student.status==='dropped'?'active':'dropped'});
-  setStatusFilter('active');
-  try{await syncPersistedStudent(saved);showNotification?.('Đã cập nhật tình trạng và Sheet.');}
+  const isDropping = student.status !== 'dropped';
+  const schoolYear = student.schoolYear || currentSchoolYear;
+  const restoredClassName = student.dropoutPreviousClassName || '';
+  const classHistory = { ...(student.classHistory || {}) };
+  if (isDropping) delete classHistory[schoolYear];
+  else if (restoredClassName) classHistory[schoolYear] = restoredClassName;
+  const saved=await persistStudent({
+   ...student,
+   status: isDropping ? 'dropped' : 'active',
+   dropoutPreviousClassName: isDropping ? (student.className || student.dropoutPreviousClassName || '') : '',
+   classHistory,
+   className: isDropping ? '' : restoredClassName,
+   grade: isDropping ? '' : getGradeFromClass(restoredClassName)
+  });
+  setStatusFilter(['active']);
+  try{await syncPersistedStudent(saved);showNotification?.(isDropping ? 'Đã đánh dấu bỏ học; lớp và khối năm nay đã để trống.' : 'Đã đưa học sinh trở lại lớp trước đó.');}
   catch(error){showNotification?.('Tình trạng đã cập nhật; đồng bộ Sheet đang chờ thử lại: '+error.message,'error');}
  }catch(error){showNotification?.('Chưa cập nhật được: '+error.message,'error');}
  finally{setIsSaving(false);}
@@ -2801,21 +3077,6 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
  finally{setIsSaving(false);}
 };
 
-  const syncPreviousYear = async () => {
- if(!previousSchoolYear){showNotification?.('Chưa nhận được năm học trước.','error');return;}
- const currentKeys=new Set(yearStudents.map(getStudentIdentity).filter(Boolean));
- const candidates=previousYearStudents.filter(student=>(student.status||'active')==='active').map(student=>({student,nextClass:promoteSchoolClassName(student.className)})).filter(item=>item.nextClass&&!currentKeys.has(getStudentIdentity(item.student)));
- if(!candidates.length){showNotification?.('Năm này đã đủ hồ sơ có thể chuyển.');return;}
- if(!window.confirm('Đồng bộ ' + candidates.length + ' hồ sơ sang ' + currentSchoolYear + '?'))return;
- setIsSaving(true);
- try {
-  const result=await processRecords(candidates,({student,nextClass})=>{
-   const data={...student};['id','createdAt','createdBy','updatedAt','updatedBy','sheetSync','syncRevision'].forEach(key=>delete data[key]);
-   return persistStudent({...data,grade:getGradeFromClass(nextClass),className:nextClass,schoolYear:currentSchoolYear,previousStudentId:student.id,syncedFromSchoolYear:previousSchoolYear,status:'active'},{id:stableRecordId('student-year',student.studentKey||student.accessCode||student.id,currentSchoolYear),createOnly:true,allocateCode:!data.accessCode});
-  });reportStudentBatch(result,'Chuyển hồ sơ năm học');
- }finally{setIsSaving(false);}
-};
-
   const importFromPaste = async () => {
  const parsed=parseSheetPaste(importText,currentSchoolYear).sort(compareClassThenName);
  if(!parsed.length){showNotification?.('Chưa đọc được bảng. Hãy dán cả hàng tiêu đề.','error');return;}
@@ -2837,6 +3098,7 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
     const exportFields = mode === 'all' ? STUDENT_FIELDS : visibleStudentFields;
     const title = buildExportTitle({
       currentSchoolYear,
+      gradeFilter,
       classFilter,
       statusFilter,
       columnFilters,
@@ -2851,8 +3113,8 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
         index + 1,
         ...exportFields.map(field => fieldValueForExport(student, field)),
         student.accessCode || '',
-        student.status === 'dropped' ? 'Bỏ học' : 'Đang học',
-        student.schoolYear || currentSchoolYear
+        student.status === 'dropped' ? 'Bỏ học' : isGraduatedStudent(student) ? 'TNTHCS' : 'Đang học',
+        isGraduatedStudent(student) ? student.graduationYear : student.schoolYear || currentSchoolYear
       ]);
     });
     const blob = createXlsxBlob(rows, title);
@@ -2950,7 +3212,7 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
     const scopeText = selectedRows.length
       ? `${selectedRows.length} học sinh đã chọn`
       : `${sourceRows.length} học sinh đang lọc`;
-    const classText = classFilter.length ? `Lớp: ${classFilter.join(', ')}` : 'Lớp: tất cả lớp đang xem';
+    const classText = classFilter?.length ? `Lớp: ${classFilter.join(', ')}` : 'Lớp: tất cả lớp đang xem';
 
     const report = missingRows.length
       ? [
@@ -2989,9 +3251,11 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
       const payload = await loadRegistrationDataAction('listPending', {}, { signal: controller.signal, timeoutMs: 20000 });
       if (controller.signal.aborted || registrationRequestRef.current !== controller) return;
       const items = Array.isArray(payload.items) ? payload.items : [];
-      const visibleItems = items.map(decorateRegistration);
+      const allItems = items.map(decorateRegistration);
+      const visibleItems = allItems.filter(item => belongsToEducationLevel(registrationToStudentData(item, currentSchoolYear), educationLevel));
       const duplicateCount = visibleItems.filter(item => item.duplicateReason).length;
-      setPendingRegistrations(visibleItems);
+      setPendingRegistrations(allItems);
+      onPendingRegistrationsLoaded?.(allItems);
       setSelectedRegistrationIds(new Set());
       showNotification?.(`Đã tải ${visibleItems.length} hồ sơ mới cần duyệt.${duplicateCount ? ` Có ${duplicateCount} hồ sơ trùng cần xử lý.` : ''}`);
     } catch (error) {
@@ -3053,70 +3317,158 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
     }
   };
 
+  const openYearReconciliation = () => {
+    if (!academicScorebooksReady) {
+      showNotification?.('Chưa tải xong sổ điểm. Đợi tải xong rồi đối chiếu lớp.', 'error');
+      return;
+    }
+    setYearReconciliationProgress('');
+    setYearReconciliation(buildStudentYearReconciliation({ records: scopedStudents, scorebooks: academicScorebooks, targetSchoolYear: currentSchoolYear }));
+  };
+
+  const applyYearReconciliation = async (rows, approveNewDecisions = false) => {
+    if (isSaving || yearReconciliationLock.current || !rows.length) return;
+    if (approveNewDecisions && !window.confirm(`Duyệt ${rows.length} hồ sơ theo đủ điểm cả năm trước? Hãy kiểm tra từng dòng trong bảng đối chiếu trước khi xác nhận.`)) return;
+    yearReconciliationLock.current = true;
+    setIsSaving(true);
+    let savedCount = 0, syncedCount = 0;
+    const errors = [];
+    try {
+      for (const [index, item] of rows.entries()) {
+        setYearReconciliationProgress(`Đang sửa lớp: ${index + 1}/${rows.length} · ${item.student.fullName}`);
+        try {
+          const original = students.find(student => student.id === item.student.id);
+          if (!original || !sameData(normalizeStudentRecord(original, currentSchoolYear), item.student)) throw new Error('Hồ sơ đã thay đổi, mở lại bảng đối chiếu.');
+          const saved = await persistStudent(reconciledStudentRecord(item), {
+            ...(item.action === 'review' ? { academicDecision: { source: students.find(student => student.id === item.sourceStudent.id), scorebook: item.scorebook } } : {})
+          });
+          savedCount += 1;
+          setYearReconciliation(previous => previous?.map(row => row.student.id === item.student.id
+            ? { ...row, action: 'unchanged', currentClass: item.proposedClass, reason: 'Đã sửa lớp trên web; đang gửi Sheet.' } : row));
+          await syncPersistedStudent(saved);
+          syncedCount += 1;
+          setYearReconciliation(previous => previous?.map(row => row.student.id === item.student.id
+            ? { ...row, reason: 'Đã sửa lớp trên web và cập nhật Sheet.' } : row));
+        } catch (error) { errors.push(`${item.student.fullName}: ${error.message}`); }
+      }
+      setYearReconciliationProgress(`Hoàn tất: đã sửa ${savedCount}/${rows.length} hồ sơ trên web; đã gửi Sheet ${syncedCount}. ${errors.length ? errors.join(' · ') : ''}`);
+    } finally {
+      yearReconciliationLock.current = false;
+      setIsSaving(false);
+    }
+  };
+
   const syncStudentsFromSheet = async () => {
+    if (isSaving || sheetImportLock.current) return;
     if (!yearStudents.length) {
       showNotification?.('Chưa có học sinh trong database để khớp với Sheet.', 'error');
       return;
     }
-    if (!window.confirm('Cập nhật database từ Google Sheet cho các học sinh đã khớp? Hệ thống chỉ ghi đè ô Sheet có dữ liệu, không xóa dữ liệu đang có trong database.')) return;
+    if (!window.confirm('Cập nhật thông tin hồ sơ từ Sheet cho năm đang xem? Giữ các quyết định lớp và kết quả đã xét trên web. Nếu Sheet đánh dấu bỏ học, web sẽ giữ trạng thái bỏ học, xóa lớp/khối hiện tại và loại hồ sơ khỏi xét nâng lớp. Bỏ qua các ô Sheet trống khác.')) return;
+    sheetImportLock.current = true;
     setIsSaving(true);
+    const progress = { phase: 'reading', completed: 0, total: 0, updated: 0, unchanged: 0, skipped: 0, failed: 0, classConflicts: 0, errors: [] };
+    setSheetImportStatus({ ...progress });
     try {
       const response = await loadRegistrationDataAction('listStudents', { schoolYear: currentSchoolYear });
       const sheetRows = Array.isArray(response.items) ? response.items : [];
       if (!sheetRows.length) {
-        showNotification?.('Chưa đọc được dòng nào từ Sheet.', 'error');
+        setSheetImportStatus({ ...progress, phase: 'done', message: 'Sheet không trả về hồ sơ nào cho năm đang xem.' });
         return;
       }
       let matchedCount = 0;
       let updatedCount = 0;
       let skippedCount = 0;
       const errors = [];
+      progress.phase = 'updating';
+      progress.total = sheetRows.length;
+      setSheetImportStatus({ ...progress });
 
       for (const row of sheetRows) {
+        try {
         const sheetStudent = registrationToStudentData(row, currentSchoolYear);
         const hasCurrentClassName = isUsefulSheetValue(row.currentClassName || row.lopHienTai || row.current_class_name);
         const accessCode = String(sheetStudent.accessCode || '').trim().toUpperCase();
         const identityCode = String(sheetStudent.identityCode || '').replace(/^'/, '').trim();
-        const existing = (accessCode
-          ? yearStudents.find(student => String(student.accessCode || student.studentCode || '').trim().toUpperCase() === accessCode)
-          : null)
-          || (/^\d{12}$/.test(identityCode)
-          ? yearStudents.find(student => String(student.identityCode || '').replace(/^'/, '').trim() === identityCode)
-          : null)
-          || yearStudents.find(student =>
+        const campus = getStudentSchoolCode(sheetStudent);
+        const candidates = yearStudents.filter(student => campus === 'UNKNOWN' || getStudentSchoolCode(student) === campus);
+        const byCode = accessCode ? candidates.filter(student => String(student.accessCode || student.studentCode || '').trim().toUpperCase() === accessCode) : [];
+        const byIdentity = /^\d{12}$/.test(identityCode) ? candidates.filter(student => String(student.identityCode || '').replace(/^'/, '').trim() === identityCode) : [];
+        const byName = candidates.filter(student =>
             normalizeVietnameseName(student.fullName || '') === normalizeVietnameseName(sheetStudent.fullName || '')
             && normalizeBirthDate(student.birthDate || '') === normalizeBirthDate(sheetStudent.birthDate || '')
           );
+        const matches = byCode.length ? byCode : byIdentity.length ? byIdentity : byName;
+        const existing = matches.length === 1 ? matches[0] : null;
         if (!existing?.id) {
           skippedCount += 1;
+          progress.skipped += 1;
           continue;
         }
         matchedCount += 1;
+        const sheetMarkedDropped = sheetStudent.status === 'dropped';
+        const keepDroppedStatus = sheetMarkedDropped || existing.status === 'dropped';
+        if (sheetClassConflict(existing, sheetStudent, hasCurrentClassName)) {
+          progress.classConflicts += 1;
+          progress.errors.push(`${existing.fullName}: giữ lớp ${existing.className}; Sheet ghi ${sheetStudent.className}. Dùng Đối chiếu lớp theo kết quả năm trước.`);
+        }
         const changes = {};
         SHEET_TO_DATABASE_SYNC_FIELDS.forEach(key => {
-          if (key === 'className' && !hasCurrentClassName) return;
+          if (['schoolCode', 'schoolName'].includes(key) && getStudentSchoolCode(sheetStudent) === 'UNKNOWN') return;
+          if (key === 'className') return;
+          if (['entryGrade', 'enrollmentYear'].includes(key) && isUsefulSheetValue(existing[key])) return;
+          // Centre results come from the scorebook; only declarations before entry grade can be imported.
+          const resultGrade = key.match(/^(?:hocLuc|hanhKiem)Lop([6-9])$/)?.[1];
+          if (resultGrade && Number(resultGrade) >= Number(getStudentEntryGrade(existing, currentSchoolYear))) return;
           const nextValue = key === 'classHistory'
-            ? (sheetStudent.classHistory && typeof sheetStudent.classHistory === 'object' ? sheetStudent.classHistory : {})
+            ? mergeStudentClassHistory(existing.classHistory, sheetStudent.classHistory)
             : key === 'birthDate'
             ? formatDisplayDate(sheetStudent[key] || '')
+            : key === 'schoolCode' ? getStudentSchoolCode(sheetStudent)
+            : key === 'schoolName' ? getSchoolName(getStudentSchoolCode(sheetStudent))
             : safePlainValue(sheetStudent[key]);
           if (key !== 'classHistory' && !isUsefulSheetValue(nextValue)) return;
           if (key === 'classHistory' && JSON.stringify(existing[key] || {}) === JSON.stringify(nextValue)) return;
           if (key !== 'classHistory' && safePlainValue(existing[key]) === nextValue) return;
           changes[key] = nextValue;
         });
-        const nextClassName = changes.className || existing.className || '';
+        if (keepDroppedStatus) {
+          const previousClassName = existing.dropoutPreviousClassName || existing.className
+            || Object.entries(existing.classHistory || {}).find(([year]) => normalizeSchoolYearKey(year) === normalizeSchoolYearKey(currentSchoolYear))?.[1]
+            || '';
+          const classHistory = { ...(changes.classHistory || existing.classHistory || {}) };
+          Object.keys(classHistory).forEach(year => {
+            if (normalizeSchoolYearKey(year) === normalizeSchoolYearKey(currentSchoolYear)) delete classHistory[year];
+          });
+          if (existing.status !== 'dropped') changes.status = 'dropped';
+          if (existing.className) changes.className = '';
+          if (existing.grade) changes.grade = '';
+          if (existing.dropoutPreviousClassName !== previousClassName) changes.dropoutPreviousClassName = previousClassName;
+          if (JSON.stringify(existing.classHistory || {}) !== JSON.stringify(classHistory)) changes.classHistory = classHistory;
+        }
+        const nextClassName = keepDroppedStatus ? '' : changes.className || existing.className || '';
         const derivedGrade = getGradeFromClass(nextClassName);
         const nextGrade = Object.prototype.hasOwnProperty.call(changes, 'grade') ? changes.grade : existing.grade;
         if (derivedGrade && String(nextGrade || '') !== String(derivedGrade)) changes.grade = derivedGrade;
-        if (!Object.keys(changes).length) continue;
+        if (!Object.keys(changes).length) { progress.unchanged += 1; continue; }
         try {
           await persistStudent({ ...existing, ...changes });
           updatedCount += 1;
+          progress.updated += 1;
         } catch (error) {
           errors.push(`${existing.fullName || existing.accessCode || 'Học sinh'}: ${error.message}`);
+          progress.failed += 1;
+          progress.errors.push(errors.at(-1));
+        }
+        } catch (error) {
+          progress.failed += 1;
+          progress.errors.push(`Dòng ${progress.completed + 1}: ${error.message}`);
+        } finally {
+          progress.completed += 1;
+          setSheetImportStatus({ ...progress, errors: [...progress.errors] });
         }
       }
+      setSheetImportStatus({ ...progress, errors: [...progress.errors], phase: progress.failed ? 'error' : 'done' });
 
       if (errors.length) {
         console.warn('Lỗi cập nhật database từ Sheet:', errors);
@@ -3125,8 +3477,10 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
         showNotification?.(`Đã cập nhật database từ Sheet: ${updatedCount} hồ sơ. Khớp ${matchedCount}, bỏ qua ${skippedCount}.`);
       }
     } catch (error) {
+      setSheetImportStatus({ ...progress, phase: 'error', message: error.message });
       showNotification?.(`Chưa đồng bộ được từ Sheet: ${error.message}`, 'error');
     } finally {
+      sheetImportLock.current = false;
       setIsSaving(false);
     }
   };
@@ -3136,6 +3490,7 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
   const removePendingRegistrationLocally = (registration = {}) => {
     const tempId = safePlainValue(registration.tempId || registration.id);
     setPendingRegistrations(prev => prev.filter(item => safePlainValue(item.tempId || item.id) !== tempId));
+    onRegistrationsResolved?.([registration]);
     setSelectedRegistrationIds(prev => {
       const next = new Set(prev);
       next.delete(tempId);
@@ -3163,7 +3518,7 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
     const identityCode = String(registration.identityCode || registration.maDinhDanh || '').replace(/^'/, '').trim();
     const shouldUpdateIdentity = /^\d{12}$/.test(identityCode) && identityCode !== String(existingStudent.identityCode || '').replace(/^'/, '').trim();
     if (shouldUpdateIdentity && !window.confirm(`Cập nhật mã định danh mới cho ${existingStudent.fullName || 'học sinh'} rồi đánh dấu dòng đăng ký là Đã có?`)) return;
-    if (!shouldUpdateIdentity && !window.confirm('Đánh dấu dòng đăng ký này là Đã có để lần sau không tải lại?')) return;
+    if (!shouldUpdateIdentity && !window.confirm(`Hồ sơ đã có trong danh sách học sinh: ${existingStudent.fullName || 'học sinh'}. Giữ nguyên hàng trên Google Sheet và đánh dấu Đã có để không hiện lại trong hồ sơ mới?`)) return;
     if (!beginRegistrationMutation()) return;
     try {
       if (shouldUpdateIdentity) {
@@ -3211,18 +3566,18 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
 
   const approveRegistrations = async (registrations = []) => {
  if(isSaving||registrationMutationRef.current)return;
- const targets=registrations.length?registrations:pendingRegistrations.filter(item=>selectedRegistrationIds.has(item.tempId));
+ const targets=registrations.length?registrations:reviewedRegistrations.filter(item=>selectedRegistrationIds.has(item.tempId));
  if(!targets.length){showNotification?.('Chưa chọn hồ sơ đăng ký.','error');return;}
- const identityFor=registration=>/^\d{12}$/.test(String(registration.identityCode||''))?registration.identityCode:registration.registrationId||registration.id||registration.tempId;
- const retry=registration=>yearStudents.some(student=>student.registrationId===identityFor(registration)&&['pending','failed','running'].includes(student.sheetSync?.status));
- const valid=targets.filter(item=>retry(item)||!(item.duplicateReason||findRegistrationDuplicate(item)));
- if(!valid.length){showNotification?.('Các hồ sơ có dấu hiệu trùng; cần đối soát trước.','error');return;}
+ const valid=targets.filter(item=>item.registrationSyncPending||!findRegistrationDuplicate(item));
+ if(!valid.length){showNotification?.('Hồ sơ trùng với danh sách học sinh trên website. Hãy đối chiếu và chọn Cập nhật/Đã có để giữ hàng trên Sheet.','error');return;}
  if(!beginRegistrationMutation())return;
  try {
   const result=await processRecords(valid,async registration=>{
    const input=normalizeStudentRecord(registrationToStudent(registration),currentSchoolYear);
+   assertStudentSchoolYear(input);
+   if(input.schoolYear!==currentSchoolYear)throw new Error(`Hồ sơ đăng ký năm ${input.schoolYear}. Hãy chuyển năm admin sang ${input.schoolYear} để duyệt; không lưu vào năm ${currentSchoolYear}.`);
    if(!input.fullName||!input.className)throw new Error('Thiếu họ tên hoặc lớp.');
-   const identity=identityFor(registration);const targetId=stableRecordId('registration',identity,currentSchoolYear,getStudentSchoolCode(input));
+   const identity=registrationIdentity(registration);const targetId=stableRecordId('registration',identity,currentSchoolYear,getStudentSchoolCode(input));
    ['id','tempId','duplicateReason','duplicateStudentName','duplicateAccessCode'].forEach(key=>delete input[key]);
    let student=await persistStudent({...input,registrationId:identity},{id:targetId,createOnly:true,allocateCode:true,registration});
    if(!student.sheetSync?.jobId)student=await persistStudent(student,{registration});
@@ -3234,11 +3589,72 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
    catch(error){syncErrors.push(error);}
   }
   setPendingRegistrations(prev=>prev.filter(item=>!synced.has(safePlainValue(item.tempId||item.id))));
+  onRegistrationsResolved?.(valid.filter(item=>synced.has(safePlainValue(item.tempId||item.id))));
   setSelectedRegistrationIds(new Set(result.failed.map(item=>item.record.tempId)));
-  showNotification?.('Database: '+result.succeeded.length+'/'+valid.length+' hồ sơ; Sheet: '+synced.size+'/'+result.succeeded.length+'. '+(result.failed.length?'Hồ sơ lỗi vẫn được chọn để thử tiếp. ':'')+(syncErrors.length?'Việc đồng bộ chưa xong được giữ trong hàng đợi.':''),result.failed.length||syncErrors.length?'error':'success');
+  showNotification?.('Database: '+result.succeeded.length+'/'+valid.length+' hồ sơ; Sheet: '+synced.size+'/'+result.succeeded.length+'. '+(result.failed.length?result.failed[0].error.message+' ':'')+(syncErrors.length?'Việc đồng bộ chưa xong được giữ trong hàng đợi.':''),result.failed.length||syncErrors.length?'error':'success');
  }catch(error){showNotification?.('Duyệt hồ sơ chưa hoàn tất: '+error.message,'error');}
  finally{registrationMutationRef.current=false;setIsSaving(false);}
 };
+
+  const approveAllRegistrations = () => {
+    if (isSaving || isLoadingRegistrations || registrationMutationRef.current) return;
+    const eligible = reviewedRegistrations.filter(item => item.registrationSyncPending || !item.duplicateReason);
+    const skipped = reviewedRegistrations.length - eligible.length;
+    if (!eligible.length) {
+      showNotification?.('Không có hồ sơ mới đủ điều kiện duyệt; hãy kiểm tra các hồ sơ trùng.', 'error');
+      return;
+    }
+    const message = `Duyệt tất cả ${eligible.length} hồ sơ đăng ký đủ điều kiện?${skipped ? `\n${skipped} hồ sơ có dấu hiệu trùng sẽ được bỏ qua.` : ''}`;
+    if (!window.confirm(message)) return;
+    approveRegistrations(eligible);
+  };
+  const approvableRegistrationCount = studentTab === 'registrations'
+    ? reviewedRegistrations.filter(item => item.registrationSyncPending || !item.duplicateReason).length
+    : 0;
+
+  const approveAllProfileRequests = async () => {
+    if (isSaving || profileBatchLock.current || !profileRequests.length) return;
+    profileBatchLock.current = true;
+    setIsSaving(true);
+    let screenUnlocked = false;
+    const total = profileRequests.length;
+    setProfileBatchStatus({ phase: 'saving', total, completed: 0, succeeded: 0, failed: 0 });
+    try {
+      const result = await approveProfileRequestGroups(groupProfileRequests(profileRequests), async group => {
+        const before = safeStudents.find(student => student.id === group.studentId);
+        if (!before) throw new Error('Không tìm thấy hồ sơ học sinh.');
+        if (isReadOnlyStudentRecord(before)) throw new Error(readOnlyStudentMessage(before));
+        const changes = sanitizeStudentChanges(group.changes);
+        if (!Object.keys(changes).length) throw new Error('Yêu cầu không có thông tin hợp lệ.');
+        if (changes.className) changes.grade = getGradeFromClass(changes.className);
+        const student = await persistStudent({ ...before, ...changes, id: group.studentId }, {
+          profileDecisions: group.requests.map(request => ({ requestId: request.id, expectedChanges: request.changes, remainingChanges: {} }))
+        });
+        const approvedIds = new Set(group.requests.map(request => request.id));
+        setProfileRequests(current => current.filter(request => !approvedIds.has(request.id)));
+        return student;
+      }, progress => setProfileBatchStatus({ phase: 'saving', total, ...progress }));
+      const succeeded = result.succeeded.reduce((count, item) => count + item.record.requests.length, 0);
+      const failed = total - succeeded;
+      const error = result.failed[0]?.error.message || '';
+      // Each saved student already has a durable Sheet job; unlock the screen now.
+      setIsSaving(false);
+      screenUnlocked = true;
+      const summary = { total, completed: total, succeeded, failed, error, syncTotal: result.succeeded.length };
+      setProfileBatchStatus({ ...summary, phase: 'syncing', synced: 0 });
+      const sync = await processRecords(result.succeeded, item => syncPersistedStudent(item.value), progress => {
+        setProfileBatchStatus({ ...summary, phase: 'syncing', synced: progress.completed });
+      });
+      setProfileBatchStatus({ ...summary, phase: 'done', synced: sync.succeeded.length, syncFailed: sync.failed.length });
+      showNotification?.('Đã duyệt ' + succeeded + '/' + total + ' yêu cầu.' + (failed ? ' Còn ' + failed + ' yêu cầu chưa duyệt: ' + error : '') + (sync.failed.length ? ' Đồng bộ Sheet chưa xong được giữ để thử lại.' : ''), failed || sync.failed.length ? 'error' : 'success');
+    } catch (error) {
+      setProfileBatchStatus(current => ({ ...current, phase: 'error', error: error.message }));
+      showNotification?.('Duyệt tất cả chưa hoàn tất: ' + error.message, 'error');
+    } finally {
+      profileBatchLock.current = false;
+      if (!screenUnlocked) setIsSaving(false);
+    }
+  };
 
   const approveProfileRequest = async request => {
  if(!request?.studentId)return;const before=resolveProfileRequestStudent(request);
@@ -3271,7 +3687,6 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
   };
 
   const editingProfileRequests = editing?.id ? (profileRequestsByStudent.get(editing.id) || []) : [];
-  const utilityButtonClass = 'flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-[11px] font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-45 sm:gap-2 sm:rounded-lg sm:px-3 sm:py-2 sm:text-sm sm:font-normal';
   const renderQuickEditControl = (student, field) => {
     const value = quickEdit?.value ?? '';
     const updateValue = (nextValue) => setQuickEdit(prev => prev ? ({ ...prev, value: nextValue }) : prev);
@@ -3285,7 +3700,7 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
         event.currentTarget.blur();
       }
     };
-    const controlClass = 'h-9 w-full min-w-[120px] rounded-lg border border-indigo-400 bg-white px-2 text-xs font-bold text-slate-800 shadow-sm outline-none ring-2 ring-indigo-100 disabled:opacity-60';
+    const controlClass = `h-8 w-full min-w-0 rounded border border-indigo-400 bg-white px-1 text-xs font-normal text-slate-800 shadow-sm outline-none ring-2 ring-indigo-100 disabled:opacity-60 ${STUDENT_LEFT_ALIGNED_FIELDS.has(field.key) ? 'text-left' : 'text-center'}`;
     const sharedProps = {
       autoFocus: true,
       value,
@@ -3315,59 +3730,202 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
     }
 
     return (
-      <div className="relative min-w-[120px]" onClick={event => event.stopPropagation()}>
+      <div className="relative min-w-0" onClick={event => event.stopPropagation()}>
         {control}
         {quickEditSaving && <Loader2 className="pointer-events-none absolute right-2 top-2.5 h-4 w-4 animate-spin text-indigo-600" />}
       </div>
     );
   };
-  const refreshStudentSheetSummary = async () => {
-    setSheetSyncStatus(prev => ({ ...prev, phase: 'checking' }));
-    try {
-      const summary = await loadStudentSheetSummary(currentSchoolYear);
-      setSheetSyncStatus(prev => ({ ...prev, ...summary, phase: 'idle' }));
-    } catch {
-      setSheetSyncStatus(prev => ({ ...prev, phase: 'unavailable', exactYearCount: null }));
-    }
-  };
-  const sheetSyncSuccessCount = Math.max(0, sheetSyncStatus.completed - sheetSyncStatus.failed);
+  const pendingSheetSyncCount = yearStudents.filter(student => ['pending', 'failed', 'running'].includes(student.sheetSync?.status)).length;
   const sheetSyncProgressPercent = sheetSyncStatus.total
     ? Math.round((sheetSyncStatus.completed / sheetSyncStatus.total) * 100)
     : 0;
-  const sheetStatusText = sheetSyncStatus.phase === 'syncing'
-    ? `Đang tải lên Sheet: ${sheetSyncStatus.completed}/${sheetSyncStatus.total} - thành công ${sheetSyncSuccessCount}${sheetSyncStatus.failed ? `, lỗi ${sheetSyncStatus.failed}` : ''}`
-    : sheetSyncStatus.phase === 'checking'
-      ? 'Đang kiểm tra số lượng trên Google Sheet...'
-      : sheetSyncStatus.phase === 'unavailable'
-        ? 'Chưa đọc được số lượng trên Google Sheet. Bấm nút tải lại để kiểm tra.'
-        : sheetSyncStatus.phase === 'partial'
-          ? `Đã tải ${sheetSyncSuccessCount}/${sheetSyncStatus.total} học sinh - lỗi ${sheetSyncStatus.failed}. Sheet năm này hiện có ${sheetSyncStatus.exactYearCount ?? '?'} dòng.`
-          : sheetSyncStatus.phase === 'done'
-            ? `Đã tải thành công ${sheetSyncSuccessCount}/${sheetSyncStatus.total} học sinh. Sheet năm này hiện có ${sheetSyncStatus.exactYearCount ?? sheetSyncSuccessCount} dòng.`
-            : `Database: ${yearStudents.length} học sinh - Sheet năm này: ${sheetSyncStatus.exactYearCount ?? '?'} dòng${sheetSyncStatus.unassignedYearCount ? ` - ${sheetSyncStatus.unassignedYearCount} dòng cũ chưa gắn năm học` : ''}.`;
+  const closeUtilitiesMenu = () => {
+    setShowUtilitiesMenu(false);
+    utilitiesButtonRef.current?.focus();
+  };
   const toggleUtilitiesMenu = () => {
     if (showUtilitiesMenu) {
-      setShowUtilitiesMenu(false);
+      closeUtilitiesMenu();
       return;
     }
     const rect = utilitiesButtonRef.current?.getBoundingClientRect();
     const viewportWidth = window.innerWidth;
     const viewportHeight = window.innerHeight;
-    const mobile = viewportWidth < 640;
-    const width = mobile ? Math.max(280, viewportWidth - 24) : 288;
-    const left = mobile ? 12 : Math.max(12, Math.min(viewportWidth - width - 12, (rect?.right || viewportWidth - 12) - width));
-    const top = Math.min((rect?.bottom || 80) + 8, viewportHeight - 180);
-    setUtilitiesMenuPosition({ top, left, width, maxHeight: Math.max(160, viewportHeight - top - 12) });
+    const width = Math.min(360, viewportWidth - 16);
+    const left = Math.max(8, Math.min(viewportWidth - width - 8, (rect?.right || viewportWidth - 8) - width));
+    const top = Math.max(8, Math.min((rect?.bottom || 80) + 6, viewportHeight - 180));
+    setUtilitiesMenuPosition({ top, left, width, maxHeight: Math.max(0, viewportHeight - top - 8) });
     setShowUtilitiesMenu(true);
   };
+  const utilityAction = action => () => { closeUtilitiesMenu(); action(); };
+  const utilityGroups = [
+    pendingSheetSyncCount > 0 && {
+      id: 'pendingSync', label: 'Đồng bộ đang chờ', actions: [{
+        id: 'retry', label: `Thử lại đồng bộ (${pendingSheetSyncCount})`,
+        note: 'Gửi lại hồ sơ của năm đang xem đang chờ hoặc bị lỗi đồng bộ Sheet.',
+        icon: <RefreshCw className="h-4 w-4 text-amber-600" />, disabled: isSaving,
+        onClick: utilityAction(retrySheetJobs)
+      }]
+    },
+    ['current', 'registrations'].includes(studentTab) && {
+      id: 'review', label: 'Rà soát hồ sơ',
+      content: <label className="mb-1 flex flex-col gap-1 px-2 py-1 text-xs text-slate-600">
+        Lọc hồ sơ
+        <select aria-label="Lọc hồ sơ" aria-describedby="student-issue-filter-note" value={quickIssueFilter} onChange={event => setQuickIssueFilter(event.target.value)} className="h-8 rounded border border-slate-200 bg-white px-2 text-sm text-slate-700">
+          {QUICK_ISSUE_FILTERS.map(item => <option key={item.key} value={item.key}>{item.label} ({issueStats[item.key] ?? 0})</option>)}
+        </select>
+        <span id="student-issue-filter-note" className="text-[11px] leading-4 text-slate-500">Chỉ lọc danh sách đang xem; không sửa dữ liệu.</span>
+      </label>,
+      actions: studentTab === 'current' ? [{
+        id: 'missingInfo', label: 'Lập danh sách thông tin còn thiếu',
+        note: 'Tạo nội dung để copy cho học sinh đã chọn, hoặc danh sách đang lọc.',
+        icon: <ClipboardCheck className="h-4 w-4 text-orange-600" />,
+        onClick: utilityAction(createMissingInfoReport)
+      }] : [{
+        id: 'reloadRegistrations', label: isLoadingRegistrations ? 'Đang tải hồ sơ…' : 'Tải lại hồ sơ đăng ký',
+        note: 'Đọc lại hồ sơ chờ duyệt từ Sheet và kiểm tra trùng với danh sách học sinh.',
+        icon: <RefreshCw className="h-4 w-4 text-emerald-600" />, disabled: isLoadingRegistrations || isSaving,
+        onClick: utilityAction(loadPendingRegistrations)
+      }, {
+        id: 'approveSelected', label: `Duyệt hồ sơ đã chọn (${selectedRegistrationIds.size})`,
+        note: 'Chỉ duyệt các hồ sơ đã tích chọn; hồ sơ có dấu hiệu trùng cần đối chiếu trước.',
+        icon: <CheckCircle2 className="h-4 w-4 text-indigo-600" />, disabled: isSaving || selectedRegistrationIds.size === 0,
+        onClick: utilityAction(() => approveRegistrations())
+      }]
+    },
+    studentTab === 'current' && {
+      id: 'common', label: 'Thường dùng', actions: [{
+        id: 'mail', label: `Gửi thư cho học sinh đã chọn (${selectedIds.size})`,
+        note: selectedIds.size ? 'Soạn thông báo vào hộp thư trên web của học sinh đã chọn.' : 'Tích chọn học sinh trước, rồi soạn thư gửi qua web.',
+        icon: <Mail className="h-4 w-4 text-emerald-600" />, disabled: !onSendMailboxMessages || selectedIds.size === 0,
+        onClick: utilityAction(() => openMailboxComposer(yearStudents.filter(student => selectedIds.has(student.id))))
+      }, {
+        id: 'codes', label: 'Quản lý mã học sinh',
+        note: 'Cấp mã đăng nhập còn thiếu, hoặc cấp lại cả năm đang xem.',
+        icon: <KeyRound className="h-4 w-4 text-amber-600" />, disabled: isSaving,
+        onClick: utilityAction(() => setShowCodeChoiceModal(true))
+      }, {
+        id: 'promotion', label: 'Chuyển năm học và lên lớp',
+        note: 'Xem trước lên lớp/lưu ban, rồi chuyển năm học hệ thống.',
+        icon: <GraduationCap className="h-4 w-4 text-violet-700" />, disabled: isSaving || !onStartSchoolYearPromotion,
+        onClick: utilityAction(openSchoolYearPromotion)
+      }, {
+        id: 'reconcileYear', label: 'Đối chiếu lớp theo kết quả năm trước',
+        note: 'Khôi phục lớp đã xếp bị ghi đè; xem đủ điểm cả năm trước khi duyệt lên lớp/lưu ban cho năm đang xem.',
+        icon: <GraduationCap className="h-4 w-4 text-sky-700" />, disabled: isSaving || !academicScorebooksReady,
+        onClick: utilityAction(openYearReconciliation)
+      }]
+    },
+    {
+      id: 'sheet', label: studentTab === 'current' ? 'Nhập và đồng bộ Sheet' : 'Dữ liệu Sheet',
+      note: 'Nhập mới, đối chiếu và cập nhật giữa web ↔ Sheet.', collapsible: studentTab === 'current',
+      actions: [{
+        id: 'openSheet', label: 'Mở bảng dữ liệu gốc',
+        note: 'Mở Google Sheet ở tab mới để xem hoặc đối chiếu thông tin.',
+        icon: <ExternalLink className="h-4 w-4 text-emerald-600" />,
+        onClick: utilityAction(() => window.open(STUDENT_DATA_SHEET_URL, '_blank', 'noopener,noreferrer'))
+      }, ...(studentTab === 'current' ? [{
+        id: 'import', label: 'Nhập danh sách mới',
+        note: `Dán bảng kèm hàng tiêu đề để tạo hồ sơ mới vào năm ${currentSchoolYear}.`,
+        icon: <UploadCloud className="h-4 w-4 text-indigo-600" />,
+        onClick: utilityAction(() => setShowImport(true))
+      }, {
+        id: 'fromSheet', label: 'Cập nhật hồ sơ từ Sheet',
+        note: 'Sheet → web: cập nhật thông tin, giữ lớp đã xếp và kết quả ở trung tâm. Báo lớp khác nhau để đối chiếu.',
+        icon: <RefreshCw className="h-4 w-4 text-blue-600" />, disabled: isSaving || yearStudents.length === 0,
+        onClick: utilityAction(syncStudentsFromSheet)
+      }, {
+        id: 'toSheet', label: 'Gửi hồ sơ trên web lên Sheet',
+        note: 'Web → Sheet: toàn bộ năm đang xem, kể cả ngoài bộ lọc.',
+        icon: <RefreshCw className="h-4 w-4 text-teal-600" />, disabled: isSaving || yearStudents.length === 0,
+        onClick: utilityAction(syncAllStudentsToSheet)
+      }] : [])]
+    },
+    studentTab === 'current' && {
+      id: 'repair', label: 'Sửa dữ liệu cũ',
+      note: 'Dùng khi dữ liệu cũ sai tên, khối hoặc mất ký hiệu lớp.', collapsible: true,
+      actions: [{
+        id: 'names', label: 'Chuẩn hóa họ tên cũ',
+        note: 'Viết hoa đầu từ và bỏ khoảng trắng thừa trong hồ sơ của năm đang xem.',
+        icon: <UserRound className="h-4 w-4 text-violet-600" />, disabled: isSaving || yearStudents.length === 0,
+        onClick: utilityAction(normalizeCurrentYearStudentNames)
+      }, {
+        id: 'grades', label: 'Sửa khối theo lớp',
+        note: 'Khớp lại cột Khối với lớp hiện tại, ví dụ 7A → khối 7; cập nhật cả Sheet.',
+        icon: <GraduationCap className="h-4 w-4 text-cyan-700" />, disabled: isSaving || yearStudents.length === 0,
+        onClick: utilityAction(backfillCurrentYearStudentGrades)
+      }, {
+        id: 'classSections', label: 'Khôi phục ký hiệu lớp',
+        note: 'Đối chiếu năm trước để sửa lớp mất chữ (7 → 7A); chỉ sửa khi ghép chắc chắn.',
+        icon: <GraduationCap className="h-4 w-4 text-indigo-700" />, disabled: isSaving || yearStudents.length === 0 || !previousSchoolYear,
+        onClick: utilityAction(restoreCurrentYearClassSections)
+      }]
+    }
+  ];
+  const closeSearch = () => {
+    setShowSearch(false);
+    setQuery('');
+    searchButtonRef.current?.focus();
+  };
+
+  const renderProfileField = field => {
+    const listId = field.key === 'province' || field.key === 'householdProvince'
+      ? 'admin-province-options'
+      : field.key === 'ward'
+        ? 'admin-current-ward-options'
+        : field.key === 'householdWard'
+          ? 'admin-household-ward-options'
+          : undefined;
+    const placeholder = field.key === 'ward' || field.key === 'householdWard'
+      ? 'Chọn tỉnh trước, rồi gõ/chọn phường xã'
+      : field.key === 'province' || field.key === 'householdProvince'
+        ? 'Gõ hoặc chọn tỉnh/thành'
+        : '';
+    return (
+      <label key={field.key} className="flex flex-col gap-1">
+        <span className="text-[10px] font-normal uppercase text-slate-400">{field.label}{field.required ? ' *' : ''}</span>
+        {field.key === 'schoolCode' ? (
+          <select disabled={profileReadOnly} value={normalizeSchoolCode(editing.schoolCode) || 'UNKNOWN'} onChange={(e) => updateEditingField(field.key, e.target.value)} className="border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-normal bg-white focus:outline-none focus:border-indigo-400">
+            {SCHOOL_OPTIONS.map(school => <option key={school.code} value={school.code}>{school.name}</option>)}
+          </select>
+        ) : field.key === 'grade' ? (
+          <input value={getGradeFromClass(editing.className) || getGradeFromClass(editing.grade)} readOnly className="border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-normal bg-slate-50 text-slate-600" title="Khối được tự động xác định từ lớp học" />
+        ) : field.key === 'className' && configuredClassOptions.length ? (
+          <select disabled={profileReadOnly} value={editing[field.key] || ''} onChange={(e) => updateEditingField(field.key, e.target.value)} className="border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-normal bg-white focus:outline-none focus:border-indigo-400">
+            <option value="">Chọn lớp...</option>
+            {[...new Set([editing[field.key], ...configuredClassOptions].filter(Boolean))].map(className => (
+              <option key={className} value={className}>Lớp {className}</option>
+            ))}
+          </select>
+        ) : editingCenterResults.sources[field.key] ? (
+          <input value={editingCenterResults.fields[field.key] || ''} readOnly className="border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-normal bg-slate-50 text-slate-600" title={`Tự lấy kết quả cả năm ${editingCenterResults.sources[field.key].schoolYear} tại trung tâm`} />
+        ) : ACADEMIC_RESULT_FIELD_KEYS.has(field.key) ? (
+          <select disabled={profileReadOnly} value={editing[field.key] || ''} onChange={(e) => updateEditingField(field.key, e.target.value)} className="border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-normal bg-white focus:outline-none focus:border-indigo-400">
+            {ACADEMIC_RESULT_OPTIONS.map(option => <option key={option || '-'} value={option}>{option || '-'}</option>)}
+          </select>
+        ) : (
+          <input readOnly={profileReadOnly} value={editing[field.key] || ''} list={listId} placeholder={placeholder} onChange={(e) => updateEditingField(field.key, e.target.value)} className="border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-normal focus:outline-none focus:border-indigo-400" />
+        )}
+      </label>
+    );
+  };
+
+  const databaseColumnWidths = [
+    36, 32, 52, showPortraits ? 104 : 44,
+    ...(studentTab === 'current' && !isImageOnlyView ? [96, 88] : []),
+    ...visibleStudentFields.map(field => isImageOnlyView && DOCUMENT_FIELD_KEYS.has(field.key) ? 160 : studentColumnWidth(field)),
+    ...(studentTab === 'registrations' ? [240] : !isImageOnlyView ? [132] : [])
+  ];
+  const databaseTableWidth = databaseColumnWidths.reduce((total, width) => total + width, 0);
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-white/95 rounded-2xl border border-indigo-100 shadow-xl overflow-hidden">
-      <div className="shrink-0 bg-gradient-to-r from-indigo-50 to-blue-50 p-2 sm:p-3 border-b border-indigo-100 flex flex-col gap-1.5 sm:gap-3">
+    <div className="flex h-full min-h-0 flex-col bg-white font-normal rounded-lg border border-slate-200 shadow-sm overflow-hidden">
+      <div className="shrink-0 bg-slate-50 p-2 border-b border-slate-200 flex flex-col gap-1.5">
         <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-3">
         <div className="flex min-w-0 items-center justify-between gap-2 lg:flex-1 lg:pr-4">
-          <h3 className="font-black text-indigo-950 text-sm sm:text-base uppercase flex items-center gap-2">
-            <GraduationCap className="w-5 h-5 text-indigo-600" /> Học sinh {currentSchoolYear}
+          <h3 className="font-normal text-slate-800 text-sm sm:text-base flex items-center gap-2">
+            <GraduationCap className="w-5 h-5 text-indigo-600" /> Học sinh {educationLabel(educationLevel)} {currentSchoolYear}
           </h3>
           {onBack && (
             <button type="button" onClick={onBack} title="Đóng database" className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-rose-600 text-white shadow-sm sm:hidden">
@@ -3377,8 +3935,8 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
         </div>
         <div className="flex flex-nowrap items-center justify-start gap-1 overflow-x-auto pb-1 sm:flex-wrap sm:gap-2 lg:pb-0 lg:justify-end lg:shrink-0">
           {onBack && (
-            <button type="button" onClick={onBack} title="Đóng database" className="hidden sm:flex sm:order-last shrink-0 w-10 h-10 bg-rose-600 text-white hover:bg-rose-700 rounded-full shadow-lg items-center justify-center transition-colors">
-              <X className="w-5 h-5" />
+            <button type="button" onClick={onBack} title="Đóng database" className="hidden sm:flex sm:order-last shrink-0 w-9 h-9 border border-slate-200 bg-white text-slate-500 hover:bg-rose-50 hover:text-rose-600 rounded items-center justify-center transition-colors">
+              <X className="w-4 h-4" />
             </button>
           )}
           {onOpenAttendance && (
@@ -3392,9 +3950,21 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
           )}
           {studentTab !== 'journey' && studentTab !== 'profileRequests' && (
             <button
+              ref={searchButtonRef}
+              type="button"
+              onClick={() => showSearch ? closeSearch() : setShowSearch(true)}
+              aria-expanded={showSearch}
+              aria-controls="student-database-search"
+              className={`flex h-7 shrink-0 items-center gap-1 rounded border px-2 text-xs sm:h-9 sm:px-3 sm:text-sm ${showSearch ? 'border-sky-300 bg-sky-50 text-sky-800' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'}`}
+            >
+              <Search className="h-4 w-4" /> Tìm kiếm
+            </button>
+          )}
+          {studentTab !== 'journey' && studentTab !== 'profileRequests' && (
+            <button
               type="button"
               onClick={() => setShowColumns(prev => !prev)}
-              className="flex h-7 shrink-0 items-center justify-center gap-1 rounded-md border border-slate-200 bg-white px-2 text-[11px] font-semibold text-slate-700 hover:bg-slate-50 sm:h-9 sm:rounded-lg sm:px-3 sm:text-sm sm:font-normal"
+              className="flex h-7 shrink-0 items-center justify-center gap-1 rounded-md border border-slate-200 bg-white px-2 text-[11px] font-normal text-slate-700 hover:bg-slate-50 sm:h-9 sm:rounded-lg sm:px-3 sm:text-sm sm:font-normal"
             >
               <Columns className="h-4 w-4" /> Cột
             </button>
@@ -3409,7 +3979,7 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
                 setSharedSheetLink('');
                 setShowExportChoice(true);
               }}
-              className="flex h-7 shrink-0 items-center justify-center gap-1 rounded-md border border-cyan-100 bg-cyan-50 px-2 text-[11px] font-semibold text-cyan-700 hover:bg-cyan-100 sm:h-9 sm:rounded-lg sm:px-3 sm:text-sm sm:font-normal"
+              className="flex h-7 shrink-0 items-center justify-center gap-1 rounded-md border border-cyan-100 bg-cyan-50 px-2 text-[11px] font-normal text-cyan-700 hover:bg-cyan-100 sm:h-9 sm:rounded-lg sm:px-3 sm:text-sm sm:font-normal"
             >
               <FileSpreadsheet className="h-4 w-4" /> Xuất
             </button>
@@ -3419,7 +3989,7 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
               type="button"
               onClick={removeSelectedStudents}
               disabled={isSaving || selectedCount === 0}
-              className="flex h-7 shrink-0 items-center justify-center gap-1 rounded-md border border-rose-100 bg-rose-50 px-2 text-[11px] font-semibold text-rose-600 hover:bg-rose-100 disabled:opacity-40 sm:h-9 sm:rounded-lg sm:px-3 sm:text-sm sm:font-normal"
+              className="flex h-7 shrink-0 items-center justify-center gap-1 rounded-md border border-rose-100 bg-rose-50 px-2 text-[11px] font-normal text-rose-600 hover:bg-rose-100 disabled:opacity-40 sm:h-9 sm:rounded-lg sm:px-3 sm:text-sm sm:font-normal"
               title="Xóa các học sinh đang được tích chọn"
             >
               <Trash2 className="h-4 w-4" /> Xóa {selectedCount ? `(${selectedCount})` : ''}
@@ -3430,147 +4000,64 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
               ref={utilitiesButtonRef}
               type="button"
               onClick={toggleUtilitiesMenu}
-              className="flex h-7 items-center justify-center gap-1 rounded-md border border-slate-200 bg-white px-2 text-[11px] font-semibold text-slate-700 shadow-sm hover:bg-slate-50 sm:h-9 sm:rounded-lg sm:px-3 sm:text-sm sm:font-normal"
+              className="flex h-7 items-center justify-center gap-1 rounded-md border border-slate-200 bg-white px-2 text-[11px] font-normal text-slate-700 shadow-sm hover:bg-slate-50 sm:h-9 sm:rounded-lg sm:px-3 sm:text-sm sm:font-normal"
               aria-expanded={showUtilitiesMenu}
             >
               <FileText className="h-4 w-4 text-blue-600" />
               Tiện ích
               <ChevronDown className={`h-3.5 w-3.5 transition-transform ${showUtilitiesMenu ? 'rotate-180' : ''}`} />
             </button>
-            {showUtilitiesMenu && typeof document !== 'undefined' && createPortal((
-              <>
-                <button type="button" className="fixed inset-0 z-[1000] cursor-default bg-transparent" onClick={() => setShowUtilitiesMenu(false)} aria-label="Đóng tiện ích" />
-                <div
-                  className="fixed z-[1010] grid grid-cols-1 gap-1 overflow-y-auto rounded-xl border border-slate-200 bg-white p-1.5 shadow-2xl"
-                  style={{
-                    top: `${utilitiesMenuPosition.top}px`,
-                    left: `${utilitiesMenuPosition.left}px`,
-                    width: `${utilitiesMenuPosition.width}px`,
-                    maxHeight: `${utilitiesMenuPosition.maxHeight}px`
-                  }}
-                >
-                  {studentTab === 'current' && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowUtilitiesMenu(false);
-                        openMailboxComposer(yearStudents.filter(student => selectedIds.has(student.id)));
-                      }}
-                      disabled={!onSendMailboxMessages || selectedIds.size === 0}
-                      className={utilityButtonClass}
-                    >
-                      <Mail className="h-4 w-4 text-emerald-600" /> Gửi thư đã chọn ({selectedIds.size})
-                    </button>
-                  )}
-                  <button type="button" onClick={() => { setShowUtilitiesMenu(false); window.open(STUDENT_DATA_SHEET_URL, '_blank', 'noopener,noreferrer'); }} className={utilityButtonClass}>
-                    <ExternalLink className="h-4 w-4 text-emerald-600" /> Mo du lieu Sheet
-                  </button>
-                  {studentTab === 'current' && (
-                    <button type="button" onClick={() => { setShowUtilitiesMenu(false); syncAllStudentsToSheet(); }} disabled={isSaving || yearStudents.length === 0} className={utilityButtonClass}>
-                      <RefreshCw className="h-4 w-4 text-teal-600" /> Cap nhat len Sheet
-                    </button>
-                  )}
-                  {studentTab === 'current' && (
-                    <button type="button" onClick={() => { setShowUtilitiesMenu(false); syncStudentsFromSheet(); }} disabled={isSaving || yearStudents.length === 0} className={utilityButtonClass}>
-                      <RefreshCw className="h-4 w-4 text-blue-600" /> Cap nhat tu Sheet
-                    </button>
-                  )}
-                  {studentTab === 'current' && (
-                    <button type="button" onClick={() => { setShowUtilitiesMenu(false); syncPreviousYear(); }} disabled={isSaving || !previousSchoolYear} className={utilityButtonClass}>
-                      <RefreshCw className="h-4 w-4 text-emerald-600" /> Dong bo nam truoc
-                    </button>
-                  )}
-                  {studentTab === 'current' && (
-                    <button type="button" onClick={() => { setShowUtilitiesMenu(false); setShowImport(prev => !prev); }} className={utilityButtonClass}>
-                      <UploadCloud className="h-4 w-4 text-indigo-600" /> Nhap Sheet
-                    </button>
-                  )}
-                  {studentTab === 'current' && (
-                    <button type="button" onClick={() => { setShowUtilitiesMenu(false); setShowCodeChoiceModal(true); }} disabled={isSaving} className={utilityButtonClass}>
-                      <KeyRound className="h-4 w-4 text-amber-600" /> Tao ma hoc sinh
-                    </button>
-                  )}
-                  {studentTab === 'current' && (
-                    <button type="button" onClick={() => { setShowUtilitiesMenu(false); normalizeCurrentYearStudentNames(); }} disabled={isSaving || yearStudents.length === 0} className={utilityButtonClass}>
-                      <UserRound className="h-4 w-4 text-violet-600" /> Chuan hoa ten
-                    </button>
-                  )}
-                  {studentTab === 'current' && (
-                    <button type="button" onClick={() => { setShowUtilitiesMenu(false); backfillCurrentYearStudentGrades(); }} disabled={isSaving || yearStudents.length === 0} className={utilityButtonClass}>
-                      <GraduationCap className="h-4 w-4 text-cyan-700" /> Bổ sung cột Khối
-                    </button>
-                  )}
-                  {studentTab === 'current' && (
-                    <button type="button" onClick={() => { setShowUtilitiesMenu(false); restoreCurrentYearClassSections(); }} disabled={isSaving || yearStudents.length === 0 || !previousSchoolYear} className={utilityButtonClass}>
-                      <GraduationCap className="h-4 w-4 text-indigo-700" /> Khôi phục hậu tố từ Sheet năm trước
-                    </button>
-                  )}
-                  {studentTab === 'current' && (
-                    <button type="button" onClick={() => { setShowUtilitiesMenu(false); openSchoolYearPromotion(); }} disabled={isSaving || !onStartSchoolYearPromotion} className={utilityButtonClass}>
-                      <GraduationCap className="h-4 w-4 text-violet-700" /> Chuyển năm học và lên lớp
-                    </button>
-                  )}
-                  {studentTab === 'current' && (
-                    <button type="button" onClick={() => { setShowUtilitiesMenu(false); createMissingInfoReport(); }} className={utilityButtonClass}>
-                      <ClipboardCheck className="h-4 w-4 text-orange-600" /> Kiem tra thieu thong tin
-                    </button>
-                  )}
-                  {studentTab === 'registrations' && (
-                    <button type="button" onClick={() => { setShowUtilitiesMenu(false); loadPendingRegistrations(); }} disabled={isLoadingRegistrations || isSaving} className={utilityButtonClass}>
-                      <RefreshCw className="h-4 w-4 text-emerald-600" /> {isLoadingRegistrations ? 'Dang tai...' : 'Tai moi'}
-                    </button>
-                  )}
-                  {studentTab === 'registrations' && (
-                    <button type="button" onClick={() => { setShowUtilitiesMenu(false); approveRegistrations(); }} disabled={isSaving || selectedRegistrationIds.size === 0} className={utilityButtonClass}>
-                      <CheckCircle2 className="h-4 w-4 text-indigo-600" /> Duyet chon ({selectedRegistrationIds.size})
-                    </button>
-                  )}
-                </div>
-              </>
-            ), document.body)}
+            {showUtilitiesMenu && typeof document !== 'undefined' && createPortal(
+              <StudentUtilitiesMenu position={utilitiesMenuPosition} groups={utilityGroups} onClose={closeUtilitiesMenu} />,
+              document.body
+            )}
           </div>
           {studentTab === 'current' && (
-            <button type="button" onClick={openCreate} className="flex h-7 shrink-0 items-center justify-center gap-1 rounded-md bg-indigo-600 px-2 text-[11px] font-semibold text-white shadow-sm hover:bg-indigo-700 sm:h-9 sm:rounded-lg sm:px-3 sm:text-sm sm:font-normal">
+            <button type="button" onClick={openCreate} className="flex h-7 shrink-0 items-center justify-center gap-1 rounded-md bg-indigo-600 px-2 text-[11px] font-normal text-white shadow-sm hover:bg-indigo-700 sm:h-9 sm:rounded-lg sm:px-3 sm:text-sm sm:font-normal">
               <Plus className="h-3.5 w-3.5 sm:h-4 sm:w-4" /> Thêm
+            </button>
+          )}
+          {studentTab === 'registrations' && (
+            <button type="button" onClick={approveAllRegistrations} disabled={isSaving || isLoadingRegistrations || approvableRegistrationCount === 0} title="Duyệt toàn bộ hồ sơ đủ điều kiện, bỏ qua hồ sơ trùng" className="flex h-7 shrink-0 items-center gap-1 rounded-md bg-emerald-600 px-2 text-[11px] text-white shadow-sm hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50 sm:h-9 sm:rounded-lg sm:px-3 sm:text-sm">
+              {isSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />} Duyệt tất cả ({approvableRegistrationCount})
             </button>
           )}
         </div>
         </div>
         {profileRequests.length > 0 && studentTab !== 'profileRequests' && (
           <div className="flex items-center">
-            <div className="rounded-full bg-rose-100 px-2.5 py-1 text-[10px] font-black uppercase text-rose-700">
+            <div className="rounded-full bg-rose-100 px-2.5 py-1 text-[10px] font-normal uppercase text-rose-700">
               {profileRequests.length} yêu cầu sửa
             </div>
           </div>
         )}
-        {studentTab === 'current' && (
-          <div className={`overflow-hidden rounded-lg border bg-white/90 ${sheetSyncStatus.phase === 'partial' || sheetSyncStatus.phase === 'unavailable' ? 'border-amber-200' : 'border-emerald-200'}`}>
-            <div className="flex min-h-8 items-center gap-2 px-2.5 py-1.5 text-[10px] font-bold sm:text-xs">
-              {sheetSyncStatus.phase === 'syncing' || sheetSyncStatus.phase === 'checking'
-                ? <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-cyan-600" />
-                : <FileSpreadsheet className="h-3.5 w-3.5 shrink-0 text-emerald-600" />}
-              <span className="min-w-0 flex-1 text-slate-700">{sheetStatusText}</span>
-              {yearStudents.some(student => ['pending', 'failed', 'running'].includes(student.sheetSync?.status)) && <button type="button" disabled={isSaving} onClick={retrySheetJobs} className="rounded-md bg-amber-100 px-2 py-1 font-bold text-amber-800 disabled:opacity-40">Thử lại đồng bộ ({yearStudents.filter(student => ['pending', 'failed', 'running'].includes(student.sheetSync?.status)).length})</button>}
-              <button type="button" onClick={refreshStudentSheetSummary} disabled={sheetSyncStatus.phase === 'syncing' || sheetSyncStatus.phase === 'checking'} className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100 disabled:opacity-40" title="Kiểm tra lại số lượng trên Sheet">
-                <RefreshCw className="h-3.5 w-3.5" />
-              </button>
+        {studentTab === 'current' && sheetSyncStatus.phase === 'syncing' && (
+          <div className="overflow-hidden rounded border border-cyan-100 bg-white" role="status">
+            <div className="flex items-center gap-2 px-2 py-1 text-xs text-slate-600">
+              <Loader2 className="h-3.5 w-3.5 animate-spin text-cyan-600" />
+              Đang đồng bộ Sheet: {sheetSyncStatus.completed}/{sheetSyncStatus.total}
             </div>
-            {sheetSyncStatus.phase === 'syncing' && (
-              <div className="h-1 bg-slate-100">
-                <div className="h-full bg-cyan-500 transition-[width] duration-200" style={{ width: `${sheetSyncProgressPercent}%` }} />
-              </div>
-            )}
+            <div className="h-1 bg-slate-100">
+              <div className="h-full bg-cyan-500 transition-[width] duration-200" style={{ width: `${sheetSyncProgressPercent}%` }} />
+            </div>
           </div>
         )}
       </div>
+
+      {studentTab === 'current' && <StudentSheetImportStatus status={sheetImportStatus} onClose={() => setSheetImportStatus(null)} />}
+      {yearReconciliation && <StudentYearReconciliation rows={yearReconciliation} schoolYear={currentSchoolYear} busy={isSaving}
+        progress={yearReconciliationProgress} onRestore={rows => applyYearReconciliation(rows)}
+        onPriorRoster={text => { try { setYearReconciliation(restoreClassesFromPriorRoster(yearReconciliation, scopedStudents, text)); }
+          catch (error) { setYearReconciliationProgress(error.message); } }}
+        onApprove={rows => applyYearReconciliation(rows, true)} onClose={() => setYearReconciliation(null)} />}
 
       {showClassStats && (
         <div className="fixed inset-0 z-[150] flex items-center justify-center bg-slate-950/50 p-3 backdrop-blur-sm">
           <div className="flex max-h-[86vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl bg-white shadow-2xl">
             <div className="flex shrink-0 items-center justify-between gap-3 border-b border-slate-200 bg-indigo-50 px-3 py-2.5">
               <div>
-                <div className="text-xs font-black uppercase text-indigo-950">Thống kê học sinh theo lớp</div>
-                <div className="text-[11px] font-bold text-indigo-700">
+                <div className="text-xs font-normal uppercase text-indigo-950">Thống kê học sinh theo lớp</div>
+                <div className="text-[11px] font-normal text-indigo-700">
                   Tổng {classStats.reduce((sum, item) => sum + item.total, 0)} học sinh
                 </div>
               </div>
@@ -3593,26 +4080,26 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
                 <tbody>
                   {classStats.length ? classStats.map(item => (
                     <tr key={item.className} className="odd:bg-white even:bg-slate-50">
-                      <td className="border border-slate-300 px-2 py-1.5 font-black text-slate-900">Lớp {item.className}</td>
-                      <td className="border border-slate-300 px-2 py-1.5 text-center font-black text-indigo-700">{item.total}</td>
-                      <td className="border border-slate-300 px-2 py-1.5 text-center font-black text-emerald-700">{item.active}</td>
-                      <td className="border border-slate-300 px-2 py-1.5 text-center font-black text-rose-700">{item.dropped}</td>
-                      <td className="border border-slate-300 px-2 py-1.5 text-center font-black text-amber-700">{item.noCode}</td>
-                      <td className="border border-slate-300 px-2 py-1.5 text-center font-black text-orange-700">{item.noIdentityCode}</td>
+                      <td className="border border-slate-300 px-2 py-1.5 font-normal text-slate-900">Lớp {item.className}</td>
+                      <td className="border border-slate-300 px-2 py-1.5 text-center font-normal text-indigo-700">{item.total}</td>
+                      <td className="border border-slate-300 px-2 py-1.5 text-center font-normal text-emerald-700">{item.active}</td>
+                      <td className="border border-slate-300 px-2 py-1.5 text-center font-normal text-rose-700">{item.dropped}</td>
+                      <td className="border border-slate-300 px-2 py-1.5 text-center font-normal text-amber-700">{item.noCode}</td>
+                      <td className="border border-slate-300 px-2 py-1.5 text-center font-normal text-orange-700">{item.noIdentityCode}</td>
                     </tr>
                   )) : (
                     <tr>
-                      <td colSpan={6} className="border border-slate-300 px-3 py-8 text-center font-bold text-slate-400">Chưa có dữ liệu lớp để thống kê.</td>
+                      <td colSpan={6} className="border border-slate-300 px-3 py-8 text-center font-normal text-slate-400">Chưa có dữ liệu lớp để thống kê.</td>
                     </tr>
                   )}
                   {classStats.length > 0 && (
                     <tr className="bg-indigo-50 text-indigo-950">
-                      <td className="border border-slate-300 px-2 py-1.5 font-black uppercase">Tổng</td>
-                      <td className="border border-slate-300 px-2 py-1.5 text-center font-black">{classStats.reduce((sum, item) => sum + item.total, 0)}</td>
-                      <td className="border border-slate-300 px-2 py-1.5 text-center font-black">{classStats.reduce((sum, item) => sum + item.active, 0)}</td>
-                      <td className="border border-slate-300 px-2 py-1.5 text-center font-black">{classStats.reduce((sum, item) => sum + item.dropped, 0)}</td>
-                      <td className="border border-slate-300 px-2 py-1.5 text-center font-black">{classStats.reduce((sum, item) => sum + item.noCode, 0)}</td>
-                      <td className="border border-slate-300 px-2 py-1.5 text-center font-black">{classStats.reduce((sum, item) => sum + item.noIdentityCode, 0)}</td>
+                      <td className="border border-slate-300 px-2 py-1.5 font-normal uppercase">Tổng</td>
+                      <td className="border border-slate-300 px-2 py-1.5 text-center font-normal">{classStats.reduce((sum, item) => sum + item.total, 0)}</td>
+                      <td className="border border-slate-300 px-2 py-1.5 text-center font-normal">{classStats.reduce((sum, item) => sum + item.active, 0)}</td>
+                      <td className="border border-slate-300 px-2 py-1.5 text-center font-normal">{classStats.reduce((sum, item) => sum + item.dropped, 0)}</td>
+                      <td className="border border-slate-300 px-2 py-1.5 text-center font-normal">{classStats.reduce((sum, item) => sum + item.noCode, 0)}</td>
+                      <td className="border border-slate-300 px-2 py-1.5 text-center font-normal">{classStats.reduce((sum, item) => sum + item.noIdentityCode, 0)}</td>
                     </tr>
                   )}
                 </tbody>
@@ -3627,22 +4114,26 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
           <div className="flex max-h-[88vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl bg-white shadow-2xl">
             <div className="flex items-start justify-between gap-3 border-b border-violet-100 bg-violet-50 px-4 py-3">
               <div className="min-w-0">
-                <div className="flex items-center gap-2 text-sm font-black text-violet-950">
+                <div className="flex items-center gap-2 text-sm font-normal text-violet-950">
                   <GraduationCap className="h-5 w-5 text-violet-700" /> Chuyển năm học và lên lớp
                 </div>
-                <div className="mt-1 text-xs font-semibold text-violet-800">{schoolYearPromotionPreview.sourceSchoolYear} sang {schoolYearPromotionPreview.targetSchoolYear}</div>
+                <div className="mt-1 text-xs font-normal text-violet-800">{schoolYearPromotionPreview.sourceSchoolYear} sang {schoolYearPromotionPreview.targetSchoolYear}</div>
               </div>
               <button type="button" onClick={() => !isSaving && setSchoolYearPromotionPreview(null)} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white text-slate-500 shadow-sm hover:bg-rose-600 hover:text-white" title="Đóng" disabled={isSaving}>
                 <X className="h-4 w-4" />
               </button>
             </div>
             <div className="min-h-0 overflow-y-auto p-4">
+              <div className="mb-3 flex flex-wrap gap-2 text-xs">
+                <button type="button" disabled={isSaving} onClick={() => openSchoolYearPromotion()} className="rounded border px-3 py-2">Xét năm hệ thống {systemSchoolYear || currentSchoolYear}</button>
+                {educationLevel !== 'primary' && <button type="button" disabled={isSaving} onClick={() => openSchoolYearPromotion('graduation')} className="rounded border px-3 py-2">Xét lớp 9 năm trước {getPreviousSchoolYear(systemSchoolYear || currentSchoolYear)}</button>}
+              </div>
               {schoolYearPromotionState?.sourceSchoolYear === schoolYearPromotionPreview.sourceSchoolYear
                 && schoolYearPromotionState?.targetSchoolYear === schoolYearPromotionPreview.targetSchoolYear && (
                 <div
                   role="status"
                   aria-live="polite"
-                  className={`mb-3 rounded-lg border p-3 text-sm font-semibold ${schoolYearPromotionState.status === 'failed' ? 'border-rose-200 bg-rose-50 text-rose-900' : schoolYearPromotionState.status === 'success' ? 'border-emerald-200 bg-emerald-50 text-emerald-900' : 'border-amber-200 bg-amber-50 text-amber-900'}`}
+                  className={`mb-3 rounded-lg border p-3 text-sm font-normal ${schoolYearPromotionState.status === 'failed' ? 'border-rose-200 bg-rose-50 text-rose-900' : schoolYearPromotionState.status === 'success' ? 'border-emerald-200 bg-emerald-50 text-emerald-900' : 'border-amber-200 bg-amber-50 text-amber-900'}`}
                 >
                   {schoolYearPromotionState.status === 'failed'
                     ? `Lần chuyển trước chưa hoàn tất (${schoolYearPromotionState.stage || 'không rõ bước'}): ${schoolYearPromotionState.message || 'Có thể chạy lại để đối soát và tiếp tục.'}`
@@ -3652,45 +4143,95 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
                 </div>
               )}
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3"><div className="text-[10px] font-black uppercase text-slate-500">Đang học</div><div className="mt-1 text-xl font-black text-slate-900">{schoolYearPromotionPreview.activeStudentCount}</div></div>
-                <div className="rounded-lg border border-emerald-100 bg-emerald-50 p-3"><div className="text-[10px] font-black uppercase text-emerald-700">Lên lớp</div><div className="mt-1 text-xl font-black text-emerald-800">{schoolYearPromotionPreview.promoted.length - schoolYearPromotionPreview.completions.length}</div></div>
-                <div className="rounded-lg border border-amber-100 bg-amber-50 p-3"><div className="text-[10px] font-black uppercase text-amber-700">Ở lại lớp</div><div className="mt-1 text-xl font-black text-amber-800">{schoolYearPromotionPreview.repeated.length}</div></div>
-                <div className="rounded-lg border border-blue-100 bg-blue-50 p-3"><div className="text-[10px] font-black uppercase text-blue-700">Hoàn thành lớp 9</div><div className="mt-1 text-xl font-black text-blue-800">{schoolYearPromotionPreview.completions.length}</div></div>
-                <div className="rounded-lg border border-slate-200 bg-white p-3"><div className="text-[10px] font-black uppercase text-slate-500">Đã có năm mới</div><div className="mt-1 text-xl font-black text-slate-700">{schoolYearPromotionPreview.alreadyPrepared.length}</div></div>
-                <div className="rounded-lg border border-slate-200 bg-white p-3"><div className="text-[10px] font-black uppercase text-slate-500">Nghỉ/bỏ học</div><div className="mt-1 text-xl font-black text-slate-700">{schoolYearPromotionPreview.droppedStudentCount}</div></div>
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3"><div className="text-[10px] font-normal uppercase text-slate-500">Đang học</div><div className="mt-1 text-xl font-normal text-slate-900">{schoolYearPromotionPreview.activeStudentCount}</div></div>
+                <div className="rounded-lg border border-emerald-100 bg-emerald-50 p-3"><div className="text-[10px] font-normal uppercase text-emerald-700">Lên lớp</div><div className="mt-1 text-xl font-normal text-emerald-800">{schoolYearPromotionPreview.promoted.length - schoolYearPromotionPreview.completions.length}</div></div>
+                <div className="rounded-lg border border-amber-100 bg-amber-50 p-3"><div className="text-[10px] font-normal uppercase text-amber-700">Ở lại lớp</div><div className="mt-1 text-xl font-normal text-amber-800">{schoolYearPromotionPreview.repeated.length}</div></div>
+                <div className="rounded-lg border border-blue-100 bg-blue-50 p-3"><div className="text-[10px] font-normal uppercase text-blue-700">Hoàn thành lớp 9</div><div className="mt-1 text-xl font-normal text-blue-800">{schoolYearPromotionPreview.completions.length}</div></div>
+                <div className="rounded-lg border border-slate-200 bg-white p-3"><div className="text-[10px] font-normal uppercase text-slate-500">Đã có năm mới</div><div className="mt-1 text-xl font-normal text-slate-700">{schoolYearPromotionPreview.alreadyPrepared.length}</div></div>
+                <div className="rounded-lg border border-slate-200 bg-white p-3"><div className="text-[10px] font-normal uppercase text-slate-500">Nghỉ/bỏ học</div><div className="mt-1 text-xl font-normal text-slate-700">{schoolYearPromotionPreview.droppedStudentCount}</div></div>
               </div>
 
+              <div className="mt-3 overflow-x-auto">
+                <table aria-label="Danh sách xét lên lớp và tốt nghiệp" className="w-full border-collapse text-xs">
+                  <thead className="bg-slate-50"><tr>{['Học sinh', 'Lớp cũ', 'Học lực', 'Hạnh kiểm', 'Lớp mới / Năm TN'].map(label => <th key={label} className="border p-2 text-left font-normal">{label}</th>)}</tr></thead>
+                  <tbody>{[...schoolYearPromotionPreview.transitions, ...schoolYearPromotionPreview.completions, ...schoolYearPromotionPreview.alreadyPrepared].map(item => <tr key={item.student.id}>
+                    <td className="border p-2">{item.student.fullName}<span className="block text-slate-500">{item.student.accessCode}</span></td>
+                    <td className="border p-2 text-center">{item.sourceClassName}</td>
+                    <td className="border p-2 text-center">{item.academicResult || '—'}</td>
+                    <td className="border p-2 text-center">{item.conductResult || '—'}</td>
+                    <td className="border p-2 text-center">{item.targetClassName}{item.graduationYear ? ` · ${item.graduationYear}` : ''}</td>
+                  </tr>)}</tbody>
+                </table>
+              </div>
               {schoolYearPromotionPreview.missingScores.length > 0 && (
-                <div className="mt-3 rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-900">
-                  Chưa thể chuyển năm: {schoolYearPromotionPreview.missingScores.length} học sinh chưa đủ kết quả cả năm. Hãy chốt đủ điểm hoặc kết quả học tập trước.
+                <div className="mt-3 rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm font-normal text-rose-900">
+                  {schoolYearPromotionPreview.scope === 'graduation' ? 'Chưa đủ căn cứ để xét tốt nghiệp' : 'Chưa thể chuyển năm'}: {schoolYearPromotionPreview.missingScores.length} học sinh chưa đủ kết quả cả năm; hồ sơ này sẽ được giữ nguyên.
+                  <ul className="mt-2 list-disc pl-4">{schoolYearPromotionPreview.missingScores.map(item => <li key={item.student.id}>{item.student.fullName} ({item.student.accessCode}): {item.completedCount}/{item.requiredCount} môn.</li>)}</ul>
+                </div>
+              )}
+              {schoolYearPromotionPreview.missingConduct.length > 0 && (
+                <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm font-normal text-amber-900">
+                  Chưa có căn cứ hạnh kiểm lớp 9 cho {schoolYearPromotionPreview.missingConduct.length} học sinh. Kiểm tra điểm danh hoặc kết quả đã chốt trước khi xét TNTHCS.
+                  <ul className="mt-2 list-disc pl-4">{schoolYearPromotionPreview.missingConduct.map(student => <li key={student.id}>{student.fullName} ({student.accessCode})</li>)}</ul>
                 </div>
               )}
               {schoolYearPromotionPreview.invalidClasses.length > 0 && (
-                <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-900">
-                  Có {schoolYearPromotionPreview.invalidClasses.length} học sinh chưa có tên lớp đầy đủ như 6A, 7B. Hãy khôi phục hậu tố lớp trước khi chuyển năm để hệ thống giữ đúng lớp A/B.
+                <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm font-normal text-amber-900">
+                  Có {schoolYearPromotionPreview.invalidClasses.length} hồ sơ cần đối chiếu lớp hoặc quyết định năm mới: {schoolYearPromotionPreview.invalidClasses.map(student => student.fullName).join(', ')}.
                 </div>
               )}
-              {!schoolYearPromotionPreview.missingScores.length && !schoolYearPromotionPreview.invalidClasses.length && (
-                <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-900">
+              {schoolYearPromotionPreview.scope === 'graduation' && (schoolYearPromotionPreview.missingScores.length || schoolYearPromotionPreview.missingConduct.length || schoolYearPromotionPreview.invalidClasses.length) > 0 && (
+                <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm font-normal text-amber-900">
+                  Chỉ cập nhật hồ sơ có đủ kết quả. Các hồ sơ thiếu điểm, thiếu dữ liệu điểm danh hoặc chưa khớp lớp sẽ giữ nguyên để đối chiếu sau.
+                </div>
+              )}
+              {schoolYearPromotionPreview.scope !== 'graduation' && !schoolYearPromotionPreview.missingScores.length && !schoolYearPromotionPreview.missingConduct.length && !schoolYearPromotionPreview.invalidClasses.length && (
+                <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm font-normal text-emerald-900">
                   Tất cả hồ sơ cần chuyển đã có kết quả để xét. Hệ thống sẽ sao lưu, tạo hoặc tiếp tục hồ sơ năm mới còn thiếu, ghi lịch sử lớp lên Google Sheet, rồi mới đổi năm học hệ thống.
                 </div>
               )}
-              <div className="mt-3 text-xs font-semibold text-slate-500">Lịch sử lớp năm cũ được giữ lại và bổ sung cột năm mới trên Google Sheet. Nếu đồng bộ bị gián đoạn, dữ liệu đã ghi không bị tạo trùng khi chạy lại.</div>
+              <div className="mt-3 text-xs font-normal text-slate-500">Lịch sử lớp năm cũ được giữ lại và bổ sung cột năm mới trên Google Sheet. Nếu đồng bộ bị gián đoạn, dữ liệu đã ghi không bị tạo trùng khi chạy lại.</div>
             </div>
             <div className="flex flex-wrap justify-end gap-2 border-t border-slate-200 bg-slate-50 px-4 py-3">
-              <button type="button" onClick={() => setSchoolYearPromotionPreview(null)} disabled={isSaving} className="h-9 rounded-md border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-50">Hủy</button>
-              <button type="button" onClick={confirmSchoolYearPromotion} disabled={isSaving || !schoolYearPromotionPreview.canExecute || !onStartSchoolYearPromotion} className={`inline-flex h-9 items-center gap-1.5 rounded-md px-3 text-xs font-semibold ${schoolYearPromotionPreview.canExecute && !isSaving ? 'bg-violet-700 text-white shadow hover:bg-violet-800' : 'cursor-not-allowed bg-slate-200 text-slate-500'}`}>
-                {isSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <GraduationCap className="h-4 w-4" />} {isSaving ? 'Đang chuyển...' : 'Sao lưu và chuyển năm'}
+              <button type="button" onClick={() => setSchoolYearPromotionPreview(null)} disabled={isSaving} className="h-9 rounded-md border border-slate-200 bg-white px-3 text-xs font-normal text-slate-700 hover:bg-slate-100 disabled:opacity-50">Hủy</button>
+              <button type="button" onClick={confirmSchoolYearPromotion} disabled={isSaving || !schoolYearPromotionPreview.canExecute || !onStartSchoolYearPromotion} className={`inline-flex h-9 items-center gap-1.5 rounded-md px-3 text-xs font-normal ${schoolYearPromotionPreview.canExecute && !isSaving ? 'bg-violet-700 text-white shadow hover:bg-violet-800' : 'cursor-not-allowed bg-slate-200 text-slate-500'}`}>
+                {isSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <GraduationCap className="h-4 w-4" />} {isSaving ? 'Đang cập nhật...' : schoolYearPromotionPreview.scope === 'graduation' ? 'Sao lưu và cập nhật lớp 9' : 'Sao lưu và chuyển năm'}
               </button>
             </div>
           </div>
         </div>
       )}
 
+      {sheetRetryStatus && (
+        <div role="status" aria-live="polite" className="shrink-0 border-b border-slate-200 bg-slate-50 px-3 py-2 text-xs font-normal text-slate-700">
+          {sheetRetryStatus.phase === 'running' ? 'Đang thử lại đồng bộ Sheet: ' + sheetRetryStatus.completed + '/' + sheetRetryStatus.total + ' hồ sơ.' : 'Đồng bộ Sheet: ' + sheetRetryStatus.succeeded + '/' + sheetRetryStatus.total + ' hồ sơ thành công.'}
+          {sheetRetryStatus.failed > 0 && ' Còn ' + sheetRetryStatus.failed + ' hồ sơ lỗi, đã giữ để thử lại.'}
+          {sheetRetryStatus.error && ' ' + sheetRetryStatus.error}
+        </div>
+      )}
       {studentTab === 'profileRequests' ? (
-        <div className="min-h-0 flex-1 overflow-y-auto p-3 sm:p-4 bg-white">
+        <div className="min-h-0 flex-1 overflow-y-auto p-2 sm:p-3 bg-white">
+          {(profileRequests.length > 0 || profileBatchStatus) && (
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-normal">
+              <div className="text-slate-600">
+                <div>{profileRequests.length} yêu cầu chờ duyệt · Cùng một thông tin, ưu tiên bản gửi mới nhất.</div>
+                {profileBatchStatus && <div role="status" aria-live="polite" className="mt-1">
+                  {profileBatchStatus.phase === 'saving'
+                    ? 'Đang duyệt ' + profileBatchStatus.completed + '/' + profileBatchStatus.total + ' yêu cầu…'
+                    : 'Đã duyệt ' + profileBatchStatus.succeeded + '/' + profileBatchStatus.total + ' yêu cầu.'}
+                  {profileBatchStatus.phase === 'syncing' && ' Đang đồng bộ Sheet ' + profileBatchStatus.synced + '/' + profileBatchStatus.syncTotal + ' học sinh; bạn có thể tiếp tục thao tác.'}
+                  {profileBatchStatus.phase === 'done' && profileBatchStatus.syncTotal > 0 && (profileBatchStatus.syncFailed ? ' Còn ' + profileBatchStatus.syncFailed + ' hồ sơ chờ đồng bộ lại Sheet.' : ' Đã đồng bộ Sheet.')}
+                  {profileBatchStatus.failed > 0 && ' Còn ' + profileBatchStatus.failed + ' yêu cầu chưa duyệt.'}
+                  {profileBatchStatus.error && ' ' + profileBatchStatus.error}
+                </div>}
+              </div>
+              <button type="button" onClick={approveAllProfileRequests} disabled={isSaving || !profileRequests.length || ['saving', 'syncing'].includes(profileBatchStatus?.phase)} className="inline-flex items-center gap-1.5 rounded bg-emerald-600 px-3 py-2 text-xs font-normal text-white hover:bg-emerald-700 disabled:opacity-50">
+                {profileBatchStatus?.phase === 'saving' ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />} Đồng ý tất cả yêu cầu
+              </button>
+            </div>
+          )}
           {profileRequests.length === 0 ? (
-            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-8 text-center text-slate-400 font-bold">
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-8 text-center text-slate-400 font-normal">
               Chưa có yêu cầu sửa hồ sơ nào.
             </div>
           ) : (
@@ -3698,53 +4239,23 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
               {profileRequests.map(request => {
                 const currentStudent = resolveProfileRequestStudent(request);
                 return (
-                  <div key={request.id} className="rounded-2xl border border-amber-100 bg-amber-50/40 p-4">
+                  <div key={request.id} className="rounded-lg border border-slate-200 bg-white p-3">
                     <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-3">
                       <div>
-                        <div className="font-black text-slate-900">{request.studentName || currentStudent?.fullName || 'Học sinh'} <span className="text-xs text-slate-400">({request.accessCode || currentStudent?.accessCode || 'chưa có mã'})</span></div>
-                        <div className="text-xs font-bold text-slate-500">Lớp {request.className || currentStudent?.className || '-'} - gửi lúc {request.createdAt ? new Date(request.createdAt).toLocaleString('vi-VN') : ''}</div>
+                        <div className="font-normal text-slate-900">{request.studentName || currentStudent?.fullName || 'Học sinh'} <span className="text-xs text-slate-400">({request.accessCode || currentStudent?.accessCode || 'chưa có mã'})</span></div>
+                        <div className="text-xs font-normal text-slate-500">Lớp {request.className || currentStudent?.className || '-'} - gửi lúc {request.createdAt ? new Date(request.createdAt).toLocaleString('vi-VN') : ''}</div>
                       </div>
                       <div className="flex flex-wrap gap-2">
-                        <button type="button" onClick={() => approveProfileRequest(request)} disabled={isSaving || !currentStudent} className="px-3 py-2 rounded-xl bg-emerald-600 text-white text-xs font-black uppercase shadow-sm flex items-center gap-1.5 disabled:opacity-50">
-                          <CheckCircle2 className="w-4 h-4" /> Đồng ý hết
+                        <button type="button" onClick={() => approveProfileRequest(request)} disabled={isSaving || !currentStudent} className="px-3 py-1.5 rounded bg-emerald-600 text-white text-xs font-normal shadow-sm flex items-center gap-1.5 disabled:opacity-50">
+                          <CheckCircle2 className="w-4 h-4" /> Đồng ý yêu cầu này
                         </button>
-                        <button type="button" onClick={() => rejectProfileRequest(request)} disabled={isSaving} className="px-3 py-2 rounded-xl bg-rose-50 text-rose-600 border border-rose-100 text-xs font-black uppercase flex items-center gap-1.5 disabled:opacity-50">
+                        <button type="button" onClick={() => rejectProfileRequest(request)} disabled={isSaving} className="px-3 py-1.5 rounded bg-rose-50 text-rose-600 border border-rose-100 text-xs font-normal flex items-center gap-1.5 disabled:opacity-50">
                           <X className="w-4 h-4" /> Từ chối hết
                         </button>
                       </div>
                     </div>
-                    <div className="mt-3 grid grid-cols-1 xl:grid-cols-2 gap-2">
-                      {Object.entries(sanitizeStudentChanges(request.changes)).map(([key, value]) => {
-                        const currentValue = safePlainValue(currentStudent?.[key]);
-                        const nextValue = safePlainValue(value);
-                        return (
-                          <div key={key} className="rounded-xl bg-white border border-amber-100 p-3">
-                            <div className="text-[10px] font-black uppercase text-slate-400 mb-2">{STUDENT_FIELD_LABELS[key] || key}</div>
-                            <div className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_auto] gap-2 sm:items-center">
-                              <div className="rounded-lg bg-slate-50 border border-slate-100 p-2 min-w-0">
-                                <div className="text-[9px] font-black uppercase text-slate-400">Cũ</div>
-                                <div className="text-xs font-bold text-slate-700 break-words">{currentValue || '(trống)'}</div>
-                              </div>
-                              <div className="rounded-lg bg-emerald-50 border border-emerald-100 p-2 min-w-0">
-                                <div className="text-[9px] font-black uppercase text-emerald-500">Mới</div>
-                                {String(key).toLowerCase().includes('url') ? (
-                                  <a href={nextValue} target="_blank" rel="noreferrer" className="text-xs font-black text-blue-600 hover:underline">Mở file/ảnh mới</a>
-                                ) : (
-                                  <div className="text-xs font-black text-emerald-800 break-words">{nextValue || '(trống)'}</div>
-                                )}
-                              </div>
-                              <div className="flex sm:flex-col gap-2">
-                                <button type="button" onClick={() => approveProfileField(request, key)} disabled={isSaving} title="Duyệt dòng này" className="w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center shadow-sm disabled:opacity-50">
-                                  <CheckCircle2 className="w-5 h-5" />
-                                </button>
-                                <button type="button" onClick={() => rejectProfileField(request, key)} disabled={isSaving} title="Từ chối dòng này" className="w-10 h-10 rounded-xl bg-rose-50 text-rose-600 border border-rose-100 flex items-center justify-center disabled:opacity-50">
-                                  <X className="w-5 h-5" />
-                                </button>
-                              </div>
-                            </div>
-                          </div>
-                        );
-                      })}
+                    <div className="mt-2">
+                      <ProfileChangeTable rows={profileChangeRows(request, currentStudent)} label={'Thay đổi hồ sơ ' + (request.studentName || currentStudent?.fullName || 'học sinh')} disabled={isSaving} onApprove={key => approveProfileField(request, key)} onReject={key => rejectProfileField(request, key)} />
                     </div>
                   </div>
                 );
@@ -3757,23 +4268,23 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
           <div className="shrink-0 p-2.5 sm:p-3 border-b border-slate-100 grid grid-cols-1 sm:grid-cols-[1fr_160px_160px] gap-2">
             <div className="relative">
               <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-              <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Tìm tên, mã học sinh, ngày sinh, lớp..." className="w-full pl-9 pr-3 py-2.5 rounded-xl border border-slate-200 text-sm font-bold focus:outline-none focus:border-blue-400" />
+              <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Tìm tên, mã học sinh, ngày sinh, lớp..." className="w-full pl-9 pr-3 py-2.5 rounded-xl border border-slate-200 text-sm font-normal focus:outline-none focus:border-blue-400" />
             </div>
-            <select value={journeyYearFilter} onChange={(e) => setJourneyYearFilter(e.target.value)} className="rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-black bg-white">
+            <select value={journeyYearFilter} onChange={(e) => setJourneyYearFilter(e.target.value)} className="rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-normal bg-white">
               <option value="">Tất cả năm học</option>
               {journeyYearOptions.map(year => <option key={year} value={year}>{year}</option>)}
             </select>
-            <select value={journeyClassFilter} onChange={(e) => setJourneyClassFilter(e.target.value)} className="rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-black bg-white">
+            <select value={journeyClassFilter} onChange={(e) => setJourneyClassFilter(e.target.value)} className="rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-normal bg-white">
               <option value="all">Tat ca lop</option>
               {journeyClassOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
             </select>
           </div>
 
-          <div className="shrink-0 px-3 py-1.5 border-b border-slate-100 bg-slate-50 text-center text-[10px] font-bold text-slate-500">
+          <div className="shrink-0 px-3 py-1.5 border-b border-slate-100 bg-slate-50 text-center text-[10px] font-normal text-slate-500">
             Mỗi năm học gồm 3 cột: Lớp, Rèn luyện, HL (học lực). Dấu — nghĩa là chưa có kết quả được lưu. Nhấn đúp vào dòng để sửa hồ sơ.
           </div>
           {journeyRows.some(row => row.dropoutContinuation) && (
-            <div className="shrink-0 border-b border-amber-200 bg-amber-50 px-3 py-2 text-center text-[11px] font-bold text-amber-900">
+            <div className="shrink-0 border-b border-amber-200 bg-amber-50 px-3 py-2 text-center text-[11px] font-normal text-amber-900">
               ⚠ Có {journeyRows.filter(row => row.dropoutContinuation).length} hồ sơ đã đánh dấu nghỉ nhưng vẫn có hồ sơ đang học ở năm sau. Hãy kiểm tra xem học sinh đã tái nhập học chưa.
             </div>
           )}
@@ -3781,14 +4292,14 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
           <div className="min-h-0 flex-1 overflow-auto">
             <table className="mx-auto min-w-[650px] table-fixed border-collapse border border-slate-200 text-left text-xs" style={{ width: Math.max(650, 302 + journeyYearOptions.length * 184) }}>
               <thead className="sticky top-0 bg-white border-b border-slate-100 z-10">
-                <tr className="text-left text-slate-500 uppercase font-black">
+                <tr className="text-left text-slate-500 uppercase font-normal">
                   <th rowSpan={2} className="sticky left-0 z-20 w-[230px] border border-slate-200 bg-white px-3 py-2">Học sinh</th>
                   <th rowSpan={2} className="w-[72px] border border-slate-200 px-1.5 py-2 text-center">Lớp hiện tại</th>
                   {journeyYearOptions.map(year => (
                     <th key={year} colSpan={3} className={`border border-slate-200 px-2 py-2 text-center ${year === journeyYearFilter ? 'bg-blue-50 text-blue-700' : ''}`}>{year}</th>
                   ))}
                 </tr>
-                <tr className="text-center text-[10px] font-semibold uppercase text-slate-500">
+                <tr className="text-center text-[10px] font-normal uppercase text-slate-500">
                   {journeyYearOptions.map(year => (
                     <React.Fragment key={year}>
                       <th className={`w-[72px] border border-slate-200 px-1.5 py-1.5 ${year === journeyYearFilter ? 'bg-blue-50/70' : ''}`}>Lớp</th>
@@ -3801,7 +4312,7 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
               <tbody>
                 {journeyRows.length === 0 ? (
                   <tr>
-                    <td colSpan={journeyYearOptions.length * 3 + 2} className="border border-slate-200 px-4 py-10 text-center text-slate-400 font-bold">
+                    <td colSpan={journeyYearOptions.length * 3 + 2} className="border border-slate-200 px-4 py-10 text-center text-slate-400 font-normal">
                       Chưa có học sinh đúng bộ lọc quá trình học này.
                     </td>
                   </tr>
@@ -3813,21 +4324,21 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
                           <DriveImage url={row.student.portraitUrl} alt={row.student.fullName || 'Học sinh'} className="w-full h-full object-contain" fallback={<UserRound className="w-5 h-5 text-indigo-300" />} />
                         </div>
                         <div className="min-w-0 flex-1">
-                          <div className={`font-black truncate ${isJourneyRowDropped(row, journeyYearFilter) ? 'text-rose-700 line-through' : 'text-slate-900'}`}>{row.student.fullName || 'Chưa có tên'}</div>
-                          <div className="text-[10px] font-bold text-slate-500 truncate">Mã HS: {row.student.accessCode || '-'}</div>
-                          <div className="text-[10px] font-bold text-slate-500 truncate">Vào: {row.entryYear || '-'}</div>
+                          <div className={`font-normal truncate ${isJourneyRowDropped(row, journeyYearFilter) ? 'text-rose-700 line-through' : 'text-slate-900'}`}>{row.student.fullName || 'Chưa có tên'}</div>
+                          <div className="text-[10px] font-normal text-slate-500 truncate">Mã HS: {row.student.accessCode || '-'}</div>
+                          <div className="text-[10px] font-normal text-slate-500 truncate">Vào: {row.entryYear || '-'}</div>
                         </div>
                       </div>
                     </td>
                     <td
-                      className={`border border-slate-200 px-1.5 py-2 align-middle text-center font-bold ${row.latestStudent.status === 'dropped' ? 'text-rose-700 line-through' : 'text-blue-700'}`}
+                      className={`border border-slate-200 px-1.5 py-2 align-middle text-center font-normal ${row.latestStudent.status === 'dropped' ? 'text-rose-700 line-through' : 'text-blue-700'}`}
                       title={row.dropoutContinuation
                         ? `Đã nghỉ năm ${row.dropoutContinuation.droppedSchoolYear}, nhưng có hồ sơ tiếp tục năm ${row.dropoutContinuation.continuedSchoolYear}, lớp ${row.dropoutContinuation.className || '—'}. Kiểm tra tái nhập học.`
                         : `Lớp gần nhất: ${row.latestStudent.className || '—'}`}
                     >
                       {row.latestStudent.className || '—'}
                       {row.dropoutContinuation && (
-                        <div className="mt-1 text-[9px] leading-tight font-bold text-rose-700" aria-label="Cần kiểm tra hồ sơ nghỉ nhưng có lớp năm sau">
+                        <div className="mt-1 text-[9px] leading-tight font-normal text-rose-700" aria-label="Cần kiểm tra hồ sơ nghỉ nhưng có lớp năm sau">
                           ⚠ Kiểm tra
                         </div>
                       )}
@@ -3836,8 +4347,8 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
                       const record = row.byYear.get(year);
                       const cell = getJourneyYearCell(record || {}, row.records);
                       const scorebookResult = record?.id ? journeyScorebookResults.get(record.id) : null;
-                      const conductResult = cell.conduct || '';
-                      const academicResult = cell.academic || scorebookResult?.academic || '';
+                      const conductResult = scorebookResult?.conduct || cell.conduct || '';
+                      const academicResult = scorebookResult?.academic || cell.academic || '';
                       const isDroppedRecord = record?.status === 'dropped';
                       return (
                         <React.Fragment key={year}>
@@ -3849,12 +4360,12 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
                             ) : <span className="text-slate-300">—</span>}
                           </td>
                           <td className={`border border-slate-200 px-1.5 py-2 align-middle text-center font-normal ${year === journeyYearFilter ? 'bg-blue-50/60' : ''}`}>
-                            <span className={conductResult ? 'text-slate-700' : 'text-slate-400'} title={conductResult ? 'Rèn luyện đã lưu trong hồ sơ học sinh' : 'Chưa có đánh giá rèn luyện được lưu'}>
+                            <span className={conductResult ? 'text-slate-700' : 'text-slate-400'} title={scorebookResult?.conduct ? 'Rèn luyện lấy từ tổng kết năm học tại trung tâm' : conductResult ? 'Rèn luyện đã lưu trong hồ sơ học sinh' : 'Chưa có đánh giá rèn luyện được lưu'}>
                               {record ? conductResult || '—' : '—'}
                             </span>
                           </td>
                           <td className={`border border-slate-200 px-1.5 py-2 align-middle text-center font-normal ${year === journeyYearFilter ? 'bg-blue-50/60' : ''}`}>
-                            <span className={academicResult ? 'text-slate-700' : 'text-slate-400'} title={cell.academic ? 'Học lực đã lưu trong hồ sơ học sinh' : scorebookResult?.academic ? 'Học lực tính từ sổ điểm năm học này' : 'Chưa có kết quả học lực được lưu'}>
+                            <span className={academicResult ? 'text-slate-700' : 'text-slate-400'} title={scorebookResult?.academic ? 'Học lực tính từ sổ điểm năm học này' : cell.academic ? 'Học lực đã lưu trong hồ sơ học sinh' : 'Chưa có kết quả học lực được lưu'}>
                               {record ? academicResult || '—' : '—'}
                             </span>
                           </td>
@@ -3873,7 +4384,7 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
         <div className="shrink-0 border-b border-cyan-100 bg-cyan-50/50 p-2 sm:p-3">
           <div className="flex flex-row items-start justify-between gap-2 sm:items-center">
             <div>
-              <div className="flex items-center gap-1.5 text-[11px] font-black uppercase text-cyan-900 sm:text-xs">
+              <div className="flex items-center gap-1.5 text-[11px] font-normal uppercase text-cyan-900 sm:text-xs">
                 {exportFormat && (
                   <button type="button" onClick={() => {
                     if (exportFormat === 'excel' && excelExportAction) {
@@ -3891,7 +4402,7 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
                 )}
                 {exportFormat === 'excel' && excelExportAction === 'sheet' ? 'Tạo Google Sheet' : exportFormat === 'excel' && excelExportAction === 'download' ? 'Tải file Excel' : exportFormat === 'excel' ? 'Chọn cách xuất Excel' : exportFormat === 'pdf' ? 'Tạo PDF và lấy liên kết' : 'Chọn định dạng xuất'}
               </div>
-              <p className="hidden text-[11px] font-bold text-cyan-700 sm:block">{exportFormat ? 'Chọn phạm vi dữ liệu cần xuất.' : 'Chọn Excel để tải file hoặc PDF để tạo liên kết chia sẻ.'}</p>
+              <p className="hidden text-[11px] font-normal text-cyan-700 sm:block">{exportFormat ? 'Chọn phạm vi dữ liệu cần xuất.' : 'Chọn Excel để tải file hoặc PDF để tạo liên kết chia sẻ.'}</p>
             </div>
             <button type="button" onClick={() => { setShowExportChoice(false); setExportFormat(''); setExcelExportAction(''); setSharedPdfLink(''); setSharedSheetLink(''); }} className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-cyan-100 bg-white text-slate-600 sm:h-auto sm:w-auto sm:rounded-xl sm:px-3 sm:py-2" aria-label="Đóng"><X className="h-3.5 w-3.5" /></button>
           </div>
@@ -3899,13 +4410,13 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
             <div className="mt-2 grid grid-cols-2 gap-2 sm:mt-3">
               <button type="button" onClick={() => setExportFormat('excel')} className="flex min-h-16 flex-col items-center justify-center gap-1 rounded-lg border border-emerald-100 bg-white p-2 text-emerald-700 hover:bg-emerald-50 sm:min-h-20 sm:rounded-xl">
                 <FileSpreadsheet className="h-5 w-5 sm:h-6 sm:w-6" />
-                <span className="text-[10px] font-black uppercase sm:text-xs">Excel (.xlsx)</span>
-                <span className="text-[9px] font-bold text-slate-400">Tải file về máy</span>
+                <span className="text-[10px] font-normal uppercase sm:text-xs">Excel (.xlsx)</span>
+                <span className="text-[9px] font-normal text-slate-400">Tải file về máy</span>
               </button>
               <button type="button" onClick={() => setExportFormat('pdf')} className="flex min-h-16 flex-col items-center justify-center gap-1 rounded-lg border border-blue-100 bg-white p-2 text-blue-700 hover:bg-blue-50 sm:min-h-20 sm:rounded-xl">
                 <FileText className="h-5 w-5 sm:h-6 sm:w-6" />
-                <span className="text-[10px] font-black uppercase sm:text-xs">PDF</span>
-                <span className="text-[9px] font-bold text-slate-400">Tạo liên kết chia sẻ</span>
+                <span className="text-[10px] font-normal uppercase sm:text-xs">PDF</span>
+                <span className="text-[9px] font-normal text-slate-400">Tạo liên kết chia sẻ</span>
               </button>
             </div>
           )}
@@ -3913,38 +4424,38 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
             <div className="mt-2 grid grid-cols-2 gap-2 sm:mt-3">
               <button type="button" onClick={() => setExcelExportAction('download')} className="flex min-h-16 flex-col items-center justify-center gap-1 rounded-lg border border-emerald-100 bg-white p-2 text-emerald-700 hover:bg-emerald-50 sm:min-h-20 sm:rounded-xl">
                 <Download className="h-5 w-5 sm:h-6 sm:w-6" />
-                <span className="text-[10px] font-black uppercase sm:text-xs">Tải Excel</span>
-                <span className="text-[9px] font-bold text-slate-400">Lưu file .xlsx về máy</span>
+                <span className="text-[10px] font-normal uppercase sm:text-xs">Tải Excel</span>
+                <span className="text-[9px] font-normal text-slate-400">Lưu file .xlsx về máy</span>
               </button>
               <button type="button" onClick={() => setExcelExportAction('sheet')} className="flex min-h-16 flex-col items-center justify-center gap-1 rounded-lg border border-emerald-100 bg-white p-2 text-emerald-700 hover:bg-emerald-50 sm:min-h-20 sm:rounded-xl">
                 <Share2 className="h-5 w-5 sm:h-6 sm:w-6" />
-                <span className="text-[10px] font-black uppercase sm:text-xs">Google Sheet</span>
-                <span className="text-[9px] font-bold text-slate-400">Tạo liên kết chia sẻ</span>
+                <span className="text-[10px] font-normal uppercase sm:text-xs">Google Sheet</span>
+                <span className="text-[9px] font-normal text-slate-400">Tạo liên kết chia sẻ</span>
               </button>
             </div>
           )}
           {exportFormat === 'excel' && excelExportAction === 'download' && (
             <div className="mt-2 grid grid-cols-2 gap-1.5 sm:mt-3 sm:gap-2">
-              <button type="button" onClick={() => downloadExportList('current')} className="rounded-md bg-emerald-600 px-2 py-2.5 text-[9px] font-black uppercase text-white sm:rounded-lg sm:px-3 sm:text-[10px]">Dữ liệu đang xem</button>
-              <button type="button" onClick={() => downloadExportList('all')} className="rounded-md border border-emerald-100 bg-emerald-50 px-2 py-2.5 text-[9px] font-black uppercase text-emerald-700 sm:rounded-lg sm:px-3 sm:text-[10px]">Đầy đủ tất cả cột</button>
+              <button type="button" onClick={() => downloadExportList('current')} className="rounded-md bg-emerald-600 px-2 py-2.5 text-[9px] font-normal uppercase text-white sm:rounded-lg sm:px-3 sm:text-[10px]">Dữ liệu đang xem</button>
+              <button type="button" onClick={() => downloadExportList('all')} className="rounded-md border border-emerald-100 bg-emerald-50 px-2 py-2.5 text-[9px] font-normal uppercase text-emerald-700 sm:rounded-lg sm:px-3 sm:text-[10px]">Đầy đủ tất cả cột</button>
             </div>
           )}
           {exportFormat === 'excel' && excelExportAction === 'sheet' && (
             <div className="mt-2 grid grid-cols-2 gap-1.5 sm:mt-3 sm:gap-2">
-              <button type="button" onClick={() => shareGoogleSheetExportList('current')} disabled={isSharingSheet} className="inline-flex items-center justify-center gap-1 rounded-md bg-emerald-600 px-2 py-2.5 text-[9px] font-black uppercase text-white disabled:opacity-60 sm:rounded-lg sm:px-3 sm:text-[10px]">
+              <button type="button" onClick={() => shareGoogleSheetExportList('current')} disabled={isSharingSheet} className="inline-flex items-center justify-center gap-1 rounded-md bg-emerald-600 px-2 py-2.5 text-[9px] font-normal uppercase text-white disabled:opacity-60 sm:rounded-lg sm:px-3 sm:text-[10px]">
                 {isSharingSheet ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Share2 className="h-3.5 w-3.5" />} Dữ liệu đang xem
               </button>
-              <button type="button" onClick={() => shareGoogleSheetExportList('all')} disabled={isSharingSheet} className="inline-flex items-center justify-center gap-1 rounded-md border border-emerald-100 bg-emerald-50 px-2 py-2.5 text-[9px] font-black uppercase text-emerald-700 disabled:opacity-60 sm:rounded-lg sm:px-3 sm:text-[10px]">
+              <button type="button" onClick={() => shareGoogleSheetExportList('all')} disabled={isSharingSheet} className="inline-flex items-center justify-center gap-1 rounded-md border border-emerald-100 bg-emerald-50 px-2 py-2.5 text-[9px] font-normal uppercase text-emerald-700 disabled:opacity-60 sm:rounded-lg sm:px-3 sm:text-[10px]">
                 <FileSpreadsheet className="h-3.5 w-3.5" /> Đầy đủ tất cả cột
               </button>
             </div>
           )}
           {exportFormat === 'pdf' && (
             <div className="mt-2 grid grid-cols-2 gap-1.5 sm:mt-3 sm:gap-2">
-              <button type="button" onClick={() => sharePdfExportList('current')} disabled={isSharingPdf} className="inline-flex items-center justify-center gap-1 rounded-md bg-blue-600 px-2 py-2.5 text-[9px] font-black uppercase text-white disabled:opacity-60 sm:rounded-lg sm:px-3 sm:text-[10px]">
+              <button type="button" onClick={() => sharePdfExportList('current')} disabled={isSharingPdf} className="inline-flex items-center justify-center gap-1 rounded-md bg-blue-600 px-2 py-2.5 text-[9px] font-normal uppercase text-white disabled:opacity-60 sm:rounded-lg sm:px-3 sm:text-[10px]">
                 {isSharingPdf ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Share2 className="h-3.5 w-3.5" />} Dữ liệu đang xem
               </button>
-              <button type="button" onClick={() => sharePdfExportList('all')} disabled={isSharingPdf} className="inline-flex items-center justify-center gap-1 rounded-md border border-blue-100 bg-blue-50 px-2 py-2.5 text-[9px] font-black uppercase text-blue-700 disabled:opacity-60 sm:rounded-lg sm:px-3 sm:text-[10px]">
+              <button type="button" onClick={() => sharePdfExportList('all')} disabled={isSharingPdf} className="inline-flex items-center justify-center gap-1 rounded-md border border-blue-100 bg-blue-50 px-2 py-2.5 text-[9px] font-normal uppercase text-blue-700 disabled:opacity-60 sm:rounded-lg sm:px-3 sm:text-[10px]">
                 <FileText className="h-3.5 w-3.5" /> Đầy đủ tất cả cột
               </button>
             </div>
@@ -3955,9 +4466,9 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
       {showExportChoice && exportFormat === 'pdf' && sharedPdfLink && (
         <div className="shrink-0 px-3 pb-3 -mt-2 border-b border-cyan-100 bg-cyan-50/50">
           <div className="rounded-xl border border-emerald-100 bg-white p-2 flex flex-col sm:flex-row gap-2">
-            <input value={sharedPdfLink} readOnly className="min-w-0 flex-1 rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-700" />
-            <button type="button" onClick={() => copyTextToClipboard(sharedPdfLink).then(copied => showNotification?.(copied ? 'Da copy link PDF.' : 'Chua copy duoc link PDF.', copied ? 'success' : 'error'))} className="px-3 py-2 rounded-lg bg-emerald-600 text-white text-[10px] font-black uppercase">Copy link</button>
-            <button type="button" onClick={() => window.open(sharedPdfLink, '_blank', 'noopener,noreferrer')} className="px-3 py-2 rounded-lg bg-white border border-emerald-100 text-emerald-700 text-[10px] font-black uppercase">Mo link</button>
+            <input value={sharedPdfLink} readOnly className="min-w-0 flex-1 rounded-lg border border-slate-200 px-3 py-2 text-xs font-normal text-slate-700" />
+            <button type="button" onClick={() => copyTextToClipboard(sharedPdfLink).then(copied => showNotification?.(copied ? 'Da copy link PDF.' : 'Chua copy duoc link PDF.', copied ? 'success' : 'error'))} className="px-3 py-2 rounded-lg bg-emerald-600 text-white text-[10px] font-normal uppercase">Copy link</button>
+            <button type="button" onClick={() => window.open(sharedPdfLink, '_blank', 'noopener,noreferrer')} className="px-3 py-2 rounded-lg bg-white border border-emerald-100 text-emerald-700 text-[10px] font-normal uppercase">Mo link</button>
           </div>
         </div>
       )}
@@ -3965,9 +4476,9 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
       {showExportChoice && exportFormat === 'excel' && excelExportAction === 'sheet' && sharedSheetLink && (
         <div className="shrink-0 px-3 pb-3 -mt-2 border-b border-emerald-100 bg-emerald-50/50">
           <div className="rounded-xl border border-emerald-100 bg-white p-2 flex flex-col sm:flex-row gap-2">
-            <input value={sharedSheetLink} readOnly className="min-w-0 flex-1 rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-700" />
-            <button type="button" onClick={() => copyTextToClipboard(sharedSheetLink).then(copied => showNotification?.(copied ? 'Đã copy liên kết Google Sheet.' : 'Chưa copy được liên kết.', copied ? 'success' : 'error'))} className="px-3 py-2 rounded-lg bg-emerald-600 text-white text-[10px] font-black uppercase">Copy link</button>
-            <button type="button" onClick={() => window.open(sharedSheetLink, '_blank', 'noopener,noreferrer')} className="px-3 py-2 rounded-lg bg-white border border-emerald-100 text-emerald-700 text-[10px] font-black uppercase">Mở Sheet</button>
+            <input value={sharedSheetLink} readOnly className="min-w-0 flex-1 rounded-lg border border-slate-200 px-3 py-2 text-xs font-normal text-slate-700" />
+            <button type="button" onClick={() => copyTextToClipboard(sharedSheetLink).then(copied => showNotification?.(copied ? 'Đã copy liên kết Google Sheet.' : 'Chưa copy được liên kết.', copied ? 'success' : 'error'))} className="px-3 py-2 rounded-lg bg-emerald-600 text-white text-[10px] font-normal uppercase">Copy link</button>
+            <button type="button" onClick={() => window.open(sharedSheetLink, '_blank', 'noopener,noreferrer')} className="px-3 py-2 rounded-lg bg-white border border-emerald-100 text-emerald-700 text-[10px] font-normal uppercase">Mở Sheet</button>
           </div>
         </div>
       )}
@@ -3977,14 +4488,14 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
           <div className="flex flex-col gap-2 rounded-2xl border border-orange-100 bg-white p-3 shadow-sm">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <div>
-                <div className="text-xs font-black uppercase text-orange-900">Nội dung thiếu thông tin để gửi nhóm</div>
-                <div className="text-[11px] font-bold text-orange-700">Có thể sửa trực tiếp nội dung trước khi copy.</div>
+                <div className="text-xs font-normal uppercase text-orange-900">Nội dung thiếu thông tin để gửi nhóm</div>
+                <div className="text-[11px] font-normal text-orange-700">Có thể sửa trực tiếp nội dung trước khi copy.</div>
               </div>
               <div className="flex gap-2">
-                <button type="button" onClick={() => copyRichReportToClipboard(missingInfoReport).then(copied => showNotification?.(copied ? 'Đã copy nội dung, tên học sinh sẽ đậm nếu nơi dán hỗ trợ.' : 'Chưa copy được, thầy bôi đen trong khung để copy.', copied ? 'success' : 'error'))} className="rounded-xl bg-orange-600 px-3 py-2 text-[10px] font-black uppercase text-white">
+                <button type="button" onClick={() => copyRichReportToClipboard(missingInfoReport).then(copied => showNotification?.(copied ? 'Đã copy nội dung, tên học sinh sẽ đậm nếu nơi dán hỗ trợ.' : 'Chưa copy được, thầy bôi đen trong khung để copy.', copied ? 'success' : 'error'))} className="rounded-xl bg-orange-600 px-3 py-2 text-[10px] font-normal uppercase text-white">
                   Copy
                 </button>
-                <button type="button" onClick={() => setMissingInfoReport('')} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-[10px] font-black uppercase text-slate-600">
+                <button type="button" onClick={() => setMissingInfoReport('')} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-[10px] font-normal uppercase text-slate-600">
                   Đóng
                 </button>
               </div>
@@ -4004,22 +4515,22 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
         <div className="shrink-0 border-b border-slate-100 bg-white p-2 sm:p-4">
           <div className="mb-2 flex flex-col gap-1.5 sm:mb-3 sm:flex-row sm:items-center sm:justify-between sm:gap-2">
             <div>
-              <div className="text-[11px] font-black uppercase text-slate-900 sm:text-xs">Cột hiển thị</div>
-              <p className="hidden text-[11px] font-bold text-slate-500 sm:block">Dữ liệu vẫn lưu đầy đủ, thầy cô chỉ chọn cột cần nhìn để bảng gọn hơn.</p>
+              <div className="text-[11px] font-normal uppercase text-slate-900 sm:text-xs">Cột hiển thị</div>
+              <p className="hidden text-[11px] font-normal text-slate-500 sm:block">Dữ liệu vẫn lưu đầy đủ, thầy cô chỉ chọn cột cần nhìn để bảng gọn hơn.</p>
             </div>
             <div className="flex flex-wrap gap-1 sm:gap-2">
-              <button type="button" onClick={() => setVisibleColumns(COMPACT_VISIBLE_COLUMNS)} className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1.5 text-[9px] font-black uppercase text-slate-600 sm:rounded-xl sm:px-3 sm:py-2 sm:text-[10px]">Gọn</button>
-              <button type="button" onClick={() => setVisibleColumns(IMAGE_ONLY_VISIBLE_COLUMNS)} className="rounded-md border border-emerald-100 bg-emerald-50 px-2 py-1.5 text-[9px] font-black uppercase text-emerald-700 sm:rounded-xl sm:px-3 sm:py-2 sm:text-[10px]">Chỉ ảnh</button>
-              <button type="button" onClick={toggleAllVisibleColumns} className="rounded-md border border-indigo-100 bg-indigo-50 px-2 py-1.5 text-[9px] font-black uppercase text-indigo-700 sm:rounded-xl sm:px-3 sm:py-2 sm:text-[10px]">Tất cả</button>
-              <button type="button" onClick={() => setVisibleColumns(typeof window !== 'undefined' && window.innerWidth < 640 ? MOBILE_VISIBLE_COLUMNS : DEFAULT_VISIBLE_COLUMNS)} className="rounded-md border border-blue-100 bg-blue-50 px-2 py-1.5 text-[9px] font-black uppercase text-blue-700 sm:rounded-xl sm:px-3 sm:py-2 sm:text-[10px]">Mặc định</button>
-              <button type="button" onClick={() => setShowColumns(false)} className="flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1.5 text-[9px] font-black uppercase text-slate-600 sm:gap-1.5 sm:rounded-xl sm:px-3 sm:py-2 sm:text-[10px]"><X className="w-3.5 h-3.5" /> Đóng</button>
+              <button type="button" onClick={() => setVisibleColumns(COMPACT_VISIBLE_COLUMNS)} className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1.5 text-[9px] font-normal uppercase text-slate-600 sm:rounded-xl sm:px-3 sm:py-2 sm:text-[10px]">Gọn</button>
+              <button type="button" onClick={() => { setShowDocumentPreviews(true); setVisibleColumns(IMAGE_ONLY_VISIBLE_COLUMNS); }} className="rounded-md border border-emerald-100 bg-emerald-50 px-2 py-1.5 text-[9px] font-normal uppercase text-emerald-700 sm:rounded-xl sm:px-3 sm:py-2 sm:text-[10px]">Chỉ ảnh</button>
+              <button type="button" onClick={toggleAllVisibleColumns} className="rounded-md border border-indigo-100 bg-indigo-50 px-2 py-1.5 text-[9px] font-normal uppercase text-indigo-700 sm:rounded-xl sm:px-3 sm:py-2 sm:text-[10px]">Tất cả</button>
+              <button type="button" onClick={() => setVisibleColumns(typeof window !== 'undefined' && window.innerWidth < 640 ? MOBILE_VISIBLE_COLUMNS : DEFAULT_VISIBLE_COLUMNS)} className="rounded-md border border-blue-100 bg-blue-50 px-2 py-1.5 text-[9px] font-normal uppercase text-blue-700 sm:rounded-xl sm:px-3 sm:py-2 sm:text-[10px]">Mặc định</button>
+              <button type="button" onClick={() => setShowColumns(false)} className="flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1.5 text-[9px] font-normal uppercase text-slate-600 sm:gap-1.5 sm:rounded-xl sm:px-3 sm:py-2 sm:text-[10px]"><X className="w-3.5 h-3.5" /> Đóng</button>
             </div>
           </div>
-          <div className="grid max-h-[32dvh] grid-cols-2 gap-1 overflow-y-auto sm:max-h-none sm:grid-cols-3 sm:gap-2 lg:grid-cols-4 xl:grid-cols-6">
-            {STUDENT_FIELDS.map(field => (
-              <label key={field.key} className={`flex items-center gap-1.5 rounded-md border px-2 py-1.5 text-[9px] font-black sm:gap-2 sm:rounded-xl sm:px-3 sm:py-2 sm:text-[11px] ${visibleColumns.includes(field.key) ? 'bg-indigo-50 border-indigo-100 text-indigo-800' : 'bg-white border-slate-200 text-slate-500'}`}>
-                <input type="checkbox" checked={visibleColumns.includes(field.key)} disabled={field.key === 'fullName'} onChange={() => updateVisibleColumns(field.key)} className="accent-indigo-600" />
-                <span className="truncate">{field.label}</span>
+          <div role="group" aria-label="Chọn cột hiển thị" className="grid max-h-[32dvh] grid-cols-[repeat(auto-fill,minmax(min(100%,170px),1fr))] content-start gap-1.5 overflow-y-auto sm:max-h-none sm:gap-2">
+            {STUDENT_FIELDS.filter(field => !(educationLevel === 'primary' && ACADEMIC_RESULT_FIELD_KEYS.has(field.key))).map(field => (
+              <label key={field.key} title={field.label} className={`flex h-8 w-full min-w-0 items-center gap-1.5 rounded-md border px-2 py-1.5 text-[10px] font-normal sm:text-[11px] ${visibleColumns.includes(field.key) ? 'bg-indigo-50 border-indigo-100 text-indigo-800' : 'bg-white border-slate-200 text-slate-500'}`}>
+                <input type="checkbox" checked={visibleColumns.includes(field.key)} disabled={field.key === 'fullName'} onChange={() => updateVisibleColumns(field.key)} className="shrink-0 accent-indigo-600" />
+                <span className="min-w-0 truncate">{field.label}</span>
               </label>
             ))}
           </div>
@@ -4028,242 +4539,206 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
 
       {studentTab === 'current' && showImport && (
         <div className="shrink-0 p-4 border-b border-indigo-100 bg-indigo-50/40 space-y-3">
-          <div className="text-xs font-black text-indigo-900 uppercase">Nhập nhanh từ Google Sheet vào năm {currentSchoolYear}</div>
-          <p className="text-[11px] text-indigo-700 font-bold">
-            Mở Sheet, chọn hàng tiêu đề và các dòng học sinh, bấm Ctrl+C rồi dán vào khung dưới. App sẽ lưu vào Firebase và tự tạo mã học sinh.
+          <div className="text-xs font-normal text-indigo-900 uppercase">Nhập nhanh từ Google Sheet vào năm {currentSchoolYear}</div>
+          <p className="text-[11px] text-indigo-700 font-normal">
+            Mở Sheet, chọn hàng tiêu đề và các dòng học sinh, bấm Ctrl+C rồi dán vào khung dưới. Hệ thống sẽ tạo hồ sơ mới trên web và tự cấp mã học sinh.
           </p>
-          <textarea value={importText} onChange={(e) => setImportText(e.target.value)} placeholder="Dán dữ liệu copy từ Google Sheet vào đây..." className="w-full min-h-[130px] rounded-2xl border border-indigo-100 bg-white p-3 text-xs font-bold focus:outline-none focus:border-indigo-400" />
+          <textarea value={importText} onChange={(e) => setImportText(e.target.value)} placeholder="Dán dữ liệu copy từ Google Sheet vào đây..." className="w-full min-h-[130px] rounded-2xl border border-indigo-100 bg-white p-3 text-xs font-normal focus:outline-none focus:border-indigo-400" />
           <div className="flex justify-end gap-2">
-            <button type="button" onClick={() => setShowImport(false)} className="px-4 py-2 bg-white text-slate-600 border border-slate-200 rounded-xl text-xs font-black">Đóng</button>
-            <button type="button" onClick={importFromPaste} disabled={isSaving || !importText.trim()} className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-black disabled:opacity-60">Nhập danh sách</button>
+            <button type="button" onClick={() => setShowImport(false)} className="px-4 py-2 bg-white text-slate-600 border border-slate-200 rounded-xl text-xs font-normal">Đóng</button>
+            <button type="button" onClick={importFromPaste} disabled={isSaving || !importText.trim()} className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-normal disabled:opacity-60">Nhập danh sách</button>
           </div>
         </div>
       )}
 
       <>
-      <div className="shrink-0 grid grid-cols-2 gap-1.5 border-b border-slate-100 p-1.5 sm:grid-cols-[minmax(220px,1fr)_170px_160px_130px_42px_auto] sm:gap-2 sm:p-3">
-        <div className="relative col-span-2 sm:col-span-1">
-          <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400 sm:left-3 sm:h-4 sm:w-4" />
-          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Tìm tên, lớp, mã..." className="h-8 w-full rounded-lg border border-slate-200 pl-8 pr-2 text-xs font-bold focus:border-indigo-400 focus:outline-none sm:h-10 sm:rounded-xl sm:pl-9 sm:pr-3 sm:text-sm" />
+      <div className="shrink-0 grid grid-cols-2 items-center gap-2 border-b border-slate-200 bg-slate-50 px-2 py-2 text-sm text-slate-700 sm:flex sm:flex-wrap">
+        <label className="col-span-2 flex h-8 shrink-0 cursor-pointer items-center gap-2 sm:mr-1">
+          <input type="checkbox" checked={showPortraits} onChange={event => setShowPortraits(event.target.checked)} aria-label="Hiện ảnh" className="h-4 w-4 accent-sky-700" />
+          <span>Hiện ảnh</span>
+        </label>
+        {studentTab === 'current' && (
+          <label className="col-span-2 flex h-8 shrink-0 cursor-pointer items-center gap-2 sm:mr-1" title="Bật để nhấn vào ô và sửa nhanh; tắt để xem hồ sơ bằng cách nhấn vào tên">
+            <input type="checkbox" checked={quickEditEnabled} onChange={event => { setQuickEditEnabled(event.target.checked); setQuickEdit(null); }} aria-label="Chỉnh sửa nhanh" className="h-4 w-4 accent-indigo-600" />
+            <span>Chỉnh sửa</span>
+          </label>
+        )}
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="shrink-0">Khối:</span>
+          <div className="min-w-0 flex-1 sm:w-40">
+            <StudentFilterDropdown label="Khối" options={gradeOptions.map(grade => ({ value: grade, label: `Khối ${grade}` }))} value={gradeFilter} onChange={changeGradeFilter}
+              open={openFilterKey === 'toolbar:grade'} onOpenChange={open => setOpenFilterKey(open ? 'toolbar:grade' : null)} />
+          </div>
         </div>
-        <select value={quickIssueFilter} onChange={(e) => setQuickIssueFilter(e.target.value)} className="h-8 min-w-0 rounded-lg border border-slate-200 bg-white px-2 text-xs font-bold sm:h-10 sm:rounded-xl sm:px-3 sm:text-sm sm:font-black">
-          {QUICK_ISSUE_FILTERS.map(item => (
-            <option key={item.key} value={item.key}>{item.label} ({issueStats[item.key] ?? 0})</option>
-          ))}
-        </select>
-        <div className="relative">
-          <button
-            type="button"
-            onClick={() => { setShowClassPicker(prev => !prev); setOpenFilterKey(null); }}
-            className={`h-8 w-full rounded-lg border bg-white px-2 text-xs font-bold flex items-center justify-between gap-1 sm:h-10 sm:rounded-xl sm:px-3 sm:text-sm sm:font-black ${classFilter.length ? 'border-indigo-200 text-indigo-700 shadow-sm' : 'border-slate-200 text-slate-900'}`}
-          >
-            <span className="truncate">{classFilterLabel}</span>
-            <ChevronDown className={`w-4 h-4 shrink-0 transition-transform ${showClassPicker ? 'rotate-180' : ''}`} />
-          </button>
-          {showClassPicker && (
-            <>
-              {typeof document !== 'undefined' && createPortal((
-                <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-slate-950/45 p-3 backdrop-blur-[1px] sm:hidden" onClick={() => setShowClassPicker(false)}>
-                  <div className="flex max-h-[calc(100dvh-1.5rem)] w-full max-w-md min-h-0 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white p-3 shadow-2xl" onClick={(event) => event.stopPropagation()}>
-                    <div className="mb-2 flex items-center justify-between gap-2 border-b border-slate-100 pb-2">
-                      <div>
-                        <div className="text-sm font-black text-slate-900">Chọn lớp cần xem</div>
-                        <div className="mt-0.5 text-[10px] font-bold text-slate-400">{classFilterLabel}</div>
-                      </div>
-                      <button type="button" onClick={() => setShowClassPicker(false)} className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-600" aria-label="Đóng">
-                        <X className="h-4 w-4" />
-                      </button>
-                    </div>
-                    <div className="flex items-center justify-between gap-2 border-b border-slate-100 pb-2">
-                      <button type="button" onClick={() => setClassFilter([])} className="rounded-lg bg-slate-50 px-3 py-2 text-[10px] font-black uppercase text-slate-600">Tất cả</button>
-                      <button type="button" onClick={() => setClassFilter(classOptions)} className="rounded-lg bg-indigo-50 px-3 py-2 text-[10px] font-black uppercase text-indigo-700">Chọn hết</button>
-                    </div>
-                    <div className="mt-2 min-h-0 flex-1 overflow-y-auto overscroll-contain pr-1">
-                      {classOptions.length ? classOptions.map(className => (
-                        <label key={className} className={`mb-1 flex cursor-pointer items-center gap-2 rounded-xl border px-3 py-3 text-xs font-black ${selectedClassSet.has(className) ? 'border-indigo-100 bg-indigo-50 text-indigo-800' : 'border-slate-100 bg-white text-slate-600'}`}>
-                          <input type="checkbox" checked={selectedClassSet.has(className)} onChange={() => toggleClassFilter(className)} className="accent-indigo-600" />
-                          <span className="truncate">Lớp {className}</span>
-                        </label>
-                      )) : (
-                        <div className="px-3 py-6 text-center text-xs font-bold text-slate-400">Chưa có lớp</div>
-                      )}
-                    </div>
-                    <button type="button" onClick={() => setShowClassPicker(false)} className="mt-2 w-full shrink-0 rounded-xl bg-indigo-600 px-3 py-3 text-xs font-black uppercase text-white shadow-sm">
-                      Xong
-                    </button>
-                  </div>
-                </div>
-              ), document.body)}
-              <div className="absolute right-0 top-full z-40 mt-2 hidden w-64 rounded-2xl border border-slate-200 bg-white p-2 shadow-2xl sm:block">
-                <div className="flex items-center justify-between gap-2 border-b border-slate-100 pb-2">
-                  <button type="button" onClick={() => setClassFilter([])} className="rounded-lg bg-slate-50 px-2 py-1.5 text-[10px] font-black uppercase text-slate-600">Tất cả</button>
-                  <button type="button" onClick={() => setClassFilter(classOptions)} className="rounded-lg bg-indigo-50 px-2 py-1.5 text-[10px] font-black uppercase text-indigo-700">Chọn hết</button>
-                </div>
-                <div className="mt-2 max-h-64 overflow-y-auto pr-1">
-                  {classOptions.length ? classOptions.map(className => (
-                    <label key={className} className={`mb-1 flex cursor-pointer items-center gap-2 rounded-xl border px-3 py-2 text-xs font-black ${selectedClassSet.has(className) ? 'border-indigo-100 bg-indigo-50 text-indigo-800' : 'border-slate-100 bg-white text-slate-600 hover:bg-slate-50'}`}>
-                      <input type="checkbox" checked={selectedClassSet.has(className)} onChange={() => toggleClassFilter(className)} className="accent-indigo-600" />
-                      <span className="truncate">Lớp {className}</span>
-                    </label>
-                  )) : (
-                    <div className="px-3 py-6 text-center text-xs font-bold text-slate-400">Chưa có lớp</div>
-                  )}
-                </div>
-                <button type="button" onClick={() => setShowClassPicker(false)} className="mt-2 w-full rounded-xl bg-indigo-600 px-3 py-2 text-[10px] font-black uppercase text-white shadow-sm">
-                  Xong
-                </button>
-              </div>
-            </>
-          )}
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="shrink-0">Lớp:</span>
+          <div className="min-w-0 flex-1 sm:w-40">
+            <StudentFilterDropdown label="Lớp" options={filteredClassOptions.map(className => ({ value: className, label: className }))} value={classFilter} onChange={setClassFilter}
+              open={openFilterKey === 'toolbar:class'} onOpenChange={open => setOpenFilterKey(open ? 'toolbar:class' : null)} />
+          </div>
         </div>
         {studentTab === 'current' ? (
-          <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="hidden h-10 rounded-xl border border-slate-200 bg-white px-3 text-sm font-black sm:block">
-            <option value="all">Tất cả</option>
-            <option value="active">Đang học</option>
-            <option value="dropped">Bỏ học</option>
-          </select>
-        ) : (
-          <div className="hidden h-10 items-center rounded-xl border border-emerald-100 bg-emerald-50 px-3 text-sm font-black text-emerald-700 sm:flex">
-            {duplicateRegistrationCount ? `${duplicateRegistrationCount} hồ sơ cần kiểm tra` : 'Chỉ hiện hồ sơ mới'}
+          <div className="col-span-2 flex min-w-0 items-center gap-2 sm:min-w-[260px]">
+            <span className="shrink-0">Trạng thái:</span>
+            <div className="min-w-0 flex-1">
+              <StudentFilterDropdown label="Trạng thái" options={[{ value: 'active', label: 'Đang học' }, { value: 'dropped', label: 'Bỏ học' }, { value: 'completed', label: 'TNTHCS' }]} value={statusFilter} onChange={setStatusFilter}
+                open={openFilterKey === 'toolbar:status'} onOpenChange={open => setOpenFilterKey(open ? 'toolbar:status' : null)} />
+            </div>
           </div>
+        ) : (
+          <span className="col-span-2 text-xs text-slate-500">{duplicateRegistrationCount ? `${duplicateRegistrationCount} hồ sơ cần kiểm tra` : 'Hồ sơ đăng ký mới'}</span>
         )}
-        <button type="button" onClick={filterCheckedStudents} title="Lọc học sinh đã chọn" className={`hidden h-10 w-10 rounded-xl border text-[11px] font-black uppercase items-center justify-center ${quickIssueFilter === 'selected' ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm' : 'bg-white text-slate-600 border-slate-200'} sm:flex`}>
-          <Filter className="w-4 h-4" />
+        <button type="button" onClick={filterCheckedStudents} title="Lọc học sinh đã chọn" aria-label="Lọc học sinh đã chọn" className={`flex h-8 w-8 items-center justify-center rounded border ${quickIssueFilter === 'selected' ? 'border-sky-700 bg-sky-700 text-white' : 'border-slate-300 bg-white text-slate-500 hover:bg-slate-100'}`}>
+          <Filter className="h-4 w-4" />
         </button>
-        {(quickIssueFilter !== 'all' || classFilter.length || query || Object.values(columnFilters).some(Boolean)) && (
-          <button
-            type="button"
-            onClick={() => {
-              setQuickIssueFilter('all');
-              setClassFilter([]);
-              setColumnFilters({});
-              setQuery('');
-            }}
-            className="col-span-2 h-8 rounded-lg border border-rose-100 bg-rose-50 px-2 text-[9px] font-black uppercase text-rose-600 sm:col-span-1 sm:h-10 sm:rounded-xl sm:px-3 sm:text-[10px]"
-          >
+        {(gradeFilter != null || quickIssueFilter !== 'all' || classFilter != null || query || (studentTab === 'current' && (statusFilter?.length !== 1 || statusFilter[0] !== 'active')) || Object.values(columnFilters).some(value => value != null)) && (
+          <button type="button" onClick={() => {
+            setGradeFilter(null);
+            setClassFilter(null);
+            setStatusFilter(studentTab === 'current' ? ['active'] : null);
+            setQuickIssueFilter('all');
+            setColumnFilters({});
+            setOpenFilterKey(null);
+            setQuery('');
+          }} className="h-8 rounded border border-slate-300 bg-white px-2 text-xs text-slate-600 hover:bg-slate-100">
             Xóa lọc
           </button>
         )}
       </div>
+      {showSearch && (
+        <div id="student-database-search" className="flex shrink-0 items-center gap-2 border-b border-slate-200 px-2 py-2">
+          <div className="relative min-w-0 flex-1 sm:max-w-md">
+            <Search className="absolute left-2 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+            <input autoFocus type="search" aria-label="Tìm học sinh" value={query} onChange={event => setQuery(event.target.value)} onKeyDown={event => { if (event.key === 'Escape') closeSearch(); }} placeholder="Tìm tên, lớp, mã..." className="h-8 w-full rounded border border-slate-300 pl-8 pr-2 text-sm focus:border-sky-500 focus:outline-none" />
+          </div>
+          <button type="button" onClick={closeSearch} aria-label="Đóng tìm kiếm" title="Đóng tìm kiếm" className="flex h-8 w-8 items-center justify-center rounded border border-slate-300 text-slate-500 hover:bg-slate-100">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
 
       {showFilters && (
         <div className="shrink-0 px-3 pb-3 border-b border-slate-100 bg-white">
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-6 gap-2">
             {visibleStudentFields.map(field => (
-              <label key={field.key} className="flex flex-col gap-1">
-                <span className="text-[9px] font-black uppercase text-slate-400">{field.label}</span>
-                <select
-                  value={columnFilters[field.key] || ''}
-                  onChange={(e) => setColumnFilters(prev => ({ ...prev, [field.key]: e.target.value }))}
-                  className="rounded-xl border border-slate-200 px-3 py-2 text-xs font-bold bg-white focus:outline-none focus:border-indigo-400"
-                >
-                  <option value="">Tất cả</option>
-                  {getFilterOptions(field.key).map(option => <option key={option} value={option}>{getColumnFilterOptionLabel(option)}</option>)}
-                </select>
-              </label>
+              <div key={field.key} className="flex flex-col gap-1">
+                <span className="text-[9px] font-normal uppercase text-slate-400">{field.label}</span>
+                <StudentFilterDropdown label={field.label} options={getDropdownFilterOptions(field.key, `advanced:${field.key}`)}
+                  value={columnFilters[field.key] ?? null} onChange={value => setColumnFilters(prev => ({ ...prev, [field.key]: value }))}
+                  open={openFilterKey === `advanced:${field.key}`} onOpenChange={open => setOpenFilterKey(open ? `advanced:${field.key}` : null)} />
+              </div>
             ))}
           </div>
           <div className="flex justify-end gap-2 mt-2">
-            <button type="button" onClick={() => setColumnFilters({})} className="px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-[10px] font-black uppercase text-slate-600">Xóa filter</button>
-            <button type="button" onClick={() => setShowFilters(false)} className="px-3 py-2 rounded-xl bg-white border border-slate-200 text-[10px] font-black uppercase text-slate-600">Đóng</button>
+            <button type="button" onClick={() => setColumnFilters({})} className="px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-[10px] font-normal uppercase text-slate-600">Xóa filter</button>
+            <button type="button" onClick={() => { setShowFilters(false); setOpenFilterKey(null); }} className="px-3 py-2 rounded-xl bg-white border border-slate-200 text-[10px] font-normal uppercase text-slate-600">Đóng</button>
           </div>
         </div>
       )}
 
       <div className="min-h-0 flex-1 overflow-auto">
-        <table className={`w-full text-left text-xs ${isImageOnlyView ? 'min-w-[980px] table-fixed' : 'min-w-[980px]'}`}>
-          <thead className="sticky top-0 bg-white border-b border-slate-100 z-10">
-            <tr className="text-slate-500 uppercase font-black">
-              <th className={`px-4 py-3 ${isImageOnlyView ? 'w-[54px]' : 'w-12'}`}>
+        <table className={`student-database-table w-full table-fixed border-collapse text-center text-xs ${showPortraits ? 'student-database-portrait-view' : ''} ${isImageOnlyView ? 'student-database-image-view' : ''}`} style={{ minWidth: databaseTableWidth }} aria-label="Database học sinh">
+          <colgroup>
+            {databaseColumnWidths.map((width, index) => <col key={index} style={{ width }} />)}
+          </colgroup>
+          <thead className="sticky top-0 bg-sky-700 border-b border-sky-800 z-10">
+            <tr className="text-white font-normal">
+              <th scope="col">STT</th>
+              <th scope="col">
                 <input type="checkbox" checked={allFilteredSelected} onChange={toggleSelectAllFiltered} className="w-4 h-4 accent-indigo-600" title="Tích tất cả dòng đang lọc" />
               </th>
+              <th scope="col">Hồ sơ</th>
+              <th scope="col">Ảnh</th>
               {studentTab === 'current' && !isImageOnlyView && (
                 <>
-                  <th className="px-4 py-3 min-w-[120px]">Mã học</th>
-                  <th className="px-4 py-3 min-w-[110px]">Tình trạng</th>
+                  <th scope="col">Mã học</th>
+                  <th scope="col">Tình trạng</th>
                 </>
               )}
               {visibleStudentFields.map(field => (
-                <th key={field.key} className={`px-4 py-3 whitespace-nowrap ${isImageOnlyView ? (field.key === 'fullName' ? 'w-[22%]' : 'w-[18.5%]') : (field.key === 'fullName' ? 'min-w-[240px]' : 'min-w-[140px]')}`}>
-                  <div className={`relative inline-flex items-center gap-1 ${isImageOnlyView && field.key !== 'fullName' ? 'w-full justify-center' : ''}`}>
+                <th key={field.key} scope="col" className={STUDENT_LEFT_ALIGNED_FIELDS.has(field.key) ? 'text-left' : 'text-center'}>
+                   <div className={`student-column-heading ${STUDENT_LEFT_ALIGNED_FIELDS.has(field.key) ? 'justify-start' : 'justify-center'}`}>
                     {field.key === 'fullName' ? (
-                      <button type="button" onClick={() => setSortMode('fullName')} className={`inline-flex items-center gap-1.5 rounded-lg px-2 py-1 -ml-2 ${sortMode === 'fullName' ? 'bg-indigo-50 text-indigo-700' : 'text-slate-500 hover:bg-slate-50'}`} title="Sắp xếp theo tên gọi tiếng Việt">
-                        {field.label} <ArrowDownAZ className="w-3.5 h-3.5" />
+                      <button type="button" onClick={() => setSortMode('fullName')} className={`inline-flex min-w-0 items-center gap-1 rounded px-1 py-0.5 -ml-1 text-left ${sortMode === 'fullName' ? 'bg-white/20 text-white' : 'text-white hover:bg-white/10'}`} title="Sắp xếp theo tên gọi tiếng Việt">
+                        <span className="student-column-label">{field.label}</span> <ArrowDownAZ className="w-3.5 h-3.5 shrink-0" />
                       </button>
                     ) : field.key === 'className' ? (
-                      <button type="button" onClick={() => setSortMode('className')} className={`inline-flex items-center gap-1.5 rounded-lg px-2 py-1 -ml-2 ${sortMode === 'className' ? 'bg-indigo-50 text-indigo-700' : 'text-slate-500 hover:bg-slate-50'}`} title="Sắp xếp theo khối/lớp rồi tên">
-                        {field.label} <ArrowUpDown className="w-3.5 h-3.5" />
+                      <button type="button" onClick={() => setSortMode('className')} className={`inline-flex min-w-0 items-center gap-1 rounded px-1 py-0.5 ${sortMode === 'className' ? 'bg-white/20 text-white' : 'text-white hover:bg-white/10'}`} title="Sắp xếp theo khối/lớp rồi tên">
+                        <span className="student-column-label">{field.label}</span> <ArrowUpDown className="w-3.5 h-3.5 shrink-0" />
                       </button>
-                    ) : <span>{isImageOnlyView ? (IMAGE_PREVIEW_FIELD_LABELS[field.key] || field.label) : field.label}</span>}
-                    <button type="button" onClick={() => setOpenFilterKey(prev => prev === field.key ? null : field.key)} className={`rounded-md p-0.5 ${columnFilters[field.key] ? 'bg-indigo-100 text-indigo-700' : 'hover:bg-slate-100'}`} title={`Lọc ${field.label}`}>
-                      <ChevronDown className="w-3.5 h-3.5" />
-                    </button>
-                    {openFilterKey === field.key && (
-                      <div className="absolute left-0 top-full mt-1 z-30 w-52 rounded-xl border border-slate-200 bg-white p-2 shadow-xl normal-case">
-                        <select
-                          autoFocus
-                          value={columnFilters[field.key] || ''}
-                          onChange={(e) => { setColumnFilters(prev => ({ ...prev, [field.key]: e.target.value })); setOpenFilterKey(null); }}
-                          className="w-full rounded-lg border border-slate-200 px-2 py-2 text-xs font-bold bg-white text-slate-700"
-                        >
-                          <option value="">Tất cả</option>
-                          {getFilterOptions(field.key).map(option => <option key={option} value={option}>{getColumnFilterOptionLabel(option)}</option>)}
-                        </select>
-                        {columnFilters[field.key] && (
-                          <button type="button" onClick={() => { setColumnFilters(prev => ({ ...prev, [field.key]: '' })); setOpenFilterKey(null); }} className="mt-2 w-full rounded-lg bg-slate-50 px-2 py-1.5 text-[10px] font-black uppercase text-slate-600">Xóa lọc cột này</button>
-                        )}
-                      </div>
-                    )}
+                    ) : <span className="student-column-label">{isImageOnlyView ? (IMAGE_PREVIEW_FIELD_LABELS[field.key] || field.label) : field.label}</span>}
+                    <StudentFilterDropdown compact label={field.label} options={getDropdownFilterOptions(field.key, `column:${field.key}`)}
+                      value={columnFilters[field.key] ?? null} onChange={value => setColumnFilters(prev => ({ ...prev, [field.key]: value }))}
+                      open={openFilterKey === `column:${field.key}`} onOpenChange={open => setOpenFilterKey(open ? `column:${field.key}` : null)} />
                   </div>
                 </th>
               ))}
               {studentTab === 'current' ? (!isImageOnlyView && (
                 <>
-                  <th className="px-4 py-3 text-right min-w-[170px]">Thao tác</th>
+                  <th scope="col">Thao tác</th>
                 </>
               )) : (
-                <th className="sticky right-0 z-20 w-[240px] min-w-[240px] border-l border-slate-100 bg-white px-3 py-3">Duyệt hồ sơ</th>
+                <th scope="col" className="sticky right-0 z-20 border-l border-sky-600 bg-sky-700">Duyệt hồ sơ</th>
               )}
             </tr>
           </thead>
           <tbody>
             {filteredStudents.length === 0 ? (
               <tr>
-                <td colSpan={visibleStudentFields.length + (studentTab === 'registrations' ? 2 : (isImageOnlyView ? 1 : 4))} className="px-4 py-10 text-center text-slate-400 font-bold">
+                <td colSpan={visibleStudentFields.length + (studentTab === 'registrations' ? 5 : (isImageOnlyView ? 4 : 7))} className="text-center text-slate-400 font-normal">
                   {studentTab === 'current' ? 'Chưa có học sinh trong năm học hoặc bộ lọc này.' : 'Chưa có hồ sơ đăng ký mới cần duyệt trong bộ lọc này.'}
                 </td>
               </tr>
-            ) : filteredStudents.map(student => (
-              <tr key={student.id} className={`border-b border-slate-50 ${studentTab === 'registrations' && student.duplicateReason ? 'bg-amber-50/70 hover:bg-amber-50' : 'hover:bg-indigo-50/40'} ${student.status === 'dropped' ? 'bg-rose-50/40 opacity-75 line-through decoration-rose-400 decoration-2' : ''}`}>
+            ) : filteredStudents.map((student, rowIndex) => (
+              <tr key={student.id} className={`border-b border-slate-200 ${studentTab === 'registrations' && student.duplicateReason ? 'bg-amber-50/70 hover:bg-amber-50' : activeSelectedIds.has(student.id) ? 'bg-sky-50 hover:bg-sky-100' : 'even:bg-slate-50 hover:bg-sky-50'} ${student.status === 'dropped' ? 'bg-rose-50/40 opacity-75 line-through decoration-rose-400 decoration-2' : ''}`}>
+                <td className="text-center tabular-nums text-slate-500">{rowIndex + 1}</td>
                 <td className="px-4 py-3 align-middle">
-                  <input type="checkbox" disabled={studentTab === 'registrations' && Boolean(student.duplicateReason)} checked={activeSelectedIds.has(student.id)} onChange={() => toggleSelectStudent(student.id)} className="w-4 h-4 accent-indigo-600 disabled:opacity-40" />
+                  <input type="checkbox" disabled={studentTab === 'registrations' && Boolean(student.duplicateReason) && !student.registrationSyncPending} checked={activeSelectedIds.has(student.id)} onChange={() => toggleSelectStudent(student.id)} className="w-4 h-4 accent-indigo-600 disabled:opacity-40" aria-label={`Chọn ${student.fullName}`} />
+                </td>
+                <td className="text-center">
+                   <button type="button" onClick={() => studentTab === 'registrations' ? setEditing({ ...emptyStudent, ...student, id: '' }) : (quickEditEnabled ? openEdit(student) : openView(student))} className="inline-flex h-7 w-8 items-center justify-center rounded border border-slate-200 bg-white text-sky-700 hover:border-sky-300 hover:bg-sky-50" title={`Mở hồ sơ ${student.fullName}`} aria-label={`Mở hồ sơ ${student.fullName}`}>
+                    <FileText className="h-4 w-4" />
+                  </button>
+                </td>
+                <td className="text-center">
+                  <button type="button" onClick={() => setAvatarStudent(student)} className={`inline-flex items-center justify-center overflow-hidden rounded border hover:bg-sky-50 ${showPortraits ? 'h-28 w-[84px]' : 'h-7 w-8'} ${student.portraitUrl ? 'border-slate-200 bg-white text-sky-700' : 'border-slate-200 bg-slate-50 text-slate-400'}`} title={student.portraitUrl ? `Xem ảnh ${student.fullName}` : `${student.fullName} chưa có ảnh đại diện`} aria-label={`Xem ảnh ${student.fullName}`}>
+                    {showPortraits ? (
+                      <DriveImage key={student.portraitUrl || 'empty'} url={student.portraitUrl} alt={`Ảnh đại diện ${student.fullName}`} className="h-full w-full object-contain" fallback={
+                        <span className="flex flex-col items-center gap-1 px-1 text-[10px] text-slate-400">
+                          <UserRound className="h-6 w-6" />
+                          Chưa có ảnh
+                        </span>
+                      } />
+                    ) : <ImageIcon className="h-4 w-4" />}
+                  </button>
                 </td>
                 {studentTab === 'current' && !isImageOnlyView && (
                   <>
                     <td className="px-4 py-3">
-                      <button type="button" onClick={() => { navigator.clipboard?.writeText(student.accessCode || ''); showNotification?.('Đã copy mã học sinh.'); }} className="inline-flex items-center gap-1.5 bg-amber-50 text-amber-700 border border-amber-100 rounded-lg px-2 py-1 font-black whitespace-nowrap">
+                      <button type="button" onClick={() => { navigator.clipboard?.writeText(student.accessCode || ''); showNotification?.('Đã copy mã học sinh.'); }} className="inline-flex items-center gap-1.5 bg-amber-50 text-amber-700 border border-amber-100 rounded-lg px-2 py-1 font-normal whitespace-nowrap">
                         <KeyRound className="w-3.5 h-3.5" /> {student.accessCode || 'Chưa có'}
                       </button>
                     </td>
                     <td className="px-4 py-3">
-                      <span className={`inline-flex items-center gap-1 rounded-full px-2 py-1 font-black whitespace-nowrap ${student.status === 'dropped' ? 'bg-rose-50 text-rose-700 border border-rose-100' : 'bg-emerald-50 text-emerald-700 border border-emerald-100'}`}>
-                        {student.status === 'dropped' ? 'Bỏ học' : 'Đang học'}
+                      <span className={`inline-flex items-center gap-1 rounded-full px-2 py-1 font-normal whitespace-nowrap ${student.status === 'dropped' ? 'bg-rose-50 text-rose-700 border border-rose-100' : 'bg-emerald-50 text-emerald-700 border border-emerald-100'}`}>
+                        {student.status === 'dropped' ? 'Bỏ học' : isGraduatedStudent(student) ? `TNTHCS · ${student.graduationYear || ''}` : 'Đang học'}
                       </span>
                     </td>
                   </>
                 )}
                 {visibleStudentFields.map(field => {
                   const isQuickEditing = studentTab === 'current' && quickEdit?.studentId === student.id && quickEdit?.fieldKey === field.key;
-                  const canQuickEdit = studentTab === 'current' && !isImageOnlyView && !DOCUMENT_FIELD_KEYS.has(field.key) && field.key !== 'grade';
+                   const centerResultSource = studentTab === 'current' ? centerAcademicByStudent.get(student.id)?.sources[field.key] : null;
+                   const canQuickEdit = studentTab === 'current' && quickEditEnabled && !isImageOnlyView && !DOCUMENT_FIELD_KEYS.has(field.key) && field.key !== 'grade' && !centerResultSource;
                   return (
                     <td
                       key={field.key}
                       onClick={() => canQuickEdit && startQuickEdit(student, field)}
-                      className={`px-4 py-3 align-middle ${isImageOnlyView && DOCUMENT_FIELD_KEYS.has(field.key) ? 'text-center' : ''} ${canQuickEdit ? 'cursor-text hover:bg-indigo-50 hover:ring-1 hover:ring-inset hover:ring-indigo-100' : ''}`}
-                      title={canQuickEdit ? `Bấm để sửa nhanh ${field.label}` : undefined}
+                      className={`align-middle ${STUDENT_LEFT_ALIGNED_FIELDS.has(field.key) ? 'text-left' : 'text-center'} ${canQuickEdit ? 'cursor-text hover:bg-indigo-50 hover:ring-1 hover:ring-inset hover:ring-indigo-100' : ''}`}
+                      title={centerResultSource ? `Tự lấy kết quả cả năm ${centerResultSource.schoolYear} tại trung tâm` : canQuickEdit ? `Bấm để sửa nhanh ${field.label}` : undefined}
                     >
                       {isQuickEditing ? renderQuickEditControl(student, field) : (
-                        <StudentCell student={student} field={field} isClassLeader={studentTab === 'current' && Boolean(student.isClassLeader)} imagePreview={isImageOnlyView && DOCUMENT_FIELD_KEYS.has(field.key)} compactName={isImageOnlyView} onOpenDocument={DOCUMENT_FIELD_KEYS.has(field.key) ? (row, fieldItem, index) => openStudentDocumentViewer(row, fieldItem, index) : null} onOpenEdit={studentTab === 'registrations' ? (row) => setEditing({ ...emptyStudent, ...row, id: '' }) : openEdit} />
+                         <StudentCell student={student} field={field} isClassLeader={studentTab === 'current' && Boolean(student.isClassLeader)} imagePreview={isImageOnlyView && DOCUMENT_FIELD_KEYS.has(field.key)} onOpenDocument={DOCUMENT_FIELD_KEYS.has(field.key) ? (row, fieldItem, index) => openStudentDocumentViewer(row, fieldItem, index) : null} onOpenEdit={studentTab === 'registrations' ? (row) => setEditing({ ...emptyStudent, ...row, id: '' }) : openEdit} onOpenProfile={studentTab === 'current' && !quickEditEnabled ? openView : null} />
                       )}
                     </td>
                   );
@@ -4271,7 +4746,7 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
                 {studentTab === 'current' ? (!isImageOnlyView && (
                   <>
                     <td className="px-4 py-3">
-                      <div className="flex justify-end gap-1.5">
+                      <div className="flex justify-center gap-1">
                         {onSendTestResults && (
                           <button
                             type="button"
@@ -4287,18 +4762,18 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
                             }}
                             disabled={sendingTestResultStudentId === student.id}
                             title="Gửi kết quả kiểm tra vào hộp thư học sinh"
-                            className="p-2 rounded-lg bg-emerald-50 border border-emerald-100 text-emerald-700 hover:bg-emerald-100 disabled:opacity-50"
+                            className="p-1 rounded bg-emerald-50 border border-emerald-100 text-emerald-700 hover:bg-emerald-100 disabled:opacity-50"
                           >
                             {sendingTestResultStudentId === student.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <Mail className="w-4 h-4" />}
                           </button>
                         )}
-                        <button type="button" onClick={() => openEdit(student)} title="Sửa thông tin" className="p-2 rounded-lg bg-white border border-slate-200 text-blue-600 hover:bg-blue-50">
+                        <button type="button" onClick={() => openEdit(student)} title="Sửa thông tin" className="p-1 rounded bg-white border border-slate-200 text-blue-600 hover:bg-blue-50">
                           <Pencil className="w-4 h-4" />
                         </button>
-                        <button type="button" onClick={() => toggleDropout(student)} title={student.status === 'dropped' ? 'Đưa học lại' : 'Đánh dấu bỏ học'} className={`p-2 rounded-lg border ${student.status === 'dropped' ? 'bg-emerald-50 border-emerald-100 text-emerald-600' : 'bg-rose-50 border-rose-100 text-rose-600'}`}>
+                        <button type="button" onClick={() => toggleDropout(student)} title={student.status === 'dropped' ? 'Đưa học lại' : 'Đánh dấu bỏ học'} className={`p-1 rounded border ${student.status === 'dropped' ? 'bg-emerald-50 border-emerald-100 text-emerald-600' : 'bg-rose-50 border-rose-100 text-rose-600'}`}>
                           <CheckCircle2 className="w-4 h-4" />
                         </button>
-                        <button type="button" onClick={() => removeStudent(student)} title="Xóa hồ sơ" className="p-2 rounded-lg bg-white border border-slate-200 text-slate-400 hover:text-rose-600 hover:bg-rose-50">
+                        <button type="button" onClick={() => removeStudent(student)} title="Xóa hồ sơ" className="p-1 rounded bg-white border border-slate-200 text-slate-400 hover:text-rose-600 hover:bg-rose-50">
                           <Trash2 className="w-4 h-4" />
                         </button>
                       </div>
@@ -4306,26 +4781,32 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
                   </>
                 )) : (
                     <td className="sticky right-0 z-[1] border-l border-slate-100 bg-white px-3 py-3">
-                      {student.duplicateReason ? (
+                      {student.registrationSyncPending ? (
                         <div className="space-y-1">
-                          <span className="inline-flex rounded-full bg-amber-100 text-amber-800 border border-amber-200 px-2 py-1 font-black text-[10px] uppercase">{student.duplicateReason}</span>
-                          <div className="text-[11px] text-amber-700 font-bold">{student.duplicateStudentName || 'Đã có trong database'} {student.duplicateAccessCode ? `- ${student.duplicateAccessCode}` : ''}</div>
+                          <span className="inline-flex rounded-full bg-amber-100 text-amber-800 border border-amber-200 px-2 py-1 font-normal text-[10px] uppercase">Chờ đồng bộ Sheet</span>
+                          <div className="text-[11px] text-amber-700">Hồ sơ đã duyệt. Nhấn Đồng ý để tiếp tục đồng bộ.</div>
+                        </div>
+                      ) : student.duplicateReason ? (
+                        <div className="space-y-1">
+                          <span className="inline-flex rounded-full bg-amber-100 text-amber-800 border border-amber-200 px-2 py-1 font-normal text-[10px] uppercase">{student.duplicateReason}</span>
+                          <div className="text-[11px] text-amber-700 font-normal">{student.duplicateStudentName || 'Đã có trong database'} {student.duplicateAccessCode ? `- ${student.duplicateAccessCode}` : ''}</div>
+                          <div className="text-[11px] text-amber-700">Đã có trong danh sách học sinh trên website.</div>
                         </div>
                       ) : (
-                        <span className="inline-flex rounded-full bg-emerald-50 text-emerald-700 border border-emerald-100 px-2 py-1 font-black text-[10px] uppercase">Hồ sơ mới</span>
+                        <span className="inline-flex rounded-full bg-emerald-50 text-emerald-700 border border-emerald-100 px-2 py-1 font-normal text-[10px] uppercase">Hồ sơ mới · {student.schoolYear}</span>
                       )}
-                      <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                        <button type="button" onClick={() => approveRegistrations([student])} disabled={isSaving || Boolean(student.duplicateReason)} title={student.duplicateReason ? 'Cần đối chiếu hồ sơ trùng trước khi đồng ý' : 'Duyệt hồ sơ và đưa vào danh sách học sinh'} className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-bold text-white hover:bg-emerald-700 disabled:opacity-40">
+                      <div className="mt-2 flex flex-wrap items-center justify-center gap-1.5">
+                        <button type="button" onClick={() => approveRegistrations([student])} disabled={isSaving || (Boolean(student.duplicateReason) && !student.registrationSyncPending)} title={student.registrationSyncPending ? 'Tiếp tục đồng bộ hồ sơ đã duyệt lên Google Sheet' : student.duplicateReason ? 'Cần đối chiếu hồ sơ trùng trước khi đồng ý' : 'Duyệt hồ sơ và đưa vào danh sách học sinh'} className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-normal text-white hover:bg-emerald-700 disabled:opacity-40">
                           <CheckCircle2 className="h-3.5 w-3.5" /> Đồng ý
                         </button>
-                        <button type="button" onClick={() => deletePendingRegistration(student)} disabled={isSaving} title="Từ chối và xóa hàng đăng ký khỏi Google Sheet" className="inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-bold text-rose-700 hover:bg-rose-100 disabled:opacity-40">
+                        <button type="button" onClick={() => deletePendingRegistration(student)} disabled={isSaving} title="Từ chối và xóa hàng đăng ký khỏi Google Sheet" className="inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-normal text-rose-700 hover:bg-rose-100 disabled:opacity-40">
                           <X className="h-3.5 w-3.5" /> Từ chối
                         </button>
                         <button type="button" onClick={() => setEditing({ ...emptyStudent, ...student, id: '' })} disabled={isSaving} title="Xem hồ sơ" className="p-2 rounded-lg bg-white border border-slate-200 text-blue-600 hover:bg-blue-50 disabled:opacity-40">
                           <Pencil className="w-4 h-4" />
                         </button>
-                        {student.duplicateReason ? (
-                            <button type="button" onClick={() => markExistingRegistration(student)} disabled={isSaving} className="px-3 py-2 rounded-xl bg-amber-50 text-amber-700 border border-amber-100 font-black uppercase text-[10px] disabled:opacity-40">
+                        {student.duplicateReason && !student.registrationSyncPending ? (
+                            <button type="button" onClick={() => markExistingRegistration(student)} disabled={isSaving} title="Giữ hàng trên Google Sheet và đánh dấu Đã có" className="px-3 py-2 rounded-xl bg-amber-50 text-amber-700 border border-amber-100 font-normal uppercase text-[10px] disabled:opacity-40">
                               Cập nhật/Đã có
                             </button>
                         ) : null}
@@ -4346,8 +4827,8 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
           <div className="flex max-h-[92vh] w-full max-w-xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
             <div className="flex items-center justify-between gap-3 border-b border-slate-100 bg-slate-50 px-4 py-3">
               <div className="min-w-0">
-                <h4 className="flex items-center gap-2 font-black uppercase text-slate-900"><Mail className="h-5 w-5 text-emerald-600" /> Gửi thư học sinh</h4>
-                <p className="truncate text-xs font-bold text-slate-500">Đã chọn {mailComposerStudents.length} học sinh</p>
+                <h4 className="flex items-center gap-2 font-normal uppercase text-slate-900"><Mail className="h-5 w-5 text-emerald-600" /> Gửi thư học sinh</h4>
+                <p className="truncate text-xs font-normal text-slate-500">Đã chọn {mailComposerStudents.length} học sinh</p>
               </div>
               <button type="button" onClick={closeMailboxComposer} disabled={isSendingMailboxMessages} className="flex h-9 w-9 items-center justify-center rounded-full bg-white text-slate-500 shadow-sm disabled:opacity-40">
                 <X className="h-5 w-5" />
@@ -4355,8 +4836,8 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
             </div>
             <div className="space-y-3 overflow-y-auto p-4">
               <label className="block">
-                <span className="mb-1 block text-[10px] font-black uppercase text-slate-500">Mục thư</span>
-                <select value={mailCategory} onChange={(event) => setMailCategory(event.target.value)} className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm font-bold">
+                <span className="mb-1 block text-[10px] font-normal uppercase text-slate-500">Mục thư</span>
+                <select value={mailCategory} onChange={(event) => setMailCategory(event.target.value)} className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm font-normal">
                   <option value="general">Thông báo</option>
                   <option value="score">Kết quả học tập</option>
                   <option value="profile">Thiếu thông tin hồ sơ</option>
@@ -4365,11 +4846,11 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
                 </select>
               </label>
               <label className="block">
-                <span className="mb-1 block text-[10px] font-black uppercase text-slate-500">Tiêu đề</span>
-                <input value={mailTitle} onChange={(event) => setMailTitle(event.target.value)} className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-bold focus:border-emerald-400 focus:outline-none" />
+                <span className="mb-1 block text-[10px] font-normal uppercase text-slate-500">Tiêu đề</span>
+                <input value={mailTitle} onChange={(event) => setMailTitle(event.target.value)} className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-normal focus:border-emerald-400 focus:outline-none" />
               </label>
               <label className="block">
-                <span className="mb-1 block text-[10px] font-black uppercase text-slate-500">Nội dung</span>
+                <span className="mb-1 block text-[10px] font-normal uppercase text-slate-500">Nội dung</span>
                 <textarea
                   value={mailBody}
                   onChange={(event) => setMailBody(event.target.value)}
@@ -4379,17 +4860,17 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
                     : mailCategory === 'profile' || mailCategory === 'progress'
                       ? 'Để trống để hệ thống tự điền nội dung riêng cho từng học sinh.'
                       : 'Nhập nội dung gửi chung cho các học sinh đã chọn.'}
-                  className="w-full resize-y rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-medium focus:border-emerald-400 focus:outline-none"
+                  className="w-full resize-y rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-normal focus:border-emerald-400 focus:outline-none"
                 />
               </label>
-              <div className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2 text-[11px] font-bold text-slate-600">
+              <div className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2 text-[11px] font-normal text-slate-600">
                 Người nhận: {mailComposerStudents.slice(0, 5).map(student => student.fullName || student.accessCode).join(', ')}
                 {mailComposerStudents.length > 5 ? ` và ${mailComposerStudents.length - 5} học sinh khác` : ''}
               </div>
             </div>
             <div className="flex justify-end gap-2 border-t border-slate-100 bg-slate-50 px-4 py-3">
-              <button type="button" onClick={closeMailboxComposer} disabled={isSendingMailboxMessages} className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-black text-slate-600 disabled:opacity-40">Hủy</button>
-              <button type="button" onClick={sendMailboxComposerMessages} disabled={isSendingMailboxMessages} className="flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-xs font-black text-white shadow-sm disabled:opacity-50">
+              <button type="button" onClick={closeMailboxComposer} disabled={isSendingMailboxMessages} className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-normal text-slate-600 disabled:opacity-40">Hủy</button>
+              <button type="button" onClick={sendMailboxComposerMessages} disabled={isSendingMailboxMessages} className="flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-xs font-normal text-white shadow-sm disabled:opacity-50">
                 {isSendingMailboxMessages ? <Loader2 className="h-4 w-4 animate-spin" /> : <Mail className="h-4 w-4" />}
                 Gửi {mailComposerStudents.length} thư
               </button>
@@ -4398,91 +4879,26 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
         </div>
       ), document.body)}
 
+      {avatarStudent && typeof document !== 'undefined' && createPortal(
+        <StudentAvatarPreview student={avatarStudent} onClose={() => setAvatarStudent(null)} onOpenProfile={() => {
+          setAvatarStudent(null);
+          if (studentTab === 'registrations') setEditing({ ...emptyStudent, ...avatarStudent, id: '' });
+           else (quickEditEnabled ? openEdit(avatarStudent) : openView(avatarStudent));
+        }} />,
+        document.body
+      )}
       {editing && (
-        <div className="fixed inset-0 z-[90] bg-slate-900/60 backdrop-blur-sm p-3 sm:p-6 flex items-center justify-center">
-          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-5xl max-h-[92vh] overflow-hidden flex flex-col">
-            <div className="px-5 py-4 border-b bg-slate-50 flex items-center justify-between gap-3">
+        <div className="fixed inset-0 z-[90] bg-slate-900/60 backdrop-blur-sm p-2 sm:p-3 flex items-center justify-center" role="dialog" aria-modal="true" aria-labelledby="admin-student-profile-title">
+          <div className="bg-white rounded-lg shadow-2xl w-full max-w-[1280px] max-h-[94dvh] overflow-hidden flex flex-col font-normal">
+            <div className="shrink-0 px-3 py-2 border-b bg-slate-50 flex items-center justify-between gap-3">
               <div>
-                <h4 className="font-black text-slate-900 uppercase">Hồ sơ học sinh</h4>
-                <p className="text-xs text-slate-500 font-bold">Mã học sinh dùng để các em đăng nhập/làm bài ở các bước sau.</p>
+                 <h4 id="admin-student-profile-title" className="font-normal text-slate-900">{profileReadOnly ? 'Xem hồ sơ học sinh' : 'Hồ sơ học sinh'}</h4>
+                <p className="text-xs text-slate-500 font-normal">{editing.fullName || 'Học sinh mới'}{editing.className ? ` · Lớp ${editing.className}` : ''}</p>
               </div>
-              <button type="button" onClick={closeEdit} className="p-2 rounded-xl bg-white border border-slate-200 text-slate-500 hover:text-rose-600"><X className="w-5 h-5" /></button>
+              <button type="button" onClick={closeEdit} aria-label="Đóng hồ sơ" className="p-2 rounded-xl bg-white border border-slate-200 text-slate-500 hover:text-rose-600"><X className="w-5 h-5" /></button>
             </div>
-            <div className="p-4 sm:p-5 overflow-y-auto grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-              <label className="flex flex-col gap-1">
-                <span className="text-[10px] font-black uppercase text-slate-400">Mã học sinh</span>
-                <div className="flex gap-2">
-                  <input value={editing.accessCode || ''} onChange={(e) => setEditing(prev => ({ ...prev, accessCode: e.target.value.toUpperCase().replace(/\s/g, '') }))} className="flex-1 border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-black focus:outline-none focus:border-indigo-400" />
-                  <button type="button" onClick={() => setEditing(prev => ({ ...prev, accessCode: makeAccessCode(prev, existingCodes) }))} className="px-3 rounded-xl bg-amber-50 text-amber-700 border border-amber-100"><KeyRound className="w-4 h-4" /></button>
-                </div>
-              </label>
-              <label className="flex flex-col gap-1">
-                <span className="text-[10px] font-black uppercase text-slate-400">Tình trạng</span>
-                <select value={editing.status || 'active'} onChange={(e) => setEditing(prev => ({ ...prev, status: e.target.value }))} className="border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-black bg-white">
-                  <option value="active">Đang học</option>
-                  <option value="dropped">Bỏ học</option>
-                </select>
-              </label>
-              <label className="flex flex-col gap-1">
-                <span className="text-[10px] font-black uppercase text-slate-400">Cán sự lớp</span>
-                <select value={editing.isClassLeader ? 'yes' : 'no'} onChange={(e) => setEditing(prev => ({ ...prev, isClassLeader: e.target.value === 'yes' }))} className="border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-black bg-white">
-                  <option value="no">Không</option>
-                  <option value="yes">Có quyền điểm danh</option>
-                </select>
-              </label>
-              <label className="flex flex-col gap-1">
-                <span className="text-[10px] font-black uppercase text-slate-400">Năm học quản lý</span>
-                <input value={editing.schoolYear || currentSchoolYear} onChange={(e) => setEditing(prev => ({ ...prev, schoolYear: e.target.value }))} className="border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-bold" />
-              </label>
-              <div className="lg:col-span-3 rounded-2xl border border-amber-100 bg-amber-50 px-3 py-2 text-[11px] font-bold text-amber-800">
-                Quy đổi đánh giá cũ: Trung bình = Đạt, Khá = Khá, Giỏi = Tốt.
-              </div>
-              {editingProfileRequests.length > 0 && (
-                <div className="lg:col-span-3 rounded-2xl border border-amber-200 bg-amber-50/70 p-3">
-                  <div className="flex items-center justify-between gap-2 mb-3">
-                    <div>
-                      <div className="text-xs font-black uppercase text-amber-900">Yêu cầu chỉnh sửa của học sinh</div>
-                      <div className="text-[11px] font-bold text-amber-700">Duyệt từng dòng: bấm ✓ để nhận, bấm X để bỏ qua dòng đó.</div>
-                    </div>
-                    <button type="button" onClick={() => setStudentTab('profileRequests')} className="px-3 py-2 rounded-xl bg-white border border-amber-100 text-[10px] font-black uppercase text-amber-700">Mở tab duyệt nhanh</button>
-                  </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                    {editingProfileRequests.flatMap(request => Object.entries(sanitizeStudentChanges(request.changes)).map(([key, value]) => {
-                      const currentValue = safePlainValue(editing?.[key]);
-                      const nextValue = safePlainValue(value);
-                      return (
-                        <div key={`${request.id}_${key}`} className="rounded-xl bg-white border border-amber-100 p-3">
-                          <div className="text-[10px] font-black uppercase text-slate-400 mb-1">{STUDENT_FIELD_LABELS[key] || key}</div>
-                          <div className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_auto] gap-2 sm:items-center">
-                            <div className="rounded-lg bg-slate-50 border border-slate-100 p-2 min-w-0">
-                              <div className="text-[9px] font-black uppercase text-slate-400">Đang có</div>
-                              <div className="text-xs font-bold text-slate-700 break-words">{currentValue || '(trống)'}</div>
-                            </div>
-                            <div className="rounded-lg bg-emerald-50 border border-emerald-100 p-2 min-w-0">
-                              <div className="text-[9px] font-black uppercase text-emerald-500">Học sinh gửi</div>
-                              {String(key).toLowerCase().includes('url') ? (
-                                <a href={nextValue} target="_blank" rel="noreferrer" className="text-xs font-black text-blue-600 hover:underline">Mở file/ảnh mới</a>
-                              ) : (
-                                <div className="text-xs font-black text-emerald-800 break-words">{nextValue || '(trống)'}</div>
-                              )}
-                            </div>
-                            <div className="flex sm:flex-col gap-2">
-                              <button type="button" onClick={() => approveProfileField(request, key)} disabled={isSaving} title="Duyệt dòng này" className="w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center shadow-sm disabled:opacity-50">
-                                <CheckCircle2 className="w-5 h-5" />
-                              </button>
-                              <button type="button" onClick={() => rejectProfileField(request, key)} disabled={isSaving} title="Từ chối dòng này" className="w-10 h-10 rounded-xl bg-rose-50 text-rose-600 border border-rose-100 flex items-center justify-center disabled:opacity-50">
-                                <X className="w-5 h-5" />
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    }))}
-                  </div>
-                </div>
-              )}
               <datalist id="admin-province-options">
-                {addressProvinceOptions.map(item => <option key={item} value={item} />)}
+                {addressProvinceOptions.map(item => <option key={item} value={item} label={provinceOptionLabel(item)} />)}
               </datalist>
               <datalist id="admin-current-ward-options">
                 {editCurrentWardOptions.map(item => <option key={item} value={item} />)}
@@ -4490,55 +4906,58 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
               <datalist id="admin-household-ward-options">
                 {editHouseholdWardOptions.map(item => <option key={item} value={item} />)}
               </datalist>
-              {adminEditFields.map(field => {
-                const listId = field.key === 'province' || field.key === 'householdProvince'
-                  ? 'admin-province-options'
-                  : field.key === 'ward'
-                    ? 'admin-current-ward-options'
-                    : field.key === 'householdWard'
-                      ? 'admin-household-ward-options'
-                      : undefined;
-                const placeholder = field.key === 'ward' || field.key === 'householdWard'
-                  ? 'Chọn tỉnh trước, rồi gõ/chọn phường xã'
-                  : field.key === 'province' || field.key === 'householdProvince'
-                    ? 'Gõ hoặc chọn tỉnh/thành'
-                    : '';
-                return (
-                  <label key={field.key} className="flex flex-col gap-1">
-                    <span className="text-[10px] font-black uppercase text-slate-400">{field.label}{field.required ? ' *' : ''}</span>
-                    {field.key === 'schoolCode' ? (
-                      <select value={normalizeSchoolCode(editing.schoolCode) || 'UNKNOWN'} onChange={(e) => updateEditingField(field.key, e.target.value)} className="border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-black bg-white focus:outline-none focus:border-indigo-400">
-                        {SCHOOL_OPTIONS.map(school => <option key={school.code} value={school.code}>{school.name}</option>)}
-                      </select>
-                    ) : field.key === 'grade' ? (
-                      <input value={getGradeFromClass(editing.className) || getGradeFromClass(editing.grade)} readOnly className="border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-black bg-slate-50 text-slate-600" title="Khối được tự động xác định từ lớp học" />
-                    ) : field.key === 'className' && configuredClassOptions.length ? (
-                      <select value={editing[field.key] || ''} onChange={(e) => updateEditingField(field.key, e.target.value)} className="border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-black bg-white focus:outline-none focus:border-indigo-400">
-                        <option value="">Chọn lớp...</option>
-                        {[...new Set([editing[field.key], ...configuredClassOptions].filter(Boolean))].map(className => (
-                          <option key={className} value={className}>Lớp {className}</option>
-                        ))}
-                      </select>
-                    ) : ACADEMIC_RESULT_FIELD_KEYS.has(field.key) ? (
-                      <select value={editing[field.key] || ''} onChange={(e) => updateEditingField(field.key, e.target.value)} className="border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-black bg-white focus:outline-none focus:border-indigo-400">
-                        {ACADEMIC_RESULT_OPTIONS.map(option => <option key={option || '-'} value={option}>{option || '-'}</option>)}
-                      </select>
-                    ) : (
-                      <input value={editing[field.key] || ''} list={listId} placeholder={placeholder} onChange={(e) => updateEditingField(field.key, e.target.value)} className="border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-bold focus:outline-none focus:border-indigo-400" />
+
+            <StudentProfileSections sections={[
+              ...STUDENT_PROFILE_SECTIONS.map(section => ({
+                ...section,
+                content: (
+                  <div className="space-y-3">
+                    {section.key === 'learning' && <p className="text-xs text-slate-500">Quy đổi đánh giá cũ: Trung bình = Đạt, Khá = Khá, Giỏi = Tốt.</p>}
+                    <div className={`grid grid-cols-1 gap-x-3 gap-y-2 sm:grid-cols-2 ${section.key === 'identity' ? 'lg:grid-cols-5' : 'lg:grid-cols-4'}`}>
+                      {section.key === 'identity' && (<>
+              <label className="flex flex-col gap-1">
+                <span className="text-[10px] font-normal uppercase text-slate-400">Mã học sinh</span>
+                <div className="flex gap-2">
+                   <input readOnly={profileReadOnly} value={editing.accessCode || ''} onChange={(e) => setEditing(prev => ({ ...prev, accessCode: e.target.value.toUpperCase().replace(/\s/g, '') }))} className="flex-1 border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-normal focus:outline-none focus:border-indigo-400" />
+                   {!profileReadOnly && <button type="button" aria-label="Tạo mã học sinh" title="Tạo mã học sinh" onClick={() => setEditing(prev => ({ ...prev, accessCode: makeAccessCode(prev, existingCodes) }))} className="px-3 rounded-xl bg-amber-50 text-amber-700 border border-amber-100"><KeyRound className="w-4 h-4" /></button>}
+                </div>
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-[10px] font-normal uppercase text-slate-400">Tình trạng</span>
+                 <select disabled={profileReadOnly} value={editing.status || 'active'} onChange={(e) => setEditing(prev => ({ ...prev, status: e.target.value }))} className="border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-normal bg-white">
+                  <option value="active">Đang học</option>
+                  <option value="dropped">Bỏ học</option>
+                </select>
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-[10px] font-normal uppercase text-slate-400">Cán sự lớp</span>
+                 <select disabled={profileReadOnly} value={editing.isClassLeader ? 'yes' : 'no'} onChange={(e) => setEditing(prev => ({ ...prev, isClassLeader: e.target.value === 'yes' }))} className="border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-normal bg-white">
+                  <option value="no">Không</option>
+                  <option value="yes">Có quyền điểm danh</option>
+                </select>
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-[10px] font-normal uppercase text-slate-400">Năm học quản lý</span>
+                 <input readOnly={profileReadOnly} value={editing.schoolYear || currentSchoolYear} onChange={(e) => setEditing(prev => ({ ...prev, schoolYear: e.target.value }))} className="border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-normal" />
+              </label>
+
+                      </>)}
+                      {adminEditFields.filter(field => studentProfileSection(field.key) === section.key).map(renderProfileField)}
+                    </div>
+                    {section.key === 'identity' && (
+                      <section aria-label="Quá trình học" className="border-t border-slate-200 pt-3">
+                        <StudentProfileHistory rows={profileHistoryRows} attendanceState={profileAttendanceState} onRetryAttendance={() => setProfileAttendanceRetry(value => value + 1)} />
+                      </section>
                     )}
-                    {field.key === 'entryGrade' && (
-                      <span className="text-[10px] font-medium text-slate-500">Hồ sơ cũ có thể được ước tính từ năm nhập học; kiểm tra lại nếu học sinh chuyển trường hoặc lưu ban.</span>
-                    )}
-                  </label>
-                );
-              })}
-              <div className="lg:col-span-3 rounded-2xl border border-indigo-100 bg-indigo-50/40 p-3">
-                <div className="text-[10px] font-black uppercase tracking-widest text-indigo-700 mb-3 flex items-center gap-2"><ImageIcon className="w-4 h-4" /> Ảnh và giấy tờ học sinh</div>
+                    {section.key === 'learning' && (
+              <div className="space-y-2">
+                <div className="text-xs font-normal text-slate-600 mb-2 flex items-center gap-2"><ImageIcon className="w-4 h-4" /> Ảnh và giấy tờ học sinh</div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
                   {STUDENT_DOCUMENTS.map(docItem => (
                     <DocumentManager
                       key={docItem.key}
                       docItem={docItem}
+                      readOnly={profileReadOnly}
                       value={editing[docItem.key]}
                       uploading={uploadingDocumentKey === docItem.key}
                       onUpload={(files) => uploadEditingDocumentFiles(docItem, files)}
@@ -4548,10 +4967,19 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
                   ))}
                 </div>
               </div>
-            </div>
-            <div className="px-5 py-4 border-t bg-slate-50 flex flex-col sm:flex-row justify-end gap-2">
-              <button type="button" onClick={closeEdit} className="px-5 py-3 bg-white border border-slate-200 text-slate-600 rounded-xl text-xs font-black">Hủy</button>
-              <button type="button" onClick={saveStudent} disabled={isSaving || Boolean(uploadingDocumentKey)} className="px-5 py-3 bg-indigo-600 text-white rounded-xl text-xs font-black shadow-md flex items-center justify-center gap-2 disabled:opacity-60"><Save className="w-4 h-4" /> Lưu hồ sơ</button>
+                    )}
+                  </div>
+                )
+              })),
+              ...(editingProfileRequests.length ? [{ key: 'requests', label: 'Chờ duyệt (' + editingProfileRequests.reduce((count, request) => count + Object.keys(sanitizeStudentChanges(request.changes)).length, 0) + ')', content: (
+                <div className="space-y-3">
+                   {editingProfileRequests.map(request => <ProfileChangeTable key={request.id} rows={profileChangeRows(request, editing)} label={'Thay đổi hồ sơ ' + (editing.fullName || 'học sinh')} disabled={isSaving || profileReadOnly} onApprove={key => approveProfileField(request, key)} onReject={key => rejectProfileField(request, key)} />)}
+                </div>
+              ) }] : [])
+            ]} />
+            <div className="shrink-0 px-3 py-2 border-t bg-slate-50 flex justify-end gap-2">
+               <button type="button" onClick={closeEdit} className="h-8 px-4 bg-white border border-slate-200 text-slate-600 rounded text-xs font-normal">{profileReadOnly ? 'Đóng' : 'Hủy'}</button>
+               {!profileReadOnly && <button type="button" onClick={saveStudent} disabled={isSaving || Boolean(uploadingDocumentKey)} className="h-8 px-4 bg-indigo-600 text-white rounded text-xs font-normal shadow-md flex items-center justify-center gap-2 disabled:opacity-60"><Save className="w-4 h-4" /> Lưu hồ sơ</button>}
             </div>
           </div>
         </div>
@@ -4569,17 +4997,17 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
         <div className="fixed inset-0 z-[95] bg-slate-900/60 backdrop-blur-sm p-4 flex items-center justify-center">
           <div className="bg-white rounded-3xl shadow-2xl max-w-md w-full p-5">
             <div className="flex items-center justify-between gap-3 mb-4">
-              <div><h4 className="font-black text-slate-900 uppercase">Tạo mã học sinh</h4><p className="text-xs text-slate-500 font-bold">Chọn cách tạo mã cho năm học hiện tại.</p></div>
-              <button type="button" onClick={() => setShowCodeChoiceModal(false)} className="p-2 rounded-xl bg-slate-50 text-slate-500"><X className="w-5 h-5" /></button>
+              <div><h4 className="font-normal text-slate-900">Quản lý mã học sinh</h4><p className="text-xs text-slate-500 font-normal">Mã đăng nhập của học sinh trong năm {currentSchoolYear}.</p></div>
+              <button type="button" onClick={() => setShowCodeChoiceModal(false)} aria-label="Đóng quản lý mã học sinh" className="p-2 rounded-xl bg-slate-50 text-slate-500"><X className="w-5 h-5" /></button>
             </div>
             <div className="grid grid-cols-1 gap-3">
-              <button type="button" onClick={() => { setShowCodeChoiceModal(false); generateMissingCodes(); }} className="text-left p-4 rounded-2xl bg-amber-50 border border-amber-100 text-amber-800 font-black">
+              <button type="button" onClick={() => { setShowCodeChoiceModal(false); generateMissingCodes(); }} className="text-left p-4 rounded-2xl bg-amber-50 border border-amber-100 text-amber-800 font-normal">
                 Tạo mã mới cho học sinh chưa có mã
-                <div className="text-xs font-bold text-amber-700/70 mt-1">Giữ nguyên mã cũ, chỉ bổ sung cho hồ sơ trống.</div>
+                <div className="text-xs font-normal text-amber-700/70 mt-1">Giữ nguyên mã cũ, chỉ bổ sung cho hồ sơ trống.</div>
               </button>
-              <button type="button" onClick={() => { setShowCodeChoiceModal(false); regenerateAllCodes(); }} className="text-left p-4 rounded-2xl bg-rose-50 border border-rose-100 text-rose-800 font-black">
+              <button type="button" onClick={() => { setShowCodeChoiceModal(false); regenerateAllCodes(); }} className="text-left p-4 rounded-2xl bg-rose-50 border border-rose-100 text-rose-800 font-normal">
                 Tạo lại mã cho tất cả
-                <div className="text-xs font-bold text-rose-700/70 mt-1">Ghi đè toàn bộ mã của năm học hiện tại.</div>
+                <div className="text-xs font-normal text-rose-700/70 mt-1">Thay toàn bộ mã đăng nhập, học sinh phải dùng mã mới. Hồ sơ, điểm và bài làm được giữ.</div>
               </button>
             </div>
           </div>
@@ -4589,41 +5017,38 @@ export default function HocSinhManager({ students = [], configuredClassOptions =
   );
 }
 
-function StudentCell({ student, field, onOpenEdit, onOpenDocument, isClassLeader = false, imagePreview = false, compactName = false }) {
+
+function profileChangeRows(request, student) {
+  return Object.entries(sanitizeStudentChanges(request.changes)).map(([key, value]) => ({
+    key,
+    label: STUDENT_FIELD_LABELS[key] || key,
+    currentValue: safePlainValue(student?.[key]),
+    nextValue: safePlainValue(value),
+    isDocument: DOCUMENT_FIELD_KEYS.has(key)
+  }));
+}
+
+function StudentCell({ student, field, onOpenEdit, onOpenProfile, onOpenDocument, isClassLeader = false, imagePreview = false }) {
   const value = field.key === 'birthDate'
     ? formatDisplayDate(safePlainValue(student[field.key]))
     : field.key === 'grade'
       ? (getGradeFromClass(student.className) || getGradeFromClass(student.grade))
       : field.key === 'schoolCode'
         ? getSchoolName(getStudentSchoolCode(student))
-      : safePlainValue(student[field.key]);
+      : field.key === 'birthProvince'
+        ? provinceFilterLabel(safePlainValue(student[field.key]))
+        : safePlainValue(student[field.key]);
   const fullName = safePlainValue(student.fullName);
-  const schoolYear = safePlainValue(student.schoolYear);
 
   if (field.key === 'fullName') {
-    if (compactName) {
-      return (
-        <div className="min-w-[220px] cursor-pointer rounded-xl -m-1 p-2 hover:bg-indigo-50" onDoubleClick={() => onOpenEdit?.(student)} title="Nhấn đúp để sửa hồ sơ">
-          <div className="font-black text-slate-800 truncate flex items-center gap-1.5">
-            <span className="truncate">{fullName || '(Chưa có tên)'}</span>
-            {isClassLeader && <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-amber-100 text-amber-600 text-xs shadow-sm flex-shrink-0" title="Cán sự lớp">★</span>}
-          </div>
-          <div className="text-[11px] text-slate-500 font-bold">{schoolYear}</div>
-        </div>
-      );
-    }
     return (
-      <div className="flex items-center gap-3 min-w-[220px] cursor-pointer rounded-xl -m-1 p-1 hover:bg-indigo-50" onDoubleClick={() => onOpenEdit?.(student)} title="Nhấn đúp để sửa hồ sơ">
-        <div className="w-11 h-11 rounded-2xl bg-indigo-50 border border-indigo-100 overflow-hidden flex items-center justify-center flex-shrink-0">
-          <DriveImage url={student.portraitUrl} alt={fullName || 'Học sinh'} className="w-full h-full object-contain" fallback={<UserRound className="w-5 h-5 text-indigo-300" />} />
-        </div>
-        <div className="min-w-0">
-          <div className="font-black text-slate-800 truncate flex items-center gap-1.5">
-            <span className="truncate">{fullName || '(Chưa có tên)'}</span>
-            {isClassLeader && <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-amber-100 text-amber-600 text-xs shadow-sm flex-shrink-0" title="Cán sự lớp">★</span>}
-          </div>
-          <div className="text-[11px] text-slate-500 font-bold">{schoolYear}</div>
-        </div>
+      <div className="flex min-w-0 items-center gap-1.5 break-words font-normal text-slate-800" onDoubleClick={onOpenProfile ? undefined : () => onOpenEdit?.(student)} title={onOpenProfile ? 'Nhấn để xem hồ sơ' : 'Nhấn đúp để sửa hồ sơ'}>
+        {onOpenProfile ? (
+          <button type="button" className="min-w-0 break-words text-left text-sky-800 hover:text-sky-600 hover:underline focus-visible:underline" onClick={event => { event.stopPropagation(); onOpenProfile(student); }} aria-label={`Xem hồ sơ ${fullName}`}>
+            {fullName || '(Chưa có tên)'}
+          </button>
+        ) : <span className="min-w-0 break-words">{fullName || '(Chưa có tên)'}</span>}
+        {isClassLeader && <span className="shrink-0 text-amber-600" title="Cán sự lớp">★</span>}
       </div>
     );
   }
@@ -4646,23 +5071,67 @@ function StudentCell({ student, field, onOpenEdit, onOpenDocument, isClassLeader
   if (field.type === 'link') {
     const urls = splitDocumentUrls(value);
     const hasFile = urls.length > 0;
-    const isPortraitPreview = field.key === 'portraitUrl';
-    const previewSize = isPortraitPreview ? 'w-12 h-14' : 'w-16 h-12';
     return hasFile ? (
-      <button type="button" onClick={() => onOpenDocument?.(student, field, 0)} className={`relative flex items-center justify-center ${previewSize} rounded-lg border border-slate-200 bg-white overflow-hidden shadow-sm`}>
-        <DriveImage url={urls[0]} alt={fullName || field.label || 'Ảnh học sinh'} className="w-full h-full object-contain" fallback={<ImageIcon className="w-5 h-5 text-slate-300" />} />
-        {urls.length > 1 && (
-          <span className="absolute right-0.5 top-0.5 rounded-full bg-slate-900/70 px-1.5 py-0.5 text-[8px] font-black text-white">+{urls.length - 1}</span>
-        )}
+      <button type="button" onClick={() => onOpenDocument?.(student, field, 0)} className="inline-flex items-center gap-1 rounded border border-slate-200 bg-white px-1.5 py-1 text-sky-700 hover:bg-sky-50" title={`Xem ${field.label} của ${fullName}`}>
+        <FileText className="h-3.5 w-3.5" /> Xem{urls.length > 1 ? ` (${urls.length})` : ''}
       </button>
     ) : (
-      <span className="inline-flex items-center rounded-full border border-rose-100 bg-rose-50 px-2.5 py-1 text-[10px] font-black uppercase text-rose-600">
+      <span className="inline-flex items-center rounded-full border border-rose-100 bg-rose-50 px-2.5 py-1 text-[10px] font-normal uppercase text-rose-600">
         Trống
       </span>
     );
   }
 
-  return <span className="font-bold text-slate-700 whitespace-nowrap">{value || '-'}</span>;
+  const originalProvince = field.key === 'birthProvince' ? safePlainValue(student.birthProvince) : '';
+  return <span className="break-words text-slate-700" title={originalProvince && originalProvince !== value ? `Giá trị gốc trong hồ sơ: ${originalProvince}` : undefined}>{value || '-'}</span>;
+}
+
+function StudentAvatarPreview({ student, onClose, onOpenProfile }) {
+  const closeButtonRef = useRef(null);
+  const profileButtonRef = useRef(null);
+  useEffect(() => {
+    const previousFocus = document.activeElement;
+    closeButtonRef.current?.focus();
+    return () => previousFocus?.focus();
+  }, []);
+
+  const handleKeyDown = event => {
+    if (event.key === 'Escape') {
+      event.stopPropagation();
+      onClose();
+    } else if (event.key === 'Tab') {
+      event.preventDefault();
+      if (document.activeElement === closeButtonRef.current) profileButtonRef.current?.focus();
+      else closeButtonRef.current?.focus();
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[1200] flex items-center justify-center bg-slate-950/40 p-3" onClick={event => { if (event.target === event.currentTarget) onClose(); }} onKeyDown={handleKeyDown}>
+      <div role="dialog" aria-modal="true" aria-labelledby="student-avatar-title" className="w-full max-w-xs max-h-[90dvh] overflow-y-auto rounded-xl border border-slate-200 bg-white p-3 shadow-2xl">
+        <div className="mb-3 flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <h4 id="student-avatar-title" className="font-normal text-slate-900">{student.fullName || 'Học sinh'}</h4>
+            <p className="text-xs text-slate-500">{student.className ? `Lớp ${student.className} · ` : ''}{student.schoolYear}</p>
+          </div>
+          <button ref={closeButtonRef} type="button" onClick={onClose} aria-label="Đóng ảnh đại diện" className="flex h-8 w-8 shrink-0 items-center justify-center rounded border border-slate-200 text-slate-500 hover:bg-slate-100">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <div className="flex h-56 items-center justify-center overflow-hidden rounded-lg bg-slate-50">
+          <DriveImage key={student.portraitUrl || 'empty'} url={student.portraitUrl} alt={`Ảnh đại diện ${student.fullName}`} className="h-full w-full object-contain" fallback={
+            <div className="flex flex-col items-center gap-2 px-4 text-center text-sm text-slate-400">
+              <UserRound className="h-12 w-12" />
+              {student.portraitUrl ? 'Chưa tải được ảnh đại diện.' : 'Chưa có ảnh đại diện.'}
+            </div>
+          } />
+        </div>
+        <button ref={profileButtonRef} type="button" onClick={onOpenProfile} className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg bg-sky-700 px-3 py-2 text-sm font-normal text-white hover:bg-sky-800">
+          <FileText className="h-4 w-4" /> Mở hồ sơ
+        </button>
+      </div>
+    </div>
+  );
 }
 
 const DriveImage = React.memo(function DriveImage({ url, alt, className, fallback }) {
@@ -4676,10 +5145,10 @@ const DriveImage = React.memo(function DriveImage({ url, alt, className, fallbac
     return <iframe title={alt} src={embedUrl} className={`border-0 bg-white pointer-events-none ${className || ''}`} loading="lazy" />;
   }
   if (fallbackMode) return fallback || null;
-  return <img src={imageUrl} alt={alt} className={className} onError={() => setFallbackMode(true)} loading="lazy" decoding="async" fetchPriority="low" />;
+  return <img src={imageUrl} alt={alt} className={className} onError={() => setFallbackMode(true)} loading="lazy" decoding="async" fetchpriority="low" />;
 });
 
-function DocumentManager({ docItem, value, uploading, onUpload, onRemove, onOpen }) {
+function DocumentManager({ docItem, value, uploading, onUpload, onRemove, onOpen, readOnly = false }) {
   const fileUrls = splitDocumentUrls(safePlainValue(value));
   const inputId = `admin-doc-upload-${docItem.key}`;
   const [activeIndex, setActiveIndex] = useState(0);
@@ -4698,15 +5167,15 @@ function DocumentManager({ docItem, value, uploading, onUpload, onRemove, onOpen
   return (
     <div className="rounded-2xl border border-white bg-white p-2 shadow-sm">
       <div className="mb-2 flex items-center justify-between gap-2">
-        <div className="text-[10px] font-black uppercase text-slate-500">{docItem.label}</div>
-        <span className="rounded-full bg-slate-50 px-2 py-1 text-[9px] font-black uppercase text-slate-500">{fileUrls.length || 0} file</span>
+        <div className="text-[10px] font-normal uppercase text-slate-500">{docItem.label}</div>
+        <span className="rounded-full bg-slate-50 px-2 py-1 text-[9px] font-normal uppercase text-slate-500">{fileUrls.length || 0} file</span>
       </div>
       <div className="rounded-xl border border-slate-100 bg-slate-50 p-2">
         <div className="relative">
           {activeUrl ? (
             <button type="button" onClick={() => onOpen?.(activeIndex)} className="relative aspect-[4/3] w-full overflow-hidden rounded-lg border border-slate-100 bg-white">
               {isPdf ? (
-                <div className="flex h-full w-full flex-col items-center justify-center gap-1 px-3 text-center text-[11px] font-black text-rose-600">
+                <div className="flex h-full w-full flex-col items-center justify-center gap-1 px-3 text-center text-[11px] font-normal text-rose-600">
                   <FileSpreadsheet className="h-6 w-6" />
                   PDF
                 </div>
@@ -4715,7 +5184,7 @@ function DocumentManager({ docItem, value, uploading, onUpload, onRemove, onOpen
               )}
             </button>
           ) : (
-            <div className="aspect-[4/3] rounded-lg bg-white border border-dashed border-slate-200 flex items-center justify-center text-center px-3 text-[11px] font-bold text-slate-400">Chưa có file</div>
+            <div className="aspect-[4/3] rounded-lg bg-white border border-dashed border-slate-200 flex items-center justify-center text-center px-3 text-[11px] font-normal text-slate-400">Chưa có file</div>
           )}
           {fileUrls.length > 1 && (
             <>
@@ -4725,24 +5194,24 @@ function DocumentManager({ docItem, value, uploading, onUpload, onRemove, onOpen
               <button type="button" onClick={goToNext} disabled={activeIndex >= fileUrls.length - 1} className="absolute right-2 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-full bg-white/90 text-slate-700 shadow-md disabled:opacity-30" title="File sau">
                 <ChevronRight className="h-4 w-4" />
               </button>
-              <div className="absolute bottom-2 left-1/2 -translate-x-1/2 rounded-full bg-slate-900/70 px-2 py-1 text-[10px] font-black text-white">
+              <div className="absolute bottom-2 left-1/2 -translate-x-1/2 rounded-full bg-slate-900/70 px-2 py-1 text-[10px] font-normal text-white">
                 {activeIndex + 1}/{fileUrls.length}
               </div>
             </>
           )}
         </div>
-        <div className="mt-2 grid grid-cols-2 gap-2">
-          <label htmlFor={inputId} className={`flex cursor-pointer items-center justify-center gap-1.5 rounded-xl border border-dashed px-3 py-2 text-[10px] font-black uppercase ${uploading ? 'border-slate-200 bg-slate-100 text-slate-400' : 'border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100'}`}>
+        {!readOnly && <div className="mt-2 grid grid-cols-2 gap-2">
+          <label htmlFor={inputId} className={`flex cursor-pointer items-center justify-center gap-1.5 rounded-xl border border-dashed px-3 py-2 text-[10px] font-normal uppercase ${uploading ? 'border-slate-200 bg-slate-100 text-slate-400' : 'border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100'}`}>
             {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}
             {uploading ? 'Đang tải...' : 'Thay file'}
           </label>
-          <button type="button" onClick={() => onRemove?.(activeIndex)} disabled={!activeUrl || uploading} className="flex items-center justify-center gap-1.5 rounded-xl bg-rose-50 px-3 py-2 text-[10px] font-black uppercase text-rose-600 disabled:cursor-not-allowed disabled:opacity-40" title="Xóa file đang xem">
+          <button type="button" onClick={() => onRemove?.(activeIndex)} disabled={!activeUrl || uploading} className="flex items-center justify-center gap-1.5 rounded-xl bg-rose-50 px-3 py-2 text-[10px] font-normal uppercase text-rose-600 disabled:cursor-not-allowed disabled:opacity-40" title="Xóa file đang xem">
             <Trash2 className="h-4 w-4" />
             Xóa
           </button>
-        </div>
+        </div>}
       </div>
-      <input
+      {!readOnly && <input
         id={inputId}
         type="file"
         accept={docItem.accept}
@@ -4753,7 +5222,7 @@ function DocumentManager({ docItem, value, uploading, onUpload, onRemove, onOpen
           onUpload?.(event.target.files);
           event.target.value = null;
         }}
-      />
+      />}
     </div>
   );
 }
@@ -4770,8 +5239,8 @@ function DocumentViewerModal({ viewer, onClose, onSelect, onPrevious, onNext }) 
       <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
         <div className="flex shrink-0 items-center justify-between gap-3 border-b border-slate-100 bg-slate-50 px-3 py-2 sm:px-4">
           <div className="min-w-0">
-            <div className="truncate text-sm font-black uppercase text-slate-900">{viewer.title}</div>
-            <div className="text-[11px] font-bold text-slate-500">File {Math.min(index + 1, urls.length)}/{urls.length}</div>
+            <div className="truncate text-sm font-normal uppercase text-slate-900">{viewer.title}</div>
+            <div className="text-[11px] font-normal text-slate-500">File {Math.min(index + 1, urls.length)}/{urls.length}</div>
           </div>
           <button type="button" onClick={onClose} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-rose-600 text-white shadow-sm" title="Đóng">
             <X className="h-5 w-5" />
@@ -4797,7 +5266,7 @@ function DocumentViewerModal({ viewer, onClose, onSelect, onPrevious, onNext }) 
               </div>
             )
           ) : (
-            <div className="flex h-full items-center justify-center text-sm font-bold text-white">Không có file để xem.</div>
+            <div className="flex h-full items-center justify-center text-sm font-normal text-white">Không có file để xem.</div>
           )}
         </div>
         {urls.length > 1 && (
@@ -4805,7 +5274,7 @@ function DocumentViewerModal({ viewer, onClose, onSelect, onPrevious, onNext }) 
             {urls.map((url, itemIndex) => (
               <button key={`${url}-${itemIndex}`} type="button" onClick={() => onSelect(itemIndex)} className={`h-16 w-20 shrink-0 overflow-hidden rounded-lg border-2 bg-slate-50 ${itemIndex === index ? 'border-indigo-500' : 'border-transparent'}`}>
                 {/\.pdf(\?|$)/i.test(url) ? (
-                  <div className="flex h-full w-full items-center justify-center text-[10px] font-black text-rose-600">PDF {itemIndex + 1}</div>
+                  <div className="flex h-full w-full items-center justify-center text-[10px] font-normal text-rose-600">PDF {itemIndex + 1}</div>
                 ) : (
                   <img src={getPreviewImageUrl(url)} alt={`${viewer.title} ${itemIndex + 1}`} className="h-full w-full object-contain" loading="lazy" decoding="async" />
                 )}

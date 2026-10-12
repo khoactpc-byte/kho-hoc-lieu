@@ -5,6 +5,8 @@ import { validateMailboxBackup, validateRestoreSnapshot } from '../utils/backupM
 import { SERVER_SYSTEM_ENABLED, listMaintenanceJobs, continueMaintenance, continueRestorePreparation, captureServerSnapshot, completeBackupExport, cancelMaintenance, retryMailboxRestore, previewGenerations, cleanGeneration, previewStudentMetadata, applyStudentMetadata } from '../services/serverSystemClient';
 import { processRecords } from '../utils/bulkOperations';
 import MaterialMigrationPanel from './MaterialMigrationPanel';
+import CampusNormalizationPanel from './CampusNormalizationPanel';
+import ClassNormalizationPanel from './ClassNormalizationPanel';
 import { readSystemSummary } from '../services/systemSummary';
 
 const formatDateTime = (value) => value ? new Date(value).toLocaleString('vi-VN') : '-';
@@ -251,6 +253,8 @@ export default function AdminDataSafetyWorkspace({
         {loading[tab === 'mail' ? 'messages' : tab === 'backup' ? 'backups' : 'logs'] && <p className="mb-3 text-sm text-slate-500">Đang tải danh sách...</p>}
         {tab === 'backup' && (
           <div className="space-y-3">
+            <CampusNormalizationPanel captureSnapshot={captureSnapshot} busy={busy} beginOperation={beginOperation} finishOperation={finishOperation} showNotification={showNotification} />
+            <ClassNormalizationPanel captureSnapshot={captureSnapshot} busy={busy} beginOperation={beginOperation} finishOperation={finishOperation} showNotification={showNotification} />
             {SERVER_SYSTEM_ENABLED && <MaterialMigrationPanel busy={busy} beginOperation={beginOperation} finishOperation={finishOperation} showNotification={showNotification} />}
             {SERVER_SYSTEM_ENABLED && <div className="rounded-xl bg-white p-3"><p className="font-bold">Đối soát định danh và phạm vi hồ sơ cũ</p><p className="text-sm text-slate-600">Xem 50 hồ sơ mỗi trang. Hồ sơ thiếu cơ sở hoặc có mã lịch sử khác cần đối chiếu riêng.</p><button disabled={Boolean(busy)} onClick={() => migrateMetadata()} className="mr-3 text-blue-700">Xem trước từ đầu</button><button disabled={Boolean(busy) || !metadataPreview?.after} onClick={() => migrateMetadata(false, metadataPreview.after)} className="mr-3 text-blue-700">Trang tiếp</button><button disabled={Boolean(busy) || !metadataPreview?.results.some(row => row.eligible)} onClick={() => migrateMetadata(true)} className="text-amber-700">Áp dụng trang đã đối chiếu</button>{metadataPreview?.results.map(row => <p key={row.id} className="text-sm">{row.fullName || row.id}: {row.eligible ? `${row.patch.studentKey} · ${row.patch.schoolYear} · ${row.patch.schoolCode} · khối ${row.patch.grade}` : row.reason}</p>)}</div>}
             <p className="rounded-xl bg-amber-50 p-3 text-sm text-amber-900">{SERVER_SYSTEM_ENABLED ? 'Sao lưu gồm đề riêng, lượt làm và mảnh phân công. Phiên đăng nhập không được phục hồi.' : 'Chế độ sao lưu cũ chỉ gồm dữ liệu công khai; chưa bao gồm đề riêng và lượt làm trên máy chủ.'} Nội dung tệp Drive và Sheet tài khoản giáo viên cần sao lưu riêng.</p>

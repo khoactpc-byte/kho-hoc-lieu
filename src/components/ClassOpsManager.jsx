@@ -1,6 +1,8 @@
 import { requestPrivateApi } from '../services/serverQuizClient';
 import { SCOPED_AUTH_ENABLED } from '../services/scopedIdentity';
 import { saveAttendanceEntry } from '../services/attendance';
+import { attendanceDocumentId } from '../utils/classNormalization';
+import ClassMonitorAttendance from './ClassMonitorAttendance';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { collection, doc, getDoc, onSnapshot, query, setDoc, where } from 'firebase/firestore';
 import {
@@ -216,8 +218,10 @@ function AdminAttendanceStaticTable({ currentSchoolYear = '', students = [], cla
   const [selectedMonth, setSelectedMonth] = useState(() => getInitialMonth(months) || { month: today.getMonth() + 1, year: today.getFullYear(), label: `Tháng ${today.getMonth() + 1}/${today.getFullYear()}` });
   const [reportMode, setReportMode] = useState('month');
   const [attendanceDocs, setAttendanceDocs] = useState([]);
+  const [attendanceLoadedYear, setAttendanceLoadedYear] = useState('');
   const attendanceSavesRef = useRef(new Set());
   const [showAttendanceStats, setShowAttendanceStats] = useState(false);
+  const [showPortraits, setShowPortraits] = useState(false);
   const days = useMemo(() => reportMode === 'month' ? makeMonthDates(selectedMonth) : [], [reportMode, selectedMonth]);
   const reportMonths = useMemo(() => {
     if (reportMode === 'hk1') return months.filter(item => [9, 10, 11, 12, 1].includes(item.month));
@@ -234,6 +238,7 @@ function AdminAttendanceStaticTable({ currentSchoolYear = '', students = [], cla
   useEffect(() => {
     setActiveGradeFilter('');
     setSelectedClasses([]);
+    setSelectedMonth(getInitialMonth(monthOptionsForSchoolYear(currentSchoolYear)));
   }, [currentSchoolYear]);
   const rows = normalizeStudents(students, '', currentSchoolYear)
     .filter(student => selectedClasses.length === 0 || selectedClasses.includes(getClassName(student)))
@@ -283,10 +288,12 @@ function AdminAttendanceStaticTable({ currentSchoolYear = '', students = [], cla
   useEffect(() => {
     const ref = query(collection(db, 'artifacts', appId, 'public', 'data', 'class_attendance'), where('schoolYear', '==', currentSchoolYear));
     setAttendanceDocs([]);
+    setAttendanceLoadedYear('');
     return onSnapshot(ref, snapshot => {
       setAttendanceDocs(snapshot.docs
         .map(item => ({ ...item.data(), id: item.id }))
         .filter(item => String(item.schoolYear || '') === String(currentSchoolYear || '')));
+      setAttendanceLoadedYear(currentSchoolYear);
     });
   }, [currentSchoolYear]);
 
@@ -307,9 +314,10 @@ function AdminAttendanceStaticTable({ currentSchoolYear = '', students = [], cla
   };
 
   const cycleAttendance = async (row, date) => {
+    if (attendanceLoadedYear !== currentSchoolYear) { showNotification?.('Đang tải điểm danh. Vui lòng thử lại sau.', 'error'); return; }
     const dateKey = toDateKey(date);
     const className = row.className;
-    const documentId = currentSchoolYear + '_' + dateKey + '_K' + className;
+    const documentId = attendanceDocumentId(attendanceDocs, { schoolYear: currentSchoolYear, schoolCode: getStudentSchoolCode(row.student), className, date: dateKey });
     const key = documentId + '/' + row.student.id;
     if (attendanceSavesRef.current.has(key)) return;
     attendanceSavesRef.current.add(key);
@@ -371,237 +379,109 @@ function AdminAttendanceStaticTable({ currentSchoolYear = '', students = [], cla
   };
 
   return (
-    <div className="bg-white shadow-2xl border-0 w-full max-w-none mx-auto h-screen max-h-screen overflow-hidden flex flex-col">
-      <div className="px-3 sm:px-5 py-3 border-b bg-cyan-50 flex items-center justify-between gap-2">
-        <div className="min-w-0 flex items-center gap-2">
-          <CalendarDays className="w-5 h-5 text-cyan-600 shrink-0" />
+    <div className="attendance-workspace flex h-full min-h-0 w-full flex-col overflow-hidden bg-white text-[13px] font-normal sm:rounded-lg sm:border sm:border-slate-200">
+      <header className="flex shrink-0 items-center justify-between gap-2 border-b border-slate-200 bg-slate-50 px-3 py-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <CalendarDays className="h-4 w-4 shrink-0 text-sky-600" />
           <div className="min-w-0">
-          <h2 className="text-base sm:text-2xl font-black text-slate-900 uppercase leading-tight truncate">
-            <span className="sm:hidden">Điểm danh</span>
-            <span className="hidden sm:inline">Điểm danh học sinh</span>
-          </h2>
-          <p className="text-[10px] sm:text-xs font-bold text-cyan-700/80 truncate">
-            <span className="sm:hidden">{currentSchoolYear || 'Năm học'} · {rowsWithStats.length} HS</span>
-            <span className="hidden sm:inline">Bảng tháng - năm học {currentSchoolYear || 'đang chọn'} · {rowsWithStats.length} học sinh</span>
-          </p>
+            <h2 className="truncate text-sm font-medium text-slate-800">Điểm danh học sinh</h2>
+            <p className="text-xs text-slate-500">{currentSchoolYear || 'Năm học'} · {rowsWithStats.length} học sinh</p>
           </div>
         </div>
-        <div className="flex items-center gap-1.5 shrink-0">
-          {onOpenDatabase && (
-            <button type="button" title="Mở database" onClick={onOpenDatabase} className="w-10 sm:w-auto h-10 px-0 sm:px-4 rounded-2xl bg-indigo-600 text-white flex items-center justify-center sm:gap-2 shadow-sm text-xs font-black uppercase">
-              <Users className="w-4 h-4" />
-              <span className="hidden sm:inline">Database</span>
-            </button>
-          )}
-          <button type="button" title="Thống kê" onClick={() => setShowAttendanceStats(prev => !prev)} className={`w-10 sm:w-auto h-10 px-0 sm:px-4 rounded-2xl flex items-center justify-center sm:gap-2 shadow-sm text-xs font-black uppercase ${showAttendanceStats ? 'bg-indigo-600 text-white' : 'bg-white text-indigo-700 border border-indigo-100'}`}>
-            <Users className="w-4 h-4" />
-            <span className="hidden sm:inline">Thống kê</span>
+        <div className="flex shrink-0 items-center gap-1.5">
+          {onOpenDatabase && <button type="button" title="Mở danh sách học sinh" aria-label="Mở danh sách học sinh" onClick={onOpenDatabase} className="attendance-tool-button">
+            <Users className="h-4 w-4" /><span className="hidden sm:inline">Học sinh</span>
+          </button>}
+          <button type="button" title="Thống kê" aria-label="Thống kê điểm danh" aria-pressed={showAttendanceStats} onClick={() => setShowAttendanceStats(prev => !prev)} className={'attendance-tool-button ' + (showAttendanceStats ? 'border-sky-300 bg-sky-50 text-sky-700' : '')}>
+            <Users className="h-4 w-4" /><span className="hidden sm:inline">Thống kê</span>
           </button>
-          <button type="button" title="Xuất PDF" onClick={exportPdf} className="w-10 sm:w-auto h-10 px-0 sm:px-4 rounded-2xl bg-cyan-600 text-white flex items-center justify-center sm:gap-2 shadow-sm text-xs font-black uppercase">
-            <Download className="w-4 h-4" />
-            <span className="hidden sm:inline">Xuất PDF</span>
+          <button type="button" title="Xuất PDF" aria-label="Xuất PDF điểm danh" onClick={exportPdf} className="attendance-tool-button text-sky-700">
+            <Download className="h-4 w-4" /><span className="hidden sm:inline">Xuất PDF</span>
           </button>
-          <button type="button" title="Đóng" onClick={onClose} className="w-10 h-10 rounded-2xl bg-white border border-slate-200 text-slate-500 hover:bg-rose-600 hover:text-white transition-colors flex items-center justify-center">
-            <X className="w-5 h-5" />
-          </button>
+          <button type="button" title="Đóng" aria-label="Đóng điểm danh" onClick={onClose} className="attendance-tool-button hover:text-rose-600"><X className="h-4 w-4" /></button>
         </div>
-      </div>
+      </header>
 
-      <div className="p-3 bg-white border-b border-slate-100 flex flex-wrap items-end gap-2">
-        <div className="min-w-0 flex-1 space-y-2">
-          <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
-            <button type="button" onClick={selectAllClasses} className={`px-3 sm:px-4 py-2 rounded-xl text-[11px] sm:text-xs font-black uppercase ${!activeGradeFilter && selectedClasses.length === 0 ? 'bg-cyan-600 text-white' : 'bg-slate-50 border border-slate-200 text-slate-600'}`}>Tất cả</button>
-            {gradeFilters.map(grade => (
-              <button key={`attendance-grade-${grade}`} type="button" onClick={() => selectGrade(grade)} className={`px-3 sm:px-4 py-2 rounded-xl text-[11px] sm:text-xs font-black uppercase ${activeGradeFilter === grade ? 'bg-cyan-600 text-white' : 'bg-slate-50 border border-slate-200 text-slate-600'}`}>
-                Khối {grade}
-              </button>
-            ))}
+      <div className="shrink-0 border-b border-slate-200 px-3 py-2">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+          <div className="flex flex-wrap items-center gap-1" aria-label="Lọc khối">
+            <button type="button" onClick={selectAllClasses} aria-pressed={!activeGradeFilter && selectedClasses.length === 0} className="attendance-filter-button">Tất cả</button>
+            {gradeFilters.map(grade => <button key={grade} type="button" onClick={() => selectGrade(grade)} aria-pressed={activeGradeFilter === grade} className="attendance-filter-button">Khối {grade}</button>)}
           </div>
-          {activeGradeFilter && (
-            <div className="flex flex-wrap items-center gap-1.5 border-t border-slate-100 pt-2">
-              <span className="mr-1 text-[10px] font-black uppercase text-slate-400">Lớp thuộc khối {activeGradeFilter}</span>
-              <button type="button" onClick={() => selectGrade(activeGradeFilter)} className={`px-3 py-1.5 rounded-lg text-[10px] sm:text-[11px] font-black uppercase ${selectedClasses.length === activeGradeClasses.length && activeGradeClasses.every(className => selectedClasses.includes(className)) ? 'bg-indigo-600 text-white' : 'bg-indigo-50 border border-indigo-100 text-indigo-700'}`}>
-                Cả khối
-              </button>
-              {activeGradeClasses.map(className => {
-                const isLegacyGrade = normalizeSchoolClassName(className) === activeGradeFilter;
-                return (
-                  <button key={`attendance-class-${className}`} type="button" onClick={() => selectSingleClass(className)} className={`px-3 py-1.5 rounded-lg text-[10px] sm:text-[11px] font-black uppercase ${selectedClasses.length === 1 && selectedClasses[0] === className ? 'bg-cyan-600 text-white' : 'bg-white border border-slate-200 text-slate-600'}`}>
-                    {isLegacyGrade ? 'Chưa chia lớp' : `Lớp ${className}`}
-                  </button>
-                );
-              })}
-            </div>
-          )}
+          <div className="flex flex-wrap items-center gap-3 sm:ml-auto">
+            <label className="inline-flex items-center gap-1.5 whitespace-nowrap text-xs text-slate-600">
+              <input type="checkbox" checked={showPortraits} onChange={event => setShowPortraits(event.target.checked)} className="h-3.5 w-3.5 rounded border-slate-300" />Hiện ảnh
+            </label>
+            <label className="inline-flex items-center gap-2 text-xs text-slate-500">
+              Thời gian
+              <select aria-label="Thời gian điểm danh" value={reportMode === 'month' ? selectedMonth.year + '-' + selectedMonth.month : reportMode} onChange={event => {
+                if (['hk1', 'hk2', 'year'].includes(event.target.value)) { setReportMode(event.target.value); return; }
+                const [year, month] = event.target.value.split('-').map(Number);
+                const found = months.find(item => item.year === year && item.month === month);
+                if (found) { setSelectedMonth(found); setReportMode('month'); }
+              }} className="h-8 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700">
+                {months.map(month => <option key={month.year + '-' + month.month} value={month.year + '-' + month.month}>{month.label}</option>)}
+                <option value="hk1">Học kỳ 1</option><option value="hk2">Học kỳ 2</option><option value="year">Cả năm</option>
+              </select>
+            </label>
+          </div>
         </div>
-        <select value={reportMode === 'month' ? `${selectedMonth.year}-${selectedMonth.month}` : reportMode} onChange={(event) => {
-          if (['hk1', 'hk2'].includes(event.target.value)) {
-            setReportMode(event.target.value);
-            return;
-          }
-          const [year, month] = event.target.value.split('-').map(Number);
-          const found = months.find(item => item.year === year && item.month === month);
-          if (found) {
-            setSelectedMonth(found);
-            setReportMode('month');
-          }
-        }} className="sm:ml-auto rounded-xl border border-slate-200 bg-white px-3 py-2 text-[11px] font-black">
-          {months.map(month => <option key={`${month.year}-${month.month}`} value={`${month.year}-${month.month}`}>{month.label}</option>)}
-          <option value="hk1">Học kỳ 1</option>
-          <option value="hk2">Học kỳ 2</option>
-        </select>
-        {[
-          { key: 'hk1', label: 'Học kỳ 1' },
-          { key: 'hk2', label: 'Học kỳ 2' },
-          { key: 'year', label: 'Cả năm' }
-        ].map(item => (
-          <button key={item.key} type="button" onClick={() => setReportMode(item.key)} className={`px-3 py-2 rounded-xl text-[11px] font-black uppercase ${item.key !== 'year' ? 'hidden sm:inline-flex' : ''} ${reportMode === item.key ? 'bg-indigo-600 text-white' : 'bg-indigo-50 border border-indigo-100 text-indigo-700'}`}>
-            {item.label}
-          </button>
-        ))}
+        {activeGradeFilter && activeGradeClasses.length > 1 && <div className="mt-2 flex flex-wrap items-center gap-1 border-t border-slate-100 pt-2" aria-label="Lọc lớp">
+          <span className="mr-1 text-xs text-slate-500">Lớp</span>
+          <button type="button" onClick={() => selectGrade(activeGradeFilter)} aria-pressed={selectedClasses.length === activeGradeClasses.length && activeGradeClasses.every(className => selectedClasses.includes(className))} className="attendance-filter-button">Cả khối {activeGradeFilter}</button>
+          {activeGradeClasses.map(className => <button key={className} type="button" onClick={() => selectSingleClass(className)} aria-pressed={selectedClasses.length === 1 && selectedClasses[0] === className} className="attendance-filter-button">
+            {normalizeSchoolClassName(className) === activeGradeFilter ? 'Chưa chia lớp' : className}
+          </button>)}
+        </div>}
       </div>
 
-      <div className="flex-1 min-h-0 bg-slate-50/60 p-3 sm:p-4 flex flex-col gap-4 overflow-hidden">
-        <div className="flex-1 min-h-[360px] overflow-auto overscroll-contain rounded-2xl border border-slate-300 bg-white shadow-sm">
-        <table className="w-full min-w-[470px] sm:min-w-[1180px] table-fixed border-separate border-spacing-0 bg-white text-xs">
-          <colgroup>
-            <col className="w-[104px] sm:w-[260px]" />
-            <col className="w-[48px] sm:w-[90px]" />
-            <col className="w-[34px] sm:w-[60px]" />
-            {reportMode === 'month' && days.map(date => (
-              <col key={`col-${toDateKey(date)}`} className="w-[44px] sm:w-[52px]" />
-            ))}
-            {reportMode !== 'month' && reportMonths.map(monthInfo => (
-              <React.Fragment key={`col-${monthInfo.year}-${monthInfo.month}`}>
-                <col className="w-[64px]" />
-                <col className="w-[64px]" />
-              </React.Fragment>
-            ))}
-            <col className="w-[42px] sm:w-[60px]" />
-            <col className="w-[42px] sm:w-[60px]" />
-            <col className="w-[44px] sm:w-[70px]" />
-          </colgroup>
-          <thead className="shadow-sm">
-            <tr className="bg-slate-100 text-slate-600 uppercase">
-              <th rowSpan="2" className="h-10 w-[104px] min-w-[104px] max-w-[104px] sm:w-[260px] sm:min-w-[260px] sm:max-w-[260px] px-2 sm:px-3 py-3 text-left sticky left-0 top-0 bg-slate-100 z-[80] border-b border-r border-slate-300 shadow-[inset_-1px_0_0_#cbd5e1,inset_0_-1px_0_#cbd5e1]">Họ và đệm</th>
-              <th rowSpan="2" className="h-10 w-[48px] min-w-[48px] max-w-[48px] sm:w-[90px] sm:min-w-[90px] sm:max-w-[90px] px-1.5 sm:px-3 py-3 text-left sticky left-[104px] sm:left-[260px] top-0 bg-slate-100 z-[75] border-b border-r border-slate-300 shadow-[inset_-1px_0_0_#cbd5e1,inset_0_-1px_0_#cbd5e1]">Tên</th>
-              <th rowSpan="2" className="h-10 w-[34px] min-w-[34px] max-w-[34px] sm:w-[60px] sm:min-w-[60px] sm:max-w-[60px] px-1.5 sm:px-2 py-3 text-center sticky top-0 bg-slate-100 z-40 border-b border-r border-slate-300 shadow-[inset_0_-1px_0_#cbd5e1]">Lớp</th>
-              {reportMode === 'month' && days.map((date, dayIndex) => (
-                <th key={toDateKey(date)} rowSpan="2" className={`h-10 px-1 sm:px-2 py-3 text-center min-w-[44px] sm:min-w-[52px] sticky top-0 z-40 border-b border-r border-slate-300 shadow-[inset_0_-1px_0_#cbd5e1] ${dayIndex % 2 === 0 ? 'bg-white' : 'bg-sky-50'}`}>
-                  <span className="block">{formatShortDate(date)}</span>
-                  <span className="block text-[9px] text-slate-400">{getShortDayLabel(date)}</span>
-                </th>
-              ))}
-              {reportMode !== 'month' && reportMonths.map(monthInfo => (
-                <th key={`${monthInfo.year}-${monthInfo.month}`} colSpan="2" className="h-10 px-3 py-2 text-center min-w-[128px] sticky top-0 z-40 bg-sky-100 border-b border-l border-r border-slate-300 text-slate-700 shadow-[inset_0_-1px_0_#cbd5e1]">
-                  Tháng {monthInfo.month}
-                </th>
-              ))}
-              <th rowSpan="2" className="h-10 px-1.5 sm:px-2 py-3 text-center min-w-[42px] sm:min-w-[60px] sticky top-0 z-40 bg-slate-100 border-b border-l border-r border-slate-300 shadow-[inset_0_-1px_0_#cbd5e1]">CP</th>
-              <th rowSpan="2" className="h-10 px-1.5 sm:px-2 py-3 text-center min-w-[42px] sm:min-w-[60px] sticky top-0 z-40 bg-rose-50 border-b border-r border-slate-300 shadow-[inset_0_-1px_0_#cbd5e1]">KP</th>
-              <th rowSpan="2" className="h-10 px-1.5 sm:px-2 py-3 text-center min-w-[44px] sm:min-w-[70px] sticky top-0 z-40 bg-slate-100 border-b border-slate-300 shadow-[inset_0_-1px_0_#cbd5e1]">Tổng</th>
-            </tr>
-            {reportMode !== 'month' && (
-              <tr className="bg-slate-50 text-slate-500 uppercase">
-                {reportMonths.map(monthInfo => (
-                  <React.Fragment key={`${monthInfo.year}-${monthInfo.month}-sub`}>
-                    <th className="h-9 px-2 py-2 text-center min-w-[64px] sticky top-10 z-40 border-b border-l border-r border-slate-300 bg-white text-amber-700 shadow-[inset_0_-1px_0_#cbd5e1]">CP</th>
-                    <th className="h-9 px-2 py-2 text-center min-w-[64px] sticky top-10 z-40 border-b border-r border-slate-300 bg-rose-50 text-rose-700 shadow-[inset_0_-1px_0_#cbd5e1]">KP</th>
-                  </React.Fragment>
-                ))}
-              </tr>
-            )}
-          </thead>
-          <tbody>
-            {rowsWithStats.length === 0 ? (
+      <div className="flex min-h-0 flex-1 flex-col gap-2 p-2">
+        <div className="attendance-table-scroll min-h-0 flex-1 overflow-auto overscroll-contain rounded-md border border-slate-200">
+          <table className={'attendance-table min-w-full table-fixed border-separate border-spacing-0 text-xs ' + (showPortraits ? 'attendance-with-portraits' : '')} style={{ width: 'calc(var(--attendance-name-width) + var(--attendance-class-width) + ' + ((reportMode === 'month' ? days.length * 42 : reportMonths.length * 96) + 144) + 'px)' }}>
+            <colgroup>
+              <col style={{ width: 'var(--attendance-name-width)' }} /><col style={{ width: 'var(--attendance-class-width)' }} />
+              {reportMode === 'month' ? days.map(date => <col key={toDateKey(date)} style={{ width: 42 }} />) : reportMonths.map(month => <React.Fragment key={month.year + '-' + month.month}><col style={{ width: 48 }} /><col style={{ width: 48 }} /></React.Fragment>)}
+              <col style={{ width: 48 }} /><col style={{ width: 48 }} /><col style={{ width: 48 }} />
+            </colgroup>
+            <thead className="sticky top-0 z-30">
               <tr>
-                <td colSpan={(reportMode === 'month' ? days.length : reportMonths.length * 2) + 6} className="px-4 py-8 text-center text-slate-400 font-bold">Chưa có học sinh trong khối đang chọn.</td>
+                <th rowSpan={reportMode === 'month' ? 1 : 2} className="attendance-name-cell text-left">Họ và tên</th>
+                <th rowSpan={reportMode === 'month' ? 1 : 2} className="attendance-class-cell">Lớp</th>
+                {reportMode === 'month' ? days.map(date => <th key={toDateKey(date)}><span className="block">{formatShortDate(date)}</span><span className="block text-[10px] text-sky-100">{getShortDayLabel(date)}</span></th>) : reportMonths.map(month => <th key={month.year + '-' + month.month} colSpan={2}>Tháng {month.month}</th>)}
+                <th rowSpan={reportMode === 'month' ? 1 : 2} title="Có phép">CP</th><th rowSpan={reportMode === 'month' ? 1 : 2} title="Không phép">KP</th><th rowSpan={reportMode === 'month' ? 1 : 2}>Tổng</th>
               </tr>
-            ) : rowsWithStats.map((row) => {
-              const rowBg = row.cp + row.kp > 0 ? 'bg-amber-50' : 'bg-white';
-              const stickyBg = row.cp + row.kp > 0 ? 'bg-amber-100' : 'bg-white';
-              return (
-              <tr key={row.student.id || `${row.student.fullName}-${row.student.birthDate}`} className={`border-t border-slate-100 ${rowBg}`}>
-                <td className={`relative overflow-hidden w-[104px] min-w-[104px] max-w-[104px] sm:w-[260px] sm:min-w-[260px] sm:max-w-[260px] px-2 sm:px-3 py-3 sm:py-4 sticky left-0 z-[70] border-b border-slate-200 shadow-[inset_-1px_0_0_#e2e8f0] ${stickyBg}`}>
-                  <div className={`absolute inset-0 ${stickyBg}`} aria-hidden="true" />
-                  <div className="relative z-10 flex items-center gap-2 sm:gap-3">
-                    <div className="w-7 h-7 sm:w-10 sm:h-10 rounded-xl sm:rounded-2xl bg-cyan-50 border border-cyan-100 overflow-hidden flex items-center justify-center text-cyan-700 font-black shrink-0">
-                      <AttendanceAvatar student={row.student} />
-                    </div>
-                    <div className="min-w-0">
-                      <div className="font-black text-slate-900 text-[11px] sm:text-xs leading-tight sm:truncate overflow-hidden [display:-webkit-box] [-webkit-line-clamp:2] [-webkit-box-orient:vertical]">{row.nameParts.family || '-'}</div>
-                      <div className="hidden sm:block text-[10px] font-bold text-slate-400">{row.student.accessCode || ''}</div>
-                    </div>
-                  </div>
-                </td>
-                <td className={`relative overflow-hidden w-[48px] min-w-[48px] max-w-[48px] sm:w-[90px] sm:min-w-[90px] sm:max-w-[90px] px-1.5 sm:px-3 py-3 sm:py-4 sticky left-[104px] sm:left-[260px] z-[65] font-black text-slate-900 text-[11px] sm:text-xs border-b border-r border-slate-200 shadow-[inset_-1px_0_0_#e2e8f0] ${stickyBg}`}>
-                  <div className={`absolute inset-0 ${stickyBg}`} aria-hidden="true" />
-                  <span className="relative z-10">{row.nameParts.given || '-'}</span>
-                </td>
-                <td className="w-[34px] min-w-[34px] max-w-[34px] sm:w-[60px] sm:min-w-[60px] sm:max-w-[60px] px-1.5 sm:px-2 py-3 sm:py-4 text-center font-black text-slate-600 border-b border-r border-slate-200 text-[11px] sm:text-xs">{row.className || '-'}</td>
-                {reportMode === 'month' && days.map((date, dayIndex) => (
-                  <td key={toDateKey(date)} className={`px-1 py-2 text-center border-b border-r border-slate-200 ${dayIndex % 2 === 0 ? 'bg-white' : 'bg-sky-50/45'}`}>
-                    {(() => {
-                      const status = row.statuses[toDateKey(date)];
-                      const tone = status === 'CP' ? 'border-slate-300 bg-white text-amber-700' : status === 'KP' ? 'border-rose-200 bg-rose-50 text-rose-700' : 'border-slate-200 bg-white text-slate-300';
-                      return <button type="button" onClick={() => cycleAttendance(row, date)} className={`inline-flex min-w-7 sm:min-w-8 justify-center rounded-lg border px-1.5 sm:px-2 py-1 font-black ${tone}`}>{status || '-'}</button>;
-                    })()}
-                  </td>
-                ))}
-                {reportMode !== 'month' && reportMonths.map(monthInfo => {
-                  const key = `${monthInfo.year}-${monthInfo.month}`;
-                  const monthStat = row.monthStats[key] || { cp: 0, kp: 0 };
-                  return (
-                    <React.Fragment key={key}>
-                      <td className="px-2 py-2 text-center font-black text-amber-700 bg-white border-b border-l border-r border-slate-300">{monthStat.cp}</td>
-                      <td className="px-2 py-2 text-center font-black text-rose-700 bg-rose-50 border-b border-r border-slate-300">{monthStat.kp}</td>
-                    </React.Fragment>
-                  );
-                })}
-                <td className="px-2 py-2 text-center font-black text-amber-700 bg-white border-b border-l border-r border-slate-300">{row.cp}</td>
-                <td className="px-2 py-2 text-center font-black text-rose-700 border-b border-r border-slate-300 bg-rose-50">{row.kp}</td>
-                <td className="px-2 py-2 text-center font-black text-slate-900 bg-white border-b border-slate-300">{row.cp + row.kp}</td>
-              </tr>
-              );
-            })}
-          </tbody>
-        </table>
-        </div>
-
-        {showAttendanceStats && <div className="shrink-0 bg-white border border-slate-200 rounded-2xl overflow-hidden">
-          <div className="px-4 py-3 bg-slate-100 border-b border-slate-200 font-black text-slate-700 uppercase text-xs">
-            Thống kê {reportMode === 'month' ? selectedMonth.label : reportMode === 'hk1' ? 'học kỳ 1' : reportMode === 'hk2' ? 'học kỳ 2' : 'cả năm'}
-          </div>
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="bg-slate-50 text-slate-500 uppercase">
-                <th className="px-3 py-2 text-left">Khối</th>
-                <th className="px-3 py-2 text-center">Số học sinh</th>
-                <th className="px-3 py-2 text-center">CP</th>
-                <th className="px-3 py-2 text-center">KP</th>
-                <th className="px-3 py-2 text-center">Tổng vắng</th>
-              </tr>
+              {reportMode !== 'month' && <tr>{reportMonths.map(month => <React.Fragment key={month.year + '-' + month.month}><th>CP</th><th>KP</th></React.Fragment>)}</tr>}
             </thead>
             <tbody>
-              {monthSummary.map(item => (
-                <tr key={item.className} className="border-t border-slate-100">
-                  <td className="px-3 py-2 font-black text-slate-800">{getClassFilterLabel(item.className)}</td>
-                  <td className="px-3 py-2 text-center font-black text-blue-700">{item.students}</td>
-                  <td className="px-3 py-2 text-center font-black text-amber-700">{item.cp}</td>
-                  <td className="px-3 py-2 text-center font-black text-rose-700">{item.kp}</td>
-                  <td className="px-3 py-2 text-center font-black text-slate-800">{item.total}</td>
-                </tr>
-              ))}
-              <tr className="border-t-2 border-slate-200 bg-slate-50">
-                <td className="px-3 py-2 font-black text-slate-900">Tổng</td>
-                <td className="px-3 py-2 text-center font-black text-blue-800">{monthSummary.reduce((sum, item) => sum + item.students, 0)}</td>
-                <td className="px-3 py-2 text-center font-black text-amber-800">{monthSummary.reduce((sum, item) => sum + item.cp, 0)}</td>
-                <td className="px-3 py-2 text-center font-black text-rose-800">{monthSummary.reduce((sum, item) => sum + item.kp, 0)}</td>
-                <td className="px-3 py-2 text-center font-black text-slate-900">{monthSummary.reduce((sum, item) => sum + item.total, 0)}</td>
-              </tr>
+              {!rowsWithStats.length ? <tr><td colSpan={(reportMode === 'month' ? days.length : reportMonths.length * 2) + 5} className="py-8 text-center text-slate-400">Chưa có học sinh trong khối đang chọn.</td></tr> : rowsWithStats.map((row, rowIndex) => <tr key={row.student.id || row.student.fullName + '-' + row.student.birthDate} className={rowIndex % 2 ? 'bg-slate-50' : 'bg-white'}>
+                <td className="attendance-name-cell" title={row.student.fullName + (row.student.accessCode ? ' · ' + row.student.accessCode : '')}>
+                  <div className="flex min-w-0 items-center gap-2">
+                    {showPortraits && <div className="h-8 w-7 shrink-0 overflow-hidden rounded border border-slate-200 bg-white text-center text-sky-700"><AttendanceAvatar student={row.student} /></div>}
+                    <div className="min-w-0"><div className="truncate text-slate-700">{row.student.fullName || '(Chưa có tên)'}</div>{showPortraits && <div className="truncate text-[10px] text-slate-400">{row.student.accessCode || ''}</div>}</div>
+                  </div>
+                </td>
+                <td className="attendance-class-cell text-slate-600">{row.className || '-'}</td>
+                {reportMode === 'month' ? days.map(date => {
+                  const status = row.statuses[toDateKey(date)] || '';
+                  return <td key={toDateKey(date)} className="p-0 text-center"><button type="button" onClick={() => cycleAttendance(row, date)} disabled={attendanceLoadedYear !== currentSchoolYear} aria-label={row.student.fullName + ', ' + formatVietnamDateKey(toDateKey(date)) + ': ' + (status === 'CP' ? 'Có phép' : status === 'KP' ? 'Không phép' : 'Đi học')} title="Nhấn để đổi: đi học → có phép → không phép" className={'attendance-day-button ' + (status === 'CP' ? 'bg-amber-50 text-amber-700' : status === 'KP' ? 'bg-rose-50 text-rose-700' : 'text-slate-300')}>{status || '-'}</button></td>;
+                }) : reportMonths.map(month => {
+                  const stats = row.monthStats[month.year + '-' + month.month] || { cp: 0, kp: 0 };
+                  return <React.Fragment key={month.year + '-' + month.month}><td className="text-center text-amber-700">{stats.cp}</td><td className="text-center text-rose-700">{stats.kp}</td></React.Fragment>;
+                })}
+                <td className="text-center text-amber-700">{row.cp}</td><td className="text-center text-rose-700">{row.kp}</td><td className="text-center text-slate-700">{row.cp + row.kp}</td>
+              </tr>)}
             </tbody>
           </table>
-        </div>}
+        </div>
+        {showAttendanceStats && <section className="max-h-[35%] shrink-0 overflow-auto rounded-md border border-slate-200" aria-label="Thống kê điểm danh">
+          <div className="border-b border-slate-200 bg-slate-50 px-3 py-1.5 text-xs text-slate-600">Thống kê {reportMode === 'month' ? selectedMonth.label : reportMode === 'hk1' ? 'học kỳ 1' : reportMode === 'hk2' ? 'học kỳ 2' : 'cả năm'}</div>
+          <table className="w-full text-xs">
+            <thead><tr className="bg-slate-50 text-slate-500"><th className="px-3 py-1.5 text-left font-normal">Lớp</th><th className="font-normal">Học sinh</th><th className="font-normal">CP</th><th className="font-normal">KP</th><th className="font-normal">Tổng vắng</th></tr></thead>
+            <tbody>{monthSummary.map(item => <tr key={item.className} className="border-t border-slate-100"><td className="px-3 py-1.5">{getClassFilterLabel(item.className)}</td><td className="text-center">{item.students}</td><td className="text-center text-amber-700">{item.cp}</td><td className="text-center text-rose-700">{item.kp}</td><td className="text-center">{item.total}</td></tr>)}</tbody>
+            <tfoot><tr className="border-t border-slate-200 bg-slate-50"><td className="px-3 py-1.5">Tổng</td><td className="text-center">{monthSummary.reduce((sum, item) => sum + item.students, 0)}</td><td className="text-center text-amber-700">{monthSummary.reduce((sum, item) => sum + item.cp, 0)}</td><td className="text-center text-rose-700">{monthSummary.reduce((sum, item) => sum + item.kp, 0)}</td><td className="text-center">{monthSummary.reduce((sum, item) => sum + item.total, 0)}</td></tr></tfoot>
+          </table>
+        </section>}
+        <div className="flex shrink-0 flex-wrap gap-x-4 gap-y-1 px-1 text-[11px] text-slate-500"><span><span className="text-amber-700">CP</span>: Có phép</span><span><span className="text-rose-700">KP</span>: Không phép</span><span>Nhấn ô để đổi: đi học → CP → KP.</span></div>
       </div>
     </div>
   );
@@ -610,6 +490,7 @@ function AdminAttendanceStaticTable({ currentSchoolYear = '', students = [], cla
 export default function ClassOpsManager(props) {
   const mode = props.mode || 'admin';
   const initialView = props.initialView || 'attendance';
+  if (mode === 'monitor') return <ClassMonitorAttendance {...props} />;
   if (mode === 'admin' && initialView === 'attendance') {
     return <AdminAttendanceStaticTable
       currentSchoolYear={props.currentSchoolYear}
@@ -656,6 +537,7 @@ function InteractiveClassOpsManager({
   const [weekAnchor, setWeekAnchor] = useState(new Date());
   const [records, setRecords] = useState({});
   const [attendanceDocs, setAttendanceDocs] = useState([]);
+  const [attendanceLoadedYear, setAttendanceLoadedYear] = useState('');
   const attendanceSavesRef = useRef(new Set());
   const [statsClass, setStatsClass] = useState('all');
   const [mobileStatsMode, setMobileStatsMode] = useState('week');
@@ -721,22 +603,20 @@ function InteractiveClassOpsManager({
 
   useEffect(() => {
     if (SCOPED_AUTH_ENABLED && !isAdmin) return undefined;
-    if (!activeClass || !selectedDate) return undefined;
-    const attendanceId = `${currentSchoolYear}_${selectedDate}_K${activeClass}`;
-    const ref = doc(db, 'artifacts', appId, 'public', 'data', 'class_attendance', attendanceId);
-    return onSnapshot(ref, snapshot => {
-      setRecords(snapshot.exists() ? (snapshot.data().records || {}) : {});
-    });
-  }, [activeClass, currentSchoolYear, selectedDate, isAdmin]);
+    setRecords(attendanceDocs.find(item => item.schoolYear === currentSchoolYear && item.date === selectedDate
+      && item.className === activeClass && getStudentSchoolCode(item) === activeSchoolCode)?.records || {});
+  }, [activeClass, activeSchoolCode, attendanceDocs, currentSchoolYear, selectedDate, isAdmin]);
 
   useEffect(() => {
     if (SCOPED_AUTH_ENABLED && !isAdmin) return undefined;
     const ref = query(collection(db, 'artifacts', appId, 'public', 'data', 'class_attendance'), where('schoolYear', '==', currentSchoolYear));
     setAttendanceDocs([]);
+    setAttendanceLoadedYear('');
     return onSnapshot(ref, snapshot => {
       setAttendanceDocs(snapshot.docs
         .map(item => ({ ...item.data(), id: item.id }))
         .filter(item => String(item.schoolYear || '') === String(currentSchoolYear || '')));
+      setAttendanceLoadedYear(currentSchoolYear);
     });
   }, [currentSchoolYear, isAdmin]);
 
@@ -871,7 +751,8 @@ function InteractiveClassOpsManager({
   };
 
   const updateAttendance = async (student, status, dateKey = selectedDate) => {
-    const documentId = currentSchoolYear + '_' + dateKey + '_K' + activeClass;
+    if (!(SCOPED_AUTH_ENABLED && !isAdmin) && attendanceLoadedYear !== currentSchoolYear) { showNotification?.('Đang tải điểm danh. Vui lòng thử lại sau.', 'error'); return; }
+    const documentId = attendanceDocumentId(attendanceDocs, { schoolYear: currentSchoolYear, schoolCode: activeSchoolCode, className: activeClass, date: dateKey });
     const key = documentId + '/' + student.id;
     if (attendanceSavesRef.current.has(key)) return;
     attendanceSavesRef.current.add(key);

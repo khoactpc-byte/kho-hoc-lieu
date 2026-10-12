@@ -90,6 +90,72 @@ test('address lookups keep one-column legacy commune lists and do not cache miss
   assert.equal(subject.context.getBirthPlaceProvince('Tỉnh A').success, true);
 });
 
+test('public registration rejects missing birth locations before accessing Data or uploading files', () => {
+  const { context } = server();
+  context.SpreadsheetApp = { openById() { throw new Error('Unexpected Sheet access'); } };
+  context.DriveApp = { getFolderById() { throw new Error('Unexpected upload'); } };
+  const location = { birthProvince: 'Tỉnh A', birthDistrict: 'Huyện 1', birthWard: 'Xã Ánh' };
+  for (const [key, label] of [['birthProvince', 'tỉnh/thành phố'], ['birthDistrict', 'huyện/quận'], ['birthWard', 'xã/phường']]) {
+    for (const value of ['', '   ', undefined, null, ['Tỉnh A']]) {
+      const result = context.processForm({ ...location, [key]: value }, {});
+      assert.equal(result.success, false);
+      assert.ok(result.message.includes(label), `${key} must identify the missing field`);
+      assert.doesNotMatch(result.message, /Unexpected/);
+    }
+  }
+  assert.equal(context.processForm(null, {}).success, false);
+});
+
+test('public registration validates province/district/ward relationships against tinhhuyenxa before saving', () => {
+  const { context } = server();
+  context.DriveApp = { getFolderById() { throw new Error('Unexpected upload'); } };
+  for (const location of [
+    { birthProvince: 'Tỉnh Không Có', birthDistrict: 'Huyện 1', birthWard: 'Xã Ánh' },
+    { birthProvince: 'Tỉnh A', birthDistrict: 'Huyện B', birthWard: 'Xã Bình' },
+    { birthProvince: 'Tỉnh A', birthDistrict: 'Huyện 1', birthWard: 'Xã Ba' }
+  ]) {
+    const result = context.processForm(location, {});
+    assert.equal(result.success, false);
+    assert.match(result.message, /chọn lại/);
+    assert.doesNotMatch(result.message, /Unexpected/);
+  }
+  const unavailable = server({});
+  const result = unavailable.context.processForm({ birthProvince: 'Tỉnh A', birthDistrict: 'Huyện 1', birthWard: 'Xã Ánh' }, {});
+  assert.equal(result.success, false);
+  assert.match(result.message, /kiểm tra được danh mục nơi sinh/);
+});
+
+test('validated registration writes and reads birth locations in AN/AO/AP without substituting other provinces', () => {
+  const { context } = server();
+  context.getBirthPlaceProvince('Tỉnh A'); // Warm the real directory before replacing the Data-sheet adapter.
+  const written = [];
+  const sheet = { appendRow: row => written.push(row), getLastRow: () => written.length + 1 };
+  context.SpreadsheetApp = { openById: () => ({ getSheetByName: () => sheet }), flush() {} };
+  context.Session = { getScriptTimeZone: () => 'Asia/Ho_Chi_Minh' };
+  context.Utilities.formatDate = date => date.toISOString();
+  context.DriveApp = { getFolderById: () => ({}) };
+  context.LockService = { getScriptLock: () => ({ waitLock() {}, releaseLock() {} }) };
+  context.ensureExtraHeaders_ = context.writeRegistrationSchoolMeta_ = context.writeSchoolYearClass_ = () => {};
+  context.hasExistingIdentity_ = () => false;
+  context.saveFiles_ = context.saveHocBaFiles_ = () => '';
+  const result = context.processForm({ coSoHoc: 'nguyen-an-ninh', tinhTrangHocSinh: '2025-2026', lopHoc: '6A',
+    maDinhDanh: '123456789012', hoVaTen: 'Nguyễn Văn An', tinhThanh: 'Tỉnh Đang Ở', tinhThanhHK: 'Tỉnh Thường Trú',
+    hometownProvince: 'Tỉnh Quê Quán', birthProvince: ' Tỉnh A ', birthDistrict: ' Huyện 1 ', birthWard: ' Xã Ánh ' }, {});
+  assert.equal(result.success, true);
+  assert.equal(written.length, 1);
+  assert.equal(written[0][7], '2025-2026', 'H keeps the enrollment year');
+  assert.equal(written[0][52], '2025-2026', 'BA starts with the same year, rather than remaining empty');
+  assert.deepEqual(Array.from(written[0].slice(39, 42)), ['Tỉnh A', 'Huyện 1', 'Xã Ánh']);
+  const mapped = context.mapStudentSheetRow_(written[0], 0, []);
+  assert.equal(mapped.birthProvince, 'Tỉnh A');
+  assert.equal(mapped.birthDistrict, 'Huyện 1');
+  assert.equal(mapped.birthWard, 'Xã Ánh');
+  assert.equal(mapped.province, 'Tỉnh Đang Ở');
+  const legacy = [...written[0]];
+  legacy[39] = legacy[40] = legacy[41] = '';
+  assert.equal(context.mapStudentSheetRow_(legacy, 0, []).birthProvince, '', 'missing data must not be guessed from address or birthplace free text');
+});
+
 async function form(cached) {
   const dom = new JSDOM(html, { url: 'https://registration.test/', runScripts: 'outside-only' });
   const window = dom.window, calls = [];
@@ -117,6 +183,90 @@ const bootstrap = revision => ({ success: true, revision: revision || 'locations
   config: { currentSchoolYear: '2025-2026', schools: [{ key: 'nguyen-an-ninh', name: 'THCS Nguyễn An Ninh', suffix: 'A' }] } });
 const bundle = province => ({ success: true, province, revision: 'locations-v2:1', districts: [`Huyện ${province}`],
   communesByDistrict: { [`${province}|||Huyện ${province}`]: [`Xã ${province}`] } });
+
+test('registration accepts only the configured year and rechecks it after uploads', () => {
+  const { context, properties } = server();
+  context.getBirthPlaceProvince('Tỉnh A');
+  properties.set('CURRENT_SCHOOL_YEAR', '2026-2027');
+  const written = [], history = [];
+  let uploads = 0, locked = false, changeYearDuringUpload = false;
+  const sheet = { appendRow: row => written.push(row), getLastRow: () => written.length + 1 };
+  context.SpreadsheetApp = { openById: () => ({ getSheetByName: () => sheet }), flush() {} };
+  context.ensureExtraHeaders_ = context.writeRegistrationSchoolMeta_ = () => {};
+  context.writeSchoolYearClass_ = (_sheet, _row, year, className) => history.push({ year, className });
+  context.hasExistingIdentity_ = () => false;
+  context.DriveApp = { getFolderById: () => { uploads++; return {}; } };
+  context.saveFiles_ = context.saveHocBaFiles_ = () => {
+    if (changeYearDuringUpload) properties.set('CURRENT_SCHOOL_YEAR', '2027-2028');
+    return '';
+  };
+  context.LockService = { getScriptLock: () => ({ waitLock() { locked = true; }, releaseLock() { locked = false; } }) };
+  const input = { coSoHoc: 'nguyen-an-ninh', tinhTrangHocSinh: '2026-2027', lopHoc: '9A',
+    maDinhDanh: '123456789012', hoVaTen: 'Học sinh thử', birthProvince: 'Tỉnh A', birthDistrict: 'Huyện 1', birthWard: 'Xã Ánh' };
+  for (const year of ['2025-2026', '2027-2028']) {
+    const result = context.processForm({ ...input, tinhTrangHocSinh: year }, {});
+    assert.equal(result.success, false);
+    assert.match(result.message, /chỉ nhận đăng ký năm 2026-2027/);
+  }
+  assert.equal(uploads, 0);
+  assert.equal(context.processForm(input, {}).success, true);
+  assert.equal(written[0][7], '2026-2027');
+  assert.equal(written[0][52], '2026-2027');
+  assert.deepEqual(history, [{ year: '2026-2027', className: '9A' }]);
+  changeYearDuringUpload = true;
+  const stale = context.processForm(input, {});
+  assert.equal(stale.success, false);
+  assert.match(stale.message, /Năm học vừa thay đổi/);
+  assert.equal(written.length, 1, 'stale forms cannot create a row after admin changes the year');
+  assert.equal(locked, false);
+  assert.throws(() => context.assertStudentSchoolYear_({ schoolYear: '2025-2026', enrollmentYear: '2026-2027' }), /trước năm nhập học/);
+});
+
+test('public form selects the admin year and never offers other years', async () => {
+  const subject = await form(), { calls, element, window } = subject;
+  try {
+    const config = { ...bootstrap().config, currentSchoolYear: '2026-2027' };
+    calls[0].resolve({ ...bootstrap(), config }); await flush();
+    assert.deepEqual([...element('tinhTrangHocSinh').options].map(option => option.value), ['2026-2027']);
+    assert.equal(element('tinhTrangHocSinh').value, '2026-2027');
+    assert.equal(new window.FormData(element('myForm')).get('tinhTrangHocSinh'), '2026-2027');
+    window.renderRegistrationConfig({ ...config, currentSchoolYear: '2027-2028' });
+    assert.equal(element('tinhTrangHocSinh').value, '2027-2028', 'refreshing config replaces a stale selection');
+  } finally { subject.dom.window.close(); }
+});
+
+test('birth location inputs are required and submitted values stay fixed while images are being prepared', async () => {
+  const subject = await form(), { calls, element, change, window } = subject;
+  try {
+    calls[0].resolve(bootstrap()); await flush();
+    for (const id of ['birthProvince', 'birthDistrict', 'birthWard']) assert.equal(element(id).required, true);
+    assert.equal(element('birthProvince').checkValidity(), false);
+    change('coSoHoc', 'nguyen-an-ninh');
+    change('lopHoc', '6A');
+    change('tinhTrangHocSinh', '2025-2026');
+    change('birthProvince', 'Tỉnh A', 'input');
+    calls.find(call => call.method === 'getBirthPlaceProvince').resolve(bundle('Tỉnh A')); await flush();
+    change('birthDistrict', 'Huyện Tỉnh A');
+    change('birthWard', 'Xã Tỉnh A');
+    assert.equal(element('birthProvince').checkValidity(), true);
+    // Other unrelated mandatory fields/file controls are outside this async snapshot regression.
+    element('myForm').checkValidity = () => true;
+    element('myForm').querySelectorAll(':disabled').forEach(input => { input.disabled = false; });
+    window.validateIdentityCode = window.validateHocBaFiles = () => '';
+    let finishImages;
+    window.readFilesFromInput = input => input.id === 'anhKhaiSinh' ? new Promise(resolve => { finishImages = resolve; }) : Promise.resolve([]);
+    window.handleFormSubmit({ preventDefault() {} });
+    assert.equal(element('submitButton').disabled, true);
+    assert.equal(calls.some(call => call.method === 'processForm'), false);
+    change('birthProvince', '', 'input');
+    finishImages([]); await flush();
+    const submitted = calls.find(call => call.method === 'processForm');
+    assert.ok(submitted);
+    assert.equal(submitted.args[0].birthProvince, 'Tỉnh A');
+    assert.equal(submitted.args[0].birthDistrict, 'Huyện Tỉnh A');
+    assert.equal(submitted.args[0].birthWard, 'Xã Tỉnh A');
+  } finally { subject.dom.window.close(); }
+});
 
 test('all three province pickers show one menu and accept unaccented search, keyboard and pointer selection', async () => {
   const subject = await form(), { calls, element, change, window } = subject;

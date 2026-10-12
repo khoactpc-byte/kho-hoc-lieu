@@ -37,6 +37,14 @@ Tren may moi, can lay lai bo Apps Script tu ban luu rieng de chay kiem thu/cu ph
 
 Chi tiet nhan dien hai du an, Script Properties va cac buoc kiem tra sau trien khai nam trong [huong dan Apps Script](./HUONG_DAN_CAP_NHAT_APPS_SCRIPT.md). Cau hinh bao mat nam trong [SECURITY_SETUP.md](./SECURITY_SETUP.md).
 
+## Thời khóa biểu khi chưa phân công giáo viên
+
+Trong **Thời khóa biểu**, bật nút **Không phụ thuộc giáo viên** rồi bấm **Xếp tự động**. Các ô chọn chỉ gợi ý môn; hệ thống xếp theo định mức tiết, giữ nguyên các ô đã nhập và ô nghỉ, không xét lịch giáo viên. Vẫn có thể lưu, ghim hoặc xuất thời khóa biểu; thiếu hoặc dư số tiết vẫn bị chặn khi ghim.
+
+Chế độ được lưu cùng từng bản thời khóa biểu. Khi đã có phân công, tắt nút để chọn giáo viên và kiểm tra trùng lịch; việc bật/tắt không tự xóa thông tin đã nhập. Bản cũ và bản soạn mới mặc định dùng chế độ có giáo viên. Tính năng này chỉ cần cập nhật website, không cần cập nhật Apps Script.
+
+Nút **Cài đặt** cho phép chọn thứ nghỉ và số tiết riêng từng ngày, hoặc đặt cùng số tiết cho các ngày dạy. Ví dụ nghỉ thứ Bảy và dạy 4 tiết/ngày: xếp tự động chỉ dùng thứ Hai đến thứ Sáu, tối đa 4 tiết; không tự mở thứ Bảy hay tăng thành 5 tiết. Nếu thiếu chỗ, hệ thống báo để điều chỉnh cài đặt. Giảm giới hạn khi đã có tiết học sẽ hỏi xác nhận trước khi xóa các tiết ngoài giới hạn khỏi bản đang soạn. Cài đặt được lưu cùng từng thời khóa biểu và được khôi phục khi mở lại.
+
 ## Sao luu va phuc hoi
 
 Admin vao **Tien ich > An toan du lieu**:

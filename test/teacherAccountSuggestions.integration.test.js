@@ -50,6 +50,14 @@ test('account form changes campus suggestions, accepts unaccented input and pres
     const click = async element => act(async () => element.dispatchEvent(new windowObject.MouseEvent('click', { bubbles: true })));
     const key = async value => act(async () => input().dispatchEvent(new windowObject.KeyboardEvent('keydown', { key: value, bubbles: true, cancelable: true })));
 
+    await click(windowObject.document.querySelector('button[aria-label="Đặt lại mật khẩu cho Tên hiện tại"]'));
+    assert.equal(username(), 'login_giu_nguyen');
+    assert.equal(password().value, '');
+    assert.equal(password().required, false);
+    assert.equal(windowObject.document.activeElement, password(), 'the reset button should focus the new password field');
+    assert.equal(requests.length, 1, 'opening password reset must not send any account mutation');
+    await click([...windowObject.document.querySelectorAll('form button')].find(item => item.textContent === 'Tạo mới'));
+
     assert.equal(password().value, '123456');
     assert.equal(password().type, 'text');
     assert.equal(password().minLength, 6);

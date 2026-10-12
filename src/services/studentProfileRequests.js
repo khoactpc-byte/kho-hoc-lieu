@@ -1,9 +1,9 @@
-import { collection, doc, setDoc, deleteDoc, addDoc } from 'firebase/firestore';
-import { db, appId } from '../config/firebase';
 import { SCOPED_AUTH_ENABLED } from './scopedIdentity';
 import { requestPrivateApi } from './serverQuizClient';
 import { postAppsScript } from '../utils/helpers';
 import { studentUploadMime, readFileBase64 } from '../utils/fileUpload';
+import { assertNoPendingProfileRequest, createPendingProfileRequest } from './profileRequestGate';
+import { PROFILE_REQUEST_PENDING_MESSAGE } from '../utils/profileRequestPolicy';
 
 export async function submitStudentProfileChange({ activeStudentProfile, isSubmittingProfileRequest, activeStudentIsReadOnly, showNotification, activeStudentReadOnlyReason, studentRequestScopeRef, setIsSubmittingProfileRequest, STUDENT_PROFILE_IMAGE_FIELDS, studentProfileImages, studentProfileDocumentOverrides, activeStudentPendingProfileChanges, studentProfileImageAppendModes, studentProfileEditableFields, normalizeStudentResultRating, studentProfileDraft, activeStudentPendingProfileRequests, currentSchoolYear, setShowStudentProfileModal, IMAGE_DRIVE_FOLDER_ID }) {
   const fileToBase64Payload = async (file, field = {}) => {
@@ -18,6 +18,10 @@ export async function submitStudentProfileChange({ activeStudentProfile, isSubmi
   };
 
     if (!activeStudentProfile?.id || isSubmittingProfileRequest) return;
+    if (activeStudentPendingProfileRequests.length > 0) {
+      showNotification(PROFILE_REQUEST_PENDING_MESSAGE, 'error');
+      return;
+    }
     if (activeStudentIsReadOnly) {
       showNotification(activeStudentReadOnlyReason || 'Hồ sơ này đang ở chế độ chỉ xem.', 'error');
       return;
@@ -26,6 +30,8 @@ export async function submitStudentProfileChange({ activeStudentProfile, isSubmi
     if (!request) return;
     setIsSubmittingProfileRequest(true);
     try {
+      await assertNoPendingProfileRequest(activeStudentProfile.id);
+      if (!studentRequestScopeRef.current.isCurrent(request)) return;
       const uploadedImageChanges = {};
       for (const field of STUDENT_PROFILE_IMAGE_FIELDS) {
         const imageFiles = Array.isArray(studentProfileImages[field.key])
@@ -82,7 +88,7 @@ export async function submitStudentProfileChange({ activeStudentProfile, isSubmi
         if (nextValue !== currentValue) changes[field.key] = nextValue;
       });
       if (Object.keys(changes).length === 0) {
-        showNotification(activeStudentPendingProfileRequests.length > 0 ? 'Yêu cầu của em đang chờ admin duyệt rồi.' : 'Chưa có thông tin nào thay đổi.', 'error');
+        showNotification('Chưa có thông tin nào thay đổi.', 'error');
         return;
       }
       const requestPayload = {
@@ -91,34 +97,20 @@ export async function submitStudentProfileChange({ activeStudentProfile, isSubmi
         accessCode: activeStudentProfile.accessCode || '',
         className: activeStudentProfile.className || '',
         schoolYear: activeStudentProfile.schoolYear || currentSchoolYear,
-        changes: {
-          ...activeStudentPendingProfileChanges,
-          ...changes
-        },
+        changes,
         status: 'pending',
         updatedAt: Date.now()
       };
-      const existingRequest = activeStudentPendingProfileRequests[0];
       if (SCOPED_AUTH_ENABLED) {
         await requestPrivateApi('data', 'profileRequest', { changes: requestPayload.changes }, { signal: request.signal });
-      } else if (existingRequest?.id) {
-        await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'student_profile_requests', existingRequest.id), {
-          ...requestPayload,
-          createdAt: existingRequest.createdAt || Date.now()
-        }, { merge: true });
-        if (!studentRequestScopeRef.current.isCurrent(request)) return;
-        await Promise.all(activeStudentPendingProfileRequests.slice(1).map(request => (
-          request.id ? deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'student_profile_requests', request.id)) : Promise.resolve()
-        )));
       } else {
-        await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'student_profile_requests'), {
-          ...requestPayload,
-          createdAt: Date.now()
-        });
+        await assertNoPendingProfileRequest(activeStudentProfile.id);
+        if (!studentRequestScopeRef.current.isCurrent(request)) return;
+        await createPendingProfileRequest(requestPayload);
       }
       if (!studentRequestScopeRef.current.isCurrent(request)) return;
       setShowStudentProfileModal(false);
-      showNotification(existingRequest?.id ? 'Đã cập nhật yêu cầu đang chờ duyệt.' : 'Đã gửi yêu cầu sửa hồ sơ. Admin duyệt xong mới cập nhật.');
+      showNotification('Đã gửi yêu cầu chỉnh sửa hồ sơ. Vui lòng chờ quản trị viên duyệt trước khi gửi chỉnh sửa mới.');
     } catch (error) {
       if (studentRequestScopeRef.current.isCurrent(request)) showNotification(`Chưa gửi được yêu cầu sửa: ${error.message}`, 'error');
     } finally {

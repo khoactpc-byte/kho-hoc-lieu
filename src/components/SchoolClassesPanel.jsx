@@ -29,6 +29,7 @@ const getPreviousConfiguredYear = (allYears = {}, selectedYear = '') => {
 };
 
 export default function SchoolClassesPanel({
+  allowedGrades = SCHOOL_GRADES,
   selectedSchoolYear = '',
   classesByYear = {},
   onSaveSetting,
@@ -48,7 +49,7 @@ export default function SchoolClassesPanel({
   }, [savedForYear]);
 
   const isDirty = JSON.stringify(draft) !== JSON.stringify(savedForYear);
-  const totalClasses = SCHOOL_GRADES.reduce((sum, grade) => sum + (draft[grade]?.length || 0), 0);
+  const totalClasses = allowedGrades.reduce((sum, grade) => sum + (draft[grade]?.length || 0), 0);
   const previousYear = getPreviousConfiguredYear(classesByYear, yearKey);
 
   const setClassCount = (grade, rawCount) => {
@@ -98,15 +99,16 @@ export default function SchoolClassesPanel({
 
   const copyPreviousYear = () => {
     if (!previousYear) return;
-    setDraft(normalizeSchoolClassesByGrade(classesByYear?.[previousYear]));
+    const previous = normalizeSchoolClassesByGrade(classesByYear?.[previousYear]);
+    setDraft(current => ({ ...current, ...Object.fromEntries(allowedGrades.map(grade => [grade, previous[grade]])) }));
     showNotification?.(`Đã sao chép danh sách lớp từ năm ${previousYear}. Hãy bấm Lưu để xác nhận.`);
   };
 
   const save = async () => {
-    const cleaned = normalizeSchoolClassesByGrade(draft);
-    const allNames = SCHOOL_GRADES.flatMap(grade => cleaned[grade]);
+    const cleaned = { ...savedForYear, ...Object.fromEntries(allowedGrades.map(grade => [grade, normalizeSchoolClassesByGrade(draft)[grade]])) };
+    const allNames = allowedGrades.flatMap(grade => cleaned[grade]);
     const duplicateNames = allNames.filter((name, index) => allNames.indexOf(name) !== index);
-    const wrongGrade = SCHOOL_GRADES.flatMap(grade => cleaned[grade].filter(name => !name.startsWith(grade)));
+    const wrongGrade = allowedGrades.flatMap(grade => cleaned[grade].filter(name => !name.startsWith(grade)));
     if (duplicateNames.length) {
       showNotification?.(`Tên lớp bị trùng: ${[...new Set(duplicateNames)].join(', ')}.`, 'error');
       return;
@@ -139,7 +141,7 @@ export default function SchoolClassesPanel({
               <Layers className="h-4 w-4" /> Cài đặt theo năm học
             </div>
             <div className="mt-0.5 text-lg font-semibold text-slate-950">Lớp học năm {yearKey || 'chưa chọn'}</div>
-            <div className="mt-1 text-xs text-slate-500">Đang có {totalClasses} lớp từ khối 1 đến khối 9.</div>
+            <div className="mt-1 text-xs text-slate-500">Đang có {totalClasses} lớp từ khối {allowedGrades[0]} đến khối {allowedGrades.at(-1)}.</div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             {previousYear && (
@@ -169,7 +171,7 @@ export default function SchoolClassesPanel({
           <div>Số lớp</div>
           <div>Tên các lớp</div>
         </div>
-        {SCHOOL_GRADES.map(grade => {
+        {allowedGrades.map(grade => {
           const rows = draft[grade] || [];
           return (
             <div key={`school-grade-${grade}`} className="grid gap-2 border-b border-slate-100 px-3 py-2.5 last:border-b-0 md:grid-cols-[90px_170px_minmax(0,1fr)] md:items-start">

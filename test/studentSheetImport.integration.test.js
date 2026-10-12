@@ -1,0 +1,107 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { build } from 'esbuild';
+import React, { act } from 'react';
+import { JSDOM } from 'jsdom';
+
+test('Sheet import shows real progress, retains assigned classes and reports partial failures persistently', async () => {
+  const directory = await mkdtemp(resolve('node_modules/.student-import-test-'));
+  const dom = new JSDOM('<div id="root"></div>', { url: 'http://localhost' });
+  const previous = Object.fromEntries(['window', 'document', 'localStorage', 'IS_REACT_ACT_ENVIRONMENT'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { window: dom.window, document: dom.window.document, localStorage: dom.window.localStorage, IS_REACT_ACT_ENVIRONMENT: true });
+  let root;
+  try {
+    const outfile = join(directory, 'manager.mjs');
+    await build({ entryPoints: [resolve('src/components/HocSinhManager.jsx')], absWorkingDir: resolve('.'), tsconfigRaw: {}, outfile, bundle: true, platform: 'node', format: 'esm', packages: 'external', jsx: 'automatic',
+      plugins: [{ name: 'offline-import', setup(builder) {
+        builder.onResolve({ filter: /^firebase\/firestore$|config\/firebase$|utils\/helpers$|services\/(studentMutations|jsonpClient)$/ }, args => ({ path: args.path, namespace: 'fixture' }));
+        builder.onLoad({ filter: /.*/, namespace: 'fixture' }, args => {
+          let contents;
+          if (args.path === 'firebase/firestore') contents = 'export const collection=(...a)=>a.join("/"); export const doc=collection; export const query=ref=>ref; export const where=(...a)=>a; export const onSnapshot=(_ref,next)=>{next({docs:[]}); return ()=>{};}; export const setDoc=async()=>{throw new Error("Unexpected write");}; export const deleteDoc=setDoc;';
+          else if (args.path.endsWith('config/firebase')) contents = 'export const db={}; export const appId="fixture";';
+          else if (args.path.endsWith('utils/helpers')) contents = 'export const postAppsScript=(...a)=>window.fixture.post(...a); export const IMAGE_DRIVE_FOLDER_ID="fixture";';
+          else if (args.path.endsWith('services/jsonpClient')) contents = 'export const requestJsonp=async()=>({success:true,provinces:[],communes:{}});';
+          else contents = 'export const saveStudentRecord=(...a)=>window.fixture.save(...a); export const deleteStudentRecord=async()=>{throw new Error("Unexpected deletion");}; export const retryStudentSync=async()=>{}; export const retryPendingStudentSync=async()=>{};';
+          return { contents, loader: 'js' };
+        });
+      } }] });
+    const { default: Manager } = await import(pathToFileURL(outfile));
+    const { createRoot } = await import('react-dom/client');
+    let finishRead, finishSave, reads = 0;
+    const writes = [];
+    dom.window.confirm = () => true;
+    dom.window.fixture = {
+      post: () => { reads += 1; return new Promise(resolveRead => { finishRead = resolveRead; }); },
+      save: student => {
+        writes.push(student);
+        if (student.id === 'failed') throw new Error('Lỗi lưu thử nghiệm');
+        return new Promise(resolveSave => { finishSave = () => resolveSave(student); });
+      }
+    };
+    const students = ['updated', 'same', 'failed'].map((id, index) => ({ id, fullName: ['An', 'Bình', 'Chi'][index], birthDate: '01/01/2010',
+      accessCode: `HS2560${index + 1}`, className: '7A', grade: '7', entryGrade: '6', enrollmentYear: '2025-2026', schoolYear: '2026-2027', schoolCode: 'NAN', phone: '0900000000', hocLucLop6: 'Đạt' }));
+    const restoreSource = { id: 'restore-source', fullName: 'Dũng', accessCode: 'HS25699', studentKey: 'HS25699', className: '6A', entryGrade: '6', enrollmentYear: '2025-2026', schoolYear: '2025-2026', schoolCode: 'NAN' };
+    students.push(restoreSource, { ...restoreSource, id: 'restore-target', previousStudentId: restoreSource.id, schoolYear: '2026-2027',
+      promotion: { sourceSchoolYear: '2025-2026', targetSchoolYear: '2026-2027', sourceClassName: '6A', targetClassName: '7A', outcome: 'promote', academicResult: 'Đạt' } });
+    const document = dom.window.document;
+    const button = label => [...document.querySelectorAll('button')].find(element => element.getAttribute('aria-label') === label || element.textContent.trim() === label);
+    const click = element => act(async () => { assert.ok(element, 'expected button'); element.click(); });
+    const status = () => document.querySelector('[aria-label="Kết quả cập nhật từ Sheet"]');
+    root = createRoot(document.getElementById('root'));
+    await act(async () => root.render(React.createElement(Manager, { students, currentSchoolYear: '2026-2027', educationLevel: 'thcs', user: { uid: 'admin' } })));
+    const start = async () => {
+      await click(button('Tiện ích'));
+      await click(button('Cập nhật hồ sơ từ Sheet'));
+    };
+    await start();
+    assert.match(status().textContent, /Đang đọc hồ sơ từ Sheet/);
+    assert.equal(reads, 1);
+    await click(button('Tiện ích'));
+    assert.equal(button('Cập nhật hồ sơ từ Sheet').disabled, true, 'a pending import cannot start twice');
+    await click(button('Đóng bảng tiện ích'));
+    const sheetRow = (student, patch = {}) => ({ ...student, currentClassName: '6A', className: '6A', ...patch });
+    await act(async () => finishRead({ result: { success: true, items: [sheetRow(students[0], { phone: '0911111111', hocLucLop6: 'Tốt' }),
+      sheetRow(students[1]), sheetRow(students[2], { phone: '0922222222' }), { fullName: 'Không khớp', birthDate: '02/01/2010', currentClassName: '6A' }] } }));
+    assert.match(status().textContent, /Đang xử lý 0\/4/);
+    assert.equal(writes.length, 1);
+    assert.equal(writes[0].className, '7A'); assert.equal(writes[0].grade, '7');
+    assert.equal(writes[0].hocLucLop6, 'Đạt', 'Sheet cannot replace centre academic results');
+    assert.equal(writes[0].entryGrade, '6');
+    await act(async () => finishSave());
+    assert.match(status().textContent, /Cập nhật chưa hoàn tất/);
+    assert.match(status().textContent, /Đã sửa 1 · Không đổi 1 · Bỏ qua 1 · Lỗi 1 · Giữ lớp khác Sheet 3/);
+    assert.match(status().textContent, /Lỗi lưu thử nghiệm/);
+    assert.ok(status().querySelector('details'), 'the completion details remain after the menu closes');
+    await click(button('Đóng kết quả cập nhật'));
+    assert.equal(status(), null);
+    await start();
+    await act(async () => finishRead({ result: { success: false, message: 'Không đọc được Sheet' } }));
+    assert.match(status().textContent, /Cập nhật chưa hoàn tất/);
+    assert.match(status().textContent, /Không đọc được Sheet/);
+    await start();
+    await act(async () => finishRead({ result: { success: true, items: [] } }));
+    assert.match(status().textContent, /Đã cập nhật xong/);
+    assert.match(status().textContent, /không trả về hồ sơ nào/);
+    await click(button('Tiện ích'));
+    await click(button('Đối chiếu lớp theo kết quả năm trước'));
+    const dialog = () => document.querySelector('[role="dialog"][aria-label="Đối chiếu lớp theo kết quả năm trước"]');
+    assert.ok(dialog());
+    assert.ok(dialog().textContent.includes('Quyết định lên lớp đã lưu'));
+    await click(button('Khôi phục lớp đã lưu (1)'));
+    assert.match(dialog().querySelector('[role="status"]').textContent, /Đang sửa lớp: 1\/1/);
+    const restored = writes.at(-1);
+    assert.equal(restored.className, '7A'); assert.equal(restored.entryGrade, '6');
+    assert.deepEqual(restored.classHistory, { '2025-2026': '6A', '2026-2027': '7A' });
+    await act(async () => finishSave());
+    assert.match(dialog().querySelector('[role="status"]').textContent, /đã sửa 1\/1 hồ sơ trên web; đã gửi Sheet 1/);
+    assert.equal(button('Khôi phục lớp đã lưu (0)').disabled, true, 'a completed restoration cannot run twice');
+  } finally {
+    if (root) await act(async () => root.unmount());
+    dom.window.close();
+    Object.assign(globalThis, previous);
+    await rm(directory, { recursive: true, force: true });
+  }
+});

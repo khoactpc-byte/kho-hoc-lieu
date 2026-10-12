@@ -1,8 +1,10 @@
 import { createHash } from 'node:crypto';
 import { FieldPath } from 'firebase-admin/firestore';
 import { sameData } from '../../src/utils/dataEquality.js';
+import { isPendingProfileRequest, PROFILE_REQUEST_PENDING_MESSAGE } from '../../src/utils/profileRequestPolicy.js';
 import { hasLegacyRowEdits, studentScoreIdentity, migrateLegacyRowEdits } from '../../src/utils/studentScoreKeys.js';
 import { SUBJECTS, TOTAL_LESSONS } from '../../src/config/learningDomain.js';
+import { primarySubjectsForGrade } from '../../src/utils/primaryAcademic.js';
 import { SCOREBOOK_SOURCE_FILE } from '../../src/config/scorebookDomain.js';
 import { writeScoreAudit } from './scoreAudit.mjs';
 import { activeStudent, documentId, fail, scoreCell, scoreValue, teacherScope, writable } from './dataPolicy.mjs';
@@ -23,7 +25,12 @@ export function createDataService({ store, appId, now = Date.now, verifySubmissi
     const cells = Object.entries(patch).map(([key, cell]) => {
       const policy = scoreCell(actor, metadata, key);
       fail(cell && !Array.isArray(cell), 400, 'Ô điểm không hợp lệ.');
-      const value = policy?.numeric ? scoreValue(cell.value) : cell.value == null ? null : String(cell.value);
+      let value = policy?.numeric ? scoreValue(cell.value) : cell.value == null ? null : String(cell.value);
+      if (policy?.normalize && value != null && value !== '') {
+        value = policy.normalize(value);
+        fail(value != null, 400, 'Điểm kiểm tra tiểu học phải là số nguyên từ 0 đến 10.');
+      }
+      fail(!policy?.levels || value == null || value === '' || policy.levels.includes(value), 400, 'Mức đánh giá tiểu học không hợp lệ.');
       fail(value == null || String(value).length <= 1000, 400, 'Nội dung ô quá dài.');
       return { key, policy, value, random: cell.source?.source === 'random' };
     });
@@ -61,9 +68,11 @@ export function createDataService({ store, appId, now = Date.now, verifySubmissi
       const settings = (await tx.get(settingsRef)).data() || {}; activeStudent(actor, profile, settings);
       const target = ref('student_profile_requests', `profile-${actor.studentId}`);
       const previous = (await tx.get(target)).data();
+      const existing = await tx.get(store.collection(`${root}/student_profile_requests`).where('studentId', '==', actor.studentId));
+      fail(!isPendingProfileRequest(previous) && !existing.docs.some(item => isPendingProfileRequest(item.data())), 409, PROFILE_REQUEST_PENDING_MESSAGE);
       tx.set(target, { studentId: actor.studentId, studentName: profile.fullName || '', accessCode: profile.accessCode,
         schoolYear: actor.schoolYear, schoolCode: actor.schoolCode, grade: actor.grade, className: profile.className || '',
-        changes: { ...(previous?.status === 'pending' ? previous.changes : {}), ...changes }, status: 'pending', authorId: actor.uid, createdAt: previous?.createdAt || now(), updatedAt: now() });
+        changes, status: 'pending', authorId: actor.uid, createdAt: now(), updatedAt: now() });
       return { id: target.id || `profile-${actor.studentId}` };
     });
   }
@@ -121,7 +130,8 @@ export function createDataService({ store, appId, now = Date.now, verifySubmissi
     });
   }
   async function progress(actor, { subject, lesson, tickId }) {
-    documentId(tickId); fail(SUBJECTS.includes(subject) && /^\d{1,2}$/.test(String(lesson)) && Number(lesson) >= 1 && Number(lesson) <= TOTAL_LESSONS, 400, 'Môn hoặc bài học không hợp lệ.');
+    const subjects = Number(actor.grade) <= 5 ? primarySubjectsForGrade(actor.grade).map(item => item.label) : SUBJECTS;
+    documentId(tickId); fail(subjects.includes(subject) && /^\d{1,2}$/.test(String(lesson)) && Number(lesson) >= 1 && Number(lesson) <= TOTAL_LESSONS, 400, 'Môn hoặc bài học không hợp lệ.');
     const id = hash(`${actor.studentId}:${actor.schoolYear}:${subject}:${lesson}`);
     return store.runTransaction(async tx => {
       const profile = (await tx.get(ref('students', actor.studentId))).data();

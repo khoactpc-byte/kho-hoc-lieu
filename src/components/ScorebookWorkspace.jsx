@@ -1,13 +1,15 @@
 import { parseScoreNumber, formatScoreNumber, calculateSemesterAverage, calculateYearAverage, academicSummary } from '../utils/scorebookCalculations';
 import ScorebookMigrationNotice from './ScorebookMigrationNotice';
+import ScorebookToolbar from './ScorebookToolbar';
 import { studentEditKey, hasLegacyRowEdits } from '../utils/studentScoreKeys';
 import { useScorebookDraft } from '../hooks/useScorebookDraft';
 import { normalizeNumericScore } from '../utils/scoreValues';
 import { parseCalendarDate } from '../utils/calendarDate';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { resolveScorebookDocument, scorebookDocumentId } from '../utils/scorebookArchive';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import { collection, onSnapshot } from 'firebase/firestore';
-import { BookOpenText, ChevronLeft, ChevronRight, Download, FileSpreadsheet, Save, Search, Settings2, X } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Download, Save, Search, X } from 'lucide-react';
 import { appId, db } from '../config/firebase';
 import scorebookTemplate from '../data/scorebookTemplate.json';
 import { compareSchoolRosterStudents, DEFAULT_SCHOOL_CODE, getSchoolClassTeacherAssignments, getSchoolGrade, getStudentSchoolCode, normalizeSchoolClassName, normalizeSchoolCode, normalizeSchoolYearKey, SCHOOL_OPTIONS } from '../utils/schoolClasses';
@@ -16,8 +18,6 @@ const PREFERRED_START_SHEET = 'Bia';
 const TRANSCRIPT_SIGNATURE_SETTINGS_KEY = 'khl-transcript-signature-settings-v1';
 
 const makeCellKey = (sheetName, row, col) => `${sheetName}!${row}:${col}`;
-
-const cleanDocId = (value) => String(value || 'default').replace(/[^\w-]+/g, '_');
 
 const coerceDisplayText = (value) => {
   if (value === null || value === undefined) return '';
@@ -719,6 +719,7 @@ function TeacherSignatureImage({ url, alt = 'Chu ky giao vien', style = {} }) {
 
 export default function ScorebookWorkspace({
   grade,
+  allowedGrades = ['6', '7', '8', '9'],
   initialMode = 'scorebook',
   initialSchoolCode = DEFAULT_SCHOOL_CODE,
   currentSchoolYear,
@@ -765,6 +766,21 @@ export default function ScorebookWorkspace({
 
   const [isSaving, setIsSaving] = useState(false);
   const [rosterPage, setRosterPage] = useState(0);
+  const [workspaceTop, setWorkspaceTop] = useState(null);
+
+  useLayoutEffect(() => {
+    const adminHeader = document.querySelector('[data-admin-menu-bar]')?.parentElement;
+    if (!adminHeader) return;
+    const updateTop = () => setWorkspaceTop(adminHeader.getBoundingClientRect().bottom);
+    updateTop();
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(updateTop);
+    observer?.observe(adminHeader);
+    window.addEventListener('resize', updateTop);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', updateTop);
+    };
+  }, []);
 
   const showHeaders = false;
   const [previewMode, setPreviewMode] = useState(false);
@@ -772,7 +788,6 @@ export default function ScorebookWorkspace({
   const [printPageIndex, setPrintPageIndex] = useState(0);
   const [showTeacherPanel, setShowTeacherPanel] = useState(false);
   const [showTranscriptPrintPanel, setShowTranscriptPrintPanel] = useState(false);
-  const [showTranscriptSignatureSettings, setShowTranscriptSignatureSettings] = useState(false);
   const [transcriptSignatureSettings, setTranscriptSignatureSettings] = useState(() => {
     try {
       const saved = JSON.parse(window.localStorage.getItem(TRANSCRIPT_SIGNATURE_SETTINGS_KEY) || '{}');
@@ -788,7 +803,8 @@ export default function ScorebookWorkspace({
   const [transcriptPrintSelection, setTranscriptPrintSelection] = useState(null);
   const [transcriptPrintStudentIds, setTranscriptPrintStudentIds] = useState([]);
   const [teacherPanelDraft, setTeacherPanelDraft] = useState({});
-  const [scorebookEditsByYearGrade, setScorebookEditsByYearGrade] = useState({});
+  const [savedScorebooks, setSavedScorebooks] = useState({ loaded: false, documents: [] });
+  const [savedBookSelection, setSavedBookSelection] = useState({});
   const [attendanceDocs, setAttendanceDocs] = useState([]);
   const [workspaceMode, setWorkspaceMode] = useState(initialMode);
   const [transcriptStudentId, setTranscriptStudentId] = useState('');
@@ -810,7 +826,12 @@ export default function ScorebookWorkspace({
     }
   }, [initialMode]);
 
-  const docId = useMemo(() => cleanDocId(`${currentSchoolYear || 'nam-hoc'}_${scorebookTemplate.sourceFile || 'so-diem'}_${scorebookSchoolCode}_khoi_${grade || 'tat-ca'}`), [currentSchoolYear, grade, scorebookSchoolCode]);
+  const scorebookScope = useMemo(() => ({ schoolYear: currentSchoolYear, sourceFile: scorebookTemplate.sourceFile,
+    schoolCode: scorebookSchoolCode, grade }), [currentSchoolYear, scorebookSchoolCode, grade]);
+  const canonicalDocId = scorebookDocumentId(scorebookScope);
+  const resolvedBook = useMemo(() => resolveScorebookDocument(savedScorebooks.documents, scorebookScope,
+    savedBookSelection[canonicalDocId]), [savedScorebooks.documents, scorebookScope, savedBookSelection, canonicalDocId]);
+  const docId = resolvedBook.id;
   const activeSheet = useMemo(
     () => workbookSheets.find((sheet) => sheet.name === activeSheetName) || workbookSheets[0] || { name: '', label: '', rows: 0, cols: 0 },
     [workbookSheets, activeSheetName]
@@ -829,32 +850,16 @@ export default function ScorebookWorkspace({
     return {};
   }, [classTeacherAssignments, legacyTeacherYearKey, currentSchoolYear, grade]);
 
-  const { edits, setEdits, isDirty, lastSavedAt, columnWidths: columnWidthsBySheet, save: saveDraft } = useScorebookDraft(docId, showNotification, draftDocuments);
+  const { edits, setEdits, isDirty, lastSavedAt, loaded: scorebookLoaded, columnWidths: columnWidthsBySheet, save: saveDraft } = useScorebookDraft(docId, showNotification, draftDocuments);
 
   useEffect(() => {
     const ref = collection(db, 'artifacts', appId, 'public', 'data', 'scorebooks');
     return onSnapshot(ref, (snapshot) => {
-      const nextMap = {};
-      snapshot.docs.forEach((item) => {
-        const data = item.data() || {};
-        if (String(data.sourceFile || '') !== String(scorebookTemplate.sourceFile || '')) return;
-        const gradeKey = String(data.grade || '').trim();
-        const schoolYearKey = compactSchoolYearLabel(data.schoolYear || '');
-        if (!gradeKey || !schoolYearKey) return;
-        const savedSchoolCode = normalizeSchoolCode(data.schoolCode) || normalizeSchoolCode(data.schoolName);
-        if (!savedSchoolCode) return;
-        if (savedSchoolCode !== scorebookSchoolCode) return;
-        const mapKey = `${schoolYearKey}__${gradeKey}__${savedSchoolCode}`;
-        const existing = nextMap[mapKey];
-        if (!existing || Number(data.updatedAt || 0) >= Number(existing.updatedAt || 0)) {
-          nextMap[mapKey] = { edits: data.edits || {}, updatedAt: Number(data.updatedAt || 0) };
-        }
-      });
-      setScorebookEditsByYearGrade(nextMap);
+      setSavedScorebooks({ loaded: true, documents: snapshot.docs.map(item => ({ ...item.data(), id: item.id })) });
     }, () => {
       showNotification?.('Chưa tải đủ dữ liệu sổ điểm liên năm cho học bạ.', 'error');
     });
-  }, [scorebookSchoolCode, showNotification]);
+  }, [showNotification]);
 
   useEffect(() => {
     const ref = collection(db, 'artifacts', appId, 'public', 'data', 'class_attendance');
@@ -882,6 +887,8 @@ export default function ScorebookWorkspace({
   }, [showTeacherPanel, classTeacherAssignments, grade, currentSchoolYear, getTeacherAssignmentsForYearGrade]);
 
   const commitCell = (row, col, originalValue, nextValue) => {
+    if (!scorebookLoaded || !savedScorebooks.loaded) { showNotification?.('Chờ tải sổ điểm trước khi chỉnh sửa.', 'error'); return; }
+    if (resolvedBook.needsSelection) { showNotification?.('Chọn bản sổ đã lưu trước khi chỉnh sửa.', 'error'); return; }
     const normalized = String(nextValue || '').replace(/\u00a0/g, ' ').trimEnd();
     const key = makeCellKey(activeSheet.name, row, col);
     setEdits((prev) => {
@@ -894,6 +901,8 @@ export default function ScorebookWorkspace({
   };
 
   const commitCustomText = (key, originalValue, nextValue) => {
+    if (!scorebookLoaded || !savedScorebooks.loaded) { showNotification?.('Chờ tải sổ điểm trước khi chỉnh sửa.', 'error'); return; }
+    if (resolvedBook.needsSelection) { showNotification?.('Chọn bản sổ đã lưu trước khi chỉnh sửa.', 'error'); return; }
     const isScoreInput = /Score:\d+:r\d+:s\d+$/.test(String(key || ''));
     const normalized = isScoreInput
       ? normalizeScoreInput(nextValue)
@@ -925,6 +934,10 @@ export default function ScorebookWorkspace({
   };
 
   const saveScorebook = async () => {
+    if (resolvedBook.needsSelection) {
+      showNotification?.('Chọn bản sổ đã lưu trước khi chỉnh sửa.', 'error');
+      return;
+    }
     if (!user) {
       showNotification?.('Chưa có phiên đăng nhập để lưu sổ điểm.', 'error');
       return;
@@ -1369,14 +1382,16 @@ export default function ScorebookWorkspace({
   const workbookPageEntries = workbookSheets.flatMap((sheet) => (
     getPageSegmentsForSheet(sheet).map((page, index) => ({ ...page, sheet, originalIndex: index }))
   )).map((page, globalIndex) => ({ ...page, globalPageNumber: globalIndex + 1 }));
-  const allClassStudents = useMemo(() => {
+  const gradeYearStudents = useMemo(() => {
     return [...(Array.isArray(students) ? students : [])]
       .filter(student => (student.status || 'active') !== 'dropped')
-      .filter(student => getStudentSchoolCode(student) === scorebookSchoolCode)
       .filter(student => String(getGradeFromClass(student.className || student.grade || '')) === String(grade))
       .filter(student => !student.schoolYear || normalizeSchoolYearKey(student.schoolYear) === normalizeSchoolYearKey(currentSchoolYear))
       .sort(compareSchoolRosterStudents);
-  }, [students, grade, currentSchoolYear, scorebookSchoolCode]);
+  }, [students, grade, currentSchoolYear]);
+  const allClassStudents = useMemo(() => gradeYearStudents.filter(student => getStudentSchoolCode(student) === scorebookSchoolCode), [gradeYearStudents, scorebookSchoolCode]);
+  const unassignedStudents = useMemo(() => gradeYearStudents.filter(student => getStudentSchoolCode(student) === 'UNKNOWN'), [gradeYearStudents]);
+  const unassignedBook = useMemo(() => resolveScorebookDocument(savedScorebooks.documents, { ...scorebookScope, schoolCode: 'UNKNOWN' }), [savedScorebooks.documents, scorebookScope]);
   const transcriptStudents = useMemo(() => allClassStudents, [allClassStudents]);
   const selectedTranscriptStudent = useMemo(() => {
     if (!transcriptStudents.length) return null;
@@ -2850,7 +2865,9 @@ export default function ScorebookWorkspace({
     const schoolYearKey = compactSchoolYearLabel(schoolYearLabel);
     const gradeKey = String(gradeValue || '').trim();
     if (sameSchoolYear(schoolYearLabel, currentSchoolYear) && gradeKey === String(grade) && schoolCode === scorebookSchoolCode) return edits;
-    return scorebookEditsByYearGrade[`${schoolYearKey}__${gradeKey}__${schoolCode}`]?.edits || {};
+    return resolveScorebookDocument(savedScorebooks.documents, {
+      schoolYear: schoolYearKey, grade: gradeKey, schoolCode, sourceFile: scorebookTemplate.sourceFile
+    }).document?.edits || {};
   };
   const studentIdentityKey = (student = {}) => {
     const stable = String(student.accessCode || student.studentCode || student.pcgdCode || student.identityCode || '').trim().toUpperCase();
@@ -3569,13 +3586,7 @@ export default function ScorebookWorkspace({
   })();
 
   return (
-    <div className="scorebook-workspace-shell fixed inset-x-0 top-[84px] bottom-0 z-[140] bg-slate-100/95 backdrop-blur-md p-2 sm:p-3 print:static print:bg-white print:p-0">
-      {allClassStudents.length > 40 && workspaceMode === 'scorebook' && <label className="my-2 block rounded border bg-white p-2 print:hidden">Danh sách học sinh đang xem/in:
-        <select value={effectiveRosterPage} onChange={event => setRosterPage(Number(event.target.value))} className="ml-2 rounded border p-1">
-          {Array.from({ length: Math.ceil(allClassStudents.length / 40) }, (_, page) => <option key={page} value={page}>{page * 40 + 1}–{Math.min((page + 1) * 40, allClassStudents.length)}</option>)}
-        </select>
-      </label>}
-      <ScorebookMigrationNotice docId={docId} edits={edits} students={allClassStudents} user={user} showNotification={showNotification} />
+    <div className="scorebook-workspace-shell fixed inset-x-0 top-[114px] sm:top-[84px] bottom-0 z-[140] flex min-h-0 flex-col bg-slate-50 p-2 print:static print:bg-white print:p-0" style={workspaceTop === null ? undefined : { top: workspaceTop }}>
       <style>{`
         @page { size: ${isTranscriptMode ? '210mm 297mm' : '297mm 420mm'}; margin: ${isTranscriptMode ? '0' : '5mm 7mm'}; }
         .scorebook-print-root, .scorebook-print-root table, .scorebook-print-root td, .scorebook-print-root th { font-family: "Times New Roman", Times, serif; }
@@ -3654,205 +3665,134 @@ export default function ScorebookWorkspace({
         .transcript-page * { letter-spacing: 0 !important; }
       `}</style>
 
-      <div className="scorebook-print-root h-full rounded-3xl border border-violet-100 bg-white shadow-2xl overflow-hidden flex flex-col print:h-auto print:rounded-none print:border-0 print:shadow-none">
-        <div className="scorebook-toolbar shrink-0 border-b border-slate-200 bg-white/95 px-4 sm:px-6 py-3 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2 text-violet-900">
-              <FileSpreadsheet className="w-5 h-5 text-violet-600" />
-              <h2 className="font-black text-lg sm:text-2xl uppercase tracking-tight truncate">
-                {isTranscriptMode ? 'Học bạ' : 'Sổ gọi tên ghi điểm'} khối {grade}
-              </h2>
+      <div className="scorebook-print-root min-h-0 flex-1 rounded-lg border border-slate-200 bg-white shadow-sm overflow-hidden flex flex-col print:h-auto print:rounded-none print:border-0 print:shadow-none">
+        <ScorebookToolbar
+          mode={workspaceMode}
+          onModeChange={mode => { setWorkspaceMode(mode); setPreviewMode(false); }}
+          schoolYear={currentSchoolYear}
+          isDirty={isDirty}
+          lastSavedText={lastSavedText}
+          isSaving={isSaving}
+          isLoading={!scorebookLoaded || !savedScorebooks.loaded}
+          needsSelection={resolvedBook.needsSelection}
+          onSave={saveScorebook}
+          previewMode={previewMode}
+          onPreviewChange={() => setPreviewMode(value => !value)}
+          onPrintPage={() => printSheet('page')}
+          onPrintWorkbook={() => printSheet('workbook')}
+          signatureSettings={transcriptSignatureSettings}
+          onSignatureChange={(key, checked) => setTranscriptSignatureSettings(prev => ({ ...prev, [key]: checked }))}
+          onPrintTranscript={() => {
+            setTranscriptPrintDraft({
+              includeCover: true,
+              mode: 'all',
+              year: transcriptYearEntries[transcriptYearEntries.length - 1]?.schoolYear || currentSchoolYear,
+              duplexBlank: true
+            });
+            setTranscriptPrintStudentIds(prev => {
+              const valid = prev.filter(id => transcriptStudents.some(student => student.id === id));
+              return valid.length ? valid : [selectedTranscriptStudent?.id].filter(Boolean);
+            });
+            setShowTranscriptPrintPanel(true);
+          }}
+          onClose={() => {
+            if (isDirty && draftDocuments) showNotification?.('Nháp được giữ trong phiên này. Mở lại đúng cơ sở, khối và năm học để tiếp tục lưu.');
+            onClose();
+          }}
+        >
+          <label className="flex items-center gap-1.5">Khối:
+            <select value={String(grade || '')} onChange={event => {
+              setTranscriptStudentId('');
+              setTranscriptStudentSearch('');
+              onGradeChange?.(event.target.value);
+            }} className="scorebook-select w-16">
+              {allowedGrades.map(item => <option key={item} value={item}>{item}</option>)}
+            </select>
+          </label>
+          <label className="flex min-w-0 items-center gap-1.5">Cơ sở:
+            <select value={scorebookSchoolCode} onChange={event => {
+              setScorebookSchoolCode(event.target.value);
+              setTranscriptStudentId('');
+              setTranscriptStudentSearch('');
+              setPreviewMode(false);
+            }} className="scorebook-select w-48 max-w-full">
+              {SCHOOL_OPTIONS.map(school => <option key={school.code} value={school.code}>{school.name}</option>)}
+            </select>
+          </label>
+          {resolvedBook.candidates.length > 1 && <label className="flex min-w-0 items-center gap-1.5">Bản đã lưu:
+            <select value={resolvedBook.document?.id || ''} onChange={event => setSavedBookSelection(prev => ({ ...prev, [canonicalDocId]: event.target.value }))} className="scorebook-select max-w-full">
+              {resolvedBook.needsSelection && <option value="">Chọn bản sổ cũ</option>}
+              {resolvedBook.candidates.map((book, index) => <option key={book.id} value={book.id}>
+                {book.id === canonicalDocId ? 'Sổ hiện tại' : `Sổ cũ ${index + 1}`} · {book.updatedAt ? new Date(book.updatedAt).toLocaleString('vi-VN') : 'Chưa có ngày lưu'}
+              </option>)}
+            </select>
+          </label>}
+          {isTranscriptMode ? (
+            <div className="flex min-w-0 items-center gap-1">
+              <button type="button" onClick={() => selectTranscriptStudentByIndex(selectedTranscriptStudentIndex - 1)}
+                disabled={!transcriptStudents.length || selectedTranscriptStudentIndex <= 0} title="Học sinh trước" aria-label="Học sinh trước" className="scorebook-step-button">
+                <ChevronLeft className="h-4 w-4" />
+              </button>
+              <div className="relative min-w-0">
+                <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+                <input value={transcriptStudentSearch} onChange={event => selectTranscriptStudentBySearch(event.target.value)}
+                  list={`transcript-student-options-${grade}`} placeholder="Gõ tên học sinh..." aria-label="Tìm học sinh trong học bạ" className="scorebook-select w-52 !pl-7" />
+              </div>
+              <button type="button" onClick={() => selectTranscriptStudentByIndex(selectedTranscriptStudentIndex + 1)}
+                disabled={!transcriptStudents.length || selectedTranscriptStudentIndex >= transcriptStudents.length - 1} title="Học sinh sau" aria-label="Học sinh sau" className="scorebook-step-button">
+                <ChevronRight className="h-4 w-4" />
+              </button>
+              <span className="whitespace-nowrap px-1 text-xs text-slate-500">{transcriptStudents.length ? `${selectedTranscriptStudentIndex + 1}/${transcriptStudents.length}` : '0/0'}</span>
             </div>
-             <div className="text-xs sm:text-sm font-bold text-slate-500 mt-1">
-               Năm học {currentSchoolYear} · {selectedScorebookSchool.name} · {scorebookTemplate.sourceFile} · {lastSavedText}{isDirty ? ' · Có chỉnh sửa chưa lưu' : ''}
-             </div>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <button type="button" onClick={() => setWorkspaceMode('scorebook')} className={`h-11 rounded-xl px-4 text-sm font-black shadow flex items-center gap-2 ${!isTranscriptMode ? 'bg-violet-600 text-white hover:bg-violet-700' : 'bg-white border border-violet-200 text-violet-700 hover:bg-violet-50'}`}>
-              <FileSpreadsheet className="w-4 h-4" /> Sổ gọi tên
-            </button>
-            <button type="button" onClick={() => { setWorkspaceMode('transcript'); setPreviewMode(false); }} className={`h-11 rounded-xl px-4 text-sm font-black shadow flex items-center gap-2 ${isTranscriptMode ? 'bg-violet-600 text-white hover:bg-violet-700' : 'bg-white border border-violet-200 text-violet-700 hover:bg-violet-50'}`}>
-              <BookOpenText className="w-4 h-4" /> Học bạ
-            </button>
-            <select
-              value={String(grade || '')}
-              onChange={(event) => {
-                setTranscriptStudentId('');
-                setTranscriptStudentSearch('');
-                onGradeChange?.(event.target.value);
-              }}
-              className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm font-black text-violet-700 shadow outline-none focus:border-violet-500"
-            >
-              {['6', '7', '8', '9'].map(item => (
-                <option key={`scorebook-grade-${item}`} value={item}>Khối {item}</option>
-              ))}
-            </select>
-            <select
-              value={scorebookSchoolCode}
-              onChange={(event) => {
-                setScorebookSchoolCode(event.target.value);
-                setTranscriptStudentId('');
-                setTranscriptStudentSearch('');
-                setPreviewMode(false);
-              }}
-              className="h-11 min-w-[210px] rounded-xl border border-slate-200 bg-white px-3 text-sm font-black text-violet-700 shadow outline-none focus:border-violet-500"
-              title="Chọn cơ sở để mở riêng học sinh, sổ điểm và học bạ"
-            >
-              {SCHOOL_OPTIONS.map(school => (
-                <option key={school.code} value={school.code}>{school.name}</option>
-              ))}
-            </select>
-            {isTranscriptMode && (
-              <div className="flex items-center gap-1 rounded-xl border border-slate-200 bg-slate-50 p-1 shadow-sm">
-                <button
-                  type="button"
-                  onClick={() => selectTranscriptStudentByIndex(selectedTranscriptStudentIndex - 1)}
-                  disabled={!transcriptStudents.length || selectedTranscriptStudentIndex <= 0}
-                  title="Học sinh trước"
-                  className="h-9 w-9 rounded-lg bg-white text-slate-700 border border-slate-200 flex items-center justify-center hover:bg-violet-50 disabled:opacity-40 disabled:hover:bg-white"
-                >
+          ) : (
+            <>
+              <div className="flex min-w-0 items-center gap-1">
+                <label className="mr-0.5 flex min-w-0 items-center gap-1.5">Trang sổ:
+                  <select value={activeSheet.name} onChange={event => setActiveSheetName(event.target.value)} className="scorebook-select w-56 max-w-full">
+                    {workbookSheets.map(sheet => <option key={sheet.name} value={sheet.name}>{sheet.label || sheet.name}</option>)}
+                  </select>
+                </label>
+                <button type="button" title="Trang sổ trước" aria-label="Trang sổ trước"
+                  disabled={workbookSheets[0]?.name === activeSheet.name}
+                  onClick={() => setActiveSheetName(workbookSheets[Math.max(0, workbookSheets.findIndex(sheet => sheet.name === activeSheet.name) - 1)].name)} className="scorebook-step-button">
                   <ChevronLeft className="h-4 w-4" />
                 </button>
-                <div className="relative">
-                  <Search className="pointer-events-none absolute left-2 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-                  <input
-                    value={transcriptStudentSearch}
-                    onChange={(event) => selectTranscriptStudentBySearch(event.target.value)}
-                    list={`transcript-student-options-${grade}`}
-                    placeholder="Gõ tên học sinh..."
-                    className="h-9 w-56 rounded-lg border border-slate-200 bg-white pl-8 pr-2 text-sm font-bold text-slate-700 outline-none focus:border-violet-500"
-                  />
-                </div>
-                <button
-                  type="button"
-                  onClick={() => selectTranscriptStudentByIndex(selectedTranscriptStudentIndex + 1)}
-                  disabled={!transcriptStudents.length || selectedTranscriptStudentIndex >= transcriptStudents.length - 1}
-                  title="Học sinh sau"
-                  className="h-9 w-9 rounded-lg bg-white text-slate-700 border border-slate-200 flex items-center justify-center hover:bg-violet-50 disabled:opacity-40 disabled:hover:bg-white"
-                >
+                <button type="button" title="Trang sổ sau" aria-label="Trang sổ sau"
+                  disabled={workbookSheets[workbookSheets.length - 1]?.name === activeSheet.name}
+                  onClick={() => setActiveSheetName(workbookSheets[Math.min(workbookSheets.length - 1, workbookSheets.findIndex(sheet => sheet.name === activeSheet.name) + 1)].name)} className="scorebook-step-button">
                   <ChevronRight className="h-4 w-4" />
                 </button>
-                <span className="min-w-[46px] px-1 text-center text-xs font-black text-slate-500">
-                  {transcriptStudents.length ? `${selectedTranscriptStudentIndex + 1}/${transcriptStudents.length}` : '0/0'}
-                </span>
               </div>
-            )}
-            {!isTranscriptMode && (
-              <select
-                value={activeSheet.name}
-                onChange={(event) => setActiveSheetName(event.target.value)}
-                className="h-11 min-w-[220px] rounded-xl border border-slate-200 bg-white px-3 text-sm font-black text-slate-700 outline-none focus:border-violet-500"
-              >
-                {workbookSheets.map((sheet) => (
-                  <option key={sheet.name} value={sheet.name}>{sheet.label || sheet.name}</option>
-                ))}
-              </select>
-            )}
-            {!isTranscriptMode && (
-              <button type="button" onClick={saveScorebook} disabled={isSaving} className="h-11 rounded-xl bg-blue-600 px-4 text-sm font-black text-white shadow hover:bg-blue-700 disabled:opacity-60 flex items-center gap-2">
-                <Save className="w-4 h-4" /> {isSaving ? 'Đang lưu' : 'Lưu'}
-              </button>
-            )}
-            {!isTranscriptMode && (
-              <button type="button" onClick={() => setPreviewMode((value) => !value)} className={`h-11 rounded-xl px-4 text-sm font-black shadow flex items-center gap-2 ${previewMode ? 'bg-violet-600 text-white hover:bg-violet-700' : 'bg-white border border-violet-200 text-violet-700 hover:bg-violet-50'}`}>
-                {previewMode ? 'Sửa bảng' : 'Xem trước A3'}
-              </button>
-            )}
-            {!isTranscriptMode && activePageSegments.length > 1 && (
-              <select
-                value={boundedPrintPageIndex}
-                onChange={(event) => setPrintPageIndex(Number(event.target.value) || 0)}
-                className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm font-black text-slate-700 outline-none focus:border-violet-500"
-              >
-                {activePageSegments.map((_, index) => (
-                  <option key={`print-page-option-${index}`} value={index}>Trang {index + 1}</option>
-                ))}
-              </select>
-            )}
-            {isTranscriptMode ? (
-              <>
-                <div className="relative">
-                  <button
-                    type="button"
-                    onClick={() => setShowTranscriptSignatureSettings((value) => !value)}
-                    className={`h-11 rounded-xl px-4 text-sm font-black shadow flex items-center gap-2 ${showTranscriptSignatureSettings ? 'bg-slate-800 text-white' : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-50'}`}
-                  >
-                    <Settings2 className="h-4 w-4" /> Cài đặt chữ ký
-                  </button>
-                  {showTranscriptSignatureSettings && (
-                    <div className="absolute right-0 top-[calc(100%+8px)] z-[170] w-72 rounded-xl border border-slate-200 bg-white p-3 text-slate-700 shadow-2xl">
-                      <div className="mb-2 text-xs font-black uppercase text-slate-500">Chữ ký trong học bạ</div>
-                      <label className="flex cursor-pointer items-center gap-3 rounded-lg px-2 py-2 hover:bg-violet-50">
-                        <input
-                          type="checkbox"
-                          checked={transcriptSignatureSettings.teacher}
-                          onChange={(event) => setTranscriptSignatureSettings((prev) => ({ ...prev, teacher: event.target.checked }))}
-                          className="h-4 w-4 accent-violet-600"
-                        />
-                        <span className="text-sm font-bold">Hiện chữ ký giáo viên</span>
-                      </label>
-                      <label className="flex cursor-pointer items-center gap-3 rounded-lg px-2 py-2 hover:bg-violet-50">
-                        <input
-                          type="checkbox"
-                          checked={transcriptSignatureSettings.director}
-                          onChange={(event) => setTranscriptSignatureSettings((prev) => ({ ...prev, director: event.target.checked }))}
-                          className="h-4 w-4 accent-violet-600"
-                        />
-                        <span className="text-sm font-bold">Hiện chữ ký Phó Giám đốc</span>
-                      </label>
-                    </div>
-                  )}
-                </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setTranscriptPrintDraft({
-                      includeCover: true,
-                      mode: 'all',
-                      year: transcriptYearEntries[transcriptYearEntries.length - 1]?.schoolYear || currentSchoolYear,
-                      duplexBlank: true
-                    });
-                    setTranscriptPrintStudentIds((prev) => {
-                      const valid = prev.filter(id => transcriptStudents.some(student => student.id === id));
-                      return valid.length ? valid : [selectedTranscriptStudent?.id].filter(Boolean);
-                    });
-                    setShowTranscriptPrintPanel(true);
-                  }}
-                  className="h-11 rounded-xl bg-emerald-600 px-4 text-sm font-black text-white shadow hover:bg-emerald-700 flex items-center gap-2"
-                >
-                  <Download className="w-4 h-4" /> In học bạ
-                </button>
-              </>
-            ) : (
-              <>
-                <button type="button" onClick={() => printSheet('page')} className="h-11 rounded-xl bg-emerald-600 px-4 text-sm font-black text-white shadow hover:bg-emerald-700 flex items-center gap-2">
-                  <Download className="w-4 h-4" /> In trang này
-                </button>
-                <button type="button" onClick={() => printSheet('workbook')} className="h-11 rounded-xl bg-slate-800 px-4 text-sm font-black text-white shadow hover:bg-slate-900 flex items-center gap-2">
-                  <Download className="w-4 h-4" /> In tất cả
-                </button>
-              </>
-            )}
-            <button type="button" onClick={() => { if (isDirty && draftDocuments) showNotification?.('Nháp được giữ trong phiên này. Mở lại đúng cơ sở, khối và năm học để tiếp tục lưu.'); onClose(); }} title="Đóng" className="h-11 w-11 rounded-full bg-rose-600 text-white shadow-lg flex items-center justify-center hover:bg-rose-700">
-              <X className="w-5 h-5" />
-            </button>
-          </div>
-        </div>
+              {activePageSegments.length > 1 && <label className="flex items-center gap-1.5">Trang in:
+                <select value={boundedPrintPageIndex} onChange={event => setPrintPageIndex(Number(event.target.value) || 0)} className="scorebook-select w-16">
+                  {activePageSegments.map((_, index) => <option key={index} value={index}>{index + 1}</option>)}
+                </select>
+              </label>}
+              {allClassStudents.length > 40 && <label className="flex items-center gap-1.5" title="Danh sách học sinh đang xem/in">
+                <span className="sr-only">Danh sách học sinh đang xem/in:</span><span aria-hidden="true">Học sinh:</span>
+                <select value={effectiveRosterPage} onChange={event => setRosterPage(Number(event.target.value))} className="scorebook-select w-20">
+                  {Array.from({ length: Math.ceil(allClassStudents.length / 40) }, (_, page) => <option key={page} value={page}>{page * 40 + 1}–{Math.min((page + 1) * 40, allClassStudents.length)}</option>)}
+                </select>
+              </label>}
+            </>
+          )}
+        </ScorebookToolbar>
+        <ScorebookMigrationNotice docId={docId} edits={edits} students={allClassStudents} user={user} showNotification={showNotification}
+          scoreSubjects={HKI_SCORE_SUBJECTS} reviewSubjects={HKI_REVIEW_SUBJECTS} />
 
-        {!isTranscriptMode && <div className="scorebook-tabs shrink-0 bg-slate-50 border-b border-slate-200 px-3 py-2 overflow-x-auto">
-          <div className="flex gap-2 min-w-max">
-            {workbookSheets.map((sheet) => (
-              <button
-                key={`tab-${sheet.name}`}
-                type="button"
-                onClick={() => setActiveSheetName(sheet.name)}
-                className={`rounded-full px-3 py-2 text-[11px] font-black transition-colors ${sheet.name === activeSheet.name ? 'bg-violet-600 text-white shadow' : 'bg-white border border-slate-200 text-slate-600 hover:border-violet-200 hover:text-violet-700'}`}
-              >
-                {sheet.label || sheet.name}
-              </button>
-            ))}
+        {scorebookSchoolCode !== 'UNKNOWN' && (unassignedStudents.length > 0 || unassignedBook.candidates.length > 0) && (
+          <div className="scorebook-toolbar flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-slate-200 bg-blue-50/50 px-3 py-1.5 text-xs text-slate-600">
+            <span>Còn {unassignedStudents.length} hồ sơ{unassignedBook.candidates.length ? ` và ${unassignedBook.candidates.length} sổ đã lưu` : ''} năm {currentSchoolYear}, khối {grade} chưa gán cơ sở.</span>
+            <button type="button" onClick={() => { setScorebookSchoolCode('UNKNOWN'); setTranscriptStudentId(''); setTranscriptStudentSearch(''); setPreviewMode(false); }} className="text-blue-700 underline underline-offset-2">Xem hồ sơ, sổ cũ</button>
           </div>
-        </div>}
+        )}
+        {(resolvedBook.archived || resolvedBook.needsSelection) && (
+          <div className="scorebook-toolbar border-b border-slate-200 bg-slate-50 px-3 py-1.5 text-xs text-slate-600">
+            {resolvedBook.needsSelection ? 'Có nhiều bản sổ đã lưu. Chọn bản cần xem ở phía trên.' : 'Đang mở bản sổ cũ đã lưu.'}
+            {scorebookSchoolCode === 'UNKNOWN' && ' Hồ sơ và sổ này chưa được gán cơ sở.'}
+          </div>
+        )}
+
 
         <datalist id={`scorebook-teacher-names-${grade}`}>
           {teacherNameOptions.map(name => <option key={name} value={name} />)}
@@ -3865,11 +3805,11 @@ export default function ScorebookWorkspace({
 
         {showTranscriptPrintPanel && (
           <div className="scorebook-toolbar fixed inset-0 z-[165] bg-slate-900/40 backdrop-blur-sm p-4 flex items-center justify-center">
-            <div className="w-full max-w-xl max-h-[92vh] overflow-y-auto rounded-3xl bg-white border border-emerald-100 shadow-2xl p-5">
+            <div className="w-full max-w-xl max-h-[92vh] overflow-y-auto rounded-lg bg-white border border-emerald-100 shadow-2xl p-5">
               <div className="flex items-center justify-between gap-3 mb-4">
                 <div>
-                  <div className="text-xl font-black text-emerald-900 uppercase">In học bạ</div>
-                  <div className="text-xs font-bold text-slate-500 mt-1">
+                  <div className="text-base font-normal text-emerald-900 uppercase">In học bạ</div>
+                  <div className="text-xs font-normal text-slate-500 mt-1">
                     {transcriptDraftStudentIds.length || 1} học sinh · {transcriptDraftPageCount} trang sẽ in
                   </div>
                 </div>
@@ -3878,10 +3818,10 @@ export default function ScorebookWorkspace({
                 </button>
               </div>
               <div className="space-y-3">
-                <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-3 text-sm font-bold text-emerald-950">
+                <div className="rounded-md border border-emerald-100 bg-emerald-50 p-3 text-sm font-normal text-emerald-950">
                   Đã chọn {transcriptDraftStudentIds.length || 1} học sinh. Muốn đổi danh sách in thì tích trực tiếp ở bảng học sinh bên trái.
                 </div>
-                <label className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3 font-bold text-slate-700">
+                <label className="flex items-center gap-3 rounded-md border border-slate-200 bg-slate-50 p-3 font-normal text-slate-700">
                   <input
                     type="checkbox"
                     checked={transcriptPrintDraft.includeCover}
@@ -3891,7 +3831,7 @@ export default function ScorebookWorkspace({
                   In 3 trang đầu: bìa, hướng dẫn, thông tin học sinh
                 </label>
 
-                <label className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white p-3 font-bold text-slate-700">
+                <label className="flex items-center gap-3 rounded-md border border-slate-200 bg-white p-3 font-normal text-slate-700">
                   <input
                     type="radio"
                     name="transcript-print-mode"
@@ -3901,8 +3841,8 @@ export default function ScorebookWorkspace({
                   />
                   In kết quả tất cả các năm
                 </label>
-                <div className="rounded-2xl border border-slate-200 bg-white p-3">
-                  <label className="flex items-center gap-3 font-bold text-slate-700">
+                <div className="rounded-md border border-slate-200 bg-white p-3">
+                  <label className="flex items-center gap-3 font-normal text-slate-700">
                     <input
                       type="radio"
                       name="transcript-print-mode"
@@ -3915,7 +3855,7 @@ export default function ScorebookWorkspace({
                   <select
                     value={transcriptPrintDraft.year || transcriptYearEntries[transcriptYearEntries.length - 1]?.schoolYear || ''}
                     onChange={(event) => setTranscriptPrintDraft(prev => ({ ...prev, year: event.target.value, mode: 'year' }))}
-                    className="mt-3 h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-black text-slate-700 outline-none focus:border-emerald-500"
+                    className="mt-3 h-9 w-full rounded border border-slate-200 bg-white px-3 text-sm font-normal text-slate-700 outline-none focus:border-emerald-500"
                   >
                     {transcriptYearEntries.map(yearEntry => (
                       <option key={`print-year-${yearEntry.startYear}`} value={yearEntry.schoolYear}>
@@ -3925,11 +3865,11 @@ export default function ScorebookWorkspace({
                   </select>
                 </div>
               </div>
-              <div className="mt-4 rounded-2xl bg-emerald-50 p-3 text-xs font-bold text-emerald-900">
+              <div className="mt-4 rounded-md bg-emerald-50 p-3 text-xs font-normal text-emerald-900">
                 Gợi ý: in nguyên sổ thì chọn “3 trang đầu” và “tất cả các năm”. Nếu chỉ cần bổ sung năm lẻ, chọn “một năm học” để xuất đúng 2 trang kết quả.
               </div>
               <div className="mt-4 flex justify-end gap-2">
-                <button type="button" onClick={() => setShowTranscriptPrintPanel(false)} className="h-11 rounded-xl border border-slate-200 bg-white px-4 text-sm font-black text-slate-600 hover:bg-slate-50">Đóng</button>
+                <button type="button" onClick={() => setShowTranscriptPrintPanel(false)} className="h-9 rounded border border-slate-200 bg-white px-4 text-sm font-normal text-slate-600 hover:bg-slate-50">Đóng</button>
                 <button
                   type="button"
                   onClick={() => {
@@ -3946,7 +3886,7 @@ export default function ScorebookWorkspace({
                       studentIds
                     });
                   }}
-                  className="h-11 rounded-xl bg-emerald-600 px-4 text-sm font-black text-white shadow hover:bg-emerald-700 flex items-center gap-2"
+                  className="h-9 rounded bg-emerald-600 px-4 text-sm font-normal text-white shadow hover:bg-emerald-700 flex items-center gap-2"
                 >
                   <Download className="w-4 h-4" /> Mở cửa sổ in
                 </button>
@@ -3957,11 +3897,11 @@ export default function ScorebookWorkspace({
 
         {showTeacherPanel && (
           <div className="scorebook-toolbar fixed inset-0 z-[160] bg-slate-900/40 backdrop-blur-sm p-4 flex items-center justify-center">
-            <div className="w-full max-w-4xl max-h-[90vh] overflow-y-auto rounded-3xl bg-white border border-blue-100 shadow-2xl p-5">
+            <div className="w-full max-w-4xl max-h-[90vh] overflow-y-auto rounded-lg bg-white border border-blue-100 shadow-2xl p-5">
               <div className="flex items-center justify-between gap-3 mb-4">
                 <div>
-                  <div className="text-xl font-black text-blue-900 uppercase">Giáo viên từng lớp - Khối {grade}</div>
-                  <div className="text-xs font-bold text-slate-500 mt-1">Điền giáo viên cho năm học {currentSchoolYear}, bấm lưu để chốt cứng theo năm.</div>
+                  <div className="text-base font-normal text-blue-900 uppercase">Giáo viên từng lớp - Khối {grade}</div>
+                  <div className="text-xs font-normal text-slate-500 mt-1">Điền giáo viên cho năm học {currentSchoolYear}, bấm lưu để chốt cứng theo năm.</div>
                 </div>
                 <button type="button" onClick={() => setShowTeacherPanel(false)} className="h-10 w-10 rounded-full bg-rose-600 text-white flex items-center justify-center shadow hover:bg-rose-700">
                   <X className="w-5 h-5" />
@@ -3970,7 +3910,7 @@ export default function ScorebookWorkspace({
               <div className="overflow-x-auto">
                 <table className="w-full min-w-[620px] border-separate border-spacing-y-2">
                   <thead>
-                    <tr className="text-left text-xs font-black uppercase text-slate-500">
+                    <tr className="text-left text-xs font-normal uppercase text-slate-500">
                       <th className="w-14 px-2">STT</th>
                       <th className="px-2">Môn</th>
                       <th className="px-2">Tên giáo viên</th>
@@ -3979,15 +3919,15 @@ export default function ScorebookWorkspace({
                   <tbody>
                     {CLASS_TEACHER_SUBJECTS.map((subject, index) => (
                       <tr key={`scorebook-teacher-${subject}`} className="bg-slate-50">
-                        <td className="rounded-l-xl px-2 py-2 font-black text-slate-500">{index + 1}</td>
-                        <td className="px-2 py-2 font-black text-slate-800">{subject}</td>
+                        <td className="rounded-l-xl px-2 py-2 font-normal text-slate-500">{index + 1}</td>
+                        <td className="px-2 py-2 font-normal text-slate-800">{subject}</td>
                         <td className="rounded-r-xl px-2 py-2">
                           <input
                             value={Object.prototype.hasOwnProperty.call(teacherPanelDraft || {}, subject) ? (teacherPanelDraft?.[subject] || '') : getClassSubjectTeacherName(subject)}
                             onChange={(event) => setTeacherPanelDraft(prev => ({ ...(prev || {}), [subject]: event.target.value }))}
                             list={`scorebook-teacher-names-${grade}`}
                             placeholder="Gõ hoặc chọn giáo viên..."
-                            className="w-full rounded-xl border border-slate-200 bg-white p-2 font-bold outline-none focus:border-blue-400"
+                            className="w-full rounded border border-slate-200 bg-white p-2 font-normal outline-none focus:border-blue-400"
                           />
                         </td>
                       </tr>
@@ -3996,8 +3936,8 @@ export default function ScorebookWorkspace({
                 </table>
               </div>
               <div className="mt-4 flex justify-end gap-2">
-                <button type="button" onClick={() => setShowTeacherPanel(false)} className="h-11 rounded-xl border border-slate-200 bg-white px-4 text-sm font-black text-slate-600 hover:bg-slate-50">Đóng</button>
-                <button type="button" onClick={saveTeacherPanel} className="h-11 rounded-xl bg-blue-600 px-4 text-sm font-black text-white shadow hover:bg-blue-700 flex items-center gap-2">
+                <button type="button" onClick={() => setShowTeacherPanel(false)} className="h-9 rounded border border-slate-200 bg-white px-4 text-sm font-normal text-slate-600 hover:bg-slate-50">Đóng</button>
+                <button type="button" onClick={saveTeacherPanel} className="h-9 rounded bg-blue-600 px-4 text-sm font-normal text-white shadow hover:bg-blue-700 flex items-center gap-2">
                   <Save className="w-4 h-4" /> Lưu giáo viên
                 </button>
               </div>
@@ -4005,17 +3945,17 @@ export default function ScorebookWorkspace({
           </div>
         )}
 
-        <div className={`scorebook-scroll flex-1 overflow-auto p-4 ${previewMode || isTranscriptMode ? 'bg-slate-200' : 'bg-slate-100'}`}>
+        <div className={`scorebook-scroll min-h-0 flex-1 overflow-auto p-2 sm:p-3 ${previewMode || isTranscriptMode ? 'bg-slate-200' : 'bg-slate-100'}`}>
           {isTranscriptMode ? (
             <div className="flex min-h-full items-start gap-4">
-              <div className="transcript-list-panel sticky top-0 flex h-[calc(100vh-190px)] max-h-full min-h-0 w-[360px] shrink-0 self-start flex-col rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
+              <div className="transcript-list-panel sticky top-0 flex h-[calc(100vh-190px)] max-h-full min-h-0 w-[360px] shrink-0 self-start flex-col rounded-md border border-slate-200 bg-white p-3 shadow-sm">
                 <div className="mb-3 shrink-0">
                   <div className="flex items-start justify-between gap-2">
                     <div>
-                      <div className="text-base font-black text-slate-900">Danh sách học sinh khối {grade}</div>
-                      <div className="text-xs font-bold text-slate-500">Bấm tên để xem, tích ô để chọn in nhiều học sinh.</div>
+                      <div className="text-base font-normal text-slate-900">Danh sách học sinh khối {grade}</div>
+                      <div className="text-xs font-normal text-slate-500">Bấm tên để xem, tích ô để chọn in nhiều học sinh.</div>
                     </div>
-                    <div className="rounded-lg bg-emerald-50 px-2 py-1 text-xs font-black text-emerald-700">
+                    <div className="rounded-lg bg-emerald-50 px-2 py-1 text-xs font-normal text-emerald-700">
                       {transcriptDraftStudentIds.length} chọn
                     </div>
                   </div>
@@ -4023,22 +3963,22 @@ export default function ScorebookWorkspace({
                     <button
                       type="button"
                       onClick={() => setTranscriptPrintStudentIds(transcriptStudents.map(student => student.id).filter(Boolean))}
-                      className="h-9 rounded-xl bg-emerald-600 px-2 text-xs font-black text-white hover:bg-emerald-700"
+                      className="h-9 rounded bg-emerald-600 px-2 text-xs font-normal text-white hover:bg-emerald-700"
                     >
                       Chọn cả lớp
                     </button>
                     <button
                       type="button"
                       onClick={() => setTranscriptPrintStudentIds([])}
-                      className="h-9 rounded-xl border border-slate-200 bg-white px-2 text-xs font-black text-slate-600 hover:bg-slate-50"
+                      className="h-9 rounded border border-slate-200 bg-white px-2 text-xs font-normal text-slate-600 hover:bg-slate-50"
                     >
                       Bỏ chọn
                     </button>
                   </div>
                 </div>
-                <div className="min-h-0 flex-1 overflow-y-scroll overscroll-contain rounded-xl border border-slate-100">
+                <div className="min-h-0 flex-1 overflow-y-scroll overscroll-contain rounded border border-slate-100">
                   <table className="w-full text-sm">
-                    <thead className="sticky top-0 bg-slate-50 text-xs font-black uppercase text-slate-500">
+                    <thead className="sticky top-0 bg-slate-50 text-xs font-normal uppercase text-slate-500">
                       <tr>
                         <th className="w-10 px-2 py-2 text-center">In</th>
                         <th className="w-10 px-2 py-2 text-center">STT</th>
@@ -4054,7 +3994,7 @@ export default function ScorebookWorkspace({
                           <tr
                             key={`transcript-student-${student.id || index}`}
                             onClick={() => selectTranscriptStudent(student)}
-                            className={`cursor-pointer border-t border-slate-100 ${active ? 'bg-violet-600 text-white' : 'bg-white text-slate-700 hover:bg-violet-50'}`}
+                            className={`cursor-pointer border-t border-slate-100 ${active ? 'bg-blue-50 text-blue-800' : 'bg-white text-slate-700 hover:bg-blue-50'}`}
                           >
                             <td className="px-2 py-2 text-center">
                               <input
@@ -4073,15 +4013,15 @@ export default function ScorebookWorkspace({
                                 title="Chọn in học bạ"
                               />
                             </td>
-                            <td className="px-2 py-2 text-center font-black">{index + 1}</td>
-                            <td className="px-2 py-2 font-bold">{titleCaseText(student.fullName)}</td>
-                            <td className="px-2 py-2 text-center font-bold">{getPcClassName(student.className || student.grade, grade)}</td>
+                            <td className="px-2 py-2 text-center font-normal">{index + 1}</td>
+                            <td className="px-2 py-2 font-normal">{titleCaseText(student.fullName)}</td>
+                            <td className="px-2 py-2 text-center font-normal">{getPcClassName(student.className || student.grade, grade)}</td>
                           </tr>
                         );
                       })}
                       {!transcriptStudents.length && (
                         <tr>
-                          <td colSpan={4} className="px-3 py-6 text-center text-sm font-bold text-slate-500">Chưa có học sinh trong khối này.</td>
+                          <td colSpan={4} className="px-3 py-6 text-center text-sm font-normal text-slate-500">Chưa có học sinh trong khối này.</td>
                         </tr>
                       )}
                     </tbody>
@@ -4164,12 +4104,12 @@ export default function ScorebookWorkspace({
             </div>
           ) : (
           <div
-            className={previewMode ? 'mx-auto bg-white shadow-2xl border border-slate-300 overflow-hidden' : 'inline-block min-w-full rounded-2xl bg-white p-4 shadow-sm'}
+            className={previewMode ? 'mx-auto bg-white shadow-2xl border border-slate-300 overflow-hidden' : 'inline-block min-w-full rounded-md bg-white p-2 shadow-sm'}
             style={previewMode ? { width: pageWidth, height: pageHeight, padding: pageMargin } : undefined}
           >
-            <div className="mb-3 print:mb-2">
-              <div className="text-base font-black text-slate-900">{activeSheet.label || activeSheet.name}</div>
-              <div className="text-xs font-bold text-slate-500">
+            <div className="scorebook-page-label mb-2">
+              <div className="text-sm font-normal text-slate-700">{activeSheet.label || activeSheet.name}</div>
+              <div className="text-xs font-normal text-slate-500">
                 {activeSheetDescription}
               </div>
             </div>

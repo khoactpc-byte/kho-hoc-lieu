@@ -32,7 +32,12 @@ test('migration confirmation resets on navigation and a late old-document respon
     const props = { edits: { 'custom:hkiScore:0:r0:s0': '6' }, students: [{ id: 'a', fullName: 'An', accessCode: 'HS001' }], user: { uid: 'teacher' }, onMigrated: value => migrated.push(value) };
     await act(async () => root.render(React.createElement(Notice, { ...props, docId: 'old' })));
     const clickText = async text => act(async () => [...document.querySelectorAll('button')].find(button => button.textContent.includes(text)).click());
-    await clickText('Xem danh sách');
+    await clickText('Xem điểm cũ');
+    const savedRow = document.querySelector('table[aria-label="Điểm gốc theo số dòng"] tbody tr');
+    assert.equal(savedRow.cells[0].textContent, '1');
+    assert.equal(savedRow.cells[1].textContent, 'An');
+    assert.equal(savedRow.cells[2].textContent, '6');
+    assert.ok(document.body.textContent.includes('chưa gắn với học sinh'));
     await act(async () => document.querySelector('input[type="checkbox"]').click());
     assert.equal([...document.querySelectorAll('button')].find(button => button.textContent.includes('Gắn điểm')).disabled, false);
     await clickText('Gắn điểm');
@@ -40,7 +45,7 @@ test('migration confirmation resets on navigation and a late old-document respon
     await act(async () => root.render(React.createElement(Notice, { ...props, docId: 'new' })));
     await act(async () => resolveSave({ 'new-key-from-old-document': '6' }));
     assert.deepEqual(migrated, []);
-    await clickText('Xem danh sách');
+    await clickText('Xem điểm cũ');
     assert.equal(document.querySelector('input[type="checkbox"]').checked, false);
     assert.equal([...document.querySelectorAll('button')].find(button => button.textContent.includes('Gắn điểm')).disabled, true);
   } finally {

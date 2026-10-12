@@ -2,6 +2,8 @@ import { collection, doc, getDocFromServer, getDocsFromServer, limit, query, run
 import { appId, db } from '../config/firebase';
 import { sameData } from '../utils/dataEquality';
 import { processRecords } from '../utils/bulkOperations';
+import { assertStudentSchoolYear } from '../utils/schoolYearText';
+import { buildStudentYearReconciliation } from '../utils/studentYearReconciliation';
 
 const records = name => collection(db, 'artifacts', appId, 'public', 'data', name);
 const ref = (name, id) => doc(records(name), id);
@@ -9,7 +11,10 @@ const plain = data => Object.fromEntries(Object.entries(data).filter(([key, valu
 const ownsCode = (owner, studentKey, id, sourceId) => owner?.studentKey === studentKey || (!owner?.studentKey && [id, sourceId].includes(owner?.studentId));
 
 // Freeze the legacy score identity before changing a login code. Never derive it from the new code.
-export async function saveStudentRecord(input, { codePrefix, allocateCode = false, actor = '', expected, id: targetId, registration, createOnly = false, profileDecision } = {}) {
+export async function saveStudentRecord(input, { codePrefix, allocateCode = false, actor = '', expected, id: targetId, registration, createOnly = false, profileDecision, profileDecisions = [], academicDecision } = {}) {
+  assertStudentSchoolYear(input);
+  const decisions = [...profileDecisions, ...(profileDecision ? [profileDecision] : [])];
+  if (decisions.length > 400 || decisions.some(item => !item?.requestId) || new Set(decisions.map(item => item.requestId)).size !== decisions.length) throw new Error('Danh sách yêu cầu duyệt không hợp lệ.');
   const target = targetId ? ref('students', targetId) : input.id ? ref('students', input.id) : doc(records('students'));
   const mutationId = globalThis.crypto.randomUUID();
   const initial = (await getDocFromServer(target)).data();
@@ -40,9 +45,28 @@ export async function saveStudentRecord(input, { codePrefix, allocateCode = fals
       const sourceId = input.previousStudentId || '';
       const source = sourceId ? (await transaction.get(ref('students', sourceId))).data() : null;
       if (sourceId && (!source || sourceId === target.id || String(source.schoolYear || '') >= String(input.schoolYear || '') || source.schoolCode !== input.schoolCode)) throw new Error('Hồ sơ năm trước không hợp lệ hoặc khác cơ sở. Đối soát trước khi nối định danh.');
-      const requestRef = profileDecision ? ref('student_profile_requests', profileDecision.requestId) : null;
-      const request = requestRef ? (await transaction.get(requestRef)).data() : null;
-      if (requestRef && (!request || request.studentId !== target.id || !sameData(request.changes, profileDecision.expectedChanges))) throw new Error('Yêu cầu hồ sơ vừa thay đổi. Tải lại trước khi duyệt.');
+      if (academicDecision) {
+        const expectedSource = academicDecision.source;
+        const expectedBook = academicDecision.scorebook;
+        if (!expectedSource?.id || !expectedBook?.id) throw new Error('Thiếu hồ sơ/sổ điểm năm trước để xét lớp.');
+        const academicSource = (await transaction.get(ref('students', expectedSource.id))).data();
+        const academicBook = (await transaction.get(ref('scorebooks', expectedBook.id))).data();
+        if (!sameData(plain(academicSource || {}), plain(expectedSource)) || !sameData(plain(academicBook || {}), plain(expectedBook))) {
+          throw new Error('Hồ sơ hoặc điểm năm trước vừa thay đổi. Mở lại bảng đối chiếu để xét lớp.');
+        }
+        const decision = buildStudentYearReconciliation({ records: [{ ...current, id: target.id }, { ...academicSource, id: expectedSource.id }],
+          scorebooks: [{ ...academicBook, id: expectedBook.id }], targetSchoolYear: input.schoolYear }).find(item => item.student.id === target.id);
+        if (decision?.action !== 'review' || decision.proposedClass !== input.className || decision.outcome !== input.promotion?.outcome) {
+          throw new Error('Kết quả cả năm không đủ hoặc không khớp lớp đã duyệt. Chưa sửa hồ sơ.');
+        }
+      }
+      const requestDecisions = [];
+      for (const decision of decisions) {
+        const requestRef = ref('student_profile_requests', decision.requestId);
+        const request = (await transaction.get(requestRef)).data();
+        if (!request || request.studentId !== target.id || (request.status || 'pending') !== 'pending' || !sameData(request.changes, decision.expectedChanges)) throw new Error('Yêu cầu hồ sơ vừa thay đổi. Tải lại trước khi duyệt.');
+        requestDecisions.push({ requestRef, decision });
+      }
       const studentKey = current?.studentKey || current?.accessCode || source?.studentKey || source?.accessCode || `student-${target.id}`;
       if (current?.studentKey && input.studentKey && input.studentKey !== current.studentKey) throw new Error('Không được thay đổi định danh học sinh.');
       if (duplicates.some(item => item.id !== target.id && item.id !== sourceId && (item.data().studentKey || item.data().accessCode) !== studentKey)) return null;
@@ -58,14 +82,15 @@ export async function saveStudentRecord(input, { codePrefix, allocateCode = fals
       const data = { ...(current || {}), ...plain(input), studentKey, accessCode: candidate,
         createdAt: current?.createdAt || Date.now(), updatedAt: Date.now(), updatedBy: actor,
         syncRevision: Number(current?.syncRevision || 0) + 1, sheetSync: { status: 'pending', jobId: `${target.id}--${mutationId}`, updatedAt: Date.now() } };
-      if (!data.fullName || !data.className || !data.schoolYear) throw new Error('Hồ sơ thiếu họ tên, lớp hoặc năm học.');
+      assertStudentSchoolYear(data);
+      if (!data.fullName || (!data.className && data.status !== 'dropped') || !data.schoolYear) throw new Error('Hồ sơ thiếu họ tên, lớp hoặc năm học.');
       transaction.set(codeRef, { studentKey, studentId: target.id, studentIds: [...new Set([...(owner?.studentIds || (owner?.studentId ? [owner.studentId] : [])), target.id])], updatedAt: Date.now() });
       // Retain aliases, so old work and a historical-year login code never belong to another child.
       if (oldRef && (!oldOwner || ownsCode(oldOwner, studentKey, target.id, sourceId))) transaction.set(oldRef, { ...(oldOwner || {}), studentKey, studentId: oldOwner?.studentId || target.id, retired: true, updatedAt: Date.now() });
       if (counterRef && candidate.startsWith(prefix)) transaction.set(counterRef, { next: Math.max(Number(counter?.next || 1), Number(candidate.slice(prefix.length)) + 1) });
       transaction.set(target, data);
-      if (requestRef) {
-        if (Object.keys(profileDecision.remainingChanges || {}).length) transaction.set(requestRef, { changes: profileDecision.remainingChanges, updatedAt: Date.now() }, { merge: true });
+      for (const { requestRef, decision } of requestDecisions) {
+        if (Object.keys(decision.remainingChanges || {}).length) transaction.set(requestRef, { changes: decision.remainingChanges, updatedAt: Date.now() }, { merge: true });
         else transaction.delete(requestRef);
       }
       transaction.set(ref('student_sync_jobs', data.sheetSync.jobId), { studentId: target.id, studentKey, revision: data.syncRevision,

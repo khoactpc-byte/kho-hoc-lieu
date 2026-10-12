@@ -54,6 +54,26 @@ test('student writes derive ownership; profile whitelist and elapsed time cannot
   store.put(`${root}/settings/global`, { schoolYear: student.schoolYear, maintenance: { active: true } });
   await assert.rejects(data.profileRequest(student, { changes: { phone: '456' } }), /phục hồi/);
 });
+
+test('profile API allows only one pending request, including legacy IDs, until admin finishes review', async () => {
+  const { store, data } = fixture();
+  const outcomes = await Promise.allSettled([
+    data.profileRequest(student, { changes: { phone: '123' } }),
+    data.profileRequest(student, { changes: { phone: '456' } })
+  ]);
+  assert.equal(outcomes.filter(item => item.status === 'fulfilled').length, 1);
+  assert.match(outcomes.find(item => item.status === 'rejected').reason.message, /đang chờ quản trị viên duyệt/);
+  assert.equal(store.get(`${root}/student_profile_requests/profile-s1`).changes.phone, '123');
+  const before = store.dump();
+  await assert.rejects(data.profileRequest(student, { changes: { fullName: 'Tên mới' } }), /đang chờ quản trị viên duyệt/);
+  assert.deepEqual(store.dump(), before, 'pending request cannot be replaced or extended');
+  await store.runTransaction(async tx => { tx.delete(store.doc(`${root}/student_profile_requests/profile-s1`)); });
+  store.put(`${root}/student_profile_requests/old-random-id`, { studentId: 's1', changes: { phone: '789' } });
+  await assert.rejects(data.profileRequest(student, { changes: { phone: '456' } }), /đang chờ quản trị viên duyệt/);
+  await store.runTransaction(async tx => { tx.delete(store.doc(`${root}/student_profile_requests/old-random-id`)); });
+  await data.profileRequest(student, { changes: { phone: '456' } });
+  assert.deepEqual(store.get(`${root}/student_profile_requests/profile-s1`).changes, { phone: '456' });
+});
 test('quick-material bank and manual HTML never expose keys; kinds cannot exchange attempts', async () => {
   const { store } = fixture(); let count = 0;
   const options = { store, appId: 'test', now: () => 1000, uuid: () => `id-${++count}`, choose: () => 0 };
