@@ -20,7 +20,7 @@ test('Sheet import shows real progress, retains assigned classes and reports par
         builder.onResolve({ filter: /^firebase\/firestore$|config\/firebase$|utils\/helpers$|services\/(studentMutations|jsonpClient)$/ }, args => ({ path: args.path, namespace: 'fixture' }));
         builder.onLoad({ filter: /.*/, namespace: 'fixture' }, args => {
           let contents;
-          if (args.path === 'firebase/firestore') contents = 'export const collection=(...a)=>a.join("/"); export const doc=collection; export const query=ref=>ref; export const where=(...a)=>a; export const onSnapshot=(_ref,next)=>{next({docs:[]}); return ()=>{};}; export const setDoc=async()=>{throw new Error("Unexpected write");}; export const deleteDoc=setDoc; export const getDocsFromServer=async()=>{throw new Error("Unexpected server read");};';
+          if (args.path === 'firebase/firestore') contents = 'export const collection=(...a)=>a.join("/"); export const doc=collection; export const query=ref=>ref; export const where=(...a)=>a; export const onSnapshot=(_ref,next)=>{next({docs:[]}); return ()=>{};}; export const setDoc=async()=>{throw new Error("Unexpected write");}; export const deleteDoc=setDoc; export const getDocsFromServer=async()=>({docs:window.fixture.serverStudents.map(student=>({id:student.id,data:()=>student}))});';
           else if (args.path.endsWith('config/firebase')) contents = 'export const db={}; export const appId="fixture";';
           else if (args.path.endsWith('utils/helpers')) contents = 'export const postAppsScript=(...a)=>window.fixture.post(...a); export const IMAGE_DRIVE_FOLDER_ID="fixture";';
           else if (args.path.endsWith('services/jsonpClient')) contents = 'export const requestJsonp=async()=>({success:true,provinces:[],communes:{}});';
@@ -32,13 +32,15 @@ test('Sheet import shows real progress, retains assigned classes and reports par
     const { createRoot } = await import('react-dom/client');
     let finishRead, finishSave, reads = 0;
     const writes = [];
+    const saveOptions = [];
     dom.window.confirm = () => true;
     dom.window.fixture = {
       post: () => { reads += 1; return new Promise(resolveRead => { finishRead = resolveRead; }); },
-      save: student => {
+      save: (student, options) => {
         writes.push(student);
+        saveOptions.push(options);
         if (student.id === 'failed') throw new Error('Lỗi lưu thử nghiệm');
-        return new Promise(resolveSave => { finishSave = () => resolveSave(student); });
+        return new Promise(resolveSave => { finishSave = () => resolveSave({ ...student, id: student.id || options.id }); });
       }
     };
     const students = ['updated', 'same', 'failed'].map((id, index) => ({ id, fullName: ['An', 'Bình', 'Chi'][index], birthDate: '01/01/2010',
@@ -126,6 +128,47 @@ test('Sheet import shows real progress, retains assigned classes and reports par
     await act(async () => finishRead({ result: { success: true, items: cleanDropped.map(item => sheetRow(item, { status: 'active', dropoutYear: '' })) } }));
     assert.equal(writes.length, beforeRepeat, 'repeated imports must neither reactivate dropouts nor create redundant sync jobs');
     assert.match(status().textContent, /Không đổi 3/);
+    await click(button('Đóng đối chiếu Sheet'));
+    const original = { ...students[0], id: 'existing-nine', accessCode: 'HS25801', className: '9A', grade: '9' };
+    const prior = { ...students[1], id: 'prior-eight', accessCode: 'HS25802', studentKey: 'stable-binh', className: '8A', grade: '8', schoolYear: '2025-2026' };
+    const wrongClass = { ...students[2], id: 'wrong-class', accessCode: 'HS25803', className: '8A', grade: '8' };
+    const duplicateOne = { ...students[0], id: 'duplicate-one', accessCode: 'HS25804', fullName: 'Đỗ Thị An' };
+    const duplicateTwo = { ...duplicateOne, id: 'duplicate-two', accessCode: 'HS25805', fullName: 'do thi an' };
+    const currentRecords = [original, prior, wrongClass, duplicateOne, duplicateTwo];
+    dom.window.fixture.serverStudents = currentRecords;
+    await render(currentRecords);
+    await click(button('Tiện ích'));
+    await click(button('Đối chiếu Sheet / thêm học sinh thiếu'));
+    const compare = () => document.querySelector('[role="dialog"][aria-label="Đối chiếu học sinh với Sheet"]');
+    assert.match(compare().textContent, /Đang đọc và đối chiếu/);
+    const beforeApply = writes.length;
+    await act(async () => finishRead({ result: { success: true, items: [
+      sheetRow(original, { rowNumber: 20, currentClassName: '9A' }),
+      sheetRow(prior, { rowNumber: 21, currentClassName: '8A', classHistory: { '2025-2026': '8A', '2026-2027': '9A' } }),
+      sheetRow(wrongClass, { rowNumber: 22, currentClassName: '9A', classHistory: { '2026-2027': '9A' } })
+    ] } }));
+    assert.equal(writes.length, beforeApply, 'opening the comparison is read-only');
+    assert.match(compare().textContent, /Thiếu trên web/);
+    assert.match(compare().textContent, /Cùng họ tên và ngày sinh/);
+    await click(document.querySelector('input[aria-label="Chọn dòng Sheet 21"]'));
+    await click(document.querySelector('input[aria-label="Chọn dòng Sheet 22"]'));
+    await click(button('Áp dụng các hồ sơ đã chọn (2)'));
+    const added = writes[beforeApply];
+    assert.equal(added.className, '9A'); assert.equal(added.grade, '9'); assert.equal(added.schoolYear, '2026-2027');
+    assert.equal(added.previousStudentId, prior.id); assert.equal(added.studentKey, prior.studentKey); assert.equal(added.accessCode, prior.accessCode);
+    assert.equal(saveOptions[beforeApply].createOnly, true);
+    assert.deepEqual(added.classHistory, { '2025-2026': '8A', '2026-2027': '9A' });
+    await act(async () => finishSave());
+    assert.equal(writes[beforeApply + 1].id, wrongClass.id); assert.equal(writes[beforeApply + 1].className, '9A');
+    await act(async () => finishSave());
+    assert.match(compare().textContent, /Hoàn tất: thêm 1, cập nhật lớp 1, lỗi 0/);
+    assert.equal(button('Áp dụng các hồ sơ đã chọn (0)').disabled, true);
+    const chooseDuplicate = [...compare().querySelectorAll('button')].find(element => element.textContent === 'Chọn trên danh sách');
+    await click(chooseDuplicate);
+    assert.equal(compare(), null);
+    const selectedOnList = [...document.querySelectorAll('tbody tr')];
+    assert.equal(selectedOnList.length, 1); assert.match(selectedOnList[0].textContent, /Đỗ Thị An/);
+    assert.equal(writes.length, beforeApply + 2, 'choosing a suspected duplicate does not delete or overwrite any record');
   } finally {
     if (root) await act(async () => root.unmount());
     dom.window.close();

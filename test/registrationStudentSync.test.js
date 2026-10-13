@@ -94,5 +94,17 @@ test('Sheet import includes earlier dropouts when viewing a later year so a stal
   const current = JSON.parse(context.listSheetStudents_({ schoolYear: '2026-2027' }).value);
   assert.equal(current.success, true); assert.equal(current.items.length, 1);
   assert.equal(current.items[0].status, 'dropped'); assert.equal(current.items[0].dropoutYear, '2025-2026');
-  assert.equal(JSON.parse(context.listSheetStudents_({ schoolYear: '2024-2025' }).value).items.length, 0);
+  const past = JSON.parse(context.listSheetStudents_({ schoolYear: '2024-2025' }).value).items;
+  assert.equal(past.length, 1); assert.equal(past[0].currentClassName, '8A'); assert.equal(past[0].status, 'active');
+  assert.equal(past[0].dropoutYear, '');
+});
+
+test('requested year uses its history column even when the current summary still points to the previous year', () => {
+  const { context, row } = fixture();
+  row[51] = '8A'; row[50] = '8'; row[52] = '2025-2026'; row[59] = '9A';
+  const current = JSON.parse(context.listSheetStudents_({ schoolYear: '2026-2027' }).value).items;
+  assert.equal(current.length, 1); assert.equal(current[0].currentClassName, '9A'); assert.equal(current[0].grade, '9');
+  assert.equal(current[0].schoolYear, '2026-2027'); assert.equal(current[0].className, '6A', 'admission class remains separate');
+  row[59] = '';
+  assert.equal(JSON.parse(context.listSheetStudents_({ schoolYear: '2026-2027' }).value).items.length, 0, 'no automatic promotion from a prior year');
 });

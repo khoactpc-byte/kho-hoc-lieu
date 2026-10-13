@@ -16,12 +16,15 @@ import { resolveScorebookDocument } from '../utils/scorebookArchive';
 import { buildStudentYearReconciliation, reconciledStudentRecord, restoreClassesFromPriorRoster, sheetClassConflict } from '../utils/studentYearReconciliation';
 import StudentYearReconciliation from './StudentYearReconciliation';
 import StudentSheetImportStatus from './StudentSheetImportStatus';
+import StudentSheetReconciliation from './StudentSheetReconciliation';
+import { buildSheetReconciliation, sheetRecordForYear, studentDuplicateGroups } from '../utils/studentSheetReconciliation';
 import { sameData } from '../utils/dataEquality';
 import { sanitizeHtml } from '../utils/safeHtml';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { collection, deleteDoc, doc, getDocsFromServer, onSnapshot, query as firestoreQuery, setDoc, where } from 'firebase/firestore';
 import {
+  Users,
   ArrowDownAZ,
   ArrowUpDown,
   CalendarDays,
@@ -1448,6 +1451,8 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
   const [yearReconciliationProgress, setYearReconciliationProgress] = useState('');
   const yearReconciliationLock = useRef(false);
   const [sheetImportStatus, setSheetImportStatus] = useState(null);
+  const [sheetReconciliation, setSheetReconciliation] = useState(null);
+  const sheetReconciliationLock = useRef(false);
   const sheetImportLock = useRef(false);
   const [isLoadingRegistrations, setIsLoadingRegistrations] = useState(false);
   const [showCodeChoiceModal, setShowCodeChoiceModal] = useState(false);
@@ -3046,7 +3051,7 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
  setIsSaving(true);
  try {
   await onBeforeDangerousAction?.('truoc-xoa-hoc-sinh');
-  await deleteStudentRecord(student, user?.uid || 'Admin');
+   await deleteStudentRecord(students.find(item => item.id === student.id) || student, user?.uid || 'Admin');
   showNotification?.('Đã xóa hồ sơ học sinh; bản đối soát được giữ.');
   try { await postAppsScript({action:'writeAuditLog',auditAction:'xoa_ho_so_hoc_sinh',actor:user?.uid || 'Admin',details:{studentId:student.id}}); }
   catch(error) { showNotification?.('Hồ sơ đã xóa; nhật ký Sheet chưa ghi được: ' + error.message, 'error'); }
@@ -3060,7 +3065,7 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
  setIsSaving(true);
  try {
   await onBeforeDangerousAction?.('truoc-xoa-nhieu-hoc-sinh');
-  const result=await processRecords(targets,student=>deleteStudentRecord(student,user?.uid || 'Admin'));
+   const result=await processRecords(targets,student=>deleteStudentRecord(students.find(item => item.id === student.id) || student,user?.uid || 'Admin'));
   setSelectedIds(new Set(result.failed.map(item=>item.record.id)));
   showNotification?.('Đã xóa ' + result.succeeded.length + '/' + targets.length + ' hồ sơ. ' + (result.failed.length ? result.failed.length + ' hồ sơ lỗi vẫn được chọn để thử tiếp: ' + result.failed[0].error.message : ''),result.failed.length?'error':'success');
   try { await postAppsScript({action:'writeAuditLog',auditAction:'xoa_nhieu_hoc_sinh',actor:user?.uid || 'Admin',details:{deletedIds:result.succeeded.map(item=>item.record.id),failedIds:result.failed.map(item=>item.record.id)}}); }
@@ -3368,18 +3373,18 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
 
   const syncStudentsFromSheet = async () => {
     if (isSaving || sheetImportLock.current) return;
-    if (!yearStudents.length) {
-      showNotification?.('Chưa có học sinh trong database để khớp với Sheet.', 'error');
-      return;
-    }
     if (!window.confirm('Cập nhật thông tin hồ sơ từ Sheet cho năm đang xem? Giữ các quyết định lớp và kết quả đã xét trên web. Nếu Sheet đánh dấu bỏ học, web sẽ giữ trạng thái bỏ học, xóa lớp/khối hiện tại và loại hồ sơ khỏi xét nâng lớp. Bỏ qua các ô Sheet trống khác.')) return;
     sheetImportLock.current = true;
     setIsSaving(true);
     const progress = { phase: 'reading', completed: 0, total: 0, updated: 0, unchanged: 0, skipped: 0, failed: 0, classConflicts: 0, errors: [] };
     setSheetImportStatus({ ...progress });
     try {
-      const response = await loadRegistrationDataAction('listStudents', { schoolYear: currentSchoolYear });
-      const sheetRows = Array.isArray(response.items) ? response.items : [];
+      const response = await loadRegistrationDataAction('listStudents');
+      const sheetRows = (Array.isArray(response.items) ? response.items : [])
+        .map(row => sheetRecordForYear(row, currentSchoolYear)).filter(Boolean)
+        .filter(row => belongsToEducationLevel(registrationToStudentData(row, currentSchoolYear), educationLevel));
+      const comparison = buildSheetReconciliation(sheetRows.map(row => ({ ...normalizeStudentRecord(registrationToStudentData(row, currentSchoolYear), currentSchoolYear),
+        rowNumber: row.rowNumber, sheetClassSource: row.sheetClassSource })), scopedStudents, currentSchoolYear);
       if (!sheetRows.length) {
         setSheetImportStatus({ ...progress, phase: 'done', message: 'Sheet không trả về hồ sơ nào cho năm đang xem.' });
         return;
@@ -3392,23 +3397,13 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
       progress.total = sheetRows.length;
       setSheetImportStatus({ ...progress });
 
-      for (const row of sheetRows) {
+      for (const [index, row] of sheetRows.entries()) {
         try {
-        const sheetStudent = registrationToStudentData(row, currentSchoolYear);
+        const reviewRow = comparison.rows[index];
+        const sheetStudent = reviewRow.student;
         const hasCurrentClassName = isUsefulSheetValue(row.currentClassName || row.lopHienTai || row.current_class_name);
-        const accessCode = String(sheetStudent.accessCode || '').trim().toUpperCase();
-        const identityCode = String(sheetStudent.identityCode || '').replace(/^'/, '').trim();
-        const campus = getStudentSchoolCode(sheetStudent);
-        const candidates = yearStudents.filter(student => campus === 'UNKNOWN' || getStudentSchoolCode(student) === campus);
-        const byCode = accessCode ? candidates.filter(student => String(student.accessCode || student.studentCode || '').trim().toUpperCase() === accessCode) : [];
-        const byIdentity = /^\d{12}$/.test(identityCode) ? candidates.filter(student => String(student.identityCode || '').replace(/^'/, '').trim() === identityCode) : [];
-        const byName = candidates.filter(student =>
-            normalizeVietnameseName(student.fullName || '') === normalizeVietnameseName(sheetStudent.fullName || '')
-            && normalizeBirthDate(student.birthDate || '') === normalizeBirthDate(sheetStudent.birthDate || '')
-          );
-        const matches = byCode.length ? byCode : byIdentity.length ? byIdentity : byName;
-        const existing = matches.length === 1 ? matches[0] : null;
-        if (!existing?.id) {
+        const existing = reviewRow.existing;
+        if (!existing?.id || reviewRow.action === 'ambiguous') {
           skippedCount += 1;
           progress.skipped += 1;
           continue;
@@ -3484,6 +3479,9 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
         }
       }
       setSheetImportStatus({ ...progress, errors: [...progress.errors], phase: progress.failed ? 'error' : 'done' });
+      if (comparison.rows.some(row => row.action !== 'matched') || comparison.duplicateGroups.length) {
+        setSheetReconciliation({ ...comparison, progress: 'Đã cập nhật thông tin các hồ sơ khớp. Tích chọn hồ sơ thiếu hoặc khác lớp bên dưới để áp dụng.' });
+      }
 
       if (errors.length) {
         console.warn('Lỗi cập nhật database từ Sheet:', errors);
@@ -3498,6 +3496,77 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
       sheetImportLock.current = false;
       setIsSaving(false);
     }
+  };
+
+  const openSheetReconciliation = async (mode = 'sheet') => {
+    if (isSaving || sheetReconciliationLock.current) return;
+    sheetReconciliationLock.current = true;
+    setIsSaving(true);
+    setSheetReconciliation({ rows: [], webOnly: [], duplicateGroups: studentDuplicateGroups(yearStudents, 'web'), schoolYear: currentSchoolYear, mode, loading: true });
+    try {
+      const response = await loadRegistrationDataAction('listStudents');
+      const sheetStudents = (Array.isArray(response.items) ? response.items : []).map(row => {
+        const projected = sheetRecordForYear(row, currentSchoolYear);
+        return projected ? { ...normalizeStudentRecord(registrationToStudentData(projected, currentSchoolYear), currentSchoolYear), rowNumber: row.rowNumber, sheetClassSource: projected.sheetClassSource } : null;
+      }).filter(student => student && belongsToEducationLevel(student, educationLevel));
+      setSheetReconciliation({ ...buildSheetReconciliation(sheetStudents, scopedStudents, currentSchoolYear), mode, loading: false });
+    } catch (error) {
+      setSheetReconciliation(previous => ({ ...previous, loading: false, error: `Chưa đọc được Sheet: ${error.message}` }));
+    } finally { sheetReconciliationLock.current = false; setIsSaving(false); }
+  };
+
+  const applySheetReconciliation = async selectedRows => {
+    if (isSaving || sheetReconciliationLock.current || !selectedRows.length) return;
+    if (sheetReconciliation?.schoolYear !== currentSchoolYear) { showNotification?.('Năm đang xem đã đổi. Mở lại đối chiếu Sheet.', 'error'); return; }
+    const additions = selectedRows.filter(row => row.action === 'create').length;
+    const classChanges = selectedRows.filter(row => row.action === 'class').length;
+    if (!window.confirm(`Thêm ${additions} hồ sơ thiếu và cập nhật lớp của ${classChanges} hồ sơ theo cột ${currentSchoolYear} trên Sheet? Chỉ áp dụng các dòng đã tích chọn.`)) return;
+    sheetReconciliationLock.current = true;
+    setIsSaving(true);
+    let added = 0, changed = 0, failed = 0;
+    try {
+      const snapshot = await getDocsFromServer(collection(db, 'artifacts', appId, 'public', 'data', 'students'));
+      const latest = snapshot.docs.map(item => ({ ...item.data(), id: item.id }));
+      const latestSafe = latest.map(student => normalizeStudentRecord(student, currentSchoolYear));
+      const fresh = buildSheetReconciliation(sheetReconciliation.rows.map(row => row.student), latestSafe, currentSchoolYear);
+      for (const [index, requested] of selectedRows.entries()) {
+        setSheetReconciliation(previous => ({ ...previous, progress: `Đang áp dụng ${index + 1}/${selectedRows.length} · ${requested.student.fullName}` }));
+        try {
+          const row = fresh.rows.find(item => item.key === requested.key);
+          if (!row || row.action !== requested.action) throw new Error('Định danh hoặc hồ sơ vừa thay đổi. Mở lại đối chiếu Sheet trước khi áp dụng.');
+          let saved;
+          if (row.action === 'create') {
+            const source = row.sourceStudent;
+            const profile = { ...row.student };
+            ['id', 'rowNumber', 'sheetClassSource'].forEach(key => delete profile[key]);
+            const input = { ...profile, accessCode: profile.accessCode || source?.accessCode || '',
+              previousStudentId: source?.id || '', ...(source ? { studentKey: source.studentKey || source.accessCode || source.id } : {}),
+              classHistory: mergeStudentClassHistory(source?.classHistory, profile.classHistory), schoolYear: currentSchoolYear };
+            if (source?.className) input.classHistory[source.schoolYear] = source.className;
+            if (input.className) input.classHistory[currentSchoolYear] = input.className;
+            const identity = source?.studentKey || source?.accessCode || source?.id || input.accessCode || input.identityCode || `${normalizeVietnameseName(input.fullName)}|${normalizeBirthDate(input.birthDate)}`;
+            saved = await persistStudent(input, { createOnly: true, allocateCode: !input.accessCode,
+              id: stableRecordId(source ? 'promotion' : 'sheet-import', identity, currentSchoolYear, getStudentSchoolCode(input)) });
+            added += 1;
+          } else {
+            if (!sameData(row.existing, requested.existing)) throw new Error('Hồ sơ trên web vừa thay đổi. Mở lại đối chiếu trước khi đổi lớp.');
+            saved = await persistStudent({ ...row.existing, className: row.student.className, grade: getGradeFromClass(row.student.className),
+              ...(isGraduatedStudent(row.student) ? { graduationYear: row.student.graduationYear || currentSchoolYear.slice(0, 4),
+                completionStatus: row.student.completionStatus || 'completed_grade_9', completionSchoolYear: row.student.completionSchoolYear || previousSchoolYear } : {}),
+              classHistory: { ...(row.existing.classHistory || {}), [currentSchoolYear]: row.student.className } },
+            { expected: latest.find(student => student.id === row.existing.id) });
+            changed += 1;
+          }
+          setSheetReconciliation(previous => ({ ...previous, rows: previous.rows.map(item => item.key === requested.key
+            ? { ...item, action: 'saved', existing: saved, reason: 'Đã lưu lên web; đồng bộ Sheet được xếp hàng.' } : item) }));
+        } catch (error) {
+          failed += 1;
+          setSheetReconciliation(previous => ({ ...previous, rows: previous.rows.map(item => item.key === requested.key ? { ...item, reason: `Chưa lưu: ${error.message}` } : item) }));
+        }
+      }
+      setSheetReconciliation(previous => ({ ...previous, progress: `Hoàn tất: thêm ${added}, cập nhật lớp ${changed}, lỗi ${failed}. Các hồ sơ lỗi vẫn được giữ để bạn đối chiếu.` }));
+    } catch (error) { setSheetReconciliation(previous => ({ ...previous, error: error.message })); }
+    finally { sheetReconciliationLock.current = false; setIsSaving(false); }
   };
 
   const registrationToStudent = (registration = {}) => registrationToStudentData(registration, currentSchoolYear);
@@ -3793,6 +3862,11 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
         <span id="student-issue-filter-note" className="text-[11px] leading-4 text-slate-500">Chỉ lọc danh sách đang xem; không sửa dữ liệu.</span>
       </label>,
       actions: studentTab === 'current' ? [{
+        id: 'duplicates', label: 'Kiểm tra học sinh nghi trùng',
+        note: 'Liệt kê hồ sơ cùng họ tên/ngày sinh, mã định danh hoặc mã học sinh trong cùng năm. Xem từng hồ sơ trước khi chọn xóa.',
+        icon: <Users className="h-4 w-4 text-amber-600" />, disabled: isSaving,
+        onClick: utilityAction(() => openSheetReconciliation('duplicates'))
+      }, {
         id: 'missingInfo', label: 'Lập danh sách thông tin còn thiếu',
         note: 'Tạo nội dung để copy cho học sinh đã chọn, hoặc danh sách đang lọc.',
         icon: <ClipboardCheck className="h-4 w-4 text-orange-600" />,
@@ -3847,9 +3921,14 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
         onClick: utilityAction(() => setShowImport(true))
       }, {
         id: 'fromSheet', label: 'Cập nhật hồ sơ từ Sheet',
-        note: 'Sheet → web: cập nhật thông tin, giữ lớp đã xếp và kết quả ở trung tâm. Báo lớp khác nhau để đối chiếu.',
-        icon: <RefreshCw className="h-4 w-4 text-blue-600" />, disabled: isSaving || yearStudents.length === 0,
+        note: 'Cập nhật hồ sơ khớp; hiện bảng để bạn tích chọn thêm hồ sơ thiếu hoặc áp dụng lớp đúng cột năm trên Sheet.',
+        icon: <RefreshCw className="h-4 w-4 text-blue-600" />, disabled: isSaving,
         onClick: utilityAction(syncStudentsFromSheet)
+      }, {
+        id: 'compareSheet', label: 'Đối chiếu Sheet / thêm học sinh thiếu',
+        note: `So sánh số lượng từng lớp theo cột ${currentSchoolYear}. Xem tên người thiếu, khác lớp và nghi trùng trước khi áp dụng.`,
+        icon: <ClipboardCheck className="h-4 w-4 text-sky-700" />, disabled: isSaving,
+        onClick: utilityAction(() => openSheetReconciliation())
       }, {
         id: 'toSheet', label: 'Gửi hồ sơ trên web lên Sheet',
         note: 'Web → Sheet: toàn bộ năm đang xem, kể cả ngoài bộ lọc.',
@@ -4060,6 +4139,12 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
       </div>
 
       {studentTab === 'current' && <StudentSheetImportStatus status={sheetImportStatus} onClose={() => setSheetImportStatus(null)} />}
+      {sheetReconciliation && <StudentSheetReconciliation key={`${sheetReconciliation.schoolYear}:${sheetReconciliation.mode || 'sheet'}`}
+        report={sheetReconciliation} webStudents={yearStudents} busy={isSaving} onApply={applySheetReconciliation}
+        onClose={() => setSheetReconciliation(null)}
+        onView={student => { setSheetReconciliation(null); openView(student); }}
+        onSelectWeb={records => { setSheetReconciliation(null); setStudentTab('current'); setGradeFilter(null); setClassFilter(null); setStatusFilter(null);
+          setColumnFilters({}); setQuery(''); setSelectedIds(new Set(records.map(student => student.id))); setQuickIssueFilter('selected'); }} />}
       {yearReconciliation && <StudentYearReconciliation rows={yearReconciliation} schoolYear={currentSchoolYear} busy={isSaving}
         progress={yearReconciliationProgress} onRestore={rows => applyYearReconciliation(rows)}
         onPriorRoster={text => { try { setYearReconciliation(restoreClassesFromPriorRoster(yearReconciliation, scopedStudents, text)); }
@@ -4076,6 +4161,7 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
                   Tổng {classStats.reduce((sum, item) => sum + item.total, 0)} học sinh
                 </div>
               </div>
+              <button type="button" disabled={isSaving} onClick={() => { setShowClassStats(false); openSheetReconciliation(); }} className="ml-auto rounded border border-slate-200 bg-white px-2 py-1.5 text-xs text-sky-700 disabled:opacity-40">Đối chiếu với Sheet</button>
               <button type="button" onClick={() => setShowClassStats(false)} className="flex h-8 w-8 items-center justify-center rounded-full bg-white text-slate-500 shadow-sm hover:bg-rose-600 hover:text-white" title="Đóng">
                 <X className="h-4 w-4" />
               </button>

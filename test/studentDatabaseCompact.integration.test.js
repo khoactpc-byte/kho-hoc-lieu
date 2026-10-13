@@ -333,7 +333,9 @@ test('compact database loads images on demand, opens the matching profile and pr
       assert.ok(body.getElementById(action.getAttribute('aria-describedby'))?.textContent.trim(), `${action.getAttribute('aria-label')} has a reminder`);
     }
     assert.match(body.getElementById(namedButton('Gửi hồ sơ trên web lên Sheet').getAttribute('aria-describedby')).textContent, /toàn bộ.*năm đang xem.*ngoài bộ lọc/);
-    assert.match(body.getElementById(namedButton('Cập nhật hồ sơ từ Sheet').getAttribute('aria-describedby')).textContent, /giữ lớp đã xếp.*kết quả ở trung tâm/);
+    assert.match(body.getElementById(namedButton('Cập nhật hồ sơ từ Sheet').getAttribute('aria-describedby')).textContent, /hồ sơ khớp.*tích chọn.*hồ sơ thiếu/);
+    assert.ok(namedButton('Đối chiếu Sheet / thêm học sinh thiếu'));
+    assert.ok(namedButton('Kiểm tra học sinh nghi trùng'));
     assert.equal(namedButton('Gửi thư cho học sinh đã chọn (1)').disabled, true, 'unavailable mailbox callbacks remain disabled');
     assert.ok(buttonWithText('Thử lại đồng bộ (1)'), 'retry stays available after removing the summary banner');
     const sheetGroup = [...utilities.querySelectorAll('details')].find(group => group.querySelector('summary').textContent.includes('Nhập và đồng bộ Sheet'));
