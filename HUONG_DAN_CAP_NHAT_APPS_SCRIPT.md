@@ -9,13 +9,15 @@ Theo lựa chọn bảo mật ngày 05/10/2026, hai bộ mã nguồn trong `apps
 | Dự án | Phiên bản cần thấy sau triển khai |
 | --- | --- |
 | Máy chủ chính | `2026-10-04-review-v8` |
-| Đăng ký học sinh | `2026-10-13-sheet-roster-v10` |
+| Đăng ký học sinh | `2026-10-14-dropout-year-repair-v11` |
 
 Lượt sửa này đã cập nhật **mã nguồn trong máy**, chưa cập nhật hai Web App đang chạy. Cập nhật và triển khai máy chủ chính trước, tiếp theo dự án đăng ký, rồi đưa frontend mới lên hosting. Giữ các URL Web App hiện tại.
 
 Lượt rà soát ngày 13/10 sửa chiều đồng bộ học sinh: giữ `TNTHCS` và năm tốt nghiệp, xóa khối hiện tại của học sinh tốt nghiệp; giữ trạng thái bỏ học khi nhập Sheet lên web và chặn lượt đồng bộ cũ tự mở lại hồ sơ. Trước khi ghi nhóm nâng lớp, Script đọc lại cột `Năm bỏ học` của tất cả học sinh trong nhóm; có học sinh bỏ học thì dừng nhóm để admin đồng bộ và xem lại. Các lớp của năm trước được giữ. Hạnh kiểm chỉ được tính khi đủ điểm cả năm và dữ liệu điểm danh đúng năm đã tải xong; không có bản ghi vắng mặt được tính là 0 ngày vắng.
 
-Để áp dụng lượt sửa này, thay `Code.gs` của **dự án đăng ký** bằng `apps-script/dang-ky-hoc-sinh/code_dangky.gs`, chọn **Deploy → Manage deployments → Edit → New version → Deploy**, rồi cập nhật website. Đây là dự án riêng với máy chủ chính. Mã Apps Script không được đưa lên GitHub; đẩy website lên hosting sẽ không tự cập nhật Script. Nếu hai Web App chưa được cập nhật các lượt sửa trước, cập nhật cả hai theo thứ tự nêu trên. Kiểm tra `/exec?action=version` của dự án đăng ký phải trả về `2026-10-13-sheet-roster-v10`.
+Để áp dụng lượt sửa này, thay `Code.gs` của **dự án đăng ký** bằng `apps-script/dang-ky-hoc-sinh/code_dangky.gs`, chọn **Deploy → Manage deployments → Edit → New version → Deploy**, rồi cập nhật website. Đây là dự án riêng với máy chủ chính. Mã Apps Script không được đưa lên GitHub; đẩy website lên hosting sẽ không tự cập nhật Script. Nếu hai Web App chưa được cập nhật các lượt sửa trước, cập nhật cả hai theo thứ tự nêu trên. Kiểm tra `/exec?action=version` của dự án đăng ký phải trả về `2026-10-14-dropout-year-repair-v11`.
+
+Bản `dropout-year-repair-v11` cho phép một lượt sửa năm có dấu vết đối với hồ sơ bỏ học bị ghi nhầm sang năm kế tiếp: chỉ khi job Firebase nêu rõ hồ sơ/năm sai, dòng Sheet hiện vẫn có đúng `Năm bỏ học` và `Năm học hiện tại` của năm sai, Script mới cho ghi lùi về năm đúng. Sau khi sửa, checkpoint năm sai trong `STUDENT_SYNC_STATE` được retire. Dòng Sheet được cập nhật tại chỗ, giữ lớp lịch sử của năm đúng (ví dụ `2025-2026 = 8A`) nhưng vẫn để khối/lớp hiện tại trống vì học sinh đã bỏ học.
 
 Bản `sheet-roster-v10` ưu tiên lớp trong cột năm được yêu cầu (ví dụ `2026-2027`) thay cho lớp trong phần tóm tắt đang trỏ sang năm khác. Website có **Tiện ích → Nhập và đồng bộ Sheet → Đối chiếu Sheet / thêm học sinh thiếu**; bảng thống kê cũng có nút **Đối chiếu với Sheet**. Bảng hiện số dòng từng lớp, tên/dòng Sheet của hồ sơ thiếu, khác lớp và nghi trùng. Tích chọn rồi áp dụng để thêm hồ sơ hoặc đổi lớp theo cột năm đã đối chiếu. Việc đọc bảng không tự nâng lớp hoặc xóa hồ sơ. **Tiện ích → Kiểm tra học sinh nghi trùng** liệt kê riêng nhóm trùng trên web và trên Sheet theo họ tên/ngày sinh, mã định danh hoặc mã học sinh trong cùng năm.
 

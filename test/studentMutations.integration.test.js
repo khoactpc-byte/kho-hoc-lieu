@@ -113,7 +113,23 @@ test('student allocation, immutable identity, durable sync and partial operation
       assert.equal(data.get(`${root}/student_code_registry/HS25817`).studentId, sourceId);
       assert.deepEqual(data.get(`${root}/student_code_registry/HS25817`).studentIds, [sourceId]);
       assert.equal(data.get(`${root}/student_sync_jobs/old-job`).status, 'cancelled');
-      assert.equal(data.get(`${root}/student_sync_jobs/${saved.sheetSync.jobId}`).studentId, sourceId);
+      const repairJob = data.get(`${root}/student_sync_jobs/${saved.sheetSync.jobId}`);
+      assert.equal(repairJob.studentId, sourceId);
+      assert.equal(repairJob.repairSchoolYearFrom, '2026-2027');
+      assert.equal(repairJob.repairStudentRecordId, targetId);
+      await assert.rejects(service.retryStudentSync(sourceId, async () => { throw new Error('Sheet unavailable'); }), /Sheet unavailable/);
+      const failedProfile = { ...data.get(`${root}/students/${sourceId}`), id: sourceId };
+      assert.equal(failedProfile.sheetSync.repairSchoolYearFrom, '2026-2027');
+      assert.equal(failedProfile.sheetSync.repairStudentRecordId, targetId);
+      const resaved = await service.saveStudentRecord({ ...failedProfile, phone: '0908' }, { expected: failedProfile });
+      const retryJob = data.get(`${root}/student_sync_jobs/${resaved.sheetSync.jobId}`);
+      assert.equal(retryJob.repairSchoolYearFrom, '2026-2027');
+      assert.equal(retryJob.repairStudentRecordId, targetId);
+      let sent;
+      await service.retryStudentSync(sourceId, async student => { sent = student; });
+      assert.equal(sent.sheetSync.repairSchoolYearFrom, '2026-2027');
+      assert.equal(sent.sheetSync.repairStudentRecordId, targetId);
+      assert.equal(data.get(`${root}/students/${sourceId}`).sheetSync.repairSchoolYearFrom, undefined, 'repair marker clears only after Sheet success');
     });
     await t.test('a reviewed promotion checks the prior record and full scorebook inside the save transaction', async () => {
       reset();

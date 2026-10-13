@@ -62,6 +62,20 @@ test('dropout clears the current class even when stale class/history arrive and 
   assert.equal(read.entryGrade, '6', 'blank current class must not lose the education level');
 });
 
+test('historical dropout repair corrects both year fields on the same Sheet row and keeps its last class history', () => {
+  const { row, sync } = fixture();
+  row[36] = '2026-2027';
+  row[52] = '2026-2027';
+  row[58] = '8A';
+  const result = sync({ schoolYear: '2025-2026', status: 'dropped', dropoutYear: '2025-2026',
+    repairSchoolYearFrom: '2026-2027', dropoutPreviousClassName: '8A', className: '', grade: '', classHistory: {} });
+  assert.equal(result.success, true, result.message);
+  assert.equal(row[36], '2025-2026', 'Năm bỏ học is corrected in place');
+  assert.equal(row[52], '2025-2026', 'Năm học hiện tại is corrected in place');
+  assert.equal(row[50], ''); assert.equal(row[51], '', 'dropouts stay out of the current class roster');
+  assert.equal(row[58], '8A', 'the 2025-2026 history column keeps the last attended class');
+});
+
 test('Sheet dropout blocks a queued active sync and graduation, and only explicit reactivation restores the class', () => {
   const { row, values, sync } = fixture();
   row[36] = '2026-2027'; row[50] = ''; row[51] = ''; row[52] = '2026-2027';

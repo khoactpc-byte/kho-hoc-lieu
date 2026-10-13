@@ -370,6 +370,49 @@ test('student sync rejects older revisions/years and renaming updates the origin
   assert.equal(context.studentSyncGuard_(params, sheet).replayed, true);
 });
 
+test('student sync permits one explicit dropout-year repair and retires the wrong newer checkpoint', () => {
+  const metaRows = [
+    ['recordId', 'studentKey', 'revision', 'jobId', 'rowNumber', 'updatedAt', 'schoolYear', 'accessCode'],
+    ['source-2025', 'HS25817', 2, 'source-old', 2, 1, '2025-2026', 'HS25817'],
+    ['wrong-2026', 'HS25817', 3, 'wrong-job', 2, 2, '2026-2027', 'HS25817']
+  ];
+  const meta = {
+    getDataRange: () => ({ getValues: () => metaRows.map(row => [...row]) }),
+    getLastRow: () => metaRows.length,
+    getRange: (r, c = 1, height = 1, width = 1) => ({
+      setValues: incoming => incoming.forEach((line, i) => line.forEach((value, j) => {
+        metaRows[r - 1 + i] ||= [];
+        metaRows[r - 1 + i][c - 1 + j] = value;
+      }))
+    })
+  };
+  const row = Array(60).fill('');
+  row[1] = 'Nguyễn Thành Linh Quyền'; row[49] = 'HS25817'; row[36] = '2026-2027'; row[52] = '2026-2027';
+  const sheet = {
+    getParent: () => ({ getSheetByName: name => name === 'STUDENT_SYNC_STATE' ? meta : null }),
+    getLastRow: () => 2,
+    getLastColumn: () => row.length,
+    getRange: (r, c, height = 1, width = 1) => ({
+      getValue: () => r === 2 ? row[c - 1] : '',
+      getValues: () => r === 2
+        ? Array.from({ length: height }, () => row.slice(c - 1, c - 1 + width))
+        : Array.from({ length: height }, () => Array(width).fill(''))
+    })
+  };
+  const context = vm.createContext({ ContentService: { createTextOutput: output, MimeType: { JAVASCRIPT: 'js' } } });
+  vm.runInContext(registrationSource, context);
+  const params = { studentRecordId: 'source-2025', studentKey: 'HS25817', syncRevision: 3, syncJobId: 'repair-job',
+    schoolYear: '2025-2026', dropoutYear: '2025-2026', status: 'dropped', accessCode: 'HS25817',
+    repairSchoolYearFrom: '2026-2027', repairStudentRecordId: 'wrong-2026' };
+  const guard = context.studentSyncGuard_(params, sheet);
+  assert.equal(guard.repairPosition, 3);
+  context.commitStudentSyncGuard_(guard, 2);
+  assert.match(String(metaRows[2][1]), /^retired:HS25817:/);
+  assert.equal(metaRows[1][0], 'source-2025'); assert.equal(metaRows[1][2], 3);
+  assert.equal(metaRows[1][3], 'repair-job'); assert.equal(metaRows[1][6], '2025-2026');
+  assert.equal(context.studentSyncGuard_(params, sheet).replayed, true);
+});
+
 test('staff expiry/revocation and student upload receipts enforce authority', () => {
   const { context, cache } = mainContext();
   const properties = new Map([['STAFF_SESSION_VERSION', '1']]);

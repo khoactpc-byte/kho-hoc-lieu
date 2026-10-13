@@ -1229,6 +1229,8 @@ const loadRegistrationDataAction = async (action = '', params = {}, options = {}
 
 const toSheetStudentParams = (student = {}, schoolYear = '') => ({
   studentRecordId: student.id || '', studentKey: student.studentKey || '', syncRevision: student.syncRevision || '', syncJobId: student.sheetSync?.jobId || '',
+  repairSchoolYearFrom: student.sheetSync?.repairSchoolYearFrom || '',
+  repairStudentRecordId: student.sheetSync?.repairStudentRecordId || '',
   accessCode: student.accessCode || student.studentCode || '',
   identityCode: String(student.identityCode || '').replace(/^'/, ''),
   fullName: student.fullName || '',
@@ -1287,6 +1289,7 @@ const toSheetStudentParams = (student = {}, schoolYear = '') => ({
   completionSchoolYear: student.completionSchoolYear || '',
   schoolYear: schoolYear || student.schoolYear || '',
   dropoutYear: student.status === 'dropped' ? (student.dropoutYear || schoolYear || student.schoolYear || '') : '',
+  dropoutPreviousClassName: student.dropoutPreviousClassName || '',
   reactivateDropout: student.status === 'active' && Number.isSafeInteger(student.dropoutReactivationRevision)
     && student.dropoutReactivationRevision > 0 && student.dropoutReactivationRevision === student.syncRevision
 });

@@ -88,7 +88,8 @@ export async function saveStudentRecord(input, { codePrefix, allocateCode = fals
           updatedAt: Date.now(),
           updatedBy: actor,
           syncRevision: Number(source.syncRevision || 0) + 1,
-          sheetSync: { status: 'pending', jobId: `${sourceId}--${mutationId}`, updatedAt: Date.now() }
+          sheetSync: { status: 'pending', jobId: `${sourceId}--${mutationId}`, updatedAt: Date.now(),
+            repairSchoolYearFrom: current.schoolYear, repairStudentRecordId: target.id }
         };
         assertStudentSchoolYear(data);
         if (!data.fullName || !data.schoolYear) throw new Error('Hồ sơ sau khi gộp thiếu họ tên hoặc năm học.');
@@ -98,7 +99,8 @@ export async function saveStudentRecord(input, { codePrefix, allocateCode = fals
           studentIds: [...new Set([...(owner?.studentIds || []), sourceId])].filter(id => id !== target.id), updatedAt: Date.now() });
         transaction.set(ref('students', sourceId), data);
         transaction.set(ref('student_sync_jobs', data.sheetSync.jobId), { studentId: sourceId, studentKey: sourceIdentity, revision: data.syncRevision,
-          status: 'pending', createdAt: Date.now(), actor, registration: registration || null });
+          status: 'pending', createdAt: Date.now(), actor, registration: registration || null,
+          repairSchoolYearFrom: current.schoolYear, repairStudentRecordId: target.id });
         transaction.delete(target);
         return { ...data, id: sourceId, collapsedStudentId: target.id };
       }
@@ -142,9 +144,11 @@ export async function saveStudentRecord(input, { codePrefix, allocateCode = fals
       const counterRef = prefix ? ref('student_code_counters', prefix) : null;
       const counter = counterRef ? (await transaction.get(counterRef)).data() : null;
       if (counter && (!Number.isSafeInteger(counter.next) || counter.next < 1)) throw new Error('Bộ cấp mã cần đối soát.');
+      const retainedRepair = current?.sheetSync?.repairSchoolYearFrom && current?.sheetSync?.repairStudentRecordId
+        ? { repairSchoolYearFrom: current.sheetSync.repairSchoolYearFrom, repairStudentRecordId: current.sheetSync.repairStudentRecordId } : {};
       const data = { ...(current || {}), ...plain(input), studentKey, accessCode: candidate,
         createdAt: current?.createdAt || Date.now(), updatedAt: Date.now(), updatedBy: actor,
-        syncRevision: Number(current?.syncRevision || 0) + 1, sheetSync: { status: 'pending', jobId: `${target.id}--${mutationId}`, updatedAt: Date.now() } };
+        syncRevision: Number(current?.syncRevision || 0) + 1, sheetSync: { status: 'pending', jobId: `${target.id}--${mutationId}`, updatedAt: Date.now(), ...retainedRepair } };
       if (data.status === 'dropped') {
         const classHistory = { ...(data.classHistory || {}) };
         const currentYear = normalizeSchoolYearKey(data.schoolYear);
@@ -171,7 +175,7 @@ export async function saveStudentRecord(input, { codePrefix, allocateCode = fals
         else transaction.delete(requestRef);
       }
       transaction.set(ref('student_sync_jobs', data.sheetSync.jobId), { studentId: target.id, studentKey, revision: data.syncRevision,
-        status: 'pending', createdAt: Date.now(), actor, registration: registration || null });
+        status: 'pending', createdAt: Date.now(), actor, registration: registration || null, ...retainedRepair });
       return { ...data, id: target.id };
     });
     if (result) return result;
@@ -212,7 +216,10 @@ export async function retryStudentSync(studentId, send, { registrationComplete }
     }
     if (current.leaseUntil > Date.now()) throw new Error('Hồ sơ đang đồng bộ ở một phiên khác. Thử lại sau.');
     transaction.set(jobRef, { status: 'running', workerId, leaseUntil: Date.now() + 60000 }, { merge: true });
-    return { ...current, student: { ...student, id: studentId } };
+    return { ...current, student: { ...student, id: studentId,
+      sheetSync: { ...(student.sheetSync || {}),
+        ...(current.repairSchoolYearFrom ? { repairSchoolYearFrom: current.repairSchoolYearFrom } : {}),
+        ...(current.repairStudentRecordId ? { repairStudentRecordId: current.repairStudentRecordId } : {}) } } };
   });
   if (!job) return;
   let failure;
@@ -224,8 +231,12 @@ export async function retryStudentSync(studentId, send, { registrationComplete }
     if (current?.workerId !== workerId) return;
     const status = failure ? 'failed' : 'success';
     const state = { status, updatedAt: Date.now(), message: failure?.message || '', leaseUntil: 0 };
+    const retainedRepair = failure ? {
+      ...(job.repairSchoolYearFrom ? { repairSchoolYearFrom: job.repairSchoolYearFrom } : {}),
+      ...(job.repairStudentRecordId ? { repairStudentRecordId: job.repairStudentRecordId } : {})
+    } : {};
     transaction.set(jobRef, state, { merge: true });
-    if (student?.syncRevision === job.revision && student?.sheetSync?.jobId === jobRef.id) transaction.set(target, { sheetSync: { ...state, jobId: jobRef.id } }, { merge: true });
+    if (student?.syncRevision === job.revision && student?.sheetSync?.jobId === jobRef.id) transaction.set(target, { sheetSync: { ...state, jobId: jobRef.id, ...retainedRepair } }, { merge: true });
   });
   if (failure) throw failure;
 }
