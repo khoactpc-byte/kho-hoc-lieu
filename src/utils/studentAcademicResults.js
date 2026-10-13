@@ -82,12 +82,11 @@ export function studentCenterAcademicResults({ student, records = [], scorebooks
       const end = `${record.schoolYear.slice(5)}-05-31`;
       const campusRecords = linked.filter(item => getStudentSchoolCode(item) === schoolCode);
       const annualAttendance = attendanceForYear(record.schoolYear, campusRecords, attendance);
-      if (annualAttendance) {
-        const absences = annualAttendance.days.filter(day => day.date >= start && day.date <= end).length;
-        // Match the full-year conduct result already used by the centre's scorebook.
-        fields[conductKey] = absences < 20 ? 'Tốt' : 'Khá';
-        sources[conductKey] = source;
-      }
+      // Once this year's feed has loaded, no absence documents means zero absences.
+      const absences = (annualAttendance?.days || []).filter(day => day.date >= start && day.date <= end).length;
+      // Match the full-year conduct result already used by the centre's scorebook.
+      fields[conductKey] = absences < 20 ? 'Tốt' : 'Khá';
+      sources[conductKey] = source;
     }
   }
   return { fields, sources };

@@ -49,6 +49,27 @@ test('student allocation, immutable identity, durable sync and partial operation
       builder.onLoad({ filter: /.*/, namespace: 'fixture' }, args => ({ contents: args.path === 'config' ? 'export const db={}, appId="fixture";' : `const mock=globalThis.__studentMutations; export const {${Object.keys(mock).join(',')}}=mock;`, loader: 'js' }));
     } }] });
     const service = await import(pathToFileURL(outfile));
+    await t.test('dropout stays blank during profile saves and only an explicit return can reactivate it', async () => {
+      reset();
+      const student = await service.saveStudentRecord({ ...record('An'), accessCode: 'HS001', entryGrade: '6',
+        classHistory: { '2025-2026': '6A', '2026-2027': '7A' }, className: '7A', grade: '7' });
+      const dropped = await service.saveStudentRecord({ ...student, status: 'dropped' });
+      assert.equal(dropped.className, ''); assert.equal(dropped.grade, '');
+      assert.equal(dropped.dropoutPreviousClassName, '7A'); assert.equal(dropped.dropoutYear, '2026-2027');
+      assert.equal(dropped.entryGrade, '6');
+      assert.deepEqual(dropped.classHistory, { '2025-2026': '6A' });
+      const updated = await service.saveStudentRecord({ ...dropped, className: '8A', grade: '8', phone: '0123' });
+      assert.equal(updated.status, 'dropped'); assert.equal(updated.className, ''); assert.equal(updated.grade, '');
+      await assert.rejects(service.saveStudentRecord({ ...updated, status: 'active', className: '8A' }), /Đưa học lại/);
+      await assert.rejects(service.saveStudentRecord({ ...updated, id: undefined, previousStudentId: student.id,
+        schoolYear: '2027-2028', status: 'active', className: '8A' }), /đã bỏ học/);
+      assert.equal(data.get(`${root}/students/${student.id}`).status, 'dropped');
+      const returned = await service.saveStudentRecord({ ...updated, status: 'active', className: '7A', grade: '7' }, { reactivateDropout: true });
+      assert.equal(returned.status, 'active'); assert.equal(returned.dropoutYear, '');
+      assert.equal(returned.dropoutReactivationRevision, returned.syncRevision);
+      const savedAgain = await service.saveStudentRecord({ ...returned, phone: '0456' });
+      assert.notEqual(savedAgain.dropoutReactivationRevision, savedAgain.syncRevision, 'return permission applies only to its own sync revision');
+    });
     await t.test('a reviewed promotion checks the prior record and full scorebook inside the save transaction', async () => {
       reset();
       const source = { ...record('An'), id: 'source', studentKey: 'HS25601', accessCode: 'HS25601', className: '6A', entryGrade: '6', enrollmentYear: '2025-2026', schoolYear: '2025-2026' };

@@ -20,7 +20,7 @@ test('Sheet import shows real progress, retains assigned classes and reports par
         builder.onResolve({ filter: /^firebase\/firestore$|config\/firebase$|utils\/helpers$|services\/(studentMutations|jsonpClient)$/ }, args => ({ path: args.path, namespace: 'fixture' }));
         builder.onLoad({ filter: /.*/, namespace: 'fixture' }, args => {
           let contents;
-          if (args.path === 'firebase/firestore') contents = 'export const collection=(...a)=>a.join("/"); export const doc=collection; export const query=ref=>ref; export const where=(...a)=>a; export const onSnapshot=(_ref,next)=>{next({docs:[]}); return ()=>{};}; export const setDoc=async()=>{throw new Error("Unexpected write");}; export const deleteDoc=setDoc;';
+          if (args.path === 'firebase/firestore') contents = 'export const collection=(...a)=>a.join("/"); export const doc=collection; export const query=ref=>ref; export const where=(...a)=>a; export const onSnapshot=(_ref,next)=>{next({docs:[]}); return ()=>{};}; export const setDoc=async()=>{throw new Error("Unexpected write");}; export const deleteDoc=setDoc; export const getDocsFromServer=async()=>{throw new Error("Unexpected server read");};';
           else if (args.path.endsWith('config/firebase')) contents = 'export const db={}; export const appId="fixture";';
           else if (args.path.endsWith('utils/helpers')) contents = 'export const postAppsScript=(...a)=>window.fixture.post(...a); export const IMAGE_DRIVE_FOLDER_ID="fixture";';
           else if (args.path.endsWith('services/jsonpClient')) contents = 'export const requestJsonp=async()=>({success:true,provinces:[],communes:{}});';
@@ -98,6 +98,34 @@ test('Sheet import shows real progress, retains assigned classes and reports par
     await act(async () => finishSave());
     assert.match(dialog().querySelector('[role="status"]').textContent, /đã sửa 1\/1 hồ sơ trên web; đã gửi Sheet 1/);
     assert.equal(button('Khôi phục lớp đã lưu (0)').disabled, true, 'a completed restoration cannot run twice');
+    await click(button('Đóng đối chiếu'));
+    const active = { ...students[0], id: 'sheet-drop', accessCode: 'HS25681', fullName: 'Lan', classHistory: { '2025-2026': '6A', '2026-2027': '7A' } };
+    const dropped = { ...active, id: 'legacy-drop', accessCode: 'HS25682', fullName: 'Mai', status: 'dropped' };
+    const conflicting = { ...active, id: 'drop-over-graduate', accessCode: 'HS25683', fullName: 'Nam', className: 'TNTHCS', grade: '' };
+    const render = records => act(async () => root.render(React.createElement(Manager, { students: records,
+      currentSchoolYear: '2026-2027', educationLevel: 'thcs', user: { uid: 'admin' } })));
+    await render([active, dropped, conflicting]);
+    await start();
+    const beforeDrops = writes.length;
+    await act(async () => finishRead({ result: { success: true, items: [
+      sheetRow(active, { dropoutYear: '2026-2027' }), sheetRow(dropped, { status: 'active', dropoutYear: '' }),
+      sheetRow(conflicting, { currentClassName: 'TNTHCS', dropoutYear: '2026-2027' })
+    ] } }));
+    for (let index = 0; index < 3; index++) {
+      const savedDrop = writes[beforeDrops + index];
+      assert.equal(savedDrop.status, 'dropped'); assert.equal(savedDrop.className, ''); assert.equal(savedDrop.grade, '');
+      assert.equal(savedDrop.dropoutYear, '2026-2027'); assert.equal(savedDrop.entryGrade, '6');
+      assert.deepEqual(savedDrop.classHistory, { '2025-2026': '6A' });
+      await act(async () => finishSave());
+    }
+    assert.match(status().textContent, /Đã sửa 3/);
+    const cleanDropped = writes.slice(beforeDrops);
+    await render(cleanDropped);
+    await start();
+    const beforeRepeat = writes.length;
+    await act(async () => finishRead({ result: { success: true, items: cleanDropped.map(item => sheetRow(item, { status: 'active', dropoutYear: '' })) } }));
+    assert.equal(writes.length, beforeRepeat, 'repeated imports must neither reactivate dropouts nor create redundant sync jobs');
+    assert.match(status().textContent, /Không đổi 3/);
   } finally {
     if (root) await act(async () => root.unmount());
     dom.window.close();

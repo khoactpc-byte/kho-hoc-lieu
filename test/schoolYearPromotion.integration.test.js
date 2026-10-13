@@ -99,6 +99,13 @@ test('promotion checkpoints commit with student writes, retry preserves targets,
     const expired = await beginPromotionJob('2026-2027', '2027-2028', 'admin');
     records.get(global).schoolYearPromotion.leaseExpiresAt = 0;
     await assert.rejects(recordPromotionStage(expired, 'sheet'), /hết quyền/);
+    const droppedSource = `${root}/students/dropped-source`;
+    const droppedData = { status: 'dropped', className: '', grade: '', accessCode: 'HS999' };
+    records.set(droppedSource, droppedData);
+    const beforeDropCheck = structuredClone([...records]);
+    await assert.rejects(applyStudentTransitions([{ type: 'create', sourceRef: droppedSource, expectedSource: droppedData,
+      ref: `${root}/students/must-not-promote`, data: { accessCode: 'HS999', className: '8A', schoolYear: '2027-2028' } }]), /đã bỏ học/);
+    assert.deepEqual([...records], beforeDropCheck, 'dropout protection must abort every queued write');
   } finally {
     delete globalThis.__promotionTestBackend;
     await rm(directory, { recursive: true, force: true });

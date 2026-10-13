@@ -353,7 +353,8 @@ test('student sync rejects older revisions/years and renaming updates the origin
   const meta = { getDataRange: () => ({ getValues: () => rows }), getLastRow: () => rows.length,
     getRange: position => ({ setValues: values => { rows[position - 1] = values[0]; } }) };
   let updates = 0, appends = 0;
-  const sheet = { getParent: () => ({ getSheetByName: () => meta }), appendRow: () => appends++ };
+  const sheet = { getParent: () => ({ getSheetByName: () => meta }), appendRow: () => appends++,
+    getRange: () => ({ getValue: () => '', getValues: () => [['', '', '']] }) };
   const context = vm.createContext({ ContentService: { createTextOutput: output, MimeType: { JAVASCRIPT: 'js' } },
     SpreadsheetApp: { openById: () => ({ getSheetByName: () => sheet }) } });
   vm.runInContext(registrationSource, context);

@@ -45,7 +45,7 @@ test('annual centre results update the table and profile, preserve declarations 
         builder.onResolve({ filter: /^firebase\/firestore$|config\/firebase$|utils\/helpers$|services\/(studentMutations|jsonpClient)$/ }, args => ({ path: args.path, namespace: 'fixture' }));
         builder.onLoad({ filter: /.*/, namespace: 'fixture' }, args => {
           let contents;
-          if (args.path === 'firebase/firestore') contents = 'export const collection=(...a)=>a.join("/"); export const doc=collection; export const query=ref=>ref; export const where=(...a)=>a; export const onSnapshot=globalThis.__academicResultsFixture.subscribe; export const setDoc=async()=>{throw new Error("Unexpected write");}; export const deleteDoc=setDoc;';
+          if (args.path === 'firebase/firestore') contents = 'export const collection=(...a)=>a.join("/"); export const doc=collection; export const query=ref=>ref; export const where=(...a)=>a; export const onSnapshot=globalThis.__academicResultsFixture.subscribe; export const setDoc=async()=>{throw new Error("Unexpected write");}; export const deleteDoc=setDoc; export const getDocsFromServer=async()=>{throw new Error("Unexpected server read");};';
           else if (args.path.endsWith('config/firebase')) contents = 'export const db={}; export const appId="fixture";';
           else if (args.path.endsWith('utils/helpers')) contents = 'export const postAppsScript=globalThis.__academicResultsFixture.post; export const IMAGE_DRIVE_FOLDER_ID="fixture";';
           else if (args.path.endsWith('services/jsonpClient')) contents = 'export const requestJsonp=async()=>({success:true,provinces:[],communes:{}});';

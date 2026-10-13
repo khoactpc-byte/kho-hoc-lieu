@@ -39,6 +39,9 @@ export async function applyStudentTransitions(operations, job, scorebookGuards =
           throw new Error('Hồ sơ cần cập nhật vừa thay đổi. Chưa ghi nhóm này; hãy làm mới bản xem trước.');
         }
         if (operation.type === 'verify') return;
+        if (sources[index]?.data()?.status === 'dropped' || existing[index].data()?.status === 'dropped') {
+          throw new Error('Học sinh đã bỏ học; không được nâng lớp hoặc xét tốt nghiệp. Hãy làm mới bản xem trước.');
+        }
         if (operation.type === 'create' && existing[index].exists()) {
           const target = existing[index].data();
           if (target.previousStudentId !== operation.data.previousStudentId || target.schoolYear !== operation.data.schoolYear || target.className !== operation.data.className) {

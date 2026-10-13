@@ -4,14 +4,18 @@ Hệ thống hiện có **2 dự án Google Apps Script đang sử dụng**. Kh�
 
 Theo lựa chọn bảo mật ngày 05/10/2026, hai bộ mã nguồn trong `apps-script/` và các tệp `.gs` được giữ riêng trên máy, không đưa nội dung lên GitHub. File `up-github.bat` đã được chỉnh để loại chúng khỏi các lần cập nhật; cần tự sao lưu bộ mã này và cập nhật trực tiếp trên Google Apps Script. Các bản mã từng đưa lên GitHub trước đó vẫn còn trong lịch sử Git; lượt chỉnh này không viết lại lịch sử.
 
-## Bản mã nguồn hoàn thiện ngày 04/10/2026
+## Bản mã nguồn rà soát ngày 13/10/2026
 
 | Dự án | Phiên bản cần thấy sau triển khai |
 | --- | --- |
 | Máy chủ chính | `2026-10-04-review-v8` |
-| Đăng ký học sinh | `2026-10-04-location-cache-v7` |
+| Đăng ký học sinh | `2026-10-13-student-sync-v9` |
 
 Lượt sửa này đã cập nhật **mã nguồn trong máy**, chưa cập nhật hai Web App đang chạy. Cập nhật và triển khai máy chủ chính trước, tiếp theo dự án đăng ký, rồi đưa frontend mới lên hosting. Giữ các URL Web App hiện tại.
+
+Lượt rà soát ngày 13/10 sửa chiều đồng bộ học sinh: giữ `TNTHCS` và năm tốt nghiệp, xóa khối hiện tại của học sinh tốt nghiệp; giữ trạng thái bỏ học khi nhập Sheet lên web và chặn lượt đồng bộ cũ tự mở lại hồ sơ. Trước khi ghi nhóm nâng lớp, Script đọc lại cột `Năm bỏ học` của tất cả học sinh trong nhóm; có học sinh bỏ học thì dừng nhóm để admin đồng bộ và xem lại. Các lớp của năm trước được giữ. Hạnh kiểm chỉ được tính khi đủ điểm cả năm và dữ liệu điểm danh đúng năm đã tải xong; không có bản ghi vắng mặt được tính là 0 ngày vắng.
+
+Để áp dụng lượt sửa này, thay `Code.gs` của **dự án đăng ký** bằng `apps-script/dang-ky-hoc-sinh/code_dangky.gs`, chọn **Deploy → Manage deployments → Edit → New version → Deploy**, rồi cập nhật website. Đây là dự án riêng với máy chủ chính. Mã Apps Script không được đưa lên GitHub; đẩy website lên hosting sẽ không tự cập nhật Script. Nếu hai Web App chưa được cập nhật các lượt sửa trước, cập nhật cả hai theo thứ tự nêu trên. Kiểm tra `/exec?action=version` của dự án đăng ký phải trả về `2026-10-13-student-sync-v9`.
 
 Bản review-v8 khóa các thao tác xóa/gửi lại thư theo ID để tránh lệch dòng khi có người khác thao tác đồng thời. Gửi lại thư đọc trạng thái mới nhất và ghi theo lô; xóa hàng loạt báo số mục đã hoàn tất nếu bị gián đoạn. Frontend mới giữ nháp điểm khi đóng/mở trong cùng phiên, chặn ngày không tồn tại, chờ thư viện toán tải xong và đọc thống kê riêng, không tạo bản sao lưu khi chỉ mở màn hình.
 
@@ -95,7 +99,7 @@ Khi cập nhật form đăng ký, cần thay cả `Code.gs` bằng `code_dangky.
 
 Danh mục địa chỉ được tối ưu trong bản location-cache-v7: đọc Sheet và lập chỉ mục khi chưa có cache, giữ cache máy chủ tối đa 6 giờ, chia dữ liệu thành mảnh nhỏ; mỗi tỉnh tải huyện và xã cùng một lượt. Đổi huyện sau đó chỉ lọc trên trình duyệt. Nơi sinh, nơi đăng ký khai sinh và quê quán dùng chung dữ liệu của tỉnh; địa chỉ hiện tại/hộ khẩu cũng dùng chung cache. Trình duyệt lưu danh mục công khai đã dùng trong 1 giờ, vẫn hỏi lại phiên bản danh mục khi mở form. Lỗi tải có nút thử lại, phản hồi cũ không đổi lựa chọn mới.
 
-Bản Index.html đã sửa lỗi hai bảng gợi ý chồng nhau ở ba ô tỉnh nơi sinh, đăng ký khai sinh và quê quán: mỗi ô chỉ dùng bảng gợi ý riêng, tìm không dấu được, chọn bằng chuột/chạm hoặc phím ↑ ↓ và Enter; Escape đóng danh sách. Chuyển ô sẽ đóng danh sách cũ. Cần cập nhật và triển khai Index.html mới để áp dụng sửa giao diện này; phiên bản endpoint máy chủ vẫn là location-cache-v7.
+Bản Index.html đã sửa lỗi hai bảng gợi ý chồng nhau ở ba ô tỉnh nơi sinh, đăng ký khai sinh và quê quán: mỗi ô chỉ dùng bảng gợi ý riêng, tìm không dấu được, chọn bằng chuột/chạm hoặc phím ↑ ↓ và Enter; Escape đóng danh sách. Chuyển ô sẽ đóng danh sách cũ. Cần cập nhật và triển khai Index.html mới để áp dụng sửa giao diện này; các sửa danh mục trước đây tiếp tục có trong bản `2026-10-13-student-sync-v9`.
 
 ### Khi chọn tỉnh báo thiếu quyền `SpreadsheetApp.openById`
 

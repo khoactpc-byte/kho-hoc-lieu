@@ -472,6 +472,7 @@ const emptyStudent = {
   classSuffix: '',
   classHistory: {},
   dropoutPreviousClassName: '',
+  dropoutYear: '',
   entryGrade: '',
   grade: '',
   className: '',
@@ -578,7 +579,9 @@ const registrationToStudentData = (registration = {}, currentSchoolYear = '') =>
   graduationYear: pickText(registration.graduationYear),
   completionStatus: pickText(registration.completionStatus),
   completionSchoolYear: pickText(registration.completionSchoolYear),
-  entryGrade: pickText(registration.entryGrade, registration.enrollmentGrade, registration.admissionGrade, registration.grade, registration.khoi),
+  dropoutYear: pickText(registration.dropoutYear),
+  entryGrade: pickText(registration.entryGrade, registration.enrollmentGrade, registration.admissionGrade,
+    getGradeFromClass(registration.className || registration.lopHoc), registration.grade, registration.khoi),
   grade: isDropped ? '' : pickText(registration.currentGrade, registration.khoiHienTai),
   className: isDropped ? '' : pickText(registration.currentClassName, registration.lopHienTai, registration.current_class_name, registration.className, registration.lopHoc),
   enrollmentYear: pickText(registration.enrollmentYear, registration.tinhTrangHocSinh, registration.hocTuNam),
@@ -623,7 +626,7 @@ const registrationToStudentData = (registration = {}, currentSchoolYear = '') =>
   hanhKiemLop8: pickText(registration.hanhKiemLop8),
   hocLucLop9: pickText(registration.hocLucLop9),
   hanhKiemLop9: pickText(registration.hanhKiemLop9),
-  status: isGraduatedStudent(registration) ? 'completed' : isDropped ? 'dropped' : 'active',
+  status: isDropped ? 'dropped' : isGraduatedStudent(registration) ? 'completed' : 'active',
   schoolYear: registrationSchoolYear(registration, currentSchoolYear)
   });
 };
@@ -664,7 +667,7 @@ const normalizeStudentRecord = (student = {}, fallbackSchoolYear = '') => {
     className: normalized.className,
     enrollmentYear: normalized.enrollmentYear
   }, fallbackSchoolYear);
-  normalized.status = isGraduatedStudent(normalized) ? 'completed' : normalized.status === 'dropped' ? 'dropped' : 'active';
+  normalized.status = normalized.status === 'dropped' ? 'dropped' : isGraduatedStudent(normalized) ? 'completed' : 'active';
   if (normalized.status === 'dropped') {
     normalized.dropoutPreviousClassName ||= normalized.className || Object.entries(normalized.classHistory)
       .find(([year]) => normalizeSchoolYearKey(year) === normalizeSchoolYearKey(normalized.schoolYear))?.[1] || '';
@@ -1280,7 +1283,9 @@ const toSheetStudentParams = (student = {}, schoolYear = '') => ({
   completionStatus: student.completionStatus || '',
   completionSchoolYear: student.completionSchoolYear || '',
   schoolYear: schoolYear || student.schoolYear || '',
-  dropoutYear: student.status === 'dropped' ? (schoolYear || student.schoolYear || '') : ''
+  dropoutYear: student.status === 'dropped' ? (student.dropoutYear || schoolYear || student.schoolYear || '') : '',
+  reactivateDropout: student.status === 'active' && Number.isSafeInteger(student.dropoutReactivationRevision)
+    && student.dropoutReactivationRevision > 0 && student.dropoutReactivationRevision === student.syncRevision
 });
 
 const syncStudentToSheet = (student = {}, schoolYear = '') => callSheetAction('syncStudent', toSheetStudentParams(student, schoolYear));
@@ -1775,7 +1780,7 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
     const targetSchoolYear = getNextSchoolYear(sourceSchoolYear);
     const sourceStudents = safeStudents
       .filter(student => normalizeSchoolYearKey(student.schoolYear || sourceSchoolYear) === sourceSchoolYear);
-    const activeStudents = sourceStudents.filter(student => !['dropped', 'completed'].includes(student.status)
+    let activeStudents = sourceStudents.filter(student => !['dropped', 'completed'].includes(student.status)
       && (scope !== 'graduation' || getGradeFromClass(student.className) === '9'));
     const attendanceCollection = collection(db, 'artifacts', appId, 'public', 'data', 'class_attendance');
     const attendanceSnapshot = await getDocsFromServer(firestoreQuery(
@@ -1824,6 +1829,8 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
       return null;
     };
 
+    // A Sheet edit may precede its import into the web database.
+    activeStudents = activeStudents.filter(student => findPreviousSheetStudent(student)?.status !== 'dropped');
     const classHistoryByStudentId = new Map();
     const studentsWithSheetHistory = new Map();
     activeStudents.forEach(student => {
@@ -3010,6 +3017,7 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
   };
 
   const toggleDropout = async student => {
+ if (isSaving) return;
  setIsSaving(true);
  try {
   const isDropping = student.status !== 'dropped';
@@ -3025,7 +3033,7 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
    classHistory,
    className: isDropping ? '' : restoredClassName,
    grade: isDropping ? '' : getGradeFromClass(restoredClassName)
-  });
+  }, { reactivateDropout: !isDropping });
   setStatusFilter(['active']);
   try{await syncPersistedStudent(saved);showNotification?.(isDropping ? 'Đã đánh dấu bỏ học; lớp và khối năm nay đã để trống.' : 'Đã đưa học sinh trở lại lớp trước đó.');}
   catch(error){showNotification?.('Tình trạng đã cập nhật; đồng bộ Sheet đang chờ thử lại: '+error.message,'error');}
@@ -3408,7 +3416,7 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
         matchedCount += 1;
         const sheetMarkedDropped = sheetStudent.status === 'dropped';
         const keepDroppedStatus = sheetMarkedDropped || existing.status === 'dropped';
-        if (sheetClassConflict(existing, sheetStudent, hasCurrentClassName)) {
+        if (!keepDroppedStatus && sheetClassConflict(existing, sheetStudent, hasCurrentClassName)) {
           progress.classConflicts += 1;
           progress.errors.push(`${existing.fullName}: giữ lớp ${existing.className}; Sheet ghi ${sheetStudent.className}. Dùng Đối chiếu lớp theo kết quả năm trước.`);
         }
@@ -3441,10 +3449,17 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
             if (normalizeSchoolYearKey(year) === normalizeSchoolYearKey(currentSchoolYear)) delete classHistory[year];
           });
           if (existing.status !== 'dropped') changes.status = 'dropped';
+          const dropoutYear = existing.dropoutYear || sheetStudent.dropoutYear || currentSchoolYear;
+          if (existing.dropoutYear !== dropoutYear) changes.dropoutYear = dropoutYear;
           if (existing.className) changes.className = '';
           if (existing.grade) changes.grade = '';
           if (existing.dropoutPreviousClassName !== previousClassName) changes.dropoutPreviousClassName = previousClassName;
           if (JSON.stringify(existing.classHistory || {}) !== JSON.stringify(classHistory)) changes.classHistory = classHistory;
+          // Compare persisted values too: display normalization may already hide a legacy class.
+          const persisted = students.find(student => student.id === existing.id);
+          if (persisted?.className || persisted?.grade || !sameData(persisted?.classHistory || {}, classHistory)) {
+            Object.assign(changes, { className: '', grade: '', classHistory });
+          }
         }
         const nextClassName = keepDroppedStatus ? '' : changes.className || existing.className || '';
         const derivedGrade = getGradeFromClass(nextClassName);

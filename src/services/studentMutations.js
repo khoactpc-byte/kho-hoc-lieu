@@ -4,6 +4,7 @@ import { sameData } from '../utils/dataEquality';
 import { processRecords } from '../utils/bulkOperations';
 import { assertStudentSchoolYear } from '../utils/schoolYearText';
 import { buildStudentYearReconciliation } from '../utils/studentYearReconciliation';
+import { getStudentEntryGrade, normalizeSchoolYearKey } from '../utils/schoolClasses';
 
 const records = name => collection(db, 'artifacts', appId, 'public', 'data', name);
 const ref = (name, id) => doc(records(name), id);
@@ -11,7 +12,7 @@ const plain = data => Object.fromEntries(Object.entries(data).filter(([key, valu
 const ownsCode = (owner, studentKey, id, sourceId) => owner?.studentKey === studentKey || (!owner?.studentKey && [id, sourceId].includes(owner?.studentId));
 
 // Freeze the legacy score identity before changing a login code. Never derive it from the new code.
-export async function saveStudentRecord(input, { codePrefix, allocateCode = false, actor = '', expected, id: targetId, registration, createOnly = false, profileDecision, profileDecisions = [], academicDecision } = {}) {
+export async function saveStudentRecord(input, { codePrefix, allocateCode = false, actor = '', expected, id: targetId, registration, createOnly = false, profileDecision, profileDecisions = [], academicDecision, reactivateDropout = false } = {}) {
   assertStudentSchoolYear(input);
   const decisions = [...profileDecisions, ...(profileDecision ? [profileDecision] : [])];
   if (decisions.length > 400 || decisions.some(item => !item?.requestId) || new Set(decisions.map(item => item.requestId)).size !== decisions.length) throw new Error('Danh sách yêu cầu duyệt không hợp lệ.');
@@ -45,6 +46,8 @@ export async function saveStudentRecord(input, { codePrefix, allocateCode = fals
       const sourceId = input.previousStudentId || '';
       const source = sourceId ? (await transaction.get(ref('students', sourceId))).data() : null;
       if (sourceId && (!source || sourceId === target.id || String(source.schoolYear || '') >= String(input.schoolYear || '') || source.schoolCode !== input.schoolCode)) throw new Error('Hồ sơ năm trước không hợp lệ hoặc khác cơ sở. Đối soát trước khi nối định danh.');
+      if (!current && source?.status === 'dropped') throw new Error('Học sinh đã bỏ học; không tự tạo hồ sơ nâng lớp. Cần đưa học sinh trở lại học trước.');
+      if (current?.status === 'dropped' && input.status !== 'dropped' && !reactivateDropout) throw new Error('Học sinh đang bỏ học. Chỉ thao tác Đưa học lại mới được mở lại hồ sơ.');
       if (academicDecision) {
         const expectedSource = academicDecision.source;
         const expectedBook = academicDecision.scorebook;
@@ -82,6 +85,20 @@ export async function saveStudentRecord(input, { codePrefix, allocateCode = fals
       const data = { ...(current || {}), ...plain(input), studentKey, accessCode: candidate,
         createdAt: current?.createdAt || Date.now(), updatedAt: Date.now(), updatedBy: actor,
         syncRevision: Number(current?.syncRevision || 0) + 1, sheetSync: { status: 'pending', jobId: `${target.id}--${mutationId}`, updatedAt: Date.now() } };
+      if (data.status === 'dropped') {
+        const classHistory = { ...(data.classHistory || {}) };
+        const currentYear = normalizeSchoolYearKey(data.schoolYear);
+        const previousClass = data.dropoutPreviousClassName || data.className || Object.entries(classHistory)
+          .find(([year]) => normalizeSchoolYearKey(year) === currentYear)?.[1] || '';
+        data.entryGrade = getStudentEntryGrade(data);
+        data.dropoutPreviousClassName = typeof previousClass === 'string' ? previousClass : previousClass.className || '';
+        data.dropoutYear ||= data.schoolYear;
+        Object.keys(classHistory).forEach(year => { if (normalizeSchoolYearKey(year) === currentYear) delete classHistory[year]; });
+        Object.assign(data, { className: '', grade: '', classHistory, dropoutReactivationRevision: 0 });
+      } else if (reactivateDropout) {
+        if (current?.status !== 'dropped' || data.status !== 'active' || !data.className) throw new Error('Thiếu lớp học lại hợp lệ.');
+        Object.assign(data, { dropoutYear: '', dropoutReactivationRevision: data.syncRevision });
+      }
       assertStudentSchoolYear(data);
       if (!data.fullName || (!data.className && data.status !== 'dropped') || !data.schoolYear) throw new Error('Hồ sơ thiếu họ tên, lớp hoặc năm học.');
       transaction.set(codeRef, { studentKey, studentId: target.id, studentIds: [...new Set([...(owner?.studentIds || (owner?.studentId ? [owner.studentId] : [])), target.id])], updatedAt: Date.now() });
