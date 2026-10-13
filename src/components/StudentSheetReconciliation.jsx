@@ -8,9 +8,11 @@ export default function StudentSheetReconciliation({ report, webStudents, busy, 
   const [filter, setFilter] = useState('issues');
   const [classFilter, setClassFilter] = useState('');
   const [selected, setSelected] = useState(new Set());
-  const rows = useMemo(() => report.rows || [], [report.rows]);
+  const rows = useMemo(() => (report.rows || []).filter(row => row.student?.status !== 'dropped'), [report.rows]);
+  const activeWebStudents = useMemo(() => (webStudents || []).filter(student => student.status !== 'dropped'), [webStudents]);
+  const webOnly = useMemo(() => (report.webOnly || []).filter(student => student.status !== 'dropped'), [report.webOnly]);
   const classes = useMemo(() => [...new Set([...rows.map(row => row.student.className || 'Chưa xếp lớp'),
-    ...webStudents.map(student => student.className || 'Chưa xếp lớp')])].sort((a, b) => a.localeCompare(b, 'vi', { numeric: true })), [rows, webStudents]);
+    ...activeWebStudents.map(student => student.className || 'Chưa xếp lớp')])].sort((a, b) => a.localeCompare(b, 'vi', { numeric: true })), [rows, activeWebStudents]);
   const visible = rows.filter(row => (!classFilter || (row.student.className || 'Chưa xếp lớp') === classFilter)
     && (filter === 'all' || filter === 'issues' && row.action !== 'matched' || filter === row.action));
   const selectedRows = rows.filter(row => selected.has(row.key) && ['create', 'class', 'year'].includes(row.action));
@@ -28,15 +30,16 @@ export default function StudentSheetReconciliation({ report, webStudents, busy, 
         {report.error && <p role="alert" className="text-rose-700">{report.error}</p>}
         {report.mode !== 'duplicates' && !report.loading && <>
           <div className="overflow-auto"><table aria-label="Số học sinh theo lớp trên Sheet và web" className="border-collapse text-xs">
-            <thead className="bg-slate-100"><tr>{['Lớp', 'Dòng Sheet', 'Hồ sơ web', 'Thiếu trên web', 'Khác lớp', 'Sai năm web', 'Nghi trùng'].map(label => <th key={label} className="border px-3 py-2 font-normal">{label}</th>)}</tr></thead>
+            <thead className="bg-slate-100"><tr>{['Lớp', 'Dòng Sheet', 'Hồ sơ web', 'Dư trên web', 'Thiếu trên web', 'Khác lớp', 'Sai năm web', 'Nghi trùng'].map(label => <th key={label} className="border px-3 py-2 font-normal">{label}</th>)}</tr></thead>
             <tbody>{classes.map(name => { const classRows = rows.filter(row => (row.student.className || 'Chưa xếp lớp') === name); return <tr key={name}>
               <td className="border px-3 py-1.5"><button type="button" onClick={() => { setClassFilter(name); setFilter('all'); }} className="text-sky-700">{name}</button></td>
-              {[classRows.length, webStudents.filter(student => (student.className || 'Chưa xếp lớp') === name).length,
+              {[classRows.length, activeWebStudents.filter(student => (student.className || 'Chưa xếp lớp') === name).length,
+                webOnly.filter(student => (student.className || 'Chưa xếp lớp') === name).length,
                 classRows.filter(row => row.action === 'create').length, classRows.filter(row => row.action === 'class').length,
                 classRows.filter(row => row.action === 'year').length, classRows.filter(row => row.action === 'ambiguous').length].map((count, index) => <td key={index} className="border px-3 py-1.5 text-center">{count}</td>)}
             </tr>; })}</tbody>
           </table></div>
-          <p className="text-xs text-slate-500">Số dòng Sheet có thể gồm dòng trùng. Bỏ học được tính ở Chưa xếp lớp. Chênh lệch được giải thích theo từng dòng bên dưới.</p>
+          <p className="text-xs text-slate-500">Số dòng Sheet có thể gồm dòng trùng. Học sinh đã bỏ học được ẩn khỏi bảng đối chiếu này. Cột “Dư trên web” cho biết hồ sơ web không tìm thấy dòng Sheet tương ứng trong năm đang xem.</p>
           <div className="flex flex-wrap items-center gap-2 text-xs">
             <label>Hiện <select aria-label="Loại đối chiếu Sheet" value={filter} onChange={event => setFilter(event.target.value)} className="ml-1 rounded border bg-white px-2 py-1.5">
               {[['issues', 'Cần xử lý'], ['all', 'Tất cả'], ['create', 'Thiếu trên web'], ['class', 'Khác lớp'], ['year', 'Sai năm hồ sơ web'], ['ambiguous', 'Nghi trùng'], ['blocked', 'Cần bổ sung'], ['matched', 'Đã khớp']].map(([value, label]) => <option key={value} value={value}>{label}</option>)}
@@ -53,7 +56,13 @@ export default function StudentSheetReconciliation({ report, webStudents, busy, 
               <td className="border p-2"><span className={['ambiguous', 'failed'].includes(row.action) ? 'text-rose-700' : 'text-sky-700'}>{actionLabel[row.action]}</span><p className="mt-1 text-slate-500">{row.reason}</p>
                 {row.matches?.map(student => <button key={student.id} type="button" disabled={busy} onClick={() => onView(student)} className="mr-2 mt-1 text-sky-700 disabled:opacity-40">Xem {student.fullName} · {student.accessCode || student.id} · {student.schoolYear}</button>)}</td>
             </tr>)}</tbody></table>{!visible.length && <p className="py-3 text-xs text-slate-500">Không có hồ sơ thuộc bộ lọc này.</p>}</div>
-          {report.webOnly?.length > 0 && <details><summary className="text-xs">Có trên web nhưng chưa khớp dòng Sheet ({report.webOnly.length})</summary><ul className="mt-2 space-y-1 text-xs">{report.webOnly.map(student => <li key={student.id}><button type="button" disabled={busy} onClick={() => onView(student)} className="text-sky-700 disabled:opacity-40">{student.fullName} · {student.birthDate} · {student.accessCode} · {student.className || statusLabel(student)}</button></li>)}</ul></details>}
+          {webOnly.length > 0 && <section aria-label="Hồ sơ dư trên web" className="rounded border border-amber-300 bg-amber-50/60 p-3">
+            <h3 className="text-sm font-medium text-amber-900">Dư trên web ({webOnly.length})</h3>
+            <p className="mt-1 text-xs text-amber-800">Các hồ sơ dưới đây có trên web nhưng không tìm thấy dòng Sheet tương ứng trong năm {report.schoolYear}. Bấm xem để kiểm tra trước khi sửa hoặc xóa.</p>
+            <div className="mt-2 overflow-auto"><table className="w-full border-collapse bg-white text-xs"><thead className="bg-amber-100"><tr>{['Họ và tên', 'Ngày sinh', 'Mã học sinh', 'Lớp', 'Trạng thái', 'Thao tác'].map(label => <th key={label} className="border p-2 font-normal">{label}</th>)}</tr></thead>
+              <tbody>{webOnly.map(student => <tr key={student.id}><td className="border p-2">{student.fullName}</td><td className="border p-2 text-center">{student.birthDate || '—'}</td><td className="border p-2 text-center">{student.accessCode || '—'}</td><td className="border p-2 text-center">{student.className || '—'}</td><td className="border p-2 text-center">{statusLabel(student)}</td><td className="border p-2 text-center"><button type="button" disabled={busy} onClick={() => onView(student)} className="text-sky-700 disabled:opacity-40">Xem hồ sơ</button><button type="button" disabled={busy} onClick={() => onSelectWeb([student])} className="ml-3 text-sky-700 disabled:opacity-40">Chọn trên danh sách</button></td></tr>)}</tbody>
+            </table></div>
+          </section>}
         </>}
         <section aria-label="Danh sách hồ sơ nghi trùng">
           <h3>Hồ sơ nghi trùng ({report.duplicateGroups?.length || 0} nhóm)</h3>

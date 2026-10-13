@@ -3887,9 +3887,9 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
   const utilityAction = action => () => { closeUtilitiesMenu(); action(); };
   const utilityGroups = [
     pendingSheetSyncCount > 0 && {
-      id: 'pendingSync', label: 'Đồng bộ đang chờ', actions: [{
-        id: 'retry', label: `Thử lại đồng bộ (${pendingSheetSyncCount})`,
-        note: 'Gửi lại hồ sơ của năm đang xem đang chờ hoặc bị lỗi đồng bộ Sheet.',
+      id: 'pendingSync', label: 'Web → Sheet đang chờ', actions: [{
+        id: 'retry', label: `Thử lại Web → Sheet (${pendingSheetSyncCount})`,
+        note: 'Web đã lưu các hồ sơ này nhưng Google Sheet chưa nhận xong. Bấm để gửi lại từ Web sang Sheet; không đọc dữ liệu từ Sheet về Web.',
         icon: <RefreshCw className="h-4 w-4 text-amber-600" />, disabled: isSaving,
         onClick: utilityAction(retrySheetJobs)
       }]
@@ -3949,8 +3949,8 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
       }]
     },
     {
-      id: 'sheet', label: studentTab === 'current' ? 'Nhập và đồng bộ Sheet' : 'Dữ liệu Sheet',
-      note: 'Nhập mới, đối chiếu và cập nhật giữa web ↔ Sheet.', collapsible: studentTab === 'current',
+      id: 'sheet', label: studentTab === 'current' ? 'Dữ liệu Web ↔ Sheet' : 'Dữ liệu Sheet',
+      note: 'Chọn đúng chiều dữ liệu: Sheet → Web hoặc Web → Sheet.', collapsible: studentTab === 'current',
       actions: [{
         id: 'openSheet', label: 'Mở bảng dữ liệu gốc',
         note: 'Mở Google Sheet ở tab mới để xem hoặc đối chiếu thông tin.',
@@ -3962,18 +3962,18 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
         icon: <UploadCloud className="h-4 w-4 text-indigo-600" />,
         onClick: utilityAction(() => setShowImport(true))
       }, {
-        id: 'fromSheet', label: 'Cập nhật hồ sơ từ Sheet',
-        note: 'Cập nhật hồ sơ khớp; hiện bảng để bạn tích chọn thêm hồ sơ thiếu hoặc áp dụng lớp đúng cột năm trên Sheet.',
+        id: 'fromSheet', label: 'Sheet → Web: cập nhật hồ sơ',
+        note: 'Đọc dữ liệu từ Google Sheet rồi cập nhật hồ sơ trên Web. Sau đó hiện bảng để bạn chọn thêm hồ sơ thiếu hoặc áp dụng lớp đúng năm.',
         icon: <RefreshCw className="h-4 w-4 text-blue-600" />, disabled: isSaving,
         onClick: utilityAction(syncStudentsFromSheet)
       }, {
-        id: 'compareSheet', label: 'Đối chiếu Sheet / thêm học sinh thiếu',
-        note: `So sánh số lượng từng lớp theo cột ${currentSchoolYear}. Xem tên người thiếu, khác lớp và nghi trùng trước khi áp dụng.`,
+        id: 'compareSheet', label: 'Chỉ đối chiếu Web ↔ Sheet',
+        note: `Chỉ so sánh theo cột ${currentSchoolYear}; chưa sửa Web hay Sheet cho đến khi bạn chọn và áp dụng.`,
         icon: <ClipboardCheck className="h-4 w-4 text-sky-700" />, disabled: isSaving,
         onClick: utilityAction(() => openSheetReconciliation())
       }, {
-        id: 'toSheet', label: 'Gửi hồ sơ trên web lên Sheet',
-        note: 'Web → Sheet: toàn bộ năm đang xem, kể cả ngoài bộ lọc.',
+        id: 'toSheet', label: 'Web → Sheet: gửi toàn bộ năm',
+        note: 'Ghi toàn bộ hồ sơ của năm đang xem từ Web sang Google Sheet, kể cả hồ sơ ngoài bộ lọc hiện tại.',
         icon: <RefreshCw className="h-4 w-4 text-teal-600" />, disabled: isSaving || yearStudents.length === 0,
         onClick: utilityAction(syncAllStudentsToSheet)
       }] : [])]
