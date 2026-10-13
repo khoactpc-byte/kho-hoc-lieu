@@ -5096,6 +5096,7 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
             ]} />
             <div className="shrink-0 px-3 py-2 border-t bg-slate-50 flex justify-end gap-2">
                <button type="button" onClick={closeEdit} className="h-8 px-4 bg-white border border-slate-200 text-slate-600 rounded text-xs font-normal">{profileReadOnly ? 'Đóng' : 'Hủy'}</button>
+               {profileReadOnly && <button type="button" onClick={() => setProfileReadOnly(false)} className="h-8 px-4 bg-indigo-600 text-white rounded text-xs font-normal flex items-center justify-center gap-2"><Pencil className="w-4 h-4" /> Chỉnh sửa hồ sơ</button>}
                {!profileReadOnly && <button type="button" onClick={saveStudent} disabled={isSaving || Boolean(uploadingDocumentKey)} className="h-8 px-4 bg-indigo-600 text-white rounded text-xs font-normal shadow-md flex items-center justify-center gap-2 disabled:opacity-60"><Save className="w-4 h-4" /> Lưu hồ sơ</button>}
             </div>
           </div>

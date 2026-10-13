@@ -262,6 +262,32 @@ test('compact database loads images on demand, opens the matching profile and pr
     dialog = body.querySelector('[role="dialog"]');
     assert.match(dialog.textContent, /hồ sơ học sinh/i);
     assert.ok([...dialog.querySelectorAll('input')].some(input => input.value === 'Lê Thị Bình'));
+    const profileInput = label => [...dialog.querySelectorAll('label')].find(item => item.firstElementChild?.textContent.trim() === label)?.querySelector('input, select');
+    const typeValue = (element, value) => act(async () => {
+      Object.getOwnPropertyDescriptor(windowObject.HTMLInputElement.prototype, 'value').set.call(element, value);
+      element.dispatchEvent(new windowObject.Event('input', { bubbles: true }));
+    });
+    assert.match(dialog.querySelector('h4').textContent, /Xem hồ sơ/);
+    assert.equal(profileInput('Họ và tên *').readOnly, true);
+    assert.equal(profileInput('Tình trạng').disabled, true);
+    assert.equal(buttonWithText('Lưu hồ sơ'), undefined);
+    await click(buttonWithText('Địa chỉ & Gia đình'));
+    await click(buttonWithText('Chỉnh sửa hồ sơ'));
+    assert.equal(dialog.querySelector('[role="tab"][aria-selected="true"]').textContent.trim(), 'Địa chỉ & Gia đình', 'switching to edit keeps the current section');
+    assert.equal(profileInput('Tên cha').readOnly, false);
+    assert.equal(buttonWithText('Lưu hồ sơ').disabled, false);
+    assert.equal(body.querySelector('input[aria-label="Chỉnh sửa nhanh"]').checked, false, 'editing a profile does not turn on quick editing for the table');
+    await click(buttonWithText('Thông tin'));
+    assert.equal(profileInput('Tình trạng').disabled, false);
+    assert.equal(profileInput('Họ và tên *').value, 'Lê Thị Bình', 'the same student stays open after switching modes');
+    await typeValue(profileInput('Họ và tên *'), 'Lê Thị Bình Thử');
+    assert.equal(profileInput('Họ và tên *').value, 'Lê Thị Bình Thử');
+    await click(buttonWithText('Hủy'));
+    assert.equal(body.querySelector('[role="dialog"]'), null, 'cancel closes the edit without saving');
+    await click(namedButton('Mở hồ sơ Lê Thị Bình'));
+    dialog = body.querySelector('[role="dialog"]');
+    assert.equal(profileInput('Họ và tên *').value, 'Lê Thị Bình', 'cancel leaves the stored profile unchanged');
+    assert.equal(profileInput('Họ và tên *').readOnly, true, 'a newly opened profile still starts in view mode');
     await click(namedButton('Đóng hồ sơ'));
     assert.equal(table().querySelectorAll('img, iframe').length, 0);
 
@@ -290,11 +316,6 @@ test('compact database loads images on demand, opens the matching profile and pr
     assert.equal(historyTable.querySelector('details').open, true);
     assert.ok(historyTable.querySelector('details').textContent.includes('01/09/2026'));
     assert.equal(windowObject.profileAttendanceSubscriptions, attendanceSubscriptionsBeforeOpen + 1, 'attendance loads with the information tab');
-    const profileInput = label => [...dialog.querySelectorAll('label')].find(item => item.firstElementChild?.textContent.trim() === label)?.querySelector('input, select');
-    const typeValue = (element, value) => act(async () => {
-      Object.getOwnPropertyDescriptor(windowObject.HTMLInputElement.prototype, 'value').set.call(element, value);
-      element.dispatchEvent(new windowObject.Event('input', { bubbles: true }));
-    });
     await click(buttonWithText('Địa chỉ & Gia đình'));
     await typeValue(profileInput('Tên cha'), 'Nguyễn Văn Ba');
     assert.ok(profileInput('Tỉnh nơi sinh'));
