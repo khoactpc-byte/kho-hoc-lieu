@@ -3,6 +3,10 @@ import { SCOPED_AUTH_ENABLED } from '../services/scopedIdentity';
 import { saveAttendanceEntry } from '../services/attendance';
 import { attendanceDocumentId } from '../utils/classNormalization';
 import ClassMonitorAttendance from './ClassMonitorAttendance';
+import AttendanceCopyButton from './AttendanceCopyButton';
+import { useAttendanceEdits } from '../hooks/useAttendanceEdits';
+import { applyAttendanceEntry, attendanceCellKey, buildAttendanceSummary } from '../utils/attendance';
+import { copyTextSafely } from '../utils/clipboard';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { collection, doc, getDoc, onSnapshot, query, setDoc, where } from 'firebase/firestore';
 import {
@@ -150,34 +154,6 @@ const normalizeStudents = (students = [], className = '', schoolYear = '') => st
   .filter(student => !className || getClassName(student) === String(className))
   .sort(compareVietnameseStudentName);
 
-const copyTextSafely = async (text) => {
-  if (navigator.clipboard && window.isSecureContext) {
-    try {
-      await navigator.clipboard.writeText(text);
-      return true;
-    } catch {
-      // Fall back to the textarea copy path below.
-    }
-  }
-  const textarea = document.createElement('textarea');
-  textarea.value = text;
-  textarea.setAttribute('readonly', '');
-  textarea.style.position = 'fixed';
-  textarea.style.left = '-9999px';
-  textarea.style.top = '0';
-  document.body.appendChild(textarea);
-  textarea.focus();
-  textarea.select();
-  textarea.setSelectionRange(0, text.length);
-  try {
-    return document.execCommand('copy');
-  } catch {
-    return false;
-  } finally {
-    document.body.removeChild(textarea);
-  }
-};
-
 const uniqueClassesFrom = (students = [], timetable = {}, configuredClasses = []) => {
   const classes = new Set([
     ...(configuredClasses || []),
@@ -219,9 +195,18 @@ function AdminAttendanceStaticTable({ currentSchoolYear = '', students = [], cla
   const [reportMode, setReportMode] = useState('month');
   const [attendanceDocs, setAttendanceDocs] = useState([]);
   const [attendanceLoadedYear, setAttendanceLoadedYear] = useState('');
-  const attendanceSavesRef = useRef(new Set());
+  const [saveError, setSaveError] = useState('');
+  const [summaryDate, setSummaryDate] = useState('');
+  const { changes, updateEntry } = useAttendanceEdits(currentSchoolYear);
   const [showAttendanceStats, setShowAttendanceStats] = useState(false);
   const [showPortraits, setShowPortraits] = useState(false);
+  useEffect(() => {
+    const dates = makeMonthDates(selectedMonth);
+    const todayKey = toDateKey(new Date());
+    const monthPrefix = `${selectedMonth.year}-${pad2(selectedMonth.month)}-`;
+    setSummaryDate(previous => previous.startsWith(monthPrefix) ? previous
+      : dates.some(date => toDateKey(date) === todayKey) ? todayKey : dates[0] ? toDateKey(dates[0]) : '');
+  }, [selectedMonth]);
   const days = useMemo(() => reportMode === 'month' ? makeMonthDates(selectedMonth) : [], [reportMode, selectedMonth]);
   const reportMonths = useMemo(() => {
     if (reportMode === 'hk1') return months.filter(item => [9, 10, 11, 12, 1].includes(item.month));
@@ -248,8 +233,13 @@ function AdminAttendanceStaticTable({ currentSchoolYear = '', students = [], cla
     attendanceDocs.forEach(item => {
       map.set(`${item.date}__${item.className}`, item.records || {});
     });
+    changes.forEach(({ input, status }) => {
+      const key = `${input.date}__${input.className}`;
+      const records = map.get(key) || {};
+      map.set(key, { ...records, [input.student.id]: { ...records[input.student.id], status } });
+    });
     return map;
-  }, [attendanceDocs]);
+  }, [attendanceDocs, changes]);
   const rowsWithStats = useMemo(() => rows.map(student => {
     const className = getClassName(student);
     const statuses = Object.fromEntries(days.map(date => {
@@ -289,6 +279,7 @@ function AdminAttendanceStaticTable({ currentSchoolYear = '', students = [], cla
     const ref = query(collection(db, 'artifacts', appId, 'public', 'data', 'class_attendance'), where('schoolYear', '==', currentSchoolYear));
     setAttendanceDocs([]);
     setAttendanceLoadedYear('');
+    setSaveError('');
     return onSnapshot(ref, snapshot => {
       setAttendanceDocs(snapshot.docs
         .map(item => ({ ...item.data(), id: item.id }))
@@ -313,22 +304,32 @@ function AdminAttendanceStaticTable({ currentSchoolYear = '', students = [], cla
     setSelectedClasses([className]);
   };
 
-  const cycleAttendance = async (row, date) => {
+  const cycleAttendance = (row, date) => {
     if (attendanceLoadedYear !== currentSchoolYear) { showNotification?.('Đang tải điểm danh. Vui lòng thử lại sau.', 'error'); return; }
     const dateKey = toDateKey(date);
     const className = row.className;
-    const documentId = attendanceDocumentId(attendanceDocs, { schoolYear: currentSchoolYear, schoolCode: getStudentSchoolCode(row.student), className, date: dateKey });
-    const key = documentId + '/' + row.student.id;
-    if (attendanceSavesRef.current.has(key)) return;
-    attendanceSavesRef.current.add(key);
-    const current = row.statuses[dateKey] || '';
+    setSaveError('');
+    setSummaryDate(dateKey);
     try {
-      await saveAttendanceEntry({ documentId, student: row.student, status: current === '' ? 'CP' : current === 'CP' ? 'KP' : '',
+      const documentId = attendanceDocumentId(attendanceDocs, { schoolYear: currentSchoolYear, schoolCode: getStudentSchoolCode(row.student), className, date: dateKey });
+      updateEntry({ documentId, student: row.student, cycle: true,
         expectedEntry: attendanceMap.get(dateKey + '__' + className)?.[row.student.id], schoolYear: currentSchoolYear,
-        schoolCode: getStudentSchoolCode(row.student), className, date: dateKey, authorId: user?.uid });
-    } catch (error) { showNotification?.('Lỗi lưu điểm danh: ' + error.message, 'error'); }
-    finally { attendanceSavesRef.current.delete(key); }
+        schoolCode: getStudentSchoolCode(row.student), className, date: dateKey, authorId: user?.uid }, {
+        onCommit: (entry, input) => setAttendanceDocs(previous => applyAttendanceEntry(previous, input, entry)),
+        onError: error => { setSaveError('Lỗi lưu điểm danh: ' + error.message); showNotification?.('Lỗi lưu điểm danh: ' + error.message, 'error'); }
+      });
+    } catch (error) { setSaveError('Lỗi lưu điểm danh: ' + error.message); }
   };
+
+  const summaryGroups = new Map();
+  rows.forEach(student => {
+    const className = getClassName(student), schoolCode = getStudentSchoolCode(student);
+    const key = `${schoolCode}/${className}`;
+    if (!summaryGroups.has(key)) summaryGroups.set(key, { className, schoolName: getSchoolName(schoolCode),
+      students: [], records: attendanceMap.get(`${summaryDate}__${className}`) || {} });
+    summaryGroups.get(key).students.push(student);
+  });
+  const summary = buildAttendanceSummary({ date: summaryDate, schoolYear: currentSchoolYear, groups: [...summaryGroups.values()] });
 
   const exportPdf = () => {
     const reportLabel = reportMode === 'hk1' ? 'HỌC KỲ 1' : reportMode === 'hk2' ? 'HỌC KỲ 2' : reportMode === 'year' ? 'CẢ NĂM' : selectedMonth.label.toUpperCase();
@@ -380,7 +381,7 @@ function AdminAttendanceStaticTable({ currentSchoolYear = '', students = [], cla
 
   return (
     <div className="attendance-workspace flex h-full min-h-0 w-full flex-col overflow-hidden bg-white text-[13px] font-normal sm:rounded-lg sm:border sm:border-slate-200">
-      <header className="flex shrink-0 items-center justify-between gap-2 border-b border-slate-200 bg-slate-50 px-3 py-2">
+      <header className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-slate-200 bg-slate-50 px-3 py-2">
         <div className="flex min-w-0 items-center gap-2">
           <CalendarDays className="h-4 w-4 shrink-0 text-sky-600" />
           <div className="min-w-0">
@@ -389,16 +390,17 @@ function AdminAttendanceStaticTable({ currentSchoolYear = '', students = [], cla
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
+          <AttendanceCopyButton message={summary} disabled={attendanceLoadedYear !== currentSchoolYear || changes.size > 0 || !rows.length || !summaryDate} className="attendance-tool-button" />
           {onOpenDatabase && <button type="button" title="Mở danh sách học sinh" aria-label="Mở danh sách học sinh" onClick={onOpenDatabase} className="attendance-tool-button">
             <Users className="h-4 w-4" /><span className="hidden sm:inline">Học sinh</span>
           </button>}
           <button type="button" title="Thống kê" aria-label="Thống kê điểm danh" aria-pressed={showAttendanceStats} onClick={() => setShowAttendanceStats(prev => !prev)} className={'attendance-tool-button ' + (showAttendanceStats ? 'border-sky-300 bg-sky-50 text-sky-700' : '')}>
             <Users className="h-4 w-4" /><span className="hidden sm:inline">Thống kê</span>
           </button>
-          <button type="button" title="Xuất PDF" aria-label="Xuất PDF điểm danh" onClick={exportPdf} className="attendance-tool-button text-sky-700">
+          <button type="button" title="Xuất PDF" aria-label="Xuất PDF điểm danh" disabled={changes.size > 0} onClick={exportPdf} className="attendance-tool-button text-sky-700">
             <Download className="h-4 w-4" /><span className="hidden sm:inline">Xuất PDF</span>
           </button>
-          <button type="button" title="Đóng" aria-label="Đóng điểm danh" onClick={onClose} className="attendance-tool-button hover:text-rose-600"><X className="h-4 w-4" /></button>
+          <button type="button" title={changes.size ? 'Đang lưu điểm danh' : 'Đóng'} disabled={changes.size > 0} aria-label="Đóng điểm danh" onClick={onClose} className="attendance-tool-button hover:text-rose-600"><X className="h-4 w-4" /></button>
         </div>
       </header>
 
@@ -409,6 +411,17 @@ function AdminAttendanceStaticTable({ currentSchoolYear = '', students = [], cla
             {gradeFilters.map(grade => <button key={grade} type="button" onClick={() => selectGrade(grade)} aria-pressed={activeGradeFilter === grade} className="attendance-filter-button">Khối {grade}</button>)}
           </div>
           <div className="flex flex-wrap items-center gap-3 sm:ml-auto">
+            <label className="inline-flex items-center gap-2 text-xs text-slate-500">Ngày báo cáo
+              <input type="date" aria-label="Ngày báo cáo Zalo" value={summaryDate} min={`${parseYearStart(currentSchoolYear)}-09-01`} max={`${parseYearStart(currentSchoolYear) + 1}-05-31`}
+                onChange={event => {
+                  const value = event.target.value;
+                  if (!value || value < `${parseYearStart(currentSchoolYear)}-09-01` || value > `${parseYearStart(currentSchoolYear) + 1}-05-31`) return;
+                  const [year, month] = value.split('-').map(Number);
+                  const found = months.find(item => item.year === year && item.month === month);
+                  if (found && (selectedMonth.year !== year || selectedMonth.month !== month)) { setSelectedMonth(found); setReportMode('month'); }
+                  setSummaryDate(value);
+                }} className="h-8 min-w-0 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700" />
+            </label>
             <label className="inline-flex items-center gap-1.5 whitespace-nowrap text-xs text-slate-600">
               <input type="checkbox" checked={showPortraits} onChange={event => setShowPortraits(event.target.checked)} className="h-3.5 w-3.5 rounded border-slate-300" />Hiện ảnh
             </label>
@@ -426,6 +439,7 @@ function AdminAttendanceStaticTable({ currentSchoolYear = '', students = [], cla
             </label>
           </div>
         </div>
+        {saveError && <p role="alert" className="attendance-save-error">{saveError}</p>}
         {activeGradeFilter && activeGradeClasses.length > 1 && <div className="mt-2 flex flex-wrap items-center gap-1 border-t border-slate-100 pt-2" aria-label="Lọc lớp">
           <span className="mr-1 text-xs text-slate-500">Lớp</span>
           <button type="button" onClick={() => selectGrade(activeGradeFilter)} aria-pressed={selectedClasses.length === activeGradeClasses.length && activeGradeClasses.every(className => selectedClasses.includes(className))} className="attendance-filter-button">Cả khối {activeGradeFilter}</button>
@@ -463,7 +477,8 @@ function AdminAttendanceStaticTable({ currentSchoolYear = '', students = [], cla
                 <td className="attendance-class-cell text-slate-600">{row.className || '-'}</td>
                 {reportMode === 'month' ? days.map(date => {
                   const status = row.statuses[toDateKey(date)] || '';
-                  return <td key={toDateKey(date)} className="p-0 text-center"><button type="button" onClick={() => cycleAttendance(row, date)} disabled={attendanceLoadedYear !== currentSchoolYear} aria-label={row.student.fullName + ', ' + formatVietnamDateKey(toDateKey(date)) + ': ' + (status === 'CP' ? 'Có phép' : status === 'KP' ? 'Không phép' : 'Đi học')} title="Nhấn để đổi: đi học → có phép → không phép" className={'attendance-day-button ' + (status === 'CP' ? 'bg-amber-50 text-amber-700' : status === 'KP' ? 'bg-rose-50 text-rose-700' : 'text-slate-300')}>{status || '-'}</button></td>;
+                  const busy = changes.has(attendanceCellKey({ schoolYear: currentSchoolYear, schoolCode: getStudentSchoolCode(row.student), className: row.className, date: toDateKey(date), student: row.student }));
+                  return <td key={toDateKey(date)} className="p-0 text-center"><button type="button" onClick={() => cycleAttendance(row, date)} disabled={attendanceLoadedYear !== currentSchoolYear} aria-busy={busy} aria-label={row.student.fullName + ', ' + formatVietnamDateKey(toDateKey(date)) + ': ' + (status === 'CP' ? 'Có phép' : status === 'KP' ? 'Không phép' : 'Đi học')} title={busy ? 'Đang lưu điểm danh' : 'Nhấn để đổi: đi học → có phép → không phép'} className={'attendance-day-button ' + (status === 'CP' ? 'bg-amber-50 text-amber-700' : status === 'KP' ? 'bg-rose-50 text-rose-700' : 'text-slate-300')}>{status || '-'}</button></td>;
                 }) : reportMonths.map(month => {
                   const stats = row.monthStats[month.year + '-' + month.month] || { cp: 0, kp: 0 };
                   return <React.Fragment key={month.year + '-' + month.month}><td className="text-center text-amber-700">{stats.cp}</td><td className="text-center text-rose-700">{stats.kp}</td></React.Fragment>;
@@ -481,7 +496,7 @@ function AdminAttendanceStaticTable({ currentSchoolYear = '', students = [], cla
             <tfoot><tr className="border-t border-slate-200 bg-slate-50"><td className="px-3 py-1.5">Tổng</td><td className="text-center">{monthSummary.reduce((sum, item) => sum + item.students, 0)}</td><td className="text-center text-amber-700">{monthSummary.reduce((sum, item) => sum + item.cp, 0)}</td><td className="text-center text-rose-700">{monthSummary.reduce((sum, item) => sum + item.kp, 0)}</td><td className="text-center">{monthSummary.reduce((sum, item) => sum + item.total, 0)}</td></tr></tfoot>
           </table>
         </section>}
-        <div className="flex shrink-0 flex-wrap gap-x-4 gap-y-1 px-1 text-[11px] text-slate-500"><span><span className="text-amber-700">CP</span>: Có phép</span><span><span className="text-rose-700">KP</span>: Không phép</span><span>Nhấn ô để đổi: đi học → CP → KP.</span></div>
+        <div className="flex shrink-0 flex-wrap gap-x-4 gap-y-1 px-1 text-[11px] text-slate-500"><span><span className="text-amber-700">CP</span>: Có phép</span><span><span className="text-rose-700">KP</span>: Không phép</span><span>Nhấn ô để đổi: đi học → CP → KP.</span>{changes.size > 0 && <span role="status">Đang lưu {changes.size} ô…</span>}</div>
       </div>
     </div>
   );

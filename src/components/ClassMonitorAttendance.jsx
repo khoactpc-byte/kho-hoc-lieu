@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { collection, limit, onSnapshot, query, where } from 'firebase/firestore';
-import { CalendarDays, ChevronLeft, ChevronRight, Copy, Loader2, X } from 'lucide-react';
+import { CalendarDays, ChevronLeft, ChevronRight, Loader2, X } from 'lucide-react';
 import { appId, db } from '../config/firebase';
-import { saveAttendanceEntry } from '../services/attendance';
+import AttendanceCopyButton from './AttendanceCopyButton';
+import { useAttendanceEdits } from '../hooks/useAttendanceEdits';
+import { applyAttendanceEntry, attendanceCellKey, buildAttendanceSummary } from '../utils/attendance';
 import { requestPrivateApi } from '../services/serverQuizClient';
 import { SCOPED_AUTH_ENABLED } from '../services/scopedIdentity';
 import { attendanceDocumentId } from '../utils/classNormalization';
@@ -46,8 +48,8 @@ export default function ClassMonitorAttendance({ currentSchoolYear, currentStude
   const [error, setError] = useState('');
   const [retry, setRetry] = useState(0);
   const [selectedDate, setSelectedDate] = useState(() => dateKey(initialDate(currentSchoolYear)));
-  const [saving, setSaving] = useState(new Set());
-  const pending = useRef(new Set());
+  const [saveError, setSaveError] = useState('');
+  const { changes, updateEntry } = useAttendanceEdits(JSON.stringify([currentSchoolYear, schoolCode, className, studentId, retry]));
   const generation = useRef(0);
 
   useEffect(() => {
@@ -61,8 +63,7 @@ export default function ClassMonitorAttendance({ currentSchoolYear, currentStude
     setStudents([]);
     setAttendance([]);
     setLoaded({ students: false, attendance: false });
-    setSaving(new Set());
-    pending.current.clear();
+    setSaveError('');
     setError('');
     const current = () => !controller.signal.aborted && generation.current === revision;
     const failed = problem => { if (current()) setError(problem.message || 'Chưa tải được danh sách lớp.'); };
@@ -117,7 +118,10 @@ export default function ClassMonitorAttendance({ currentSchoolYear, currentStude
   const weekDates = useMemo(() => weekOf(new Date(`${selectedDate}T12:00:00`)), [selectedDate]);
   const dayDocuments = attendance.filter(row => row.date === selectedDate);
   const dayDocument = dayDocuments[0];
-  const records = dayDocument?.records || {};
+  const records = { ...dayDocument?.records };
+  changes.forEach(({ input, status }) => {
+    if (input.date === selectedDate) records[input.student.id] = { ...records[input.student.id], status };
+  });
   const displayError = error || (dayDocuments.length > 1 ? 'Có nhiều bảng điểm danh cùng ngày/lớp. Nhờ giáo viên đối chiếu trước khi sửa.' : '');
   const ready = allowed && loaded.students && loaded.attendance && !displayError;
   const cp = students.filter(student => records[student.id]?.status === 'CP').length;
@@ -127,57 +131,29 @@ export default function ClassMonitorAttendance({ currentSchoolYear, currentStude
     next.setDate(next.getDate() + offset * 7);
     setSelectedDate(dateKey(next));
   };
-  const updateAttendance = async (student, status) => {
+  const updateAttendance = (student, status) => {
     if (!ready) return;
-    const key = `${selectedDate}/${student.id}`;
-    if (pending.current.has(key)) return;
-    pending.current.add(key);
-    setSaving(new Set(pending.current));
-    const revision = generation.current;
+    setSaveError('');
     const date = selectedDate;
     try {
       const documentId = attendanceDocumentId(attendance, { schoolYear: currentSchoolYear, schoolCode, className, date });
-      const entry = await saveAttendanceEntry({ documentId, student, status, expectedEntry: records[student.id],
-        schoolYear: currentSchoolYear, schoolCode, className, date, authorId: user?.uid || studentId });
-      if (generation.current !== revision) return;
-      setAttendance(previous => {
-        const existing = previous.find(row => row.date === date);
-        const next = { ...(existing || { id: documentId, schoolYear: currentSchoolYear, schoolCode, className, date }),
-          records: { ...existing?.records, [student.id]: entry } };
-        return existing ? previous.map(row => row === existing ? next : row) : [...previous, next];
+      updateEntry({ documentId, student, status, toggle: true, expectedEntry: dayDocument?.records?.[student.id],
+        schoolYear: currentSchoolYear, schoolCode, className, date, authorId: user?.uid || studentId }, {
+        onCommit: (entry, input) => setAttendance(previous => applyAttendanceEntry(previous, input, entry)),
+        onError: problem => { setSaveError(`Chưa lưu điểm danh: ${problem.message}`); showNotification?.(`Chưa lưu điểm danh: ${problem.message}`, 'error'); }
       });
     } catch (problem) {
-      if (generation.current === revision) showNotification?.(`Chưa lưu điểm danh: ${problem.message}`, 'error');
-    } finally {
-      if (generation.current === revision) { pending.current.delete(key); setSaving(new Set(pending.current)); }
+      setSaveError(`Chưa lưu điểm danh: ${problem.message}`);
     }
   };
-  const copySummary = async () => {
-    const names = status => students.filter(student => records[student.id]?.status === status).map(student => student.fullName).join(', ') || 'Không có';
-    const message = `ĐIỂM DANH LỚP ${className} - ${selectedDate.split('-').reverse().join('/')}\nCP: ${names('CP')}\nKP: ${names('KP')}\nTổng vắng: ${cp + kp} (CP ${cp}, KP ${kp})`;
-    let copied = false;
-    try { await navigator.clipboard.writeText(message); copied = true; } catch { /* Some mobile webviews only support the selection fallback. */ }
-    if (!copied) {
-      const textarea = document.createElement('textarea');
-      textarea.value = message;
-      textarea.readOnly = true;
-      textarea.style.cssText = 'position:fixed;left:-9999px;top:0';
-      document.body.appendChild(textarea);
-      textarea.select();
-      textarea.setSelectionRange(0, message.length);
-      try { copied = document.execCommand('copy'); } catch { copied = false; }
-      finally { textarea.remove(); }
-    }
-    if (copied) {
-      showNotification?.('Đã sao chép điểm danh. Em có thể dán vào nhóm Zalo.');
-    } else showNotification?.('Chưa sao chép được. Em thử lại trên trình duyệt.', 'error');
-  };
+  const summary = buildAttendanceSummary({ date: selectedDate, schoolYear: currentSchoolYear,
+    groups: [{ className, students, records }] });
 
   return (
     <section className="monitor-attendance" role="dialog" aria-modal="true" aria-label="Điểm danh lớp">
       <header className="monitor-attendance-header">
         <div><h2><CalendarDays size={18} /> Điểm danh lớp {className}</h2><p>Năm học {currentSchoolYear} · {loaded.students ? `${students.length} học sinh` : 'Đang tải danh sách'}</p></div>
-        <button type="button" className="monitor-icon-button" aria-label="Đóng điểm danh" onClick={onClose}><X size={19} /></button>
+        <button type="button" className="monitor-icon-button" aria-label="Đóng điểm danh" disabled={changes.size > 0} title={changes.size ? 'Đang lưu điểm danh' : 'Đóng'} onClick={onClose}><X size={19} /></button>
       </header>
       <div className="monitor-attendance-calendar">
         <div className="monitor-week-navigation">
@@ -193,6 +169,7 @@ export default function ClassMonitorAttendance({ currentSchoolYear, currentStude
         </div>
       </div>
       <div className="monitor-attendance-help">CP: Vắng có phép · KP: Vắng không phép. Bỏ chọn là có mặt.</div>
+      {saveError && <p role="alert" className="attendance-save-error">{saveError}</p>}
       {!allowed ? <p role="alert" className="monitor-load-message">Chưa có phân công lớp trưởng hoặc hồ sơ chưa đủ lớp, cơ sở. Nhờ giáo viên kiểm tra lại.</p>
         : displayError ? <div role="alert" className="monitor-load-message">{displayError} <button type="button" onClick={() => setRetry(value => value + 1)}>Thử lại</button></div>
           : !ready ? <p role="status" className="monitor-load-message"><Loader2 size={16} className="animate-spin" /> Đang tải danh sách cả lớp…</p>
@@ -202,19 +179,21 @@ export default function ClassMonitorAttendance({ currentSchoolYear, currentStude
                 <thead><tr><th scope="col">STT</th><th scope="col">Họ và tên</th><th scope="col">CP</th><th scope="col">KP</th></tr></thead>
                 <tbody>{students.length === 0 ? <tr><td colSpan={4} className="monitor-empty-list">Chưa có học sinh trong lớp này. Nhờ giáo viên kiểm tra danh sách.</td></tr> : students.map((student, index) => {
                   const currentStatus = records[student.id]?.status || '';
-                  const busy = saving.has(`${selectedDate}/${student.id}`);
+                  const busy = changes.has(attendanceCellKey({ schoolYear: currentSchoolYear, schoolCode, className, date: selectedDate, student }));
                   return <tr key={student.id}>
                     <td>{index + 1}</td><th scope="row">{student.fullName || '(Chưa có tên)'}</th>
                     {['CP', 'KP'].map(status => <td key={status}><button type="button" className="monitor-status-button" data-status={status}
                       aria-label={`${status === 'CP' ? 'Vắng có phép' : 'Vắng không phép'}: ${student.fullName}`}
-                      aria-pressed={currentStatus === status} disabled={busy} onClick={() => updateAttendance(student, currentStatus === status ? '' : status)}>{status}</button></td>)}
+                      aria-pressed={currentStatus === status} aria-busy={busy} title={busy ? 'Đang lưu điểm danh' : undefined}
+                      onClick={() => updateAttendance(student, status)}>{status}</button></td>)}
                   </tr>;
                 })}</tbody>
               </table>
             </div>}
       <footer className="monitor-attendance-footer">
         <span>{ready ? `Có mặt ${students.length - cp - kp} · CP ${cp} · KP ${kp}` : 'Danh sách đúng lớp được tải khi mở điểm danh.'}</span>
-        <button type="button" disabled={!ready || saving.size > 0 || !students.length} onClick={copySummary}><Copy size={14} /> Sao chép Zalo</button>
+        {changes.size > 0 && <span role="status">Đang lưu {changes.size} ô…</span>}
+        <AttendanceCopyButton message={summary} disabled={!ready || changes.size > 0 || !students.length} />
       </footer>
     </section>
   );

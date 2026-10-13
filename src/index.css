@@ -176,6 +176,15 @@ body:has(.attendance-workspace, .learning-results-workspace, .schedule-editor, .
 .monitor-empty-list { padding: 24px 12px !important; color: #64748b; }
 .monitor-attendance-footer { display: flex; flex-shrink: 0; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px; border-top: 1px solid #dbe3ee; background: #f8fafc; padding: 7px 10px; font-size: 11px; }
 
+.attendance-copy-control { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.attendance-copy-button { width: 144px; flex-shrink: 0; white-space: nowrap; }
+.attendance-copy-button[data-copy-state="copied"] { border-color: #6ee7b7; background: #ecfdf5; color: #047857; }
+.attendance-copy-error { max-width: 240px; color: #be123c; font-size: 11px; overflow-wrap: anywhere; }
+.attendance-save-error { flex-shrink: 0; margin: 6px 0; padding: 6px 10px; border: 1px solid #fecdd3; border-radius: 4px; background: #fff1f2; color: #be123c; font-size: 12px; }
+.attendance-day-button[aria-busy="true"],
+.monitor-status-button[aria-busy="true"] { outline: 1px dashed #0284c7; outline-offset: -2px; }
+.attendance-tool-button:disabled { opacity: .5; cursor: wait; }
+
 @media (max-width: 639px) {
   .student-subject-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .student-portal > main { padding: 10px; }

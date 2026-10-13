@@ -10,8 +10,11 @@ export async function saveAttendanceEntry({ documentId, student, status, expecte
   if (!['', 'CP', 'KP'].includes(status)) throw new Error('Trạng thái điểm danh không hợp lệ.');
   const ref = doc(db, 'artifacts', appId, 'public', 'data', 'class_attendance', documentId);
   return runTransaction(db, async transaction => {
-    const previous = (await transaction.get(ref)).data() || {};
-    const settings = (await transaction.get(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'global'))).data() || {};
+    const [previousSnapshot, settingsSnapshot] = await Promise.all([
+      transaction.get(ref), transaction.get(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'global'))
+    ]);
+    const previous = previousSnapshot.data() || {};
+    const settings = settingsSnapshot.data() || {};
     if (settings.inputYearLocks?.[schoolYear]) throw new Error('Năm học đang khóa nhập liệu. Chưa lưu điểm danh.');
     if ((previous.schoolYear && previous.schoolYear !== schoolYear) || (previous.className && previous.className !== className)
       || (previous.date && previous.date !== date) || (previous.schoolCode && previous.schoolCode !== schoolCode)) throw new Error('Hồ sơ điểm danh thuộc lớp, năm hoặc cơ sở khác. Chưa ghi đè.');
