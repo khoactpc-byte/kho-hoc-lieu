@@ -64,7 +64,7 @@ import StudentProfileSections from './StudentProfileSections';
 import StudentProfileHistory from './StudentProfileHistory';
 import StudentFilterDropdown from './StudentFilterDropdown';
 import StudentUtilitiesMenu from './StudentUtilitiesMenu';
-import { belongsToEducationLevel, educationLabel } from '../utils/educationLevels';
+import { belongsToEducationLevel, educationGrades, educationLabel } from '../utils/educationLevels';
 import { buildStudentProfileHistory, profileSchoolYear } from '../utils/studentProfileHistory';
 import ProfileChangeTable from './ProfileChangeTable';
 import { STUDENT_PROFILE_SECTIONS, studentProfileSection } from '../utils/studentProfileLayout';
@@ -1670,6 +1670,10 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
     () => ADMIN_EDIT_FIELD_ORDER.map(key => editFieldMap.get(key)).filter(field => field && !(educationLevel === 'primary' && ACADEMIC_RESULT_FIELD_KEYS.has(field.key))),
     [editFieldMap, educationLevel]
   );
+  const profileYearOptions = useMemo(() => {
+    const lastYear = getYearStart(systemSchoolYear || currentSchoolYear);
+    return lastYear >= 2020 ? Array.from({ length: lastYear - 2020 + 1 }, (_, index) => `${2020 + index}-${2021 + index}`) : [];
+  }, [systemSchoolYear, currentSchoolYear]);
   const journeyYearOptions = useMemo(
     () => uniqueTextItems([...safeStudents.map(student => student.schoolYear), currentSchoolYear])
       .sort((a, b) => (getYearStart(a) || 0) - (getYearStart(b) || 0)),
@@ -2578,6 +2582,13 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
     setEditing(prev => {
       if (!prev) return prev;
       const next = { ...prev, [key]: value };
+      if (key === 'status') {
+        if (value === 'dropped') return normalizeStudentRecord(next, currentSchoolYear);
+        if (prev.status === 'dropped' && editingOriginal.current?.status !== 'dropped') {
+          next.className = prev.dropoutPreviousClassName || '';
+          next.grade = getGradeFromClass(next.className);
+        }
+      }
       if (key === 'schoolCode') {
         next.schoolCode = normalizeSchoolCode(value) || 'UNKNOWN';
         next.schoolName = getSchoolName(next.schoolCode);
@@ -2586,6 +2597,7 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
         next.grade = getGradeFromClass(value);
         if (!prev.entryGrade) next.entryGrade = getGradeFromClass(value);
       }
+      if (key === 'grade' && getGradeFromClass(prev.className) !== value) next.className = '';
       if (key === 'province' && prev.province !== value) next.ward = '';
       if (key === 'householdProvince' && prev.householdProvince !== value) next.householdWard = '';
       return next;
@@ -2949,7 +2961,8 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
   const saveStudent = async () => {
   if (profileReadOnly) return;
  if (uploadingDocumentKey) { showNotification?.('Đang tải giấy tờ, chờ xong rồi lưu hồ sơ.', 'error'); return; }
- if (!safePlainValue(editing?.fullName) || !safePlainValue(editing?.className)) { showNotification?.('Cần nhập họ tên và lớp học.', 'error'); return; }
+ if (!safePlainValue(editing?.fullName)) { showNotification?.('Cần nhập họ tên học sinh.', 'error'); return; }
+ if (editing.status !== 'dropped' && !safePlainValue(editing.className)) { showNotification?.('Cần chọn lớp cho học sinh đang học.', 'error'); return; }
  setIsSaving(true);
  try {
   const payload = await persistStudent({ ...editing, fullName: safePlainValue(editing.fullName), className: safePlainValue(editing.className), schoolYear: editing.schoolYear || currentSchoolYear }, { allocateCode: !editing.accessCode, expected: editingOriginal.current || undefined });
@@ -3979,7 +3992,19 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
     searchButtonRef.current?.focus();
   };
 
+  const renderProfileYearSelect = (key, value) => (
+    <select disabled={profileReadOnly} value={value || ''} onChange={event => updateEditingField(key, event.target.value)} className="border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-normal bg-white focus:outline-none focus:border-indigo-400">
+      <option value="">Chọn năm học...</option>
+      {value && !profileYearOptions.includes(value) && <option value={value} disabled>{value} (đã lưu)</option>}
+      {profileYearOptions.map(year => <option key={year} value={year}>{year}</option>)}
+    </select>
+  );
   const renderProfileField = field => {
+    const isDropped = editing.status === 'dropped';
+    const currentGrade = isDropped ? '' : getGradeFromClass(editing.className) || getGradeFromClass(editing.grade);
+    const fieldOptions = field.key === 'entryGrade'
+      ? [...new Set([...educationGrades(educationLevel), editing.entryGrade].filter(Boolean))].sort((a, b) => Number(a) - Number(b))
+      : field.key === 'gender' ? [...new Set(['Nam', 'Nữ', editing.gender].filter(Boolean))] : null;
     const listId = field.key === 'province' || field.key === 'householdProvince'
       ? 'admin-province-options'
       : field.key === 'ward'
@@ -3994,19 +4019,27 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
         : '';
     return (
       <label key={field.key} className="flex flex-col gap-1">
-        <span className="text-[10px] font-normal uppercase text-slate-400">{field.label}{field.required ? ' *' : ''}</span>
+        <span className="text-[10px] font-normal uppercase text-slate-400">{field.label}{field.required && !(field.key === 'className' && isDropped) ? ' *' : ''}</span>
         {field.key === 'schoolCode' ? (
           <select disabled={profileReadOnly} value={normalizeSchoolCode(editing.schoolCode) || 'UNKNOWN'} onChange={(e) => updateEditingField(field.key, e.target.value)} className="border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-normal bg-white focus:outline-none focus:border-indigo-400">
             {SCHOOL_OPTIONS.map(school => <option key={school.code} value={school.code}>{school.name}</option>)}
           </select>
         ) : field.key === 'grade' ? (
-          <input value={getGradeFromClass(editing.className) || getGradeFromClass(editing.grade)} readOnly className="border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-normal bg-slate-50 text-slate-600" title="Khối được tự động xác định từ lớp học" />
-        ) : field.key === 'className' && configuredClassOptions.length ? (
-          <select disabled={profileReadOnly} value={editing[field.key] || ''} onChange={(e) => updateEditingField(field.key, e.target.value)} className="border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-normal bg-white focus:outline-none focus:border-indigo-400">
-            <option value="">Chọn lớp...</option>
-            {[...new Set([editing[field.key], ...configuredClassOptions].filter(Boolean))].map(className => (
+          <select disabled={profileReadOnly || isDropped} value={currentGrade} onChange={event => updateEditingField(field.key, event.target.value)} className="border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-normal bg-white focus:outline-none focus:border-indigo-400">
+            <option value="">{isDropped ? 'Không có khối hiện tại' : 'Chọn khối...'}</option>
+            {[...new Set([...educationGrades(educationLevel), currentGrade].filter(Boolean))].map(grade => <option key={grade} value={grade}>Khối {grade}</option>)}
+          </select>
+        ) : field.key === 'className' && (classOptions.length || editing.className || isDropped) ? (
+          <select disabled={profileReadOnly || isDropped} value={isDropped ? '' : editing.className || ''} onChange={(e) => updateEditingField(field.key, e.target.value)} className="border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-normal bg-white focus:outline-none focus:border-indigo-400">
+            <option value="">{isDropped ? 'Không có lớp hiện tại' : 'Chọn lớp...'}</option>
+            {[...new Set([editing.className, ...classOptions].filter(Boolean))].filter(className => !currentGrade || getGradeFromClass(className) === currentGrade).map(className => (
               <option key={className} value={className}>Lớp {className}</option>
             ))}
+          </select>
+        ) : field.key === 'enrollmentYear' ? renderProfileYearSelect(field.key, editing.enrollmentYear) : fieldOptions ? (
+          <select disabled={profileReadOnly} value={editing[field.key] || ''} onChange={event => updateEditingField(field.key, event.target.value)} className="border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-normal bg-white focus:outline-none focus:border-indigo-400">
+            <option value="">{field.key === 'entryGrade' ? 'Chọn khối...' : 'Chọn giới tính...'}</option>
+            {fieldOptions.map(option => <option key={option} value={option}>{field.key === 'entryGrade' ? `Khối ${option}` : option}</option>)}
           </select>
         ) : editingCenterResults.sources[field.key] ? (
           <input value={editingCenterResults.fields[field.key] || ''} readOnly className="border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-normal bg-slate-50 text-slate-600" title={`Tự lấy kết quả cả năm ${editingCenterResults.sources[field.key].schoolYear} tại trung tâm`} />
@@ -5041,8 +5074,8 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
               </label>
               <label className="flex flex-col gap-1">
                 <span className="text-[10px] font-normal uppercase text-slate-400">Tình trạng</span>
-                 <select disabled={profileReadOnly} value={editing.status || 'active'} onChange={(e) => setEditing(prev => ({ ...prev, status: e.target.value }))} className="border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-normal bg-white">
-                  <option value="active">Đang học</option>
+                 <select disabled={profileReadOnly} value={editing.status || 'active'} onChange={(e) => updateEditingField('status', e.target.value)} className="border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-normal bg-white">
+                  <option value="active" disabled={editingOriginal.current?.status === 'dropped'}>Đang học</option>
                   <option value="dropped">Bỏ học</option>
                 </select>
               </label>
@@ -5055,7 +5088,7 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
               </label>
               <label className="flex flex-col gap-1">
                 <span className="text-[10px] font-normal uppercase text-slate-400">Năm học quản lý</span>
-                 <input readOnly={profileReadOnly} value={editing.schoolYear || currentSchoolYear} onChange={(e) => setEditing(prev => ({ ...prev, schoolYear: e.target.value }))} className="border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-normal" />
+                 {renderProfileYearSelect('schoolYear', editing.schoolYear || currentSchoolYear)}
               </label>
 
                       </>)}
