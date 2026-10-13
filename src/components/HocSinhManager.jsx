@@ -2965,8 +2965,18 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
  if (editing.status !== 'dropped' && !safePlainValue(editing.className)) { showNotification?.('Cần chọn lớp cho học sinh đang học.', 'error'); return; }
  setIsSaving(true);
  try {
-  const payload = await persistStudent({ ...editing, fullName: safePlainValue(editing.fullName), className: safePlainValue(editing.className), schoolYear: editing.schoolYear || currentSchoolYear }, { allocateCode: !editing.accessCode, expected: editingOriginal.current || undefined });
-  try { await syncPersistedStudent(payload); showNotification?.('Đã lưu hồ sơ và cập nhật Sheet.'); }
+  const original = editingOriginal.current;
+  const linkedSource = original?.previousStudentId ? students.find(student => student.id === original.previousStudentId) : null;
+  const collapseToPreviousYear = Boolean(original && linkedSource
+    && getYearStart(original.schoolYear) > getYearStart(linkedSource.schoolYear)
+    && getYearStart(editing.schoolYear) === getYearStart(linkedSource.schoolYear));
+  const payload = await persistStudent({ ...editing, fullName: safePlainValue(editing.fullName), className: safePlainValue(editing.className), schoolYear: editing.schoolYear || currentSchoolYear }, {
+    allocateCode: !editing.accessCode,
+    expected: original || undefined,
+    collapseToPreviousYear,
+    collapseSourceExpected: collapseToPreviousYear ? linkedSource : undefined
+  });
+  try { await syncPersistedStudent(payload); showNotification?.(payload.collapsedStudentId ? `Đã gộp hồ sơ lên nhầm năm về ${payload.schoolYear}, giữ trạng thái Bỏ học và cập nhật Sheet.` : 'Đã lưu hồ sơ và cập nhật Sheet.'); }
   catch (error) { showNotification?.('Đã lưu hồ sơ; đồng bộ Sheet đang chờ thử lại: ' + error.message, 'error'); }
   closeEdit();
  } catch(error) { showNotification?.('Chưa lưu được học sinh: ' + error.message, 'error'); }

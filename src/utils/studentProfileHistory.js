@@ -123,11 +123,11 @@ export function buildStudentProfileHistory({ student = {}, records = [], origina
   for (let year = Math.min(start, ...knownYears.map(key => Number(key.slice(0, 4)))); year <= end; year += 1) {
     const schoolYear = `${year}-${year + 1}`;
     const record = actual.get(schoolYear);
-    const className = record?.className || history.get(schoolYear) || '';
+    const dropout = record?.status === 'dropped' || linked.some(item => item.status === 'dropped' && profileSchoolYear(item.dropoutYear) === schoolYear);
+    const className = record?.className || (dropout ? record?.dropoutPreviousClassName : '') || history.get(schoolYear) || '';
     const grade = getSchoolGrade(className);
     const completion = isGraduatedStudent({ className });
     if (completion) graduated = true;
-    const dropout = record?.status === 'dropped' || linked.some(item => item.status === 'dropped' && profileSchoolYear(item.dropoutYear) === schoolYear);
     const returning = dropped && record && record.status !== 'dropped';
     if (dropout) dropped = true;
     else if (returning) dropped = false;

@@ -54,6 +54,16 @@ test('repeated grades keep each year result, dropouts stop projections and re-en
   assert.equal(droppedRows[5].className, '');
 });
 
+test('a dropped profile keeps its last class visible in the history row even though the current class is blank', () => {
+  const student = record('drop', '2025-2026', '', {
+    enrollmentYear: '2025-2026', entryGrade: '8', status: 'dropped', dropoutYear: '2025-2026', dropoutPreviousClassName: '8A'
+  });
+  const rows = history(student, [student], { currentSchoolYear: '2025-2026' });
+  assert.equal(rows[0].schoolYear, '2025-2026');
+  assert.equal(rows[0].className, '8A');
+  assert.equal(rows[0].status, 'Bỏ học');
+});
+
 test('identity links survive changed codes and multi-year promotion chains without using names', () => {
   const first = record('first', '2024-2025', '4A', { accessCode: 'OLD' });
   const second = record('second', '2025-2026', '5A', { accessCode: 'OTHER', previousStudentId: 'first' });

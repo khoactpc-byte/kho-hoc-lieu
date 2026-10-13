@@ -12,7 +12,7 @@ const plain = data => Object.fromEntries(Object.entries(data).filter(([key, valu
 const ownsCode = (owner, studentKey, id, sourceId) => owner?.studentKey === studentKey || (!owner?.studentKey && [id, sourceId].includes(owner?.studentId));
 
 // Freeze the legacy score identity before changing a login code. Never derive it from the new code.
-export async function saveStudentRecord(input, { codePrefix, allocateCode = false, actor = '', expected, id: targetId, registration, createOnly = false, profileDecision, profileDecisions = [], academicDecision, reactivateDropout = false } = {}) {
+export async function saveStudentRecord(input, { codePrefix, allocateCode = false, actor = '', expected, id: targetId, registration, createOnly = false, profileDecision, profileDecisions = [], academicDecision, reactivateDropout = false, collapseToPreviousYear = false, collapseSourceExpected } = {}) {
   assertStudentSchoolYear(input);
   const decisions = [...profileDecisions, ...(profileDecision ? [profileDecision] : [])];
   if (decisions.length > 400 || decisions.some(item => !item?.requestId) || new Set(decisions.map(item => item.requestId)).size !== decisions.length) throw new Error('Danh sách yêu cầu duyệt không hợp lệ.');
@@ -45,6 +45,63 @@ export async function saveStudentRecord(input, { codePrefix, allocateCode = fals
       if (allocateCode && current?.accessCode === candidate) return null;
       const sourceId = input.previousStudentId || '';
       const source = sourceId ? (await transaction.get(ref('students', sourceId))).data() : null;
+      const collapseLinkedYear = Boolean(collapseToPreviousYear && current && sourceId && source
+        && sourceId !== target.id
+        && getSchoolYearStart(current.schoolYear) > 0
+        && getSchoolYearStart(source.schoolYear) > 0
+        && getSchoolYearStart(current.schoolYear) > getSchoolYearStart(source.schoolYear)
+        && getSchoolYearStart(input.schoolYear) === getSchoolYearStart(source.schoolYear));
+      if (collapseLinkedYear) {
+        if (source.schoolCode !== input.schoolCode || source.schoolCode !== current.schoolCode) throw new Error('Hồ sơ hai năm khác cơ sở. Chưa gộp dữ liệu.');
+        if (input.status !== 'dropped') throw new Error('Chỉ tự gộp hồ sơ lên nhầm năm khi học sinh được xác nhận Bỏ học ở năm nguồn.');
+        if (collapseSourceExpected && !sameData(plain(source), plain(collapseSourceExpected))) throw new Error('Hồ sơ năm nguồn vừa thay đổi. Tải lại hồ sơ trước khi sửa năm.');
+        const sourceIdentity = source.studentKey || source.accessCode || '';
+        const currentIdentity = current.studentKey || current.accessCode || '';
+        if (!sourceIdentity || !currentIdentity || sourceIdentity !== currentIdentity) throw new Error('Hai hồ sơ chưa đủ căn cứ cùng định danh để tự gộp. Cần đối soát mã học sinh.');
+        const sourceCode = String(source.accessCode || '').trim().toUpperCase();
+        const currentCode = String(current.accessCode || '').trim().toUpperCase();
+        if (sourceCode && currentCode && sourceCode !== currentCode) throw new Error('Hai hồ sơ đang dùng mã học sinh khác nhau. Cần đối soát trước khi gộp.');
+        const mergedCode = currentCode || sourceCode;
+        if (!/^HS\d{3,15}$/.test(mergedCode)) throw new Error('Mã học sinh của hồ sơ cần gộp không hợp lệ.');
+        const codeRef = ref('student_code_registry', mergedCode);
+        const owner = (await transaction.get(codeRef)).data();
+        if (owner && !ownsCode(owner, sourceIdentity, sourceId, target.id)) throw new Error('Mã học sinh đang thuộc hồ sơ khác. Chưa gộp dữ liệu.');
+        const mutationId = globalThis.crypto.randomUUID();
+        const sourceClass = source.className || source.dropoutPreviousClassName || input.dropoutPreviousClassName || '';
+        const classHistory = { ...(source.classHistory || {}), ...(input.classHistory || {}) };
+        const sourceYear = normalizeSchoolYearKey(source.schoolYear);
+        Object.keys(classHistory).forEach(year => { if (normalizeSchoolYearKey(year) === sourceYear) delete classHistory[year]; });
+        const data = {
+          ...source,
+          ...plain(input),
+          schoolYear: source.schoolYear,
+          previousStudentId: source.previousStudentId || '',
+          studentKey: sourceIdentity,
+          accessCode: mergedCode,
+          status: 'dropped',
+          className: '',
+          grade: '',
+          classHistory,
+          dropoutPreviousClassName: input.dropoutPreviousClassName || sourceClass,
+          dropoutYear: source.schoolYear,
+          createdAt: source.createdAt || current.createdAt || Date.now(),
+          updatedAt: Date.now(),
+          updatedBy: actor,
+          syncRevision: Number(source.syncRevision || 0) + 1,
+          sheetSync: { status: 'pending', jobId: `${sourceId}--${mutationId}`, updatedAt: Date.now() }
+        };
+        assertStudentSchoolYear(data);
+        if (!data.fullName || !data.schoolYear) throw new Error('Hồ sơ sau khi gộp thiếu họ tên hoặc năm học.');
+        transaction.set(ref('student_archives', target.id), { ...current, archivedAt: Date.now(), archivedBy: actor, archiveReason: 'collapsed_wrong_school_year', mergedIntoStudentId: sourceId });
+        if (current.sheetSync?.jobId) transaction.set(ref('student_sync_jobs', current.sheetSync.jobId), { status: 'cancelled', updatedAt: Date.now(), message: `Đã gộp vào hồ sơ ${sourceId}.` }, { merge: true });
+        transaction.set(codeRef, { ...(owner || {}), studentKey: sourceIdentity, studentId: sourceId,
+          studentIds: [...new Set([...(owner?.studentIds || []), sourceId])].filter(id => id !== target.id), updatedAt: Date.now() });
+        transaction.set(ref('students', sourceId), data);
+        transaction.set(ref('student_sync_jobs', data.sheetSync.jobId), { studentId: sourceId, studentKey: sourceIdentity, revision: data.syncRevision,
+          status: 'pending', createdAt: Date.now(), actor, registration: registration || null });
+        transaction.delete(target);
+        return { ...data, id: sourceId, collapsedStudentId: target.id };
+      }
       if (sourceId && (!source || sourceId === target.id || String(source.schoolYear || '') >= String(input.schoolYear || '') || source.schoolCode !== input.schoolCode)) throw new Error('Hồ sơ năm trước không hợp lệ hoặc khác cơ sở. Đối soát trước khi nối định danh.');
       if (sourceId && getSchoolYearStart(input.enrollmentYear) && getSchoolYearStart(source.schoolYear) < getSchoolYearStart(input.enrollmentYear)) {
         throw new Error('Hồ sơ được nối nằm trước năm nhập học. Cần sửa năm hồ sơ web, không tạo lịch sử học trước khi nhập học.');

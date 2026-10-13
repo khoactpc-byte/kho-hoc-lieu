@@ -85,6 +85,36 @@ test('student allocation, immutable identity, durable sync and partial operation
       const savedAgain = await service.saveStudentRecord({ ...returned, phone: '0456' });
       assert.notEqual(savedAgain.dropoutReactivationRevision, savedAgain.syncRevision, 'return permission applies only to its own sync revision');
     });
+    await t.test('a wrong next-year dropout can collapse back into its linked source year without creating a duplicate', async () => {
+      reset();
+      const source = { ...record('Linh Quyên'), id: 'source-2025', accessCode: 'HS25817', studentKey: 'HS25817',
+        className: '8A', grade: '8', entryGrade: '8', enrollmentYear: '2025-2026', schoolYear: '2025-2026', schoolCode: 'NAN',
+        status: 'active', classHistory: { '2025-2026': '8A' }, syncRevision: 2 };
+      const target = { ...source, id: 'wrong-2026', previousStudentId: source.id, schoolYear: '2026-2027',
+        status: 'dropped', className: '', grade: '', dropoutPreviousClassName: '8A', dropoutYear: '2026-2027',
+        classHistory: { '2025-2026': '8A' }, syncRevision: 3, sheetSync: { status: 'success', jobId: 'old-job' } };
+      const { id: sourceId, ...sourceData } = source;
+      const { id: targetId, ...targetData } = target;
+      data.set(`${root}/students/${sourceId}`, sourceData);
+      data.set(`${root}/students/${targetId}`, targetData);
+      data.set(`${root}/student_code_registry/HS25817`, { studentKey: 'HS25817', studentId: targetId, studentIds: [sourceId, targetId] });
+      data.set(`${root}/student_sync_jobs/old-job`, { studentId: targetId, revision: 3, status: 'success' });
+      const saved = await service.saveStudentRecord({ ...target, schoolYear: '2025-2026', enrollmentYear: '2025-2026' }, {
+        expected: target, collapseToPreviousYear: true, collapseSourceExpected: source, actor: 'admin'
+      });
+      assert.equal(saved.id, sourceId); assert.equal(saved.collapsedStudentId, targetId);
+      assert.equal(saved.schoolYear, '2025-2026'); assert.equal(saved.status, 'dropped');
+      assert.equal(saved.dropoutYear, '2025-2026'); assert.equal(saved.dropoutPreviousClassName, '8A');
+      assert.equal(saved.previousStudentId, ''); assert.equal(saved.className, ''); assert.equal(saved.grade, '');
+      assert.equal(data.has(`${root}/students/${targetId}`), false, 'wrong-year profile is removed from active students');
+      assert.equal(data.get(`${root}/students/${sourceId}`).status, 'dropped');
+      assert.equal(data.get(`${root}/student_archives/${targetId}`).mergedIntoStudentId, sourceId);
+      assert.equal(data.get(`${root}/student_archives/${targetId}`).archiveReason, 'collapsed_wrong_school_year');
+      assert.equal(data.get(`${root}/student_code_registry/HS25817`).studentId, sourceId);
+      assert.deepEqual(data.get(`${root}/student_code_registry/HS25817`).studentIds, [sourceId]);
+      assert.equal(data.get(`${root}/student_sync_jobs/old-job`).status, 'cancelled');
+      assert.equal(data.get(`${root}/student_sync_jobs/${saved.sheetSync.jobId}`).studentId, sourceId);
+    });
     await t.test('a reviewed promotion checks the prior record and full scorebook inside the save transaction', async () => {
       reset();
       const source = { ...record('An'), id: 'source', studentKey: 'HS25601', accessCode: 'HS25601', className: '6A', entryGrade: '6', enrollmentYear: '2025-2026', schoolYear: '2025-2026' };
