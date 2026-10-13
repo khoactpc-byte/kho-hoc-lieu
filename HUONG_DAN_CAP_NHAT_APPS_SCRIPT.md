@@ -9,9 +9,19 @@ Theo lựa chọn bảo mật ngày 05/10/2026, hai bộ mã nguồn trong `apps
 | Dự án | Phiên bản cần thấy sau triển khai |
 | --- | --- |
 | Máy chủ chính | `2026-10-04-review-v8` |
-| Đăng ký học sinh | `2026-10-14-dropout-year-repair-v11` |
+| Đăng ký học sinh | `2026-10-14-registration-compact-v13` |
 
 Lượt sửa này đã cập nhật **mã nguồn trong máy**, chưa cập nhật hai Web App đang chạy. Cập nhật và triển khai máy chủ chính trước, tiếp theo dự án đăng ký, rồi đưa frontend mới lên hosting. Giữ các URL Web App hiện tại.
+
+### Form đăng ký tích hợp trong web — 14/10/2026
+
+Form mới ở `/#/dang-ky`, mở bằng nút **Đăng ký mới** trên màn hình đăng nhập. Giao diện được chia theo bước, tự lấy năm đăng ký từ admin, đặt lớp cạnh cơ sở và số điện thoại trong thông tin học sinh. Mã giao diện, kiểm tra dữ liệu, danh mục địa chỉ và kết nối được tách trong `src/features/registration/`.
+
+**Cập nhật dự án đăng ký trước khi phát hành frontend:** thay `Code.gs` bằng `apps-script/dang-ky-hoc-sinh/code_dangky.gs`; thêm file script **PublicRegistration** từ `apps-script/dang-ky-hoc-sinh/PublicRegistration.gs`; cập nhật `Index.html` cùng thư mục cho form dự phòng. Triển khai phiên bản mới của deployment hiện tại. `/exec?action=version` phải trả `2026-10-14-registration-compact-v13`, cấu hình đăng ký phải có `publicApiVersion: 1`. Riêng lượt nâng cấp form không cần sửa dự án máy chủ chính.
+
+Luồng tiếp nhận/duyệt/đồng bộ và các cột hồ sơ cũ được giữ. Hai cột kỹ thuật chống gửi trùng được tự thêm sau các cột hiện có khi nhận hồ sơ đầu tiên. Backup web giữ nguyên phạm vi hiện tại; chưa bao gồm toàn bộ Sheet đăng ký hay bản gốc tệp Drive. Xem [hướng dẫn cấu trúc, dữ liệu và triển khai form](./src/features/registration/README.md).
+
+### Các bản sửa đồng bộ trước đây
 
 Lượt rà soát ngày 13/10 sửa chiều đồng bộ học sinh: giữ `TNTHCS` và năm tốt nghiệp, xóa khối hiện tại của học sinh tốt nghiệp; giữ trạng thái bỏ học khi nhập Sheet lên web và chặn lượt đồng bộ cũ tự mở lại hồ sơ. Trước khi ghi nhóm nâng lớp, Script đọc lại cột `Năm bỏ học` của tất cả học sinh trong nhóm; có học sinh bỏ học thì dừng nhóm để admin đồng bộ và xem lại. Các lớp của năm trước được giữ. Hạnh kiểm chỉ được tính khi đủ điểm cả năm và dữ liệu điểm danh đúng năm đã tải xong; không có bản ghi vắng mặt được tính là 0 ngày vắng.
 

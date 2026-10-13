@@ -8354,7 +8354,7 @@ ${lessonBlocks}`;
                   <button type="button" onClick={handleStudentCodeLogin} disabled={isLoggingIn} className="w-full py-3.5 bg-blue-600 text-white rounded-2xl font-black shadow-lg hover:bg-blue-700 transition-all">Vào học</button>
                   <div className="grid grid-cols-2 gap-2">
                     <button type="button" onClick={() => { setStudentForgotMode(true); setStudentFoundCode(''); }} className="py-2.5 text-[11px] font-black uppercase text-slate-500 hover:text-blue-600">Quên mã?</button>
-                    <button type="button" onClick={() => window.open(REGISTRATION_WEB_APP_URL, '_blank', 'noopener,noreferrer')} className="py-2.5 text-[11px] font-black uppercase text-emerald-600 hover:text-emerald-700">Đăng ký mới</button>
+                    <button type="button" onClick={() => { window.location.hash = '/dang-ky'; }} className="py-2.5 text-[11px] font-black uppercase text-emerald-600 hover:text-emerald-700">Đăng ký mới</button>
                   </div>
                 </div>
               ) : (

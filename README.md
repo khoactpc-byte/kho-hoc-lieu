@@ -45,6 +45,10 @@ Chế độ được lưu cùng từng bản thời khóa biểu. Khi đã có p
 
 Nút **Cài đặt** cho phép chọn thứ nghỉ và số tiết riêng từng ngày, hoặc đặt cùng số tiết cho các ngày dạy. Ví dụ nghỉ thứ Bảy và dạy 4 tiết/ngày: xếp tự động chỉ dùng thứ Hai đến thứ Sáu, tối đa 4 tiết; không tự mở thứ Bảy hay tăng thành 5 tiết. Nếu thiếu chỗ, hệ thống báo để điều chỉnh cài đặt. Giảm giới hạn khi đã có tiết học sẽ hỏi xác nhận trước khi xóa các tiết ngoài giới hạn khỏi bản đang soạn. Cài đặt được lưu cùng từng thời khóa biểu và được khôi phục khi mở lại.
 
+## Đăng ký học sinh
+
+Form đăng ký học sinh mới nằm ở `/#/dang-ky`, dùng chung Sheet/Drive và luồng admin duyệt hiện có. Cấu trúc từng phần, yêu cầu cập nhật Apps Script đăng ký và phạm vi sao lưu được ghi trong [hướng dẫn form đăng ký](./src/features/registration/README.md).
+
 ## Sao luu va phuc hoi
 
 Admin vao **Tien ich > An toan du lieu**:

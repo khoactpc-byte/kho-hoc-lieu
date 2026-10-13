@@ -53,7 +53,7 @@ export default function StudentProfileModal({ view }) {
     const placeholder = field.key === 'birthDate'
       ? 'dd/mm/yyyy'
       : field.key === 'identityCode'
-        ? '12 số hoặc bé chưa có'
+        ? '12 số hoặc học sinh chưa có'
         : (field.key === 'ward' || field.key === 'householdWard')
           ? 'Chọn tỉnh trước, rồi gõ/chọn phường xã'
           : '';

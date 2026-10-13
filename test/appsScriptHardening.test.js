@@ -379,7 +379,7 @@ test('student sync permits one explicit dropout-year repair and retires the wron
   const meta = {
     getDataRange: () => ({ getValues: () => metaRows.map(row => [...row]) }),
     getLastRow: () => metaRows.length,
-    getRange: (r, c = 1, height = 1, width = 1) => ({
+    getRange: (r, c = 1) => ({
       setValues: incoming => incoming.forEach((line, i) => line.forEach((value, j) => {
         metaRows[r - 1 + i] ||= [];
         metaRows[r - 1 + i][c - 1 + j] = value;

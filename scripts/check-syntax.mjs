@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 
-for (const path of ['apps-script/code_hoclieu.gs', 'apps-script/dang-ky-hoc-sinh/code_dangky.gs']) {
+for (const path of ['apps-script/code_hoclieu.gs', 'apps-script/dang-ky-hoc-sinh/code_dangky.gs', 'apps-script/dang-ky-hoc-sinh/PublicRegistration.gs']) {
   new vm.Script(await readFile(path, 'utf8'), { filename: path });
 }
 const registrationHtml = await readFile('apps-script/dang-ky-hoc-sinh/Index.html', 'utf8');
