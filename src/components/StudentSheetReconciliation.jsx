@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 
 const statusLabel = student => student.status === 'dropped' ? 'Bỏ học' : student.status === 'completed' ? 'TNTHCS' : 'Đang học';
 const sourceLabel = source => source === 'web' ? 'Web' : 'Sheet';
-const actionLabel = { create: 'Thiếu trên web', class: 'Khác lớp', matched: 'Đã khớp', ambiguous: 'Nghi trùng', blocked: 'Cần bổ sung', saved: 'Đã cập nhật', failed: 'Lỗi cập nhật' };
+const actionLabel = { create: 'Thiếu trên web', class: 'Khác lớp', year: 'Sai năm hồ sơ web', matched: 'Đã khớp', ambiguous: 'Nghi trùng', blocked: 'Cần bổ sung', saved: 'Đã cập nhật', failed: 'Lỗi cập nhật' };
 
 export default function StudentSheetReconciliation({ report, webStudents, busy, onApply, onClose, onView, onSelectWeb }) {
   const [filter, setFilter] = useState('issues');
@@ -13,8 +13,8 @@ export default function StudentSheetReconciliation({ report, webStudents, busy, 
     ...webStudents.map(student => student.className || 'Chưa xếp lớp')])].sort((a, b) => a.localeCompare(b, 'vi', { numeric: true })), [rows, webStudents]);
   const visible = rows.filter(row => (!classFilter || (row.student.className || 'Chưa xếp lớp') === classFilter)
     && (filter === 'all' || filter === 'issues' && row.action !== 'matched' || filter === row.action));
-  const selectedRows = rows.filter(row => selected.has(row.key) && ['create', 'class'].includes(row.action));
-  const selectable = visible.filter(row => ['create', 'class'].includes(row.action));
+  const selectedRows = rows.filter(row => selected.has(row.key) && ['create', 'class', 'year'].includes(row.action));
+  const selectable = visible.filter(row => ['create', 'class', 'year'].includes(row.action));
   const toggle = key => setSelected(previous => { const next = new Set(previous); if (next.has(key)) next.delete(key); else next.add(key); return next; });
   return <div className="fixed inset-0 z-[190] flex items-center justify-center bg-slate-950/40 p-2 sm:p-4">
     <section role="dialog" aria-modal="true" aria-label={report.mode === 'duplicates' ? 'Hồ sơ nghi trùng' : 'Đối chiếu học sinh với Sheet'} className="flex max-h-[94vh] w-full max-w-7xl flex-col rounded-lg border border-slate-200 bg-white text-sm font-normal text-slate-700 shadow-xl">
@@ -28,28 +28,28 @@ export default function StudentSheetReconciliation({ report, webStudents, busy, 
         {report.error && <p role="alert" className="text-rose-700">{report.error}</p>}
         {report.mode !== 'duplicates' && !report.loading && <>
           <div className="overflow-auto"><table aria-label="Số học sinh theo lớp trên Sheet và web" className="border-collapse text-xs">
-            <thead className="bg-slate-100"><tr>{['Lớp', 'Dòng Sheet', 'Hồ sơ web', 'Thiếu trên web', 'Khác lớp', 'Nghi trùng'].map(label => <th key={label} className="border px-3 py-2 font-normal">{label}</th>)}</tr></thead>
+            <thead className="bg-slate-100"><tr>{['Lớp', 'Dòng Sheet', 'Hồ sơ web', 'Thiếu trên web', 'Khác lớp', 'Sai năm web', 'Nghi trùng'].map(label => <th key={label} className="border px-3 py-2 font-normal">{label}</th>)}</tr></thead>
             <tbody>{classes.map(name => { const classRows = rows.filter(row => (row.student.className || 'Chưa xếp lớp') === name); return <tr key={name}>
               <td className="border px-3 py-1.5"><button type="button" onClick={() => { setClassFilter(name); setFilter('all'); }} className="text-sky-700">{name}</button></td>
               {[classRows.length, webStudents.filter(student => (student.className || 'Chưa xếp lớp') === name).length,
                 classRows.filter(row => row.action === 'create').length, classRows.filter(row => row.action === 'class').length,
-                classRows.filter(row => row.action === 'ambiguous').length].map((count, index) => <td key={index} className="border px-3 py-1.5 text-center">{count}</td>)}
+                classRows.filter(row => row.action === 'year').length, classRows.filter(row => row.action === 'ambiguous').length].map((count, index) => <td key={index} className="border px-3 py-1.5 text-center">{count}</td>)}
             </tr>; })}</tbody>
           </table></div>
           <p className="text-xs text-slate-500">Số dòng Sheet có thể gồm dòng trùng. Bỏ học được tính ở Chưa xếp lớp. Chênh lệch được giải thích theo từng dòng bên dưới.</p>
           <div className="flex flex-wrap items-center gap-2 text-xs">
             <label>Hiện <select aria-label="Loại đối chiếu Sheet" value={filter} onChange={event => setFilter(event.target.value)} className="ml-1 rounded border bg-white px-2 py-1.5">
-              {[['issues', 'Cần xử lý'], ['all', 'Tất cả'], ['create', 'Thiếu trên web'], ['class', 'Khác lớp'], ['ambiguous', 'Nghi trùng'], ['blocked', 'Cần bổ sung'], ['matched', 'Đã khớp']].map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+              {[['issues', 'Cần xử lý'], ['all', 'Tất cả'], ['create', 'Thiếu trên web'], ['class', 'Khác lớp'], ['year', 'Sai năm hồ sơ web'], ['ambiguous', 'Nghi trùng'], ['blocked', 'Cần bổ sung'], ['matched', 'Đã khớp']].map(([value, label]) => <option key={value} value={value}>{label}</option>)}
             </select></label>
             <label>Lớp <select aria-label="Lớp đối chiếu Sheet" value={classFilter} onChange={event => setClassFilter(event.target.value)} className="ml-1 rounded border bg-white px-2 py-1.5"><option value="">Tất cả</option>{classes.map(name => <option key={name}>{name}</option>)}</select></label>
           </div>
           <div className="overflow-auto"><table aria-label="Hồ sơ Sheet cần đối chiếu" className="w-full border-collapse text-xs">
             <thead className="bg-slate-100"><tr><th className="border p-2"><input type="checkbox" aria-label="Chọn các hồ sơ Sheet đang hiện đủ điều kiện" disabled={busy || !selectable.length}
               checked={selectable.length > 0 && selectable.every(row => selected.has(row.key))} onChange={event => { const checked = event.target.checked; setSelected(previous => { const next = new Set(previous); selectable.forEach(row => { if (checked) next.add(row.key); else next.delete(row.key); }); return next; }); }} /></th>
-              {['Dòng Sheet', 'Họ và tên', 'Ngày sinh', 'Mã HS / định danh', 'Lớp Sheet', 'Lớp web', 'Kết quả đối chiếu'].map(label => <th key={label} className="border p-2 font-normal">{label}</th>)}</tr></thead>
-            <tbody>{visible.map(row => <tr key={row.key} className="even:bg-slate-50"><td className="border p-2 text-center"><input type="checkbox" aria-label={`Chọn dòng Sheet ${row.rowNumber || row.key}`} checked={selected.has(row.key)} disabled={busy || !['create', 'class'].includes(row.action)} onChange={() => toggle(row.key)} /></td>
+              {['Dòng Sheet', 'Họ và tên', 'Ngày sinh', 'Năm nhập học (Sheet)', 'Mã HS / định danh', 'Lớp Sheet', 'Lớp / năm hồ sơ web', 'Kết quả đối chiếu'].map(label => <th key={label} className="border p-2 font-normal">{label}</th>)}</tr></thead>
+            <tbody>{visible.map(row => <tr key={row.key} className="even:bg-slate-50"><td className="border p-2 text-center"><input type="checkbox" aria-label={`Chọn dòng Sheet ${row.rowNumber || row.key}`} checked={selected.has(row.key)} disabled={busy || !['create', 'class', 'year'].includes(row.action)} onChange={() => toggle(row.key)} /></td>
               <td className="border p-2 text-center">{row.rowNumber || '—'}</td><td className="border p-2">{row.student.fullName}</td><td className="whitespace-nowrap border p-2 text-center">{row.student.birthDate}</td>
-              <td className="border p-2 text-center">{row.student.accessCode || 'Chưa có mã'}<br />{row.student.identityCode || '—'}</td><td className="border p-2 text-center">{row.student.className || '—'}</td><td className="border p-2 text-center">{row.existing?.className || '—'}</td>
+              <td className="whitespace-nowrap border p-2 text-center">{row.student.enrollmentYear || 'Chưa ghi'}</td><td className="border p-2 text-center">{row.student.accessCode || 'Chưa có mã'}<br />{row.student.identityCode || '—'}</td><td className="border p-2 text-center">{row.student.className || '—'}</td><td className="border p-2 text-center">{row.existing?.className || '—'}{row.existing && <span className="block whitespace-nowrap text-slate-500">{row.existing.schoolYear}</span>}</td>
               <td className="border p-2"><span className={['ambiguous', 'failed'].includes(row.action) ? 'text-rose-700' : 'text-sky-700'}>{actionLabel[row.action]}</span><p className="mt-1 text-slate-500">{row.reason}</p>
                 {row.matches?.map(student => <button key={student.id} type="button" disabled={busy} onClick={() => onView(student)} className="mr-2 mt-1 text-sky-700 disabled:opacity-40">Xem {student.fullName} · {student.accessCode || student.id} · {student.schoolYear}</button>)}</td>
             </tr>)}</tbody></table>{!visible.length && <p className="py-3 text-xs text-slate-500">Không có hồ sơ thuộc bộ lọc này.</p>}</div>

@@ -62,3 +62,30 @@ test('missing yearly profiles retain their unique latest predecessor and do not 
   assert.equal(buildSheetReconciliation([now], [{ ...old, status: 'dropped' }], year).rows[0].action, 'blocked');
   assert.equal(buildSheetReconciliation([now], [{ ...old, id: 'duplicate-old' }, old], year).rows[0].action, 'ambiguous');
 });
+
+test('a new admission is repaired in place instead of being linked to a mistaken year before enrollment', () => {
+  const vinh = student(9, { fullName: 'Phạm Quốc Vinh', enrollmentYear: year, entryGrade: '9', identityCode: '012345678901' });
+  const misplaced = { ...vinh, id: 'wrong-year', schoolYear: '2025-2026', studentKey: 'keep-identity' };
+  const row = buildSheetReconciliation([vinh], [misplaced], year).rows[0];
+  assert.equal(row.action, 'year'); assert.equal(row.existing.id, misplaced.id); assert.equal(row.sourceStudent, null);
+  assert.match(row.reason, /Sheet ghi nhập học 2026-2027/); assert.match(row.reason, /trước năm nhập học/);
+  assert.doesNotMatch(row.reason, /giữ định danh từ năm/);
+  const fresh = buildSheetReconciliation([vinh], [], year).rows[0];
+  assert.equal(fresh.action, 'create'); assert.equal(fresh.sourceStudent, null); assert.match(fresh.reason, /Năm nhập học trên Sheet: 2026-2027/);
+});
+
+test('an already imported profile also reports linked history before its declared enrollment for repair', () => {
+  const current = student(9, { enrollmentYear: year, entryGrade: '9', previousStudentId: 'old', classHistory: { '2025-2026': '9A', [year]: '9A' } });
+  const sheet = { ...current, id: '', previousStudentId: '', classHistory: { [year]: '9A' } };
+  const old = { ...current, id: 'old', schoolYear: '2025-2026' };
+  const row = buildSheetReconciliation([sheet], [old, current], year).rows[0];
+  assert.equal(row.action, 'year'); assert.equal(row.existing.id, current.id);
+  assert.equal(buildSheetReconciliation([sheet], [{ ...current, previousStudentId: '', classHistory: { [year]: '9A' } }], year).rows[0].action, 'matched');
+});
+
+test('name and birth alone do not justify moving a record from an earlier year or linking its scores', () => {
+  const now = student(9, { enrollmentYear: year });
+  const old = { ...now, id: 'old', schoolYear: '2025-2026', accessCode: 'HS25888' };
+  assert.equal(buildSheetReconciliation([now], [old], year).rows[0].action, 'ambiguous');
+  assert.equal(buildSheetReconciliation([{ ...now, enrollmentYear: '2025-2026' }], [old], year).rows[0].action, 'ambiguous');
+});

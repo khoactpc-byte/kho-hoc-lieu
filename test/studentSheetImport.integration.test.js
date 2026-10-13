@@ -169,6 +169,28 @@ test('Sheet import shows real progress, retains assigned classes and reports par
     const selectedOnList = [...document.querySelectorAll('tbody tr')];
     assert.equal(selectedOnList.length, 1); assert.match(selectedOnList[0].textContent, /Đỗ Thị An/);
     assert.equal(writes.length, beforeApply + 2, 'choosing a suspected duplicate does not delete or overwrite any record');
+    const misplaced = { ...original, id: 'wrong-year-vinh', fullName: 'Phạm Quốc Vinh', accessCode: 'HS26909', studentKey: 'stable-vinh',
+      enrollmentYear: '2026-2027', entryGrade: '9', schoolYear: '2025-2026', classHistory: { '2025-2026': '9A' } };
+    dom.window.fixture.serverStudents = [misplaced];
+    await render([misplaced]);
+    const beforeYearRead = writes.length;
+    await click(button('Tiện ích'));
+    await click(button('Cập nhật hồ sơ từ Sheet'));
+    await act(async () => finishRead({ result: { success: true, items: [sheetRow(misplaced, { rowNumber: 119, schoolYear: '2026-2027', currentClassName: '9A', classHistory: { '2026-2027': '9A' } })] } }));
+    assert.match(compare().textContent, /Năm nhập học \(Sheet\)/);
+    assert.match(compare().textContent, /Sai năm hồ sơ web/);
+    assert.match(compare().textContent, /trước năm nhập học/);
+    assert.equal(writes.length, beforeYearRead, 'ordinary profile import must leave the wrong-year record untouched until its repair is selected');
+    const beforeRepair = writes.length;
+    await click(document.querySelector('input[aria-label="Chọn dòng Sheet 119"]'));
+    await click(button('Áp dụng các hồ sơ đã chọn (1)'));
+    const repaired = writes[beforeRepair];
+    assert.equal(repaired.id, misplaced.id); assert.equal(repaired.schoolYear, '2026-2027'); assert.equal(repaired.enrollmentYear, '2026-2027');
+    assert.equal(repaired.accessCode, misplaced.accessCode); assert.equal(repaired.previousStudentId, ''); assert.equal(repaired.studentKey, misplaced.studentKey);
+    assert.deepEqual(repaired.classHistory, { '2026-2027': '9A' });
+    assert.notEqual(saveOptions[beforeRepair].createOnly, true, 'repair must update the original record rather than create a duplicate');
+    await act(async () => finishSave());
+    assert.match(compare().textContent, /Đã sửa năm 1 hồ sơ/);
   } finally {
     if (root) await act(async () => root.unmount());
     dom.window.close();

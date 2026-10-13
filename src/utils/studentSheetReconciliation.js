@@ -17,6 +17,10 @@ const nameBirth = student => fold(student.fullName) && sheetBirthDateKey(student
   ? `${fold(student.fullName)}|${sheetBirthDateKey(student.birthDate)}` : '';
 const identifiers = student => [code(student.accessCode) && `code:${code(student.accessCode)}`,
   identity(student.identityCode) && `identity:${identity(student.identityCode)}`, nameBirth(student) && `name:${nameBirth(student)}`].filter(Boolean);
+const sameStableIdentity = (student, record) => Boolean(
+  /^HS\d{3,15}$/.test(code(student.accessCode)) && code(student.accessCode) === code(record.accessCode)
+  || identity(student.identityCode) && identity(student.identityCode) === identity(record.identityCode)
+);
 
 // Only an explicit yearly class or a summary belonging to this year can supply a class.
 export function sheetRecordForYear(record, schoolYear) {
@@ -90,6 +94,13 @@ export function buildSheetReconciliation(sheetStudents, records, schoolYear) {
     if (existing) {
       if (existing.status === 'dropped' || student.status === 'dropped') return { ...base, action: 'matched', reason: 'Bỏ học; lớp/khối hiện tại phải để trống.' };
       if (existing.status === 'completed' && className(student.className) !== 'TNTHCS') return { ...base, action: 'blocked', reason: 'Hồ sơ đã tốt nghiệp; cần đối chiếu trước khi thay lớp TNTHCS.' };
+      const entryYear = profileSchoolYear(student.enrollmentYear);
+      const previous = records.find(record => record.id === existing.previousStudentId);
+      const invalidHistory = Object.keys(existing.classHistory || {}).some(year => profileSchoolYear(year) && profileSchoolYear(year) < entryYear);
+      if (entryYear && (profileSchoolYear(existing.enrollmentYear) !== entryYear || invalidHistory
+        || previous && profileSchoolYear(previous.schoolYear) < entryYear)) {
+        return { ...base, action: 'year', reason: `Năm nhập học trên Sheet là ${student.enrollmentYear}. Hồ sơ web có năm nhập học hoặc liên kết/lịch sử trước đó không khớp; chọn để sửa theo Sheet, giữ nguyên mã học sinh.` };
+      }
       if (className(existing.className) !== className(student.className)) {
         return { ...base, action: student.sheetClassSource === 'unassigned' ? 'blocked' : 'class',
           reason: student.sheetClassSource === 'unassigned' ? 'Chưa xác định lớp thuộc năm đang xem.' : `Khác lớp; Sheet ghi rõ lớp năm ${schoolYear}. Chọn nếu muốn áp dụng lớp này.` };
@@ -103,13 +114,30 @@ export function buildSheetReconciliation(sheetStudents, records, schoolYear) {
     const codeOwners = records.filter(record => code(student.accessCode) && code(record.accessCode) === code(student.accessCode)
       && getStudentSchoolCode(record) !== getStudentSchoolCode(student));
     if (codeOwners.length) return { ...base, action: 'ambiguous', matches: codeOwners, reason: 'Mã học sinh đang thuộc hồ sơ ở cơ sở khác. Cần đối chiếu trước khi thêm.' };
-    const older = records.filter(record => profileSchoolYear(record.schoolYear) < schoolYear && getStudentSchoolCode(record) === getStudentSchoolCode(student));
+    const entryYear = profileSchoolYear(student.enrollmentYear);
+    const older = records.filter(record => profileSchoolYear(record.schoolYear) < schoolYear
+      && (!entryYear || profileSchoolYear(record.schoolYear) >= entryYear)
+      && getStudentSchoolCode(record) === getStudentSchoolCode(student));
     const linked = matchSheetStudent(student, older);
     const latestYear = linked.matches.map(record => profileSchoolYear(record.schoolYear)).sort().at(-1);
     const latest = linked.matches.filter(record => profileSchoolYear(record.schoolYear) === latestYear);
     if (latest.length > 1 || matchSheetStudent(student, latest).conflictingIdentity) return { ...base, action: 'ambiguous', matches: linked.matches, reason: 'Hồ sơ năm trước không khớp duy nhất; cần đối chiếu định danh.' };
+    if (latest[0] && !sameStableIdentity(student, latest[0])) return { ...base, action: 'ambiguous', matches: latest, reason: 'Chỉ khớp họ tên/ngày sinh; chưa đủ định danh để nối hồ sơ và điểm năm trước.' };
     if (latest[0]?.status === 'dropped') return { ...base, action: 'blocked', matches: latest, reason: 'Hồ sơ năm trước đã bỏ học; cần đưa học lại trước khi nhập năm mới.' };
-    return { ...base, sourceStudent: latest[0] || null, action: 'create', reason: latest[0] ? `Thiếu hồ sơ năm ${schoolYear}; giữ định danh từ năm ${latestYear}.` : 'Chưa có trên web; có thể thêm từ dòng Sheet này.' };
+    if (!latest.length && entryYear) {
+      const beforeEntry = matchSheetStudent(student, records.filter(record => profileSchoolYear(record.schoolYear) < entryYear));
+      if (beforeEntry.matches.length) {
+        if (beforeEntry.ambiguous) return { ...base, action: 'ambiguous', matches: beforeEntry.matches, reason: 'Có nhiều hồ sơ web nằm trước năm nhập học trên Sheet; cần kiểm tra trước khi sửa năm.' };
+        const misplaced = beforeEntry.matches[0];
+        if (!sameStableIdentity(student, misplaced)) return { ...base, action: 'ambiguous', matches: [misplaced], reason: 'Chỉ khớp họ tên/ngày sinh với hồ sơ nằm trước năm nhập học; cần đối chiếu mã học sinh hoặc mã định danh trước khi sửa năm.' };
+        if (['dropped', 'completed'].includes(misplaced.status)) return { ...base, action: 'blocked', matches: [misplaced], reason: 'Hồ sơ web trước năm nhập học đã bỏ học/tốt nghiệp; cần đối chiếu, không tự mở lại.' };
+        return { ...base, existing: misplaced, matches: [misplaced], sourceStudent: null, action: 'year',
+          reason: `Sheet ghi nhập học ${student.enrollmentYear}; web có hồ sơ ở ${misplaced.schoolYear}, trước năm nhập học. Chọn để sửa hồ sơ web sang ${schoolYear}; không tạo lịch sử học năm ${misplaced.schoolYear}.` };
+      }
+    }
+    return { ...base, sourceStudent: latest[0] || null, action: 'create', reason: latest[0]
+      ? `Năm nhập học trên Sheet: ${student.enrollmentYear || 'chưa ghi'}. Có hồ sơ web từ năm ${latestYear}; nối định danh khi thêm hồ sơ ${schoolYear}.`
+      : `Năm nhập học trên Sheet: ${student.enrollmentYear || 'chưa ghi'}. Chưa có trên web; có thể thêm hồ sơ năm ${schoolYear}.` };
   });
   const matchedIds = new Set(rows.flatMap(row => row.matches.map(student => student.id)));
   const webOnly = current.filter(student => !matchedIds.has(student.id));

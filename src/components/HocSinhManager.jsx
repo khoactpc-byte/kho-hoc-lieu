@@ -65,7 +65,7 @@ import StudentProfileHistory from './StudentProfileHistory';
 import StudentFilterDropdown from './StudentFilterDropdown';
 import StudentUtilitiesMenu from './StudentUtilitiesMenu';
 import { belongsToEducationLevel, educationLabel } from '../utils/educationLevels';
-import { buildStudentProfileHistory } from '../utils/studentProfileHistory';
+import { buildStudentProfileHistory, profileSchoolYear } from '../utils/studentProfileHistory';
 import ProfileChangeTable from './ProfileChangeTable';
 import { STUDENT_PROFILE_SECTIONS, studentProfileSection } from '../utils/studentProfileLayout';
 
@@ -3403,7 +3403,7 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
         const sheetStudent = reviewRow.student;
         const hasCurrentClassName = isUsefulSheetValue(row.currentClassName || row.lopHienTai || row.current_class_name);
         const existing = reviewRow.existing;
-        if (!existing?.id || reviewRow.action === 'ambiguous') {
+        if (!existing?.id || ['ambiguous', 'year'].includes(reviewRow.action)) {
           skippedCount += 1;
           progress.skipped += 1;
           continue;
@@ -3520,10 +3520,11 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
     if (sheetReconciliation?.schoolYear !== currentSchoolYear) { showNotification?.('Năm đang xem đã đổi. Mở lại đối chiếu Sheet.', 'error'); return; }
     const additions = selectedRows.filter(row => row.action === 'create').length;
     const classChanges = selectedRows.filter(row => row.action === 'class').length;
-    if (!window.confirm(`Thêm ${additions} hồ sơ thiếu và cập nhật lớp của ${classChanges} hồ sơ theo cột ${currentSchoolYear} trên Sheet? Chỉ áp dụng các dòng đã tích chọn.`)) return;
+    const yearChanges = selectedRows.filter(row => row.action === 'year').length;
+    if (!window.confirm(`Thêm ${additions} hồ sơ thiếu, cập nhật lớp ${classChanges} hồ sơ và sửa năm ${yearChanges} hồ sơ theo Sheet? Chỉ áp dụng các dòng đã tích chọn vào năm ${currentSchoolYear}.`)) return;
     sheetReconciliationLock.current = true;
     setIsSaving(true);
-    let added = 0, changed = 0, failed = 0;
+    let added = 0, changed = 0, repairedYears = 0, failed = 0;
     try {
       const snapshot = await getDocsFromServer(collection(db, 'artifacts', appId, 'public', 'data', 'students'));
       const latest = snapshot.docs.map(item => ({ ...item.data(), id: item.id }));
@@ -3548,6 +3549,21 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
             saved = await persistStudent(input, { createOnly: true, allocateCode: !input.accessCode,
               id: stableRecordId(source ? 'promotion' : 'sheet-import', identity, currentSchoolYear, getStudentSchoolCode(input)) });
             added += 1;
+          } else if (row.action === 'year') {
+            if (!sameData(row.existing, requested.existing)) throw new Error('Hồ sơ web vừa thay đổi. Mở lại đối chiếu trước khi sửa năm.');
+            const profile = { ...row.student };
+            ['id', 'rowNumber', 'sheetClassSource'].forEach(key => delete profile[key]);
+            const entryYear = profileSchoolYear(profile.enrollmentYear);
+            const history = mergeStudentClassHistory(row.existing.classHistory, profile.classHistory);
+            Object.keys(history).forEach(year => { if (profileSchoolYear(year) < entryYear) delete history[year]; });
+            if (profile.className) history[currentSchoolYear] = profile.className;
+            const previous = latest.find(student => student.id === row.existing.previousStudentId);
+            const previousStudentId = previous && profileSchoolYear(previous.schoolYear) >= entryYear
+              && profileSchoolYear(previous.schoolYear) < currentSchoolYear ? previous.id : '';
+            saved = await persistStudent({ ...row.existing, ...profile, id: row.existing.id, previousStudentId,
+              accessCode: row.existing.accessCode || profile.accessCode, schoolYear: currentSchoolYear, classHistory: history },
+            { expected: latest.find(student => student.id === row.existing.id) });
+            repairedYears += 1;
           } else {
             if (!sameData(row.existing, requested.existing)) throw new Error('Hồ sơ trên web vừa thay đổi. Mở lại đối chiếu trước khi đổi lớp.');
             saved = await persistStudent({ ...row.existing, className: row.student.className, grade: getGradeFromClass(row.student.className),
@@ -3564,7 +3580,7 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
           setSheetReconciliation(previous => ({ ...previous, rows: previous.rows.map(item => item.key === requested.key ? { ...item, reason: `Chưa lưu: ${error.message}` } : item) }));
         }
       }
-      setSheetReconciliation(previous => ({ ...previous, progress: `Hoàn tất: thêm ${added}, cập nhật lớp ${changed}, lỗi ${failed}. Các hồ sơ lỗi vẫn được giữ để bạn đối chiếu.` }));
+      setSheetReconciliation(previous => ({ ...previous, progress: `Hoàn tất: thêm ${added}, cập nhật lớp ${changed}, lỗi ${failed}. Đã sửa năm ${repairedYears} hồ sơ. Các hồ sơ lỗi vẫn được giữ để bạn đối chiếu.` }));
     } catch (error) { setSheetReconciliation(previous => ({ ...previous, error: error.message })); }
     finally { sheetReconciliationLock.current = false; setIsSaving(false); }
   };

@@ -49,6 +49,21 @@ test('student allocation, immutable identity, durable sync and partial operation
       builder.onLoad({ filter: /.*/, namespace: 'fixture' }, args => ({ contents: args.path === 'config' ? 'export const db={}, appId="fixture";' : `const mock=globalThis.__studentMutations; export const {${Object.keys(mock).join(',')}}=mock;`, loader: 'js' }));
     } }] });
     const service = await import(pathToFileURL(outfile));
+    await t.test('a source before admission is rejected, but correcting the original record keeps its ID and code', async () => {
+      reset();
+      const misplaced = { ...record('Vinh'), id: 'wrong-year', className: '9A', grade: '9', entryGrade: '9',
+        accessCode: 'HS26909', studentKey: 'stable-vinh', enrollmentYear: '2026-2027', schoolYear: '2025-2026' };
+      const { id, ...stored } = misplaced;
+      data.set(`${root}/students/${id}`, stored);
+      const before = clone([...data]);
+      await assert.rejects(service.saveStudentRecord({ ...misplaced, id: undefined, previousStudentId: id, schoolYear: '2026-2027' }), /trước năm nhập học/);
+      assert.deepEqual([...data], before, 'no new student, registry or sync job may be written');
+      const repaired = await service.saveStudentRecord({ ...misplaced, previousStudentId: '', schoolYear: '2026-2027', classHistory: { '2026-2027': '9A' } }, { expected: misplaced });
+      assert.equal(repaired.id, id); assert.equal(repaired.accessCode, misplaced.accessCode); assert.equal(repaired.studentKey, misplaced.studentKey);
+      assert.equal(repaired.schoolYear, '2026-2027'); assert.equal(repaired.enrollmentYear, '2026-2027'); assert.equal(repaired.previousStudentId, '');
+      assert.deepEqual(repaired.classHistory, { '2026-2027': '9A' });
+      assert.equal([...data.keys()].filter(key => key.startsWith(`${root}/students/`)).length, 1);
+    });
     await t.test('dropout stays blank during profile saves and only an explicit return can reactivate it', async () => {
       reset();
       const student = await service.saveStudentRecord({ ...record('An'), accessCode: 'HS001', entryGrade: '6',

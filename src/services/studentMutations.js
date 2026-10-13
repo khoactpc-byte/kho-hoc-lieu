@@ -2,7 +2,7 @@ import { collection, doc, getDocFromServer, getDocsFromServer, limit, query, run
 import { appId, db } from '../config/firebase';
 import { sameData } from '../utils/dataEquality';
 import { processRecords } from '../utils/bulkOperations';
-import { assertStudentSchoolYear } from '../utils/schoolYearText';
+import { assertStudentSchoolYear, getSchoolYearStart } from '../utils/schoolYearText';
 import { buildStudentYearReconciliation } from '../utils/studentYearReconciliation';
 import { getStudentEntryGrade, normalizeSchoolYearKey } from '../utils/schoolClasses';
 
@@ -46,6 +46,9 @@ export async function saveStudentRecord(input, { codePrefix, allocateCode = fals
       const sourceId = input.previousStudentId || '';
       const source = sourceId ? (await transaction.get(ref('students', sourceId))).data() : null;
       if (sourceId && (!source || sourceId === target.id || String(source.schoolYear || '') >= String(input.schoolYear || '') || source.schoolCode !== input.schoolCode)) throw new Error('Hồ sơ năm trước không hợp lệ hoặc khác cơ sở. Đối soát trước khi nối định danh.');
+      if (sourceId && getSchoolYearStart(input.enrollmentYear) && getSchoolYearStart(source.schoolYear) < getSchoolYearStart(input.enrollmentYear)) {
+        throw new Error('Hồ sơ được nối nằm trước năm nhập học. Cần sửa năm hồ sơ web, không tạo lịch sử học trước khi nhập học.');
+      }
       if (!current && source?.status === 'dropped') throw new Error('Học sinh đã bỏ học; không tự tạo hồ sơ nâng lớp. Cần đưa học sinh trở lại học trước.');
       if (current?.status === 'dropped' && input.status !== 'dropped' && !reactivateDropout) throw new Error('Học sinh đang bỏ học. Chỉ thao tác Đưa học lại mới được mở lại hồ sơ.');
       if (academicDecision) {

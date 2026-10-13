@@ -12,6 +12,14 @@ Nút cập nhật trước đây chỉ sửa các hồ sơ đã khớp trên web
 4. Tích các dòng **Thiếu trên web** để thêm hồ sơ. Tích **Khác lớp** nếu đã kiểm tra và muốn áp dụng lớp ghi trong cột năm trên Sheet. Bấm **Áp dụng các hồ sơ đã chọn**.
 5. Hồ sơ nghi trùng/thiếu định danh không được tự tạo hoặc ghi đè. Hồ sơ có năm trước được nối bằng định danh ổn định; không tạo bản sao độc lập làm mất liên kết điểm.
 
+## Hồ sơ web nằm trước năm nhập học
+
+Bảng luôn hiển thị riêng **Năm nhập học (Sheet)** và **Lớp / năm hồ sơ web**. Ví dụ Sheet ghi nhập học `2026-2027` nhưng web có hồ sơ cùng mã/định danh ở `2025-2026`: đây là **Sai năm hồ sơ web**, không được coi là đã học năm `2025-2026`.
+
+Tích dòng **Sai năm hồ sơ web** rồi áp dụng để sửa chính hồ sơ đó sang năm đang xem, giữ nguyên ID, mã học sinh và định danh; bỏ liên kết/lịch sử lớp trước năm nhập học. Hệ thống không tạo thêm hồ sơ mới trong trường hợp này. Nếu trước đó đã thêm hồ sơ năm mới với liên kết trước năm nhập học, mở lại đối chiếu cũng phát hiện để sửa. Việc đọc bảng không tự sửa dữ liệu.
+
+Chỉ họ tên/ngày sinh giống nhau chưa đủ để nối điểm hoặc chuyển hồ sơ giữa các năm; cần mã học sinh hoặc mã định danh khớp. Hồ sơ bỏ học/tốt nghiệp không tự được mở lại khi sửa năm.
+
 Nút **Cập nhật hồ sơ từ Sheet** vẫn cập nhật thông tin các hồ sơ khớp; nếu còn người thiếu/khác lớp/nghi trùng thì mở bảng đối chiếu để xử lý. Các ô lớp theo năm không tự được suy ra bằng cách cộng/trừ khối.
 
 Nguồn lớp ưu tiên ô của cột năm đang xem. Nếu ô đó chưa có nhưng phần tóm tắt thuộc đúng năm đang xem thì dùng lớp của phần tóm tắt; không dùng phần tóm tắt của năm khác để tự tính lớp. Do đó bảng đối chiếu còn giúp thấy các hồ sơ chưa được điền vào cột năm trên Sheet.
@@ -27,7 +35,8 @@ Với hồ sơ web: bấm **Xem hồ sơ** để đối chiếu hoặc **Chọn 
 - Website: các thay đổi trong `src/components/HocSinhManager.jsx`, `src/components/StudentSheetReconciliation.jsx`, `src/utils/studentSheetReconciliation.js`.
 - Apps Script đăng ký: thay `Code.gs` bằng `apps-script/dang-ky-hoc-sinh/code_dangky.gs`, sau đó **Deploy → Manage deployments → Edit → New version → Deploy**; giữ URL hiện tại. Phiên bản mới: `2026-10-13-sheet-roster-v10`.
 - Các thao tác thêm/sửa chỉ chạy khi admin chọn áp dụng trên web. Lượt chỉnh mã không sửa dữ liệu Sheet/Firebase đang sử dụng.
+- Phần sửa nhận diện hồ sơ trước năm nhập học và cột năm nhập học trong bảng chỉ cần cập nhật website; không có thay đổi Apps Script bổ sung so với `sheet-roster-v10`.
 
 ## Kiểm tra mã
 
-`npm run check` hoàn tất: 247 test đạt, 0 lỗi, 2 test cần Firestore Emulator được bỏ qua; lint, kiểm tra cú pháp Apps Script và build production đều đạt. Đã kiểm thử bằng dữ liệu giả lập tình huống 35 dòng Sheet so với 31 hồ sơ web, thêm hồ sơ thiếu giữ liên kết năm trước, cập nhật lớp được chọn, xử lý nghi trùng và giữ trạng thái bỏ học. Chưa xác định danh tính bốn trường hợp trong Sheet thật từ ảnh chụp.
+`npm run check` hoàn tất: 251 test đạt, 0 lỗi, 2 test cần Firestore Emulator được bỏ qua; lint, kiểm tra cú pháp Apps Script và build production đều đạt. Đã kiểm thử bằng dữ liệu giả lập tình huống 35 dòng Sheet so với 31 hồ sơ web, thêm hồ sơ thiếu giữ liên kết năm trước hợp lệ, sửa hồ sơ web nằm trước năm nhập học tại chỗ, cập nhật lớp được chọn, xử lý nghi trùng và giữ trạng thái bỏ học. Chưa xác định danh tính bốn trường hợp trong Sheet thật từ ảnh chụp.
