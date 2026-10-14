@@ -4,25 +4,26 @@ import { belongsToEducationLevel } from '../utils/educationLevels';
 
 // Load outside the student workspace so pending applications are visible on every admin page.
 export function usePendingRegistrationCount(enabled, scopeKey, educationLevel = '') {
-  const [snapshot, setSnapshot] = useState({ scopeKey: null, items: [], loaded: false, error: '' });
+  const [snapshot, setSnapshot] = useState({ scopeKey: null, items: [], loaded: false, loading: false, error: '' });
   const runtimeRef = useRef(null);
 
   useEffect(() => {
     if (!enabled) return undefined;
     const runtime = { scopeKey, active: true, controller: null, lastRefreshAt: 0 };
     runtimeRef.current = runtime;
-    setSnapshot({ scopeKey, items: [], loaded: false, error: '' });
+    setSnapshot({ scopeKey, items: [], loaded: false, loading: true, error: '' });
     const refresh = async () => {
       if (!runtime.active || runtime.controller || document.visibilityState === 'hidden') return;
       const controller = new AbortController();
       runtime.controller = controller;
       runtime.lastRefreshAt = Date.now();
+      setSnapshot(previous => ({ ...previous, loading: true }));
       try {
         const items = await fetchPendingRegistrations({ signal: controller.signal });
-        if (runtime.active && !controller.signal.aborted) setSnapshot({ scopeKey, items, loaded: true, error: '' });
+        if (runtime.active && !controller.signal.aborted) setSnapshot({ scopeKey, items, loaded: true, loading: false, error: '' });
       } catch (error) {
         if (runtime.active && !controller.signal.aborted) {
-          setSnapshot(previous => ({ ...previous, error: error.message }));
+          setSnapshot(previous => ({ ...previous, loading: false, error: error.message }));
         }
       } finally {
         if (runtime.controller === controller) runtime.controller = null;
@@ -51,7 +52,7 @@ export function usePendingRegistrationCount(enabled, scopeKey, educationLevel = 
     runtime.controller?.abort();
     runtime.controller = null;
     runtime.lastRefreshAt = Date.now();
-    setSnapshot(previous => previous.scopeKey === scopeKey ? transform(previous) : previous);
+    setSnapshot(previous => previous.scopeKey === scopeKey ? { ...transform(previous), loading: false } : previous);
   }, [enabled, scopeKey]);
 
   const replaceRegistrations = useCallback(items => {
@@ -63,6 +64,6 @@ export function usePendingRegistrationCount(enabled, scopeKey, educationLevel = 
     updateSnapshot(previous => ({ ...previous, items: previous.items.filter(item => !resolved.has(pendingRegistrationKey(item))) }));
   }, [updateSnapshot]);
 
-  const current = enabled && snapshot.scopeKey === scopeKey ? snapshot : { items: [], loaded: !enabled, error: '' };
-  return { count: current.items.filter(item => belongsToEducationLevel(item, educationLevel)).length, loaded: current.loaded, error: current.error, replaceRegistrations, removeRegistrations };
+  const current = enabled && snapshot.scopeKey === scopeKey ? snapshot : { items: [], loaded: !enabled, loading: enabled, error: '' };
+  return { count: current.items.filter(item => belongsToEducationLevel(item, educationLevel)).length, loaded: current.loaded, error: current.error, snapshot: current, replaceRegistrations, removeRegistrations };
 }

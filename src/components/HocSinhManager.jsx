@@ -1427,7 +1427,7 @@ const fileToBase64Payload = (file, documentItem = {}, student = {}) => new Promi
   reader.readAsDataURL(file);
 });
 
-export default function HocSinhManager({ students = [], educationLevel = '', configuredClassOptions = [], currentSchoolYear, systemSchoolYear = '', initialTab = 'current', initialTabKey = 0, user, showNotification, onBack, onOpenAttendance, onSendTestResults, onSendMailboxMessages, learningProgressRows = [], onBeforeDangerousAction, onStartSchoolYearPromotion, schoolYearPromotionState = null, onPendingRegistrationsLoaded, onRegistrationsResolved }) {
+export default function HocSinhManager({ students = [], educationLevel = '', configuredClassOptions = [], currentSchoolYear, systemSchoolYear = '', initialTab = 'current', initialTabKey = 0, user, showNotification, onBack, onOpenAttendance, onSendTestResults, onSendMailboxMessages, learningProgressRows = [], onBeforeDangerousAction, onStartSchoolYearPromotion, schoolYearPromotionState = null, pendingRegistrationSnapshot, onPendingRegistrationsLoaded, onRegistrationsResolved }) {
   const [query, setQuery] = useState('');
   const [showSearch, setShowSearch] = useState(false);
   const searchButtonRef = useRef(null);
@@ -1444,7 +1444,9 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
   const [sortMode, setSortMode] = useState('className');
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [selectedRegistrationIds, setSelectedRegistrationIds] = useState(new Set());
-  const [allPendingRegistrations, setPendingRegistrations] = useState([]);
+  const [localPendingRegistrations, setPendingRegistrations] = useState([]);
+  // The badge already fetched the complete queue. Keep one live source for both views.
+  const allPendingRegistrations = pendingRegistrationSnapshot?.items ?? localPendingRegistrations;
   const registrationRequestRef = useRef(null);
   const registrationMutationRef = useRef(false);
   useEffect(() => () => registrationRequestRef.current?.abort(), []);
@@ -1459,7 +1461,8 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
   const [sheetReconciliation, setSheetReconciliation] = useState(null);
   const sheetReconciliationLock = useRef(false);
   const sheetImportLock = useRef(false);
-  const [isLoadingRegistrations, setIsLoadingRegistrations] = useState(false);
+  const [isReloadingRegistrations, setIsLoadingRegistrations] = useState(false);
+  const isLoadingRegistrations = isReloadingRegistrations || Boolean(pendingRegistrationSnapshot?.loading && !pendingRegistrationSnapshot.loaded);
   const [showCodeChoiceModal, setShowCodeChoiceModal] = useState(false);
   const [showFilters, setShowFilters] = useState(false);
   const [columnFilters, setColumnFilters] = useState({});
@@ -2126,10 +2129,11 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
     : registration.registrationId || registration.id || registration.tempId;
   const decorateRegistration = useCallback((item = {}, index = 0) => {
     const duplicate = findRegistrationDuplicate(item);
-    const identity = registrationIdentity(item);
+    const tempId = safePlainValue(item.id || item.rowNumber || `${pickText(item.identityCode, item.fullName) || 'row'}_${index}`);
+    const identity = registrationIdentity({ ...item, tempId });
     return {
       ...item,
-      tempId: safePlainValue(item.id || item.rowNumber || `${pickText(item.identityCode, item.fullName) || 'row'}_${index}`),
+      tempId,
       hiddenBecauseExistingStudent: Boolean(duplicate?.student),
       duplicateReason: duplicate?.reason || '',
       duplicateStudentId: duplicate?.student?.id || '',
@@ -2163,6 +2167,8 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
   const autoLoadRegistrationsAttemptedRef = useRef(false);
 
   useEffect(() => {
+    // Reuse the reminder's completed or in-flight read, including a known empty queue.
+    if (pendingRegistrationSnapshot) return;
     if (studentTab !== 'registrations') {
       autoLoadRegistrationsAttemptedRef.current = false;
       return;
@@ -2171,7 +2177,7 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
       autoLoadRegistrationsAttemptedRef.current = true;
       loadPendingRegistrationsRef.current();
     }
-  }, [studentTab, pendingRegistrations.length, isLoadingRegistrations]);
+  }, [studentTab, pendingRegistrations.length, isLoadingRegistrations, pendingRegistrationSnapshot]);
 
   useEffect(() => {
     setColumnFilters({});
@@ -4817,6 +4823,13 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
         </div>
       )}
 
+      {studentTab === 'registrations' && pendingRegistrationSnapshot?.error && (
+        <div role="alert" className="flex flex-wrap items-center justify-between gap-2 border-b border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+          <span>Chưa cập nhật được hồ sơ đăng ký.{pendingRegistrationSnapshot.loaded ? ' Đang hiển thị danh sách đã tải.' : ''} {pendingRegistrationSnapshot.error}</span>
+          <button type="button" onClick={loadPendingRegistrations} disabled={isLoadingRegistrations || isSaving} className="rounded border border-amber-300 bg-white px-3 py-1.5 disabled:opacity-50">Thử lại</button>
+        </div>
+      )}
+
       {showFilters && (
         <div className="shrink-0 px-3 pb-3 border-b border-slate-100 bg-white">
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-6 gap-2">
@@ -4886,7 +4899,10 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
             {filteredStudents.length === 0 ? (
               <tr>
                 <td colSpan={visibleStudentFields.length + (studentTab === 'registrations' ? 5 : (isImageOnlyView ? 4 : 7))} className="text-center text-slate-400 font-normal">
-                  {studentTab === 'current' ? 'Chưa có học sinh trong năm học hoặc bộ lọc này.' : 'Chưa có hồ sơ đăng ký mới cần duyệt trong bộ lọc này.'}
+                  {studentTab === 'current' ? 'Chưa có học sinh trong năm học hoặc bộ lọc này.'
+                    : isLoadingRegistrations ? 'Đang tải hồ sơ đăng ký mới…'
+                    : pendingRegistrationSnapshot?.error && !pendingRegistrationSnapshot.loaded ? 'Chưa tải được danh sách hồ sơ. Bấm Thử lại để tải.'
+                    : 'Chưa có hồ sơ đăng ký mới cần duyệt trong bộ lọc này.'}
                 </td>
               </tr>
             ) : filteredStudents.map((student, rowIndex) => (

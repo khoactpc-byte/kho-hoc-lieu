@@ -7330,6 +7330,7 @@ ${lessonBlocks}`;
                     initialTab={studentDatabaseInitialTab}
                     initialTabKey={studentDatabaseOpenKey}
                     user={user}
+                    pendingRegistrationSnapshot={pendingRegistrationNotice.snapshot}
                     onPendingRegistrationsLoaded={pendingRegistrationNotice.replaceRegistrations}
                     onRegistrationsResolved={pendingRegistrationNotice.removeRegistrations}
                     showNotification={showNotification}
