@@ -30,6 +30,7 @@ import { captureSystemSnapshot, restoreAtomicSnapshot } from './services/systemB
 import { completeBackupExport } from './services/serverSystemClient';
 import { observeTeachingAssignments, saveTeachingAssignments, saveSimpleTeachingAssignments } from './services/teachingAssignments';
 import { useTeacherNavigation } from './hooks/useTeacherNavigation';
+import { useDefaultLearningGrade } from './hooks/useDefaultLearningGrade';
 import TeacherSubjectSelect from './components/TeacherSubjectSelect';
 import { listDriveFiles } from './services/driveClient';
 import { sanitizeHtml, formatSafeAiText } from './utils/safeHtml';
@@ -1016,7 +1017,7 @@ function App() {
     });
   }, [role, loginRole, teacherProfile, currentContentSchoolCode]);
   const currentTeacherHasScope = teacherCanUseScope(selectedGrade, selectedSubject);
-  const studentNavigationGrade = getGradeFromClassName(activeStudentProfile?.className || currentStudent?.className || '');
+  const studentNavigationGrade = getGradeFromClassName(activeStudentProfile?.className || currentStudent?.className || activeStudentProfile?.grade || currentStudent?.grade || '');
   const navigationGrades = useMemo(() => role === 'teacher' ? (teacherProfile?.grades || []) : isAdmin ? adminGrades
     : Number(studentNavigationGrade) >= 1 && Number(studentNavigationGrade) <= 5 ? educationGrades('primary') : GRADES, [role, teacherProfile, isAdmin, adminGrades, studentNavigationGrade]);
   const navigationSubjects = useMemo(() => role === 'teacher' ? (teacherProfile?.subjects || []) : Number(selectedGrade) >= 1 && Number(selectedGrade) <= 5
@@ -1160,7 +1161,8 @@ function App() {
     const timer = setInterval(() => setNowMs(Date.now()), 10000);
     return () => clearInterval(timer);
   }, []);
-  useEffect(() => { if (role && !selectedGrade && window.innerWidth >= 640 && !selectedLesson && !selectedSubject) { setSelectedGrade(navigationGrades[0] || '6'); setIsTextbookExpanded(true); } }, [role, selectedGrade, selectedLesson, selectedSubject, navigationGrades]);
+  useDefaultLearningGrade({ role, studentGrade: studentNavigationGrade, grades: navigationGrades, grade: selectedGrade,
+    subject: selectedSubject, lesson: selectedLesson, setGrade: setSelectedGrade, setTextbookExpanded: setIsTextbookExpanded });
 
   const showNotification = useCallback((message, type = 'success') => {
     if (notificationTimeoutRef.current) {
@@ -8386,7 +8388,7 @@ ${lessonBlocks}`;
   }
 
   return (
-    <div className={`min-h-screen flex flex-col text-slate-800 font-sans relative ${role === 'student' ? 'student-portal' : ''}`} style={focusBackgroundStyle}><MainBackground />
+    <div className={`min-h-screen flex flex-col text-slate-800 font-sans relative ${role === 'student' ? `student-portal${selectedLesson ? ' student-reading' : ''}` : role === 'teacher' ? 'teacher-portal' : ''}`} style={focusBackgroundStyle}><MainBackground />
       {role === 'teacher' && educationGrades('primary').includes(String(scorebookGrade)) && <WorkspaceErrorBoundary title="Sổ điểm tiểu học" onClose={() => setScorebookGrade(null)}>
         <Suspense fallback={<div className="fixed inset-0 z-[140] bg-white p-8">Đang mở sổ điểm tiểu học…</div>}>
           <PrimaryAcademicWorkspace grade={scorebookGrade} allowedGrades={(teacherProfile?.grades || []).filter(grade => educationGrades('primary').includes(String(grade)))}
@@ -8563,7 +8565,7 @@ ${lessonBlocks}`;
              </marquee>
           </div>
 
-          <div className="flex items-center space-x-2 sm:space-x-5 flex-shrink-0">
+          <div className="student-header-actions flex items-center gap-2 sm:gap-5 flex-shrink-0">
             {loginRole === 'teacher' ? (
               <button onClick={handleToggleRole} className={`flex items-center space-x-1 sm:space-x-2.5 px-3 py-2 sm:px-4 sm:py-2 rounded-full border shadow-sm transition-all hover:scale-105 active:scale-95 ${role === 'teacher' ? 'bg-indigo-50 border-indigo-200 text-indigo-700 hover:bg-indigo-100' : 'bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100'}`}>
                 {role === 'teacher' ? <GraduationCap className="w-4 h-4 sm:w-4.5 sm:h-4.5" /> : <User className="w-4 h-4 sm:w-4.5 sm:h-4.5" />}
@@ -8583,7 +8585,7 @@ ${lessonBlocks}`;
                     </span>
                   )}
                 </button>
-                <button type="button" onClick={openStudentProfileEditor} disabled={isOpeningStudentProfile} title="Sửa thông tin" className="relative flex items-center space-x-1.5 sm:space-x-2.5 bg-blue-50 px-3 py-1.5 sm:px-4 sm:py-2 rounded-full border shadow-sm border-blue-100 hover:bg-blue-100 transition-colors disabled:opacity-60">
+                <button type="button" onClick={openStudentProfileEditor} disabled={isOpeningStudentProfile} title="Sửa thông tin" className="student-profile-trigger relative flex items-center space-x-1.5 sm:space-x-2.5 bg-blue-50 px-3 py-1.5 sm:px-4 sm:py-2 rounded-full border shadow-sm border-blue-100 hover:bg-blue-100 transition-colors disabled:opacity-60">
                   {isOpeningStudentProfile ? <Loader2 className="w-4 h-4 animate-spin text-blue-600" /> : <User className="w-4 h-4 sm:w-4.5 sm:h-4.5 text-blue-600" />}
                   <span className="text-[11px] sm:text-sm font-black text-blue-800">
                     <span className="sm:hidden">{getStudentDisplayName(activeStudentProfile?.fullName, true)}</span>
@@ -8663,13 +8665,13 @@ ${lessonBlocks}`;
         </div>
       )}
       
-      <main className="max-w-6xl mx-auto px-4 py-4 sm:py-8 flex-1 w-full relative z-10 flex flex-col">
+      <main className="learning-main max-w-6xl mx-auto px-4 py-4 sm:py-8 flex-1 w-full relative z-10 flex flex-col">
         <div className={`student-learning-navigation flex flex-nowrap items-center text-[clamp(9px,2.35vw,11px)] sm:text-xs font-black text-slate-400 ${selectedLesson && role === 'teacher' ? 'mb-2' : 'mb-2 sm:mb-8'} bg-white/80 backdrop-blur-md px-2.5 sm:px-6 py-2 sm:py-4 rounded-xl sm:rounded-2xl shadow-sm border border-white/60 uppercase tracking-wide sm:tracking-widest shrink-0 overflow-hidden`}>
-            <button onClick={resetNavigationWithClean} className="hover:text-blue-600 flex items-center transition-colors whitespace-nowrap flex-shrink-0" title="Trang chủ"><Home className="w-3.5 h-3.5 sm:w-4 sm:h-4 mr-0 sm:mr-2" /> <span className="hidden sm:inline">{'Trang ch\u1ee7'}</span></button>
-            {selectedGrade && <><ChevronRight className="w-3 h-3 sm:w-4 sm:h-4 mx-0.5 sm:mx-2 opacity-30 flex-shrink-0" /><div className="relative flex-shrink-0"><select value={selectedGrade} onChange={(e) => { setSelectedGrade(e.target.value); setIsTextbookExpanded(true); }} className="appearance-none bg-emerald-50 text-emerald-700 border border-emerald-100 pl-1.5 pr-5 sm:pl-2 sm:pr-7 py-0.5 rounded-md sm:rounded-lg whitespace-nowrap font-black focus:outline-none focus:ring-2 focus:ring-emerald-100 cursor-pointer">{navigationGrades.map(g => <option key={g} value={g}>{'Kh\u1ed1i ' + g}</option>)}</select><ChevronDown className="pointer-events-none absolute right-1 sm:right-2 top-1/2 -translate-y-1/2 w-3 h-3 opacity-60" /></div></>}
+            <button onClick={resetNavigationWithClean} aria-label="Trang chủ" className="hover:text-blue-600 flex items-center transition-colors whitespace-nowrap flex-shrink-0" title="Trang chủ"><Home className="w-3.5 h-3.5 sm:w-4 sm:h-4 mr-0 sm:mr-2" /> <span className="hidden sm:inline">{'Trang ch\u1ee7'}</span></button>
+            {selectedGrade && <><ChevronRight className="w-3 h-3 sm:w-4 sm:h-4 mx-0.5 sm:mx-2 opacity-30 flex-shrink-0" /><div className="relative flex-shrink-0"><select aria-label="Khối lớp" value={selectedGrade} onChange={(e) => { setSelectedGrade(e.target.value); setIsTextbookExpanded(true); }} className="appearance-none bg-emerald-50 text-emerald-700 border border-emerald-100 pl-1.5 pr-5 sm:pl-2 sm:pr-7 py-0.5 rounded-md sm:rounded-lg whitespace-nowrap font-black focus:outline-none focus:ring-2 focus:ring-emerald-100 cursor-pointer">{navigationGrades.map(g => <option key={g} value={g}>{'Kh\u1ed1i ' + g}</option>)}</select><ChevronDown className="pointer-events-none absolute right-1 sm:right-2 top-1/2 -translate-y-1/2 w-3 h-3 opacity-60" /></div></>}
             {selectedSubject && <><ChevronRight className="w-3 h-3 sm:w-4 sm:h-4 mx-0.5 sm:mx-2 opacity-30 flex-shrink-0" />{role === 'teacher'
               ? <TeacherSubjectSelect subjects={navigationSubjects} value={selectedSubject} onChange={selectLearningSubject} />
-              : <button onClick={() => setSelectedLesson(null)} className="bg-sky-50 text-sky-700 border border-sky-100 px-1.5 sm:px-2 py-0.5 rounded-md sm:rounded-lg whitespace-nowrap truncate min-w-0 max-w-[82px] sm:max-w-none">{selectedSubject}</button>}</>}
+              : <button onClick={() => setSelectedLesson(null)} aria-label={`Danh sách tuần môn ${selectedSubject}`} title={selectedSubject} className="student-subject-return bg-sky-50 text-sky-700 border border-sky-100 px-1.5 sm:px-2 py-0.5 rounded-md sm:rounded-lg whitespace-nowrap truncate min-w-0 max-w-[82px] sm:max-w-none">{selectedSubject}</button>}</>}
             {role === 'student' && activeStudentProfile?.isClassLeader && !selectedLesson && (
               <button type="button" onClick={() => setShowClassOps(true)} className="ml-auto sm:ml-3 bg-emerald-600 text-white px-2.5 sm:px-3 py-1.5 rounded-lg sm:rounded-xl whitespace-nowrap flex items-center gap-1.5 shadow-sm">
                 <ListChecks className="w-3.5 h-3.5" /> <span>Điểm danh</span>
@@ -8677,15 +8679,15 @@ ${lessonBlocks}`;
             )}
             {selectedLesson && <>
               <ChevronRight className="w-3 h-3 sm:w-4 sm:h-4 mx-0.5 sm:mx-2 opacity-30 flex-shrink-0" />
-              <div className="ml-auto flex items-center gap-0.5 sm:gap-1.5 bg-blue-50/90 border border-blue-100 rounded-lg sm:rounded-xl p-0.5 sm:p-1 shadow-sm flex-shrink-0">
-                <button type="button" onClick={() => setSelectedLesson(String(Math.max(1, Number(selectedLesson || 1) - 1)))} disabled={Number(selectedLesson) <= 1} className="w-7 h-7 sm:w-9 sm:h-9 rounded-md sm:rounded-lg bg-white text-blue-700 flex items-center justify-center shadow-sm disabled:opacity-40 active:scale-95"><ChevronLeft className="w-3.5 h-3.5 sm:w-4 sm:h-4" /></button>
-                <select value={selectedLesson} onChange={(e) => setSelectedLesson(e.target.value)} className={`h-7 sm:h-9 bg-white border-0 ${getWeekData(selectedLesson).isExam ? getWeekData(selectedLesson).text : 'text-blue-900'} font-black text-[clamp(10px,2.5vw,11px)] sm:text-sm px-1 sm:px-3 rounded-md sm:rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-200 cursor-pointer text-center w-[clamp(74px,20vw,92px)] sm:w-[120px] shadow-sm`}>
+              <div className="learning-week-navigation ml-auto flex items-center gap-0.5 sm:gap-1.5 bg-blue-50/90 border border-blue-100 rounded-lg sm:rounded-xl p-0.5 sm:p-1 shadow-sm flex-shrink-0">
+                <button type="button" onClick={() => setSelectedLesson(String(Math.max(1, Number(selectedLesson || 1) - 1)))} disabled={Number(selectedLesson) <= 1} aria-label="Tuần trước" className="w-7 h-7 sm:w-9 sm:h-9 rounded-md sm:rounded-lg bg-white text-blue-700 flex items-center justify-center shadow-sm disabled:opacity-40 active:scale-95"><ChevronLeft className="w-3.5 h-3.5 sm:w-4 sm:h-4" /></button>
+                <select aria-label="Tuần học" value={selectedLesson} onChange={(e) => setSelectedLesson(e.target.value)} className={`h-7 sm:h-9 bg-white border-0 ${getWeekData(selectedLesson).isExam ? getWeekData(selectedLesson).text : 'text-blue-900'} font-black text-[clamp(10px,2.5vw,11px)] sm:text-sm px-1 sm:px-3 rounded-md sm:rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-200 cursor-pointer text-center w-[clamp(74px,20vw,92px)] sm:w-[120px] shadow-sm`}>
                   {Array.from({ length: TOTAL_LESSONS }, (_, i) => i + 1).map(l => {
                     const lData = getWeekData(l);
                     return <option key={l} value={String(l)}>{(quizLessonSet.has(String(l)) ? '* ' : '') + (lData.isExam ? lData.main : 'Tuần ' + l)}</option>
                   })}
                 </select>
-                <button type="button" onClick={() => setSelectedLesson(String(Math.min(TOTAL_LESSONS, Number(selectedLesson || 1) + 1)))} disabled={Number(selectedLesson) >= TOTAL_LESSONS} className="w-7 h-7 sm:w-9 sm:h-9 rounded-md sm:rounded-lg bg-white text-blue-700 flex items-center justify-center shadow-sm disabled:opacity-40 active:scale-95"><ChevronRight className="w-3.5 h-3.5 sm:w-4 sm:h-4" /></button>
+                <button type="button" onClick={() => setSelectedLesson(String(Math.min(TOTAL_LESSONS, Number(selectedLesson || 1) + 1)))} disabled={Number(selectedLesson) >= TOTAL_LESSONS} aria-label="Tuần sau" className="w-7 h-7 sm:w-9 sm:h-9 rounded-md sm:rounded-lg bg-white text-blue-700 flex items-center justify-center shadow-sm disabled:opacity-40 active:scale-95"><ChevronRight className="w-3.5 h-3.5 sm:w-4 sm:h-4" /></button>
               </div>
             </>}
         </div>
@@ -8694,7 +8696,7 @@ ${lessonBlocks}`;
            <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 flex-1 flex flex-col">
 
 
-              <div className="hidden sm:flex justify-center mb-8 gap-4 bg-white/60 p-2 rounded-2xl shadow-sm border border-white/50 w-fit mx-auto">
+              <div className="learning-grade-picker hidden sm:flex justify-center mb-8 gap-4 bg-white/60 p-2 rounded-2xl shadow-sm border border-white/50 w-fit mx-auto">
                  <div className="px-4 py-3 text-sm font-black text-slate-400 uppercase tracking-widest flex items-center border-r border-slate-200">Chọn Khối</div>
                  {navigationGrades.map(g => (
                     <button key={g} onClick={() => { setSelectedGrade(g); setSelectedSubject(null); setIsTextbookExpanded(true); }} className={`px-8 py-3 rounded-xl font-black text-lg transition-all ${selectedGrade === g ? 'bg-blue-600 text-white shadow-lg scale-105' : 'bg-slate-50 text-slate-600 hover:bg-blue-100 hover:text-blue-700'}`}>
@@ -8735,7 +8737,7 @@ ${lessonBlocks}`;
                                  onSelect={selectLearningSubject} />
 
                                <div className="student-textbook-panel bg-white/70 backdrop-blur-md rounded-[1.5rem] sm:rounded-[2rem] p-4 sm:p-8 border border-white/60 shadow-xl shrink-0">
-                                  <button onClick={() => setIsTextbookExpanded(!isTextbookExpanded)} className="w-full flex justify-between items-center focus:outline-none group">
+                                  <button onClick={() => setIsTextbookExpanded(!isTextbookExpanded)} aria-expanded={isTextbookExpanded} className="w-full flex justify-between items-center focus:outline-none group">
                                     <div className="flex flex-col items-start gap-1">
                                         <div className="flex items-center gap-2 sm:gap-4">
                                             <div className="w-1.5 sm:w-2.5 h-5 sm:h-8 bg-emerald-500 rounded-full"></div>
@@ -8781,7 +8783,7 @@ ${lessonBlocks}`;
         )}
 
         {(!role || role === 'student' || role === 'teacher') && selectedGrade && selectedSubject && !selectedLesson && (
-          <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 space-y-4 flex-1 mt-4">
+          <div className="learning-week-picker animate-in fade-in slide-in-from-bottom-4 duration-500 space-y-4 flex-1 mt-4">
             <div className="grid grid-cols-4 sm:grid-cols-7 md:grid-cols-9 lg:grid-cols-12 gap-2 pb-2">
               {Array.from({ length: TOTAL_LESSONS }, (_, i) => i + 1).map(l => {
                 const wData = getWeekData(l);
@@ -8866,7 +8868,7 @@ ${lessonBlocks}`;
         )}
 
         {selectedGrade && selectedSubject && selectedLesson && (
-          <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 space-y-3 sm:space-y-4 flex-1 mt-0 pb-20 sm:pb-0">
+          <div className="student-lesson-workspace animate-in fade-in slide-in-from-bottom-4 duration-500 space-y-3 sm:space-y-4 flex-1 mt-0 pb-20 sm:pb-0">
             <div className="hidden">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                 <h2 className={`text-2xl sm:text-4xl md:text-5xl font-black ${getWeekData(selectedLesson).isExam ? getWeekData(selectedLesson).text : 'text-slate-800'} tracking-tighter flex items-center flex-wrap`}>
@@ -8898,10 +8900,11 @@ ${lessonBlocks}`;
               </div>
             </div>
             
-            <div className="bg-white/95 rounded-2xl sm:rounded-[2.5rem] shadow-2xl border border-white/60 overflow-hidden">
-              <div className="bg-gradient-to-r from-indigo-100/95 via-blue-50/95 to-white px-4 sm:px-8 py-3 sm:py-4 border-b border-indigo-200 shadow-sm flex flex-col">
-                <div className="flex items-center justify-between w-full">
-                    <div className="flex items-center gap-2.5">
+            <div className="lesson-card bg-white/95 rounded-2xl sm:rounded-[2.5rem] shadow-2xl border border-white/60 overflow-hidden">
+              {(role !== 'student' || activeStudentProfile?.isClassLeader || studentCurrentQuizVisible || studentScheduledQuizPending) && (
+              <div className="lesson-toolbar bg-gradient-to-r from-indigo-100/95 via-blue-50/95 to-white px-4 sm:px-8 py-3 sm:py-4 border-b border-indigo-200 shadow-sm flex flex-col">
+                <div className="lesson-heading-row flex items-center justify-between w-full">
+                    <div className="lesson-heading flex items-center gap-2.5">
                     <div className="bg-blue-600 p-2 sm:p-2.5 rounded-lg sm:rounded-xl text-white shadow-md ring-4 ring-blue-100/80">
                       <FileText className="w-3.5 h-3.5 sm:w-5 sm:h-5" />
                     </div>
@@ -8922,7 +8925,7 @@ ${lessonBlocks}`;
                   )}
 
                   {role === 'teacher' && (
-                    <div className="flex items-center gap-2">
+                    <div className="lesson-editing-tools flex items-center gap-2">
                       <label className="lg:hidden px-3 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded-lg text-[10px] font-black uppercase flex items-center gap-1.5 shadow-sm border border-emerald-200 active:scale-95 cursor-pointer">
                         <ImageIcon className="w-3.5 h-3.5" /> Chèn ảnh
                         <input type="file" accept="image/*" onChange={handleToolbarImageUpload} className="hidden" />
@@ -8932,7 +8935,7 @@ ${lessonBlocks}`;
                         <Palette className="w-3.5 h-3.5" /> {showMobileToolbar ? 'Ẩn công cụ' : 'Công cụ'}
                       </button>
 
-                      <div className="hidden lg:flex flex-wrap items-center gap-1.5 bg-white p-1.5 rounded-2xl shadow-sm border border-slate-200 transition-all">
+                      <div className="lesson-desktop-formatting hidden lg:flex flex-wrap items-center gap-1.5 bg-white p-1.5 rounded-2xl shadow-sm border border-slate-200 transition-all">
                         <button onMouseDown={e => {e.preventDefault(); document.execCommand('bold')}} className="p-2 sm:p-2.5 hover:bg-slate-100 rounded-lg sm:rounded-xl text-slate-700 transition-colors" title="In đậm"><Bold className="w-3.5 h-3.5 sm:w-4 sm:h-4" /></button>
                         <button onMouseDown={e => {e.preventDefault(); document.execCommand('italic')}} className="p-2 sm:p-2.5 hover:bg-slate-100 rounded-lg sm:rounded-xl text-slate-700 transition-colors" title="In nghiêng"><Italic className="w-3.5 h-3.5 sm:w-4 sm:h-4" /></button>
                         <button onMouseDown={e => {e.preventDefault(); document.execCommand('underline')}} className="p-2 sm:p-2.5 hover:bg-slate-100 rounded-lg sm:rounded-xl text-slate-700 transition-colors" title="Gạch chân"><Underline className="w-3.5 h-3.5 sm:w-4 sm:h-4" /></button>
@@ -8988,6 +8991,7 @@ ${lessonBlocks}`;
                 )}
               </div>
               
+              )}
               <div className="p-0 relative">
                 {role === 'teacher' ? (
                   <div className="relative">
@@ -9021,7 +9025,7 @@ ${lessonBlocks}`;
               </div>
 
               {currentQuickQuizMaterials.length > 0 && (
-                <div className="border-t border-emerald-100 bg-emerald-50/55 px-4 py-2.5 sm:px-8 sm:py-3">
+                <div className="lesson-quick-practice border-t border-emerald-100 bg-emerald-50/55 px-4 py-2.5 sm:px-8 sm:py-3">
                   <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
                     <div className="flex shrink-0 items-center gap-2 text-emerald-900 font-black text-[11px] sm:text-xs uppercase tracking-tight">
                       <ListChecks className="h-3.5 w-3.5" />
@@ -9056,7 +9060,7 @@ ${lessonBlocks}`;
               )}
 
               {role === 'student' && sortedCurrentStudyMaterials.length > 0 && (
-                <div className="bg-slate-50/70 border-t border-slate-200 px-4 py-3 sm:px-8 sm:py-4">
+                <div className="student-lesson-materials bg-slate-50/70 border-t border-slate-200 px-4 py-3 sm:px-8 sm:py-4">
                   <div className="flex items-center gap-2 mb-2 text-blue-800 font-black text-xs sm:text-sm uppercase tracking-tight"><LinkIcon className="w-4 h-4" /> {'T\u00e0i li\u1ec7u \u0111\u00ednh k\u00e8m'}</div>
                   <div className="flex flex-wrap gap-2">
                     {sortedCurrentStudyMaterials.map((m) => (
@@ -9071,8 +9075,8 @@ ${lessonBlocks}`;
 
               {/* TÀI LIỆU ĐÍNH KÈM TÍCH HỢP CHO GIÁO VIÊN */}
               {role === 'teacher' && (
-                <div className="bg-slate-50/50 border-t border-slate-200 p-2 sm:p-6">
-                  <div className="flex flex-row items-center justify-between gap-1 mb-2 sm:mb-4">
+                <div className="lesson-attachments bg-slate-50/50 border-t border-slate-200 p-2 sm:p-6">
+                  <div className="lesson-actions-row flex flex-row items-center justify-between gap-1 mb-2 sm:mb-4">
                     <div className="flex items-center gap-1.5 flex-wrap">
                       <button type="button" onClick={() => setShowInlineLink(prev => !prev)} className={`text-[10px] sm:text-xs font-black flex items-center gap-1 transition-all hover:underline ${showInlineLink ? 'text-slate-600' : 'text-blue-600 hover:text-blue-800'}`}>
                         {showInlineLink ? <X className="w-3 h-3 sm:w-3.5 sm:h-3.5" /> : <LinkIcon className="w-3 h-3 sm:w-3.5 sm:h-3.5" />}
@@ -9380,7 +9384,7 @@ ${lessonBlocks}`;
                   </div>)}
                 {role !== 'teacher' && studentCurrentQuizVisible && showStudentQuizPanel && (
                   activeSelfQuiz ? (
-                    <div ref={studentQuizContentRef} className="student-quiz-viewport p-3 sm:p-5 student-content space-y-3">
+                    <div ref={studentQuizContentRef} className="student-quiz-form student-quiz-viewport p-3 sm:p-5 student-content space-y-3">
                       <div className="bg-white border border-rose-100 rounded-2xl px-3 py-3 sm:px-4 relative shadow-sm">
                         <button type="button" onClick={() => setShowStudentQuizPanel(false)} className="absolute right-2.5 top-2.5 w-8 h-8 rounded-full bg-rose-50 text-rose-700 border border-rose-100 flex items-center justify-center active:scale-95" aria-label="Đóng bài kiểm tra">
                           <X className="w-4 h-4" />
@@ -9398,7 +9402,7 @@ ${lessonBlocks}`;
                         </div>
                         <p className="mt-1.5 pr-10 text-[11px] sm:text-xs text-slate-500 font-bold">Nhập họ tên, chọn đáp án rồi nộp bài. Điểm được lưu cho giáo viên.</p>
                       </div>
-                      <div className="rounded-xl border border-amber-100 bg-amber-50/80 px-3 py-2 text-[11px] sm:text-xs font-bold text-amber-800">
+                      <div className="student-quiz-notice rounded-xl border border-amber-100 bg-amber-50/80 px-3 py-2 text-[11px] sm:text-xs font-bold text-amber-800">
                         Lưu ý: Khi đang làm trắc nghiệm, nếu em thoát khỏi trang, chuyển tab hoặc chuyển ứng dụng, hệ thống sẽ tự nộp phần bài đã làm. Câu chưa chọn sẽ tính là chưa làm.
                       </div>
                       <input ref={studentQuizNameRef} value={studentQuizName} onChange={(e) => { setStudentQuizName(e.target.value); if (studentQuizWarning) setStudentQuizWarning(''); }} disabled={studentSelfQuizSubmitted || activeStudentIsReadOnly} placeholder="Nhập họ tên..." className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 font-bold text-sm focus:outline-none focus:border-rose-300 disabled:opacity-60" />
@@ -9409,11 +9413,11 @@ ${lessonBlocks}`;
                       )}
                       <div className="space-y-2.5">
                         {shuffledSelfQuizQuestions.map((q, qIndex) => (
-                          <div key={q.id} className="bg-white border border-slate-200 rounded-2xl p-3 shadow-sm">
+                          <div key={q.id} className="student-quiz-question bg-white border border-slate-200 rounded-2xl p-3 shadow-sm">
                             <div className="flex gap-2.5">
                               <div className="w-7 h-7 rounded-lg bg-rose-50 text-rose-700 font-black text-xs flex items-center justify-center flex-shrink-0 border border-rose-100">{qIndex + 1}</div>
                               <div className="flex-1 min-w-0">
-                                <div className="font-black text-slate-800 text-sm whitespace-pre-wrap leading-snug">{q.text}</div>
+                                <div className="student-quiz-question-text font-black text-slate-800 text-sm whitespace-pre-wrap leading-snug">{q.text}</div>
                                 <div className="mt-2 grid grid-cols-1 gap-1.5">
                                   {q.displayOptions.map((opt, optIndex) => {
                                     const checked = studentQuizAnswers[q.id] === opt.id;
@@ -9423,10 +9427,10 @@ ${lessonBlocks}`;
                                     const isWrongSelection = showCorrection && checked && !isCorrectOption;
                                     const label = String.fromCharCode(65 + optIndex);
                                     return (
-                                      <label key={opt.id} className={`flex items-start gap-2 rounded-xl border px-2.5 py-2 transition-all ${isCorrectOption && showCorrection ? 'bg-emerald-50 border-emerald-300 text-emerald-900' : isWrongSelection ? 'bg-rose-50 border-rose-300 text-rose-900' : checked ? 'bg-rose-50 border-rose-300 text-rose-900' : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-rose-50'} ${submitted ? 'cursor-default' : 'cursor-pointer'}`}>
+                                      <label key={opt.id} className={`student-quiz-option flex items-start gap-2 rounded-xl border px-2.5 py-2 transition-all ${isCorrectOption && showCorrection ? 'bg-emerald-50 border-emerald-300 text-emerald-900' : isWrongSelection ? 'bg-rose-50 border-rose-300 text-rose-900' : checked ? 'bg-rose-50 border-rose-300 text-rose-900' : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-rose-50'} ${submitted ? 'cursor-default' : 'cursor-pointer'}`}>
                                         <input type="radio" name={`student-${q.id}`} checked={checked} disabled={submitted} onChange={() => { setStudentQuizAnswers(prev => ({ ...prev, [q.id]: opt.id })); if (studentQuizResult?.needsRetake) setStudentQuizResult(null); if (studentQuizWarning) setStudentQuizWarning(''); }} className="mt-1 h-3.5 w-3.5" />
                                         <span className="font-black text-[11px] bg-white border border-slate-200 rounded-md w-6 h-6 flex items-center justify-center flex-shrink-0">{label}</span>
-                                        <span className="text-sm font-bold whitespace-pre-wrap flex-1 leading-snug">{opt.text}</span>
+                                        <span className="student-quiz-answer-text text-sm font-bold whitespace-pre-wrap flex-1 leading-snug">{opt.text}</span>
                                         {submitted && isCorrectOption && <span className="text-[10px] font-black text-emerald-700 uppercase">Đúng</span>}
                                         {isWrongSelection && <span className="text-[10px] font-black text-rose-700 uppercase">Sai</span>}
                                       </label>
@@ -9465,8 +9469,8 @@ ${lessonBlocks}`;
 
             {/* KHO CHUNG - BỘ LỌC TỰ ĐỘNG VÀ UP FILE TRỰC TIẾP */}
             {role === 'teacher' && (
-              <div className={`${showCommonLibraryWorkspace ? 'fixed inset-0 z-[190] block overflow-y-auto bg-slate-100/95 p-2 backdrop-blur-md' : 'hidden'} sm:static sm:z-auto sm:block sm:overflow-hidden sm:bg-white/90 sm:p-0 sm:backdrop-blur-0 sm:rounded-[2.5rem] shadow-xl border border-white/60 sm:mt-12`}>
-                <div className="bg-gradient-to-r from-blue-50 to-indigo-50 p-4 sm:px-8 sm:py-7 border-b flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+              <div className={`lesson-common-library ${showCommonLibraryWorkspace ? 'fixed inset-0 z-[190] block overflow-y-auto bg-slate-100/95 p-2 backdrop-blur-md' : 'hidden'} sm:static sm:z-auto sm:block sm:overflow-hidden sm:bg-white/90 sm:p-0 sm:backdrop-blur-0 sm:rounded-[2.5rem] shadow-xl border border-white/60 sm:mt-12`}>
+                <div className="lesson-library-header bg-gradient-to-r from-blue-50 to-indigo-50 p-4 sm:px-8 sm:py-7 border-b flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
                   <div className="flex w-full items-start justify-between gap-3 md:w-auto">
                     <div>
                     <h3 className="font-black text-blue-900 flex items-center gap-2 sm:gap-3 text-lg sm:text-xl uppercase tracking-tighter"><Folder className="w-5 h-5 sm:w-6 sm:h-6 text-blue-600" />Tài liệu Kho Chung</h3>
@@ -9736,15 +9740,15 @@ ${lessonBlocks}`;
 
             {/* --- NỘP BÀI HỌC SINH --- */}
             {role === 'student' && studentCanAccessCurrentGradeQuiz && (
-              <div ref={studentSubmitSectionRef} className="bg-white/95 rounded-2xl sm:rounded-[2rem] shadow-xl border border-white/70 overflow-hidden animate-in fade-in duration-500">
-                 <div className="flex flex-row items-center gap-3 sm:gap-5 px-4 sm:px-8 py-3 sm:py-5 border-b border-slate-100 bg-gradient-to-r from-sky-50 to-emerald-50 text-left">
+              <div ref={studentSubmitSectionRef} className="student-submission-panel bg-white/95 rounded-2xl sm:rounded-[2rem] shadow-xl border border-white/70 overflow-hidden animate-in fade-in duration-500">
+                 <div className="student-submission-heading flex flex-row items-center gap-3 sm:gap-5 px-4 sm:px-8 py-3 sm:py-5 border-b border-slate-100 bg-gradient-to-r from-sky-50 to-emerald-50 text-left">
                     <div className="bg-white p-2 sm:p-3 rounded-xl text-sky-600 shadow-sm border border-sky-100"><UploadCloud className="w-5 h-5 sm:w-6 sm:h-6" /></div>
                     <div className="min-w-0">
                        <h3 className="font-black text-base sm:text-2xl text-slate-800 tracking-tight">Nộp Bài Làm Cho Thầy Cô</h3>
                        <p className="text-[9px] sm:text-xs font-black text-slate-500 mt-0.5 uppercase tracking-widest truncate">Học sinh nộp trực tiếp (Không cần tài khoản Google)</p>
                     </div>
                  </div>
-                 <div className="p-4 sm:p-8 space-y-3 sm:space-y-5">
+                 <div className="student-submission-body p-4 sm:p-8 space-y-3 sm:space-y-5">
                     <div className="rounded-2xl border border-amber-100 bg-amber-50 px-4 py-3 text-xs sm:text-sm font-black text-amber-800">
                       Lưu ý: Nếu đang làm bài tự luận mà em thoát khỏi trang, chuyển tab hoặc chuyển ứng dụng, hệ thống sẽ khóa bài và ghi nhận: em đã thoát ra ngoài. Chọn ảnh hoặc chụp ảnh để nộp bài không bị tính là thoát.
                     </div>

@@ -144,6 +144,157 @@ body:has(.attendance-workspace, .learning-results-workspace, .schedule-editor, .
 .student-portal .student-textbook-panel > button > div > div > div { display: none; }
 .student-portal .student-textbook-panel > button > div > p { margin-left: 0; }
 
+.student-portal .learning-main { max-width: 1280px; padding: 12px; }
+.student-portal .learning-grade-picker { display: none; }
+.student-portal .student-subject-button { min-height: 44px; font-size: 14px; }
+.student-portal .student-learning-navigation { flex-wrap: wrap; gap: 4px; margin-bottom: 10px; padding: 6px 8px; }
+.student-portal .student-learning-navigation button,
+.student-portal .student-learning-navigation select { min-height: 44px; }
+.student-portal .student-learning-navigation > button:first-child { min-width: 44px; justify-content: center; }
+.student-portal .student-subject-return { max-width: 220px; padding-inline: 10px; }
+.student-portal .learning-week-navigation { gap: 4px; border-radius: 4px; padding: 0; box-shadow: none; }
+.student-portal .learning-week-navigation button { width: 44px; border-radius: 4px; box-shadow: none; }
+.student-portal .learning-week-navigation select { min-width: 0; border-radius: 4px; font-size: 14px; box-shadow: none; }
+.student-portal .student-textbook-panel > button { min-height: 44px; }
+.student-portal .student-textbook-panel > div { margin-top: 10px; padding-top: 0; }
+.student-portal .student-textbook-panel > div button { min-height: 44px; border-width: 1px; border-radius: 4px; padding: 10px; }
+.student-portal .student-textbook-panel h4 { font-size: 14px; font-weight: 400; text-transform: none; letter-spacing: normal; }
+.student-portal .learning-week-picker { margin-top: 0; }
+.student-portal .learning-week-picker > div:first-child { gap: 6px; }
+.student-portal .learning-week-picker > div:first-child > button { min-height: 56px; border-radius: 5px; padding: 8px 4px; }
+.student-portal .learning-week-picker > div:first-child > button > span { font-size: 13px; font-weight: 500; text-transform: none; letter-spacing: normal; }
+.student-portal .student-lesson-workspace { padding-bottom: max(12px, env(safe-area-inset-bottom)); }
+.student-portal .lesson-card,
+.student-portal .quiz-panel,
+.student-portal .student-submission-panel { border: 1px solid #dbe3ee; border-radius: 6px; box-shadow: none; }
+.student-portal .lesson-toolbar { padding: 6px 10px; box-shadow: none; }
+.student-portal .lesson-heading { display: none; }
+.student-portal .lesson-heading-row { flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.student-portal .lesson-heading-row button { min-height: 44px; margin: 0; border-radius: 4px; font-size: 13px; font-weight: 400; text-transform: none; letter-spacing: normal; }
+.student-portal .lesson-readable-content { padding: 14px 16px; font-size: 17px; line-height: 1.7; overflow-wrap: anywhere; }
+.student-portal .lesson-readable-content > p { margin: 8px 0; font-size: 15px; font-weight: 400; text-transform: none; letter-spacing: normal; }
+.student-portal .student-content img { max-width: 100%; height: auto; }
+.student-portal .student-content iframe { max-width: 100%; }
+.student-portal .student-content table { display: block; max-width: 100%; overflow-x: auto; }
+.student-portal .lesson-quick-practice,
+.student-portal .student-lesson-materials { padding: 10px 12px; }
+.student-portal .lesson-quick-practice button,
+.student-portal .student-lesson-materials button { min-height: 44px; border-radius: 5px; }
+.student-portal .student-lesson-materials button > span:last-child { max-width: min(100%, 420px); font-size: 14px; font-weight: 400; }
+.student-portal .quiz-panel { margin-inline: 0; scroll-margin-top: 12px; }
+.student-portal .quiz-panel > div:first-child { padding: 6px 10px; }
+.student-portal .quiz-panel > div:first-child > button { min-height: 44px; font-size: 14px; font-weight: 500; text-transform: none; }
+.student-portal .student-quiz-viewport { padding: 12px; font-size: 16px; line-height: 1.65; overflow-wrap: anywhere; }
+.student-portal .student-quiz-form input[type="text"],
+.student-portal .student-quiz-form > input { min-height: 44px; font-size: 16px; }
+.student-portal .student-quiz-form > div:first-child { border-radius: 5px; padding: 10px; }
+.student-portal .student-quiz-form > div:first-child > button { width: 44px; height: 44px; }
+.student-portal .student-quiz-form > div:first-child > div:first-of-type { padding-right: 44px; }
+.student-portal .student-quiz-notice { font-size: 13px; font-weight: 400; }
+.student-portal .student-quiz-question { border-radius: 5px; padding: 10px; box-shadow: none; }
+.student-portal .student-quiz-question-text { font-size: 16px; font-weight: 500; line-height: 1.5; }
+.student-portal .student-quiz-option { min-height: 44px; border-radius: 5px; }
+.student-portal .student-quiz-answer-text { font-size: 16px; font-weight: 400; line-height: 1.5; }
+.student-portal .student-quiz-form button { min-height: 44px; }
+.student-portal .student-submission-panel { scroll-margin-top: 12px; }
+.student-portal .student-submission-heading { gap: 8px; padding: 10px 12px; }
+.student-portal .student-submission-heading > div:first-child { padding: 6px; border-radius: 4px; box-shadow: none; }
+.student-portal .student-submission-heading h3 { font-size: 16px; font-weight: 500; }
+.student-portal .student-submission-heading p { font-size: 11px; font-weight: 400; text-transform: none; letter-spacing: normal; }
+.student-portal .student-submission-body { padding: 12px; }
+.student-portal .student-submission-body > .bg-amber-50 { padding: 10px; border-radius: 5px; font-size: 13px; font-weight: 400; }
+.student-portal .student-submission-body label { font-size: 13px; font-weight: 400; text-transform: none; letter-spacing: normal; }
+.student-portal .student-submission-body input[type="text"] { min-height: 44px; border-radius: 5px; padding: 10px; font-size: 16px; font-weight: 400; }
+.student-portal .student-submission-body button,
+.student-portal .student-submission-body label[for="student-file-upload"] { min-height: 44px; border-radius: 5px; font-size: 14px; font-weight: 500; text-transform: none; letter-spacing: normal; }
+
+@media (max-width: 639px) {
+  .student-portal .learning-main { padding: 8px; }
+  .student-portal .student-header-actions { gap: 6px; }
+  .student-portal .student-portal-header button { min-width: 44px; min-height: 44px; }
+  .student-portal .student-profile-trigger { padding-inline: 8px; }
+  .student-portal .student-profile-trigger > span:first-of-type { max-width: 32vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .student-reading .student-portal-header { position: static; }
+  .student-portal .student-learning-navigation { margin-bottom: 8px; padding: 4px 6px; }
+  .student-portal .student-learning-navigation > svg { display: none; }
+  .student-portal .student-learning-navigation > div:not(.learning-week-navigation) select { padding-left: 10px; padding-right: 24px; }
+  .student-portal .student-subject-return { flex: 1; max-width: none; }
+  .student-portal .learning-week-navigation { display: grid; width: 100%; grid-template-columns: 44px minmax(0, 1fr) 44px; margin: 0; }
+  .student-portal .learning-week-navigation select { width: 100%; }
+  .student-portal .lesson-readable-content { padding: 12px; }
+}
+
+.teacher-portal .learning-main { max-width: 1280px; padding: 12px; }
+.teacher-portal .student-portal-header > div { height: 52px; }
+.teacher-portal .student-learning-navigation {
+  flex-wrap: wrap;
+  row-gap: 6px;
+  min-height: 40px;
+  margin-bottom: 10px;
+  border-color: #dbe3ee;
+  border-radius: 6px;
+  padding: 6px 10px;
+  box-shadow: none;
+  font-size: 12px;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: normal;
+}
+.teacher-portal .student-learning-navigation button,
+.teacher-portal .student-learning-navigation select { font-weight: 400; }
+.teacher-portal .teacher-subject-select { min-width: 64px; }
+.teacher-portal .learning-week-navigation { gap: 3px; border-radius: 4px; padding: 2px; box-shadow: none; }
+.teacher-portal .learning-week-navigation button,
+.teacher-portal .learning-week-navigation select { height: 28px; border-radius: 3px; padding: 0 5px; font-size: 12px; }
+.teacher-portal .learning-week-navigation button { width: 28px; }
+.teacher-portal .learning-grade-picker { flex-wrap: wrap; gap: 4px; margin-bottom: 12px; border-radius: 6px; padding: 4px; }
+.teacher-portal .learning-grade-picker > div,
+.teacher-portal .learning-grade-picker > button { min-height: 32px; border-radius: 4px; padding: 5px 12px; font-size: 13px; font-weight: 400; letter-spacing: normal; transform: none; }
+.teacher-portal .student-learning-panels { gap: 12px; }
+.teacher-portal .learning-subject-panel,
+.teacher-portal .student-textbook-panel { border: 1px solid #dbe3ee; border-radius: 6px; padding: 12px; box-shadow: none; }
+.teacher-portal .learning-subject-panel > div:first-child { gap: 7px; margin-bottom: 10px; border: 0; padding-bottom: 0; }
+.teacher-portal .learning-subject-panel h2,
+.teacher-portal .student-textbook-panel h2 { font-size: 15px; font-weight: 400; text-transform: none; letter-spacing: normal; }
+.teacher-portal .learning-subject-panel button { height: 40px; border-radius: 4px; padding: 8px; }
+.teacher-portal .learning-subject-panel button span { font-size: 13px; font-weight: 400; text-transform: none; }
+.teacher-portal .student-textbook-panel > button > div > div > div { display: none; }
+.teacher-portal .student-textbook-panel p { margin-left: 0; font-size: 11px; font-weight: 400; text-transform: none; letter-spacing: normal; }
+.teacher-portal .student-textbook-panel > div { margin-top: 12px; padding-top: 0; }
+.teacher-portal .student-textbook-panel > div button { border-width: 1px; border-radius: 4px; padding: 10px; }
+.teacher-portal .learning-week-picker { margin-top: 0; }
+.teacher-portal .learning-week-picker > div:first-child > button { min-height: 52px; border-radius: 5px; padding-block: 6px; }
+.teacher-portal .lesson-card { border-color: #dbe3ee; border-radius: 6px; box-shadow: none; }
+.teacher-portal .lesson-toolbar { padding: 6px 10px; box-shadow: none; }
+.teacher-portal .lesson-heading-row { flex-wrap: wrap; gap: 6px 10px; }
+.teacher-portal .lesson-heading { flex-shrink: 0; gap: 7px; }
+.teacher-portal .lesson-heading > div { border-radius: 4px; padding: 6px; box-shadow: none; }
+.teacher-portal .lesson-heading svg { width: 16px; height: 16px; }
+.teacher-portal .lesson-heading h3 { font-size: 14px; font-weight: 400; text-transform: none; letter-spacing: normal; }
+.teacher-portal .lesson-editing-tools { min-width: 0; flex-wrap: wrap; gap: 4px; }
+.teacher-portal .lesson-editing-tools > button,
+.teacher-portal .lesson-editing-tools > label { min-height: 30px; border-radius: 4px; padding: 5px 8px; font-size: 11px; font-weight: 400; box-shadow: none; }
+.teacher-portal .lesson-desktop-formatting { gap: 2px; border-radius: 4px; padding: 2px; box-shadow: none; }
+.teacher-portal .lesson-desktop-formatting > button,
+.teacher-portal .lesson-desktop-formatting > label { height: 30px; border-radius: 3px; padding: 6px; }
+.teacher-portal .lesson-editor-viewport { padding: 14px 16px; font-size: 16px; line-height: 1.65; overscroll-behavior: contain; }
+.teacher-portal .lesson-attachments { padding: 8px 10px; }
+.teacher-portal .lesson-actions-row { flex-wrap: wrap; gap: 6px; margin-bottom: 0; }
+.teacher-portal .lesson-actions-row button { min-height: 32px; border-radius: 4px; padding: 5px 10px; font-size: 11px; font-weight: 400; letter-spacing: normal; box-shadow: none; }
+.teacher-portal .lesson-attachments form { border-width: 1px; border-radius: 5px; padding: 12px; }
+.teacher-portal .lesson-attachments > div:not(.lesson-actions-row) { margin-top: 8px; }
+.teacher-portal .lesson-common-library { border-radius: 6px; box-shadow: none; }
+.teacher-portal .lesson-library-header { gap: 10px; padding: 10px 12px; }
+.teacher-portal .lesson-library-header h3 { font-size: 14px; font-weight: 400; text-transform: none; letter-spacing: normal; }
+.teacher-portal .lesson-library-header p { margin-top: 3px; font-weight: 400; text-transform: none; letter-spacing: normal; }
+.teacher-portal .lesson-library-header button,
+.teacher-portal .lesson-library-header select { height: 32px; border-radius: 4px; padding: 5px 9px; font-size: 12px; font-weight: 400; box-shadow: none; }
+.teacher-portal .lesson-library-header button { min-width: 32px; }
+
+@media (min-width: 640px) {
+  .teacher-portal .lesson-common-library { margin-top: 16px; }
+}
+
 .monitor-attendance {
   display: flex;
   width: 100%;
@@ -1641,4 +1792,18 @@ body:has(.quiz-work-page) {
   .quiz-attachment-preview iframe {
     min-height: 360px;
   }
+}
+
+/* Keep the lesson and save actions within a short laptop viewport. */
+.teacher-portal .lesson-editor-viewport:not(.is-expanded) {
+  min-height: clamp(220px, calc(100svh - 300px), 560px) !important;
+  max-height: clamp(240px, calc(100svh - 250px), 720px) !important;
+}
+
+/* Reading uses the page scroll, including on phones with short viewports. */
+.student-portal .lesson-readable-content,
+.student-portal .student-quiz-viewport {
+  min-height: 0 !important;
+  max-height: none !important;
+  overflow: visible;
 }

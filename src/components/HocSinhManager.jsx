@@ -5105,7 +5105,7 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
       )}
       {editing && (
         <div className="fixed inset-0 z-[90] bg-slate-900/60 backdrop-blur-sm p-2 sm:p-3 flex items-center justify-center" role="dialog" aria-modal="true" aria-labelledby="admin-student-profile-title">
-          <div className="bg-white rounded-lg shadow-2xl w-full max-w-[1280px] max-h-[94dvh] overflow-hidden flex flex-col font-normal">
+          <div className="bg-white rounded-lg shadow-2xl w-full min-w-0 min-h-0 max-w-[1280px] max-h-[min(94dvh,100%)] overflow-hidden flex flex-col font-normal">
             <div className="shrink-0 px-3 py-2 border-b bg-slate-50 flex items-center justify-between gap-3">
               <div>
                  <h4 id="admin-student-profile-title" className="font-normal text-slate-900">{profileReadOnly ? 'Xem hồ sơ học sinh' : 'Hồ sơ học sinh'}</h4>

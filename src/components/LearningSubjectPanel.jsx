@@ -2,7 +2,7 @@ import { BookOpen } from 'lucide-react';
 
 export default function LearningSubjectPanel({ role, subjects, onSelect, getShortName, getCardStyle }) {
   const isStudent = role === 'student';
-  return <section className={isStudent ? 'student-subject-panel' : 'bg-white/80 backdrop-blur-md rounded-[1.5rem] sm:rounded-[2rem] p-4 sm:p-8 border border-white shadow-xl'}>
+  return <section className={isStudent ? 'student-subject-panel' : 'learning-subject-panel bg-white/80 backdrop-blur-md rounded-[1.5rem] sm:rounded-[2rem] p-4 sm:p-8 border border-white shadow-xl'}>
     <div className={isStudent ? 'student-subject-heading' : 'flex items-center gap-3 mb-4 sm:mb-6 border-b-2 border-blue-100/50 pb-4'}>
       <BookOpen className={isStudent ? 'w-4 h-4 text-sky-700' : 'w-5 h-5 sm:w-6 sm:h-6 text-blue-600'} />
       <h2 className={isStudent ? '' : 'text-base sm:text-2xl font-black text-slate-800 uppercase tracking-widest'}>{isStudent ? 'Môn học' : 'Môn dạy'}</h2>

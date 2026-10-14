@@ -1,7 +1,7 @@
 import { ChevronDown } from 'lucide-react';
 
 export default function TeacherSubjectSelect({ subjects, value, onChange }) {
-  return <div className="relative min-w-0 max-w-[132px] shrink sm:max-w-[220px]">
+  return <div className="teacher-subject-select relative min-w-0 max-w-[132px] shrink sm:max-w-[220px]">
     <select aria-label="Môn dạy" title="Đổi môn dạy" value={value} onChange={event => onChange(event.target.value)}
       className="w-full appearance-none truncate rounded-md border border-sky-100 bg-sky-50 py-0.5 pl-1.5 pr-5 font-black text-sky-700 focus:outline-none focus:ring-2 focus:ring-sky-100 sm:rounded-lg sm:pl-2 sm:pr-7">
       {subjects.map(subject => <option key={subject} value={subject}>{subject}</option>)}
