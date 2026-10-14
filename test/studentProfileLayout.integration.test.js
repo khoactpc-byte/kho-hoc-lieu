@@ -18,7 +18,7 @@ test('profile sections preserve edits, respect read-only access and keep review 
     await build({ stdin: { contents: "export { default as Profile } from './src/components/StudentProfileModal.jsx'; export { default as Changes } from './src/components/ProfileChangeTable.jsx';", resolveDir: resolve('.'), loader: 'js' }, absWorkingDir: resolve('.'), tsconfigRaw: {}, outfile, bundle: true, platform: 'node', format: 'esm', packages: 'external', jsx: 'automatic' });
     const { Profile, Changes } = await import(pathToFileURL(outfile));
     const { createRoot } = await import('react-dom/client');
-    const submitted = [], approved = [], rejected = [];
+    const submitted = [], approved = [], rejected = [], cleaned = [];
     function Harness({ readOnly = false, pending = false }) {
       const [draft, setDraft] = useState({ fullName: 'Nguyễn Văn An', birthProvince: 'TP. Hồ Chí Minh', fatherName: 'Nguyễn Văn Ba', phone: '0900000000', hocLucLop6: 'Khá' });
       const view = {
@@ -87,9 +87,9 @@ test('profile sections preserve edits, respect read-only access and keep review 
 
     const rows = [
       { key: 'phone', label: 'Số điện thoại', currentValue: '0900000001', nextValue: '0900000002' },
-      { key: 'portraitUrl', label: 'Ảnh thẻ', currentValue: 'https://example.com/old.png', nextValue: 'https://example.com/new.png,https://example.com/page2.png', isDocument: true }
+      { key: 'portraitUrl', label: 'Ảnh thẻ', currentValue: 'https://drive.google.com/file/d/old-photo-id/view', nextValue: 'https://drive.google.com/file/d/new-photo-id/view,https://drive.google.com/file/d/another-page-id/view', isDocument: true }
     ];
-    const renderChanges = disabled => act(async () => root.render(React.createElement(Changes, { rows, disabled, onApprove: key => approved.push(key), onReject: key => rejected.push(key) })));
+    const renderChanges = disabled => act(async () => root.render(React.createElement(Changes, { rows, disabled, onApprove: key => approved.push(key), onApproveAndTrash: key => cleaned.push(key), onReject: key => rejected.push(key) })));
     await renderChanges(false);
     assert.equal(body.querySelectorAll('tbody tr').length, 2);
     assert.ok(body.querySelector('tbody tr').textContent.includes('0900000001'));
@@ -99,9 +99,14 @@ test('profile sections preserve edits, respect read-only access and keep review 
     await click(body.querySelector('button[aria-label="Từ chối Ảnh thẻ"]'));
     assert.deepEqual(approved, ['phone']);
     assert.deepEqual(rejected, ['portraitUrl']);
+    assert.equal(body.querySelectorAll('button[aria-label$="và dọn file cũ"]').length, 1, 'cleanup is offered only for a replaced document, never for text fields');
+    await click(body.querySelector('button[aria-label="Duyệt Ảnh thẻ và dọn file cũ"]'));
+    assert.deepEqual(cleaned, ['portraitUrl']);
     await renderChanges(true);
     await click(body.querySelector('button[aria-label="Duyệt Số điện thoại"]'));
     assert.deepEqual(approved, ['phone'], 'review remains disabled while a save is in progress');
+    await click(body.querySelector('button[aria-label="Duyệt Ảnh thẻ và dọn file cũ"]'));
+    assert.deepEqual(cleaned, ['portraitUrl'], 'cleanup is disabled while a save is in progress');
   } finally {
     if (root) await act(async () => root.unmount());
     windowObject.close();

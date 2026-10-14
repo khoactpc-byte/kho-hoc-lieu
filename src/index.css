@@ -5,6 +5,61 @@
 .hide-scrollbar::-webkit-scrollbar { display: none; }
 .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
 
+/* Published news is sanitized, so timetable styles must live in the app. */
+.schedule-news {
+  max-width: 100%;
+  overflow-x: auto;
+  color: #1e293b;
+}
+.schedule-news h2 { margin-bottom: 6px; font-size: 18px; font-weight: 700; }
+.schedule-news p { margin-bottom: 16px; color: #64748b; font-size: 14px; }
+.schedule-news table {
+  width: 100%;
+  min-width: 420px;
+  border: 2px solid #64748b;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 14px;
+}
+.schedule-news th,
+.schedule-news td {
+  border: 1px solid #94a3b8;
+  padding: 9px 6px;
+  text-align: center;
+  vertical-align: middle;
+  line-height: 1.4;
+  word-break: normal;
+  overflow-wrap: anywhere;
+}
+.schedule-news thead th { background: #dbeafe; color: #1e3a8a; font-weight: 800; }
+.schedule-news .schedule-class-head,
+.schedule-news .schedule-class-cell { width: 56px; }
+.schedule-news .schedule-period-head,
+.schedule-news .schedule-period-cell { width: 40px; }
+.schedule-news .schedule-class-cell {
+  border: 2px solid #64748b;
+  background: #eff6ff;
+  color: #1e3a8a;
+  font-weight: 800;
+}
+.schedule-news .schedule-period-cell { background: #f1f5f9; font-weight: 700; }
+.schedule-news tbody tr:nth-child(even) td { background: #f8fafc; }
+.schedule-news tbody tr.schedule-class-start > th,
+.schedule-news tbody tr.schedule-class-start > td { border-top: 2px solid #64748b; }
+.schedule-news tbody tr.schedule-class-end > th,
+.schedule-news tbody tr.schedule-class-end > td { border-bottom: 2px solid #64748b; }
+
+@media (max-width: 640px) {
+  .schedule-news h2 { font-size: 15px; }
+  .schedule-news table { min-width: 320px; font-size: 12px; }
+  .schedule-news th,
+  .schedule-news td { padding: 7px 4px; }
+  .schedule-news .schedule-class-head,
+  .schedule-news .schedule-class-cell { width: 40px; }
+  .schedule-news .schedule-period-head,
+  .schedule-news .schedule-period-cell { width: 34px; }
+}
+
 html:has(.attendance-workspace, .learning-results-workspace, .schedule-editor, .password-workspace, .monitor-attendance),
 body:has(.attendance-workspace, .learning-results-workspace, .schedule-editor, .password-workspace, .monitor-attendance) {
   overflow: hidden;

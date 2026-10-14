@@ -1,13 +1,16 @@
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 
-for (const path of ['apps-script/code_hoclieu.gs', 'apps-script/dang-ky-hoc-sinh/code_dangky.gs', 'apps-script/dang-ky-hoc-sinh/PublicRegistration.gs']) {
+for (const path of ['apps-script/code_hoclieu.gs', 'apps-script/code_chambai.gs', 'apps-script/dang-ky-hoc-sinh/code_dangky.gs', 'apps-script/dang-ky-hoc-sinh/PublicRegistration.gs']) {
   new vm.Script(await readFile(path, 'utf8'), { filename: path });
 }
-const registrationHtml = await readFile('apps-script/dang-ky-hoc-sinh/Index.html', 'utf8');
-for (const [index, script] of [...registrationHtml.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)].entries()) {
-  new vm.Script(script[1], { filename: `registration-Index-script-${index + 1}` });
+for (const name of ['Index', 'Javascript']) {
+  const registrationHtml = await readFile(`apps-script/dang-ky-hoc-sinh/${name}.html`, 'utf8');
+  for (const [index, script] of [...registrationHtml.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)].entries()) {
+    new vm.Script(script[1], { filename: `registration-${name}-script-${index + 1}` });
+  }
 }
+new vm.Script((await Promise.all(['code_dangky', 'PublicRegistration'].map(name => readFile(`apps-script/dang-ky-hoc-sinh/${name}.gs`, 'utf8')))).join('\n'), { filename: 'registration-combined-project' });
 JSON.parse(await readFile('apps-script/dang-ky-hoc-sinh/appsscript.json', 'utf8'));
 JSON.parse(await readFile('firebase.secure-ready.json', 'utf8'));
 JSON.parse(await readFile('firestore.indexes.secure-ready.json', 'utf8'));

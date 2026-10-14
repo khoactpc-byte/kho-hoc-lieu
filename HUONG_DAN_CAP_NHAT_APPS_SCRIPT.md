@@ -4,20 +4,43 @@ Hệ thống hiện có **2 dự án Google Apps Script đang sử dụng**. Kh�
 
 Theo lựa chọn bảo mật ngày 05/10/2026, hai bộ mã nguồn trong `apps-script/` và các tệp `.gs` được giữ riêng trên máy, không đưa nội dung lên GitHub. File `up-github.bat` đã được chỉnh để loại chúng khỏi các lần cập nhật; cần tự sao lưu bộ mã này và cập nhật trực tiếp trên Google Apps Script. Các bản mã từng đưa lên GitHub trước đó vẫn còn trong lịch sử Git; lượt chỉnh này không viết lại lịch sử.
 
-## Bản mã nguồn rà soát ngày 13/10/2026
+## Bản mã nguồn rà soát ngày 14/10/2026
 
-| Dự án | Phiên bản cần thấy sau triển khai |
+| Dự án | Phiên bản đã triển khai | Phiên bản Google |
+| --- | --- | --- |
+| Máy chủ chính | `2026-10-14-script-review-v10` | 46 |
+| Đăng ký học sinh | `2026-10-14-script-review-v15` | 55 |
+
+Đã cập nhật cả hai Web App ngày 14/10/2026, giữ URL, ID Sheet/Drive và Script Properties đang dùng. Endpoint máy chủ chính trả đúng v10; endpoint đăng ký trả v15, `publicApiVersion: 1`, năm `2026-2027`. Đã sao lưu source trên Google trước khi thay vào `.test-tools/apps-script-google-before-deploy-20261014/`, kèm phiên bản cũ để khôi phục (máy chủ chính 45, đăng ký 54). Frontend được phát hành qua nhánh `main` của GitHub, Netlify tự build và publish tại `https://phocaptmt.netlify.app`.
+
+### Bộ cập nhật tổng hợp sau rà soát — 14/10/2026
+
+Bộ file sẵn để dán nằm trong `apps-script/ban-trien-khai-2026-10-14/`:
+
+| Dự án hiện có | File cần thay/thêm |
 | --- | --- |
-| Máy chủ chính | `2026-10-04-review-v8` |
-| Đăng ký học sinh | `2026-10-14-registration-compact-v13` |
+| Máy chủ chính | `may-chu-chinh/Code.gs` |
+| Đăng ký học sinh | `dang-ky-hoc-sinh/Code.gs`, `PublicRegistration.gs`, `Index.html`, `appsscript.json` |
 
-Lượt sửa này đã cập nhật **mã nguồn trong máy**, chưa cập nhật hai Web App đang chạy. Cập nhật và triển khai máy chủ chính trước, tiếp theo dự án đăng ký, rồi đưa frontend mới lên hosting. Giữ các URL Web App hiện tại.
+Mỗi dự án chỉ **Deploy một phiên bản mới** sau khi cập nhật đủ các file trong dòng tương ứng. Giữ deployment và URL `/exec` hiện có, tài khoản chạy, Script Properties, Spreadsheet ID và Folder ID. Không dán `code_chambai.gs` vào máy chủ chính; không include `Javascript.html` cũ vào `Index.html` đang tự chứa JavaScript. Có thể giữ các tệp HTML cũ trong dự án nếu chúng không được include.
+
+Bản tổng hợp giữ các sửa đăng ký/năm học tối qua và chức năng duyệt ảnh/dọn file cũ. Đồng thời thống nhất kiểm tra form dự phòng với API mới; chống gửi trùng khi mất phản hồi; dọn tệp của lượt chưa ghi Sheet; ghi văn bản giống công thức dưới dạng chữ; giảm lượt đọc Sheet khi nâng lớp; khóa và flush các thao tác ghi; sửa các vòng thử lại AI và bộ đếm dùng theo ngày. Sheet `key gemini` có cột đếm sử dụng sẽ tự thêm `Ngày thống kê`, giữ số đếm trong ngày nâng cấp và đặt lại khi sang ngày mới theo múi giờ dự án.
+
+Chi tiết phát hiện, kiểm thử và giới hạn xác nhận có trong [báo cáo rà soát](./BAO_CAO_RA_SOAT_APPS_SCRIPT_2026-10-14.md). Bộ file đóng gói và bản sao trước rà soát nằm ngoài Git theo quy định giữ Apps Script trên máy.
+
+### Duyệt ảnh mới và dọn file cũ — 14/10/2026
+
+Trong **Học sinh → Yêu cầu sửa**, mỗi dòng ảnh/giấy tờ có file Drive cũ bị thay thế sẽ có thêm **Duyệt và dọn file cũ**. Nút duyệt thông thường và duyệt hàng loạt giữ nguyên file cũ. Lựa chọn dọn chỉ chuyển file vào thùng rác Drive sau khi hồ sơ và Google Sheet lưu thành công; không xóa vĩnh viễn. Các file còn được hồ sơ năm khác, hồ sơ lưu trữ, yêu cầu đang chờ hoặc dòng Sheet sử dụng được giữ lại. Chỉ dọn ảnh/PDF trong thư mục ảnh hồ sơ và thư mục đăng ký hiện có.
+
+Nếu mạng, quyền Drive hoặc phiên bản máy chủ chưa sẵn sàng, yêu cầu dọn được lưu cùng giao dịch duyệt trong `student_file_cleanup_jobs`. Mục **File cũ chờ dọn → Thử dọn lại** vẫn có sau khi tải lại trang; ảnh mới không bị mất và thao tác duyệt không cần làm lại. Apps Script đăng ký đối chiếu mã học sinh, phiên bản đồng bộ và liên kết mới dưới cùng khóa với thao tác ghi Sheet trước khi dọn. File đã ở thùng rác được coi là hoàn tất khi thử lại.
+
+**Cần triển khai cả hai Apps Script:** cập nhật `apps-script/code_hoclieu.gs` ở máy chủ chính và `apps-script/dang-ky-hoc-sinh/code_dangky.gs` ở dự án đăng ký, giữ `PublicRegistration.gs` và các file hiện có. Deploy phiên bản mới của hai deployment hiện tại, rồi cập nhật website. Kiểm tra phiên bản tương ứng là `2026-10-14-script-review-v10` và `2026-10-14-script-review-v15`. Đẩy mã website lên hosting không tự cập nhật các file `.gs` đang được giữ riêng trên máy.
 
 ### Form đăng ký tích hợp trong web — 14/10/2026
 
 Form mới ở `/#/dang-ky`, mở bằng nút **Đăng ký mới** trên màn hình đăng nhập. Giao diện được chia theo bước, tự lấy năm đăng ký từ admin, đặt lớp cạnh cơ sở và số điện thoại trong thông tin học sinh. Mã giao diện, kiểm tra dữ liệu, danh mục địa chỉ và kết nối được tách trong `src/features/registration/`.
 
-**Cập nhật dự án đăng ký trước khi phát hành frontend:** thay `Code.gs` bằng `apps-script/dang-ky-hoc-sinh/code_dangky.gs`; thêm file script **PublicRegistration** từ `apps-script/dang-ky-hoc-sinh/PublicRegistration.gs`; cập nhật `Index.html` cùng thư mục cho form dự phòng. Triển khai phiên bản mới của deployment hiện tại. `/exec?action=version` phải trả `2026-10-14-registration-compact-v13`, cấu hình đăng ký phải có `publicApiVersion: 1`. Riêng lượt nâng cấp form không cần sửa dự án máy chủ chính.
+**Cập nhật dự án đăng ký trước khi phát hành frontend:** thay `Code.gs` bằng `apps-script/dang-ky-hoc-sinh/code_dangky.gs`; thêm file script **PublicRegistration** từ `apps-script/dang-ky-hoc-sinh/PublicRegistration.gs`; cập nhật `Index.html` cùng thư mục cho form dự phòng. Triển khai phiên bản mới của deployment hiện tại. `/exec?action=version` phải trả `2026-10-14-script-review-v15`, cấu hình đăng ký phải có `publicApiVersion: 1`. Riêng lượt nâng cấp form không cần sửa dự án máy chủ chính; chức năng dọn file cũ cần cập nhật cả hai dự án theo mục phía trên.
 
 Luồng tiếp nhận/duyệt/đồng bộ và các cột hồ sơ cũ được giữ. Hai cột kỹ thuật chống gửi trùng được tự thêm sau các cột hiện có khi nhận hồ sơ đầu tiên. Backup web giữ nguyên phạm vi hiện tại; chưa bao gồm toàn bộ Sheet đăng ký hay bản gốc tệp Drive. Xem [hướng dẫn cấu trúc, dữ liệu và triển khai form](./src/features/registration/README.md).
 
@@ -25,11 +48,11 @@ Luồng tiếp nhận/duyệt/đồng bộ và các cột hồ sơ cũ được 
 
 Lượt rà soát ngày 13/10 sửa chiều đồng bộ học sinh: giữ `TNTHCS` và năm tốt nghiệp, xóa khối hiện tại của học sinh tốt nghiệp; giữ trạng thái bỏ học khi nhập Sheet lên web và chặn lượt đồng bộ cũ tự mở lại hồ sơ. Trước khi ghi nhóm nâng lớp, Script đọc lại cột `Năm bỏ học` của tất cả học sinh trong nhóm; có học sinh bỏ học thì dừng nhóm để admin đồng bộ và xem lại. Các lớp của năm trước được giữ. Hạnh kiểm chỉ được tính khi đủ điểm cả năm và dữ liệu điểm danh đúng năm đã tải xong; không có bản ghi vắng mặt được tính là 0 ngày vắng.
 
-Để áp dụng lượt sửa này, thay `Code.gs` của **dự án đăng ký** bằng `apps-script/dang-ky-hoc-sinh/code_dangky.gs`, chọn **Deploy → Manage deployments → Edit → New version → Deploy**, rồi cập nhật website. Đây là dự án riêng với máy chủ chính. Mã Apps Script không được đưa lên GitHub; đẩy website lên hosting sẽ không tự cập nhật Script. Nếu hai Web App chưa được cập nhật các lượt sửa trước, cập nhật cả hai theo thứ tự nêu trên. Kiểm tra `/exec?action=version` của dự án đăng ký phải trả về `2026-10-14-dropout-year-repair-v11`.
+Để áp dụng lượt sửa này, thay `Code.gs` của **dự án đăng ký** bằng `apps-script/dang-ky-hoc-sinh/code_dangky.gs`, chọn **Deploy → Manage deployments → Edit → New version → Deploy**, rồi cập nhật website. Đây là dự án riêng với máy chủ chính. Mã Apps Script không được đưa lên GitHub; đẩy website lên hosting sẽ không tự cập nhật Script. Nếu hai Web App chưa được cập nhật các lượt sửa trước, cập nhật cả hai theo thứ tự nêu trên. Các sửa này đã có trong bản tổng hợp ở đầu tài liệu; không cần triển khai riêng phiên bản lịch sử.
 
 Bản `dropout-year-repair-v11` cho phép một lượt sửa năm có dấu vết đối với hồ sơ bỏ học bị ghi nhầm sang năm kế tiếp: chỉ khi job Firebase nêu rõ hồ sơ/năm sai, dòng Sheet hiện vẫn có đúng `Năm bỏ học` và `Năm học hiện tại` của năm sai, Script mới cho ghi lùi về năm đúng. Sau khi sửa, checkpoint năm sai trong `STUDENT_SYNC_STATE` được retire. Dòng Sheet được cập nhật tại chỗ, giữ lớp lịch sử của năm đúng (ví dụ `2025-2026 = 8A`) nhưng vẫn để khối/lớp hiện tại trống vì học sinh đã bỏ học.
 
-Bản `sheet-roster-v10` ưu tiên lớp trong cột năm được yêu cầu (ví dụ `2026-2027`) thay cho lớp trong phần tóm tắt đang trỏ sang năm khác. Website có **Tiện ích → Nhập và đồng bộ Sheet → Đối chiếu Sheet / thêm học sinh thiếu**; bảng thống kê cũng có nút **Đối chiếu với Sheet**. Bảng hiện số dòng từng lớp, tên/dòng Sheet của hồ sơ thiếu, khác lớp và nghi trùng. Tích chọn rồi áp dụng để thêm hồ sơ hoặc đổi lớp theo cột năm đã đối chiếu. Việc đọc bảng không tự nâng lớp hoặc xóa hồ sơ. **Tiện ích → Kiểm tra học sinh nghi trùng** liệt kê riêng nhóm trùng trên web và trên Sheet theo họ tên/ngày sinh, mã định danh hoặc mã học sinh trong cùng năm.
+Bản `sheet-roster-v10` ưu tiên lớp trong cột năm được yêu cầu (ví dụ `2026-2027`) thay cho lớp trong phần tóm tắt đang trỏ sang năm khác. Website có **Tiện ích → Dữ liệu Web ↔ Sheet → Chỉ đối chiếu Web ↔ Sheet**; bảng thống kê cũng có nút **Đối chiếu với Sheet**. Bảng hiện số dòng từng lớp, tên/dòng Sheet của hồ sơ thiếu, khác lớp và nghi trùng. Tích chọn rồi áp dụng để thêm hồ sơ hoặc đổi lớp theo cột năm đã đối chiếu. Việc đọc bảng không tự nâng lớp hoặc xóa hồ sơ. **Tiện ích → Kiểm tra học sinh nghi trùng** liệt kê riêng nhóm trùng trên web và trên Sheet theo họ tên/ngày sinh, mã định danh hoặc mã học sinh trong cùng năm.
 
 Website cũng phân biệt **năm nhập học trên Sheet** với **năm hồ sơ đang lưu trên web**. Hồ sơ web nằm trước năm nhập học được báo **Sai năm hồ sơ web**, không tự nối thành lịch sử học năm trước. Tích chọn để sửa chính hồ sơ đó, giữ ID/mã học sinh và bỏ liên kết/lịch sử lớp trước năm nhập học. Phần kiểm tra và sửa năm này chỉ thay mã website, không yêu cầu triển khai lại Script nếu đã dùng `sheet-roster-v10`.
 
@@ -123,7 +146,7 @@ Bản Index.html đã sửa lỗi hai bảng gợi ý chồng nhau ở ba ô t�
 
 1. Mở spreadsheet có ID trong hằng `SPREADSHEET_ID` ở `code_dangky.gs`; xác nhận tài khoản này xem được các tab `Data`, `Provinces`, `Communes` và `tinhhuyenxa`.
 2. Trong Apps Script, vào **Project Settings**, bật **Show "appsscript.json" manifest file in editor**. Nếu manifest của dự án đã có `oauthScopes`, bảo đảm có `https://www.googleapis.com/auth/spreadsheets`. File [`appsscript.json`](./apps-script/dang-ky-hoc-sinh/appsscript.json) trong máy là mẫu đầy đủ cho mã đăng ký hiện tại. Giữ lại các cấu hình riêng khác của dự án khi chỉnh manifest.
-3. Lưu dự án, chọn hàm **`capQuyenMotLan`** trong thanh chọn hàm của trình sửa Apps Script, nhấn **Run** và chấp thuận các quyền Google được hỏi, gồm Google Sheets. **Execution log** phải hiển thị “Đã cấp đủ quyền: Sheet, Drive, Google Docs.” Nếu vẫn báo thiếu quyền, kiểm tra tài khoản Google đang dùng, quyền truy cập spreadsheet và `oauthScopes` trong dự án thực tế.
+3. Lưu dự án, chọn hàm **`capQuyenMotLan_`** trong thanh chọn hàm của trình sửa Apps Script, nhấn **Run** và chấp thuận các quyền Google được hỏi, gồm Google Sheets. **Execution log** phải hiển thị “Đã cấp đủ quyền: Sheet, Drive, Google Docs.” Nếu vẫn báo thiếu quyền, kiểm tra tài khoản Google đang dùng, quyền truy cập spreadsheet và `oauthScopes` trong dự án thực tế.
 4. Vào **Deploy → Manage deployments → Edit** bản triển khai Web App đăng ký hiện tại. Chọn **Execute as: Me** (tài khoản đã cấp quyền ở bước 3), giữ phạm vi người được truy cập phù hợp với biểu mẫu, chọn **New version** rồi **Deploy**. Nếu để **User accessing the web app**, mỗi người mở form sẽ cần cấp quyền và có quyền đọc spreadsheet; cách đó không phù hợp với form học sinh này.
 5. Mở lại URL `/exec` của **bản triển khai vừa cập nhật** và thử chọn tỉnh → huyện → xã. Nếu vừa thay mã nguồn hoặc manifest, không dùng URL `/dev` để kết luận bản `/exec` đã sửa.
 
@@ -203,7 +226,7 @@ Thông báo này xuất phát từ máy chủ đăng ký, không phải kết qu
 1. Mở đúng dự án có deployment URL `AKfycbx1...` của **máy chủ chính**. Trong `Code.gs`, thay nội dung bằng file `apps-script/code_hoclieu.gs` trong máy. Kiểm tra dự án không có thêm tệp `.gs` khác định nghĩa lại `doGet`/`doPost` từ mã đăng ký.
 2. Giữ Script Property `APP_ADMIN_PASSWORD` là mật khẩu Admin đang dùng; không dán mật khẩu vào mã nguồn. Nếu property này chưa có, đặt tại Project Settings → Script Properties.
 3. Lưu rồi **Deploy → Manage deployments → Edit đúng deployment URL hiện tại → New version → Deploy**, chạy với tài khoản sở hữu đã cấp quyền.
-4. Mở URL `/exec` máy chủ chính. Kết quả đúng là `KET NOI MAY CHU THANH CONG. Version: 2026-10-04-review-v8`. Nếu thêm `?action=version` mà vẫn nhận JSON version `location-cache-v7`, URL đó vẫn chạy mã đăng ký.
+4. Mở URL `/exec` máy chủ chính. Kết quả đúng là `KET NOI MAY CHU THANH CONG. Version: 2026-10-14-script-review-v10`. Nếu thêm `?action=version` mà nhận JSON version của dự án đăng ký, URL đó đang chạy mã đăng ký.
 5. Tải lại website rồi đăng nhập. Dự án đăng ký `AKfycby6...` tiếp tục dùng `code_dangky.gs` và `Index.html` riêng.
 
 Frontend đã có thông báo phân biệt lỗi triển khai này với mật khẩu sai; cần cập nhật website để áp dụng. Frontend không tự chuyển mật khẩu sang URL khác để thử đăng nhập.

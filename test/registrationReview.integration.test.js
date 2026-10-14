@@ -59,6 +59,7 @@ test('registration review refreshes duplicate checks, preserves existing Sheet r
           else if (args.path.endsWith('utils/helpers')) contents = 'export const postAppsScript=globalThis.__registrationReview.post; export const IMAGE_DRIVE_FOLDER_ID="fixture";';
           else if (args.path.endsWith('services/jsonpClient')) contents = 'export const requestJsonp=async()=>({success:true,provinces:[],communes:{}});';
           else contents = 'export const saveStudentRecord=globalThis.__registrationReview.save; export const retryStudentSync=globalThis.__registrationReview.sync; export const retryPendingStudentSync=async()=>({succeeded:[],failed:[]}); export const deleteStudentRecord=async()=>{throw new Error("Rejection must not delete database records");};';
+          if (args.path === 'firebase/firestore') contents += 'export const getDocFromServer=async()=>{throw new Error("Unexpected cleanup read");}; export const runTransaction=async()=>{throw new Error("Unexpected cleanup transaction");};';
           return { contents, loader: 'js' };
         });
       } }] });

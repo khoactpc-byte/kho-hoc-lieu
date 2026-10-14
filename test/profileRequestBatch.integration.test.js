@@ -41,6 +41,7 @@ test('approve-all UI saves each student once, keeps failures visible and unlocks
           else if (args.path.endsWith('utils/helpers')) contents = 'export const postAppsScript=async()=>{throw new Error("Unexpected Sheet request");}; export const IMAGE_DRIVE_FOLDER_ID="fixture";';
           else if (args.path.endsWith('services/jsonpClient')) contents = 'export const requestJsonp=async()=>({success:true,provinces:[],communes:{}});';
           else contents = 'export const saveStudentRecord=(...args)=>window.batchFixture.save(...args); export const retryStudentSync=(...args)=>window.batchFixture.sync(...args); export const deleteStudentRecord=async()=>{throw new Error("Unexpected deletion");}; export const retryPendingStudentSync=(...args)=>window.batchFixture.retry(...args);';
+          if (args.path === 'firebase/firestore') contents += 'export const getDocFromServer=async()=>{throw new Error("Unexpected cleanup read");}; export const runTransaction=async()=>{throw new Error("Unexpected cleanup transaction");};';
           return { contents, loader: 'js' };
         });
       } }] });
@@ -80,7 +81,7 @@ test('approve-all UI saves each student once, keeps failures visible and unlocks
     const pendingStudents = students.map(student => ({ ...student, ...(student.id !== 'chi' ? { sheetSync: { status: 'failed' } } : {}) }));
     await act(async () => root.render(React.createElement(Manager, { key: 'retry', students: pendingStudents, currentSchoolYear: '2026-2027', initialTab: 'profileRequests', user: { uid: 'fixture' }, showNotification: (...args) => notices.push(args) })));
     await act(async () => button('Tiện ích').click());
-    await act(async () => button('Thử lại đồng bộ (2)').click());
+    await act(async () => button('Thử lại Web → Sheet (2)').click());
     assert.match(body.body.textContent, /Đang thử lại đồng bộ Sheet: 1\/2/);
     await act(async () => releaseRetry());
     assert.equal(retries, 1);

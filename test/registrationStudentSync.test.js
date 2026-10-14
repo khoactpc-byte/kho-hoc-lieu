@@ -95,7 +95,7 @@ test('promotion rechecks dropout on Sheet before writing any row in its batch', 
   const other = [...row]; other[1] = 'Bình'; other[49] = 'HS002'; other[36] = '2026-2027';
   values.push(other);
   const before = structuredClone(values);
-  const result = JSON.parse(context.syncSchoolYearClasses_({ items: ['HS001', 'HS002'].map(accessCode => ({
+  const result = JSON.parse(context.syncSchoolYearClasses_({ sourceSchoolYear: '2025-2026', targetSchoolYear: '2026-2027', items: ['HS001', 'HS002'].map(accessCode => ({
     accessCode, sourceSchoolYear: '2025-2026', targetSchoolYear: '2026-2027', sourceClassName: '8A', targetClassName: '9A'
   })) }).value);
   assert.equal(result.success, false); assert.equal(result.updatedCount, 0); assert.match(result.message, /bỏ học/);
@@ -121,4 +121,39 @@ test('requested year uses its history column even when the current summary still
   assert.equal(current[0].schoolYear, '2026-2027'); assert.equal(current[0].className, '6A', 'admission class remains separate');
   row[59] = '';
   assert.equal(JSON.parse(context.listSheetStudents_({ schoolYear: '2026-2027' }).value).items.length, 0, 'no automatic promotion from a prior year');
+});
+
+test('batch promotion reads identities once and refuses missing, duplicate or wrong-year rows before writing', () => {
+  const subject = fixture(), { context, sheet, row, values } = subject;
+  const other = [...row]; other[49] = 'HS002'; other[1] = 'Bình'; values.push(other);
+  const params = { sourceSchoolYear: '2025-2026', targetSchoolYear: '2026-2027', items: ['HS001', 'HS002'].map(accessCode => ({
+    accessCode, sourceSchoolYear: '2025-2026', targetSchoolYear: '2026-2027', sourceClassName: '8A', targetClassName: '9A'
+  })) };
+  let identityReads = 0;
+  const getRange = sheet.getRange;
+  sheet.getRange = (r, c, height, width) => {
+    if (r === 2 && c === 1 && height === 2) identityReads++;
+    return getRange(r, c, height, width);
+  };
+  const original = structuredClone(values);
+  for (const items of [
+    [params.items[0], { ...params.items[1], accessCode: 'missing' }],
+    [params.items[0], { ...params.items[0] }],
+    [params.items[0], { ...params.items[1], targetSchoolYear: '2027-2028' }]
+  ]) {
+    const result = JSON.parse(context.syncSchoolYearClasses_({ ...params, items }).value);
+    assert.equal(result.success, false); assert.equal(result.updatedCount, 0); assert.deepEqual(values, original);
+  }
+  identityReads = 0;
+  const result = JSON.parse(context.syncSchoolYearClasses_(params).value);
+  assert.equal(result.success, true, result.message); assert.equal(result.updatedCount, 2);
+  assert.equal(identityReads, 1);
+});
+
+test('student strings that resemble formulas are written literally without altering normal codes or dates', () => {
+  const { context } = fixture();
+  const row = context.buildStudentSheetRow_({ fullName: '=IMPORTDATA("https://example.test")', fatherJob: '  =1+1', phone: '0900000000', birthDate: '2014-01-20' });
+  assert.equal(row[0], "'=IMPORTDATA(\"https://example.test\")");
+  assert.equal(row[15], "'  =1+1"); assert.equal(row[4], "'0900000000"); assert.equal(row[1], '2014-01-20');
+  assert.equal(context.buildStudentExtraSheetRow_({ birthPlaceName: '=1+1' })[3], "'=1+1");
 });

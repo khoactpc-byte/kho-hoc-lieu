@@ -11,6 +11,7 @@ function mainContext() {
   const cache = new Map();
   let counter = 0;
   const context = vm.createContext({
+    SpreadsheetApp: { flush() {} },
     CacheService: { getScriptCache: () => ({ get: key => cache.get(key), put: (key, value) => cache.set(key, value), remove: key => cache.delete(key) }) },
     LockService: { getScriptLock: () => ({ waitLock() {}, releaseLock() {} }) },
     ContentService: { createTextOutput: output, MimeType: { JSON: 'json' } },
@@ -20,6 +21,82 @@ function mainContext() {
   vm.runInContext(mainSource, context);
   return { context, cache };
 }
+
+test('AI preserves a successful response when usage logging fails and surfaces model exhaustion without exposing the logging error', () => {
+  const { context } = mainContext();
+  context.getGeminiKeyCandidates_ = () => [{ apiKey: 'fixture-only', sheet: { getRange: () => { throw new Error('Sheet logging offline'); } },
+    col: { usedToday: 0, lastError: 1 }, rowNumber: 2 }];
+  let calls = 0;
+  context.callGeminiPayload_ = () => { calls++; return { candidates: [{ content: { parts: [{ text: 'Kết quả hợp lệ' }] } }] }; };
+  assert.equal(context.callGeminiPayloadFallback_({}, ['first', 'second'], {}).response.candidates[0].content.parts[0].text, 'Kết quả hợp lệ');
+  assert.equal(calls, 1);
+  context.callGeminiPayload_ = () => { calls++; throw new Error('429 RESOURCE_EXHAUSTED'); };
+  assert.throws(() => context.callGeminiPayloadFallback_({}, ['first', 'second'], {}), error => error.aiFallbackExhausted === true && /quota|han muc/.test(error.message) && !/logging/.test(error.message));
+  assert.equal(calls, 3);
+  assert.equal(context.cleanErrorForClient_(new Error('SpreadsheetApp quota exceeded'), 'createSystemBackup'), 'SpreadsheetApp quota exceeded');
+});
+
+test('AI file responses join all visible text parts and handle an empty or blocked candidate explicitly', () => {
+  const { context } = mainContext();
+  let response = { candidates: [{ content: { parts: [{ text: 'Phần suy nghĩ', thought: true }, { text: 'Câu 1' }, { text: 'Câu 2' }] } }] };
+  context.UrlFetchApp = { fetch: () => ({ getResponseCode: () => 200, getContentText: () => JSON.stringify(response) }) };
+  const actual = () => context.callGeminiWithFile_('', { name: 'work.pdf', mimeType: 'application/pdf' }, { uri: 'fixture' }, 'model', '', 'fixture-only');
+  assert.equal(actual(), 'Câu 1\nCâu 2');
+  response = { candidates: [], promptFeedback: { blockReason: 'SAFETY' } };
+  assert.throws(actual, /chưa trả nội dung.*SAFETY/);
+});
+
+test('student upload allowance supports a twenty-page profile without weakening the login attempt limit', () => {
+  const { context, cache } = mainContext();
+  cache.set('student-session:student', JSON.stringify({ accessCode: 'HS01' }));
+  const data = { studentSessionToken: 'student', folderId: context.APPKHOBAI_IMAGE_DRIVE_FOLDER_ID, mimeType: 'image/jpeg', filename: 'page.jpg', bytes: 3 };
+  for (let index = 0; index < 20; index++) assert.doesNotThrow(() => context.createUploadPermit_(data));
+  for (let index = 0; index < 10; index++) context.recordLoginAttempt_('teacher:fixture');
+  assert.throws(() => context.recordLoginAttempt_('teacher:fixture'), /15 phút/);
+});
+
+test('mailbox formula-like text remains literal and its writes are flushed before unlocking', () => {
+  const { context } = mainContext();
+  let locked = false, flushed = false, saved;
+  context.LockService = { getScriptLock: () => ({ waitLock() { locked = true; }, releaseLock() { assert.equal(flushed, true); locked = false; } }) };
+  context.SpreadsheetApp = { flush() { assert.equal(locked, true); flushed = true; } };
+  context.getStudentMailboxSheet_ = () => ({ appendRow(row) { assert.equal(locked, true); saved = row; } });
+  context.appendAuditLog_ = () => true;
+  context.handleSendStudentMailboxMessage_({ title: '=1+1', body: '=IMPORTDATA("https://example.test")', recipientValue: 'HS01' });
+  assert.equal(saved[7], "'=1+1"); assert.equal(saved[8], "'=IMPORTDATA(\"https://example.test\")"); assert.equal(locked, false);
+});
+
+test('Gemini daily usage keeps the upgrade-day count and resets once on the next day, including a request crossing midnight', () => {
+  const { context } = mainContext();
+  const rows = [['key', 'usedToday', 'dailyLimit', 'status', 'grade', 'subject'], ['fixture-only', 3, 5, 'on', '6', 'Toán']];
+  let day = '2026-10-14', locked = false, reads = 0, writes = 0;
+  const sheet = {
+    getDataRange: () => ({ getValues: () => { reads++; return rows.map(row => [...row]); } }),
+    getRange: (r, c) => ({
+      getValue: () => rows[r - 1][c - 1],
+      setValue: value => { assert.equal(locked, true); rows[r - 1][c - 1] = value; writes++; },
+      setValues: incoming => incoming.forEach((line, index) => { assert.equal(locked, true); rows[r + index - 1][c - 1] = line[0]; writes++; })
+    })
+  };
+  context.Session = { getScriptTimeZone: () => 'Asia/Ho_Chi_Minh' };
+  context.Utilities.formatDate = () => day;
+  context.LockService = { getScriptLock: () => ({ waitLock() { locked = true; }, releaseLock() { locked = false; } }) };
+  context.SpreadsheetApp = { flush: () => assert.equal(locked, true) };
+  context.getGeminiKeySpreadsheet_ = () => ({ getSheetByName: () => sheet });
+  let key = context.readGeminiKeyRows_()[0];
+  assert.equal(key.usedToday, 3); assert.equal(rows[0][6], 'Ngày thống kê'); assert.equal(rows[1][6], day);
+  const before = writes, beforeReads = reads;
+  assert.equal(context.readGeminiKeyRows_()[0].usedToday, 3);
+  assert.equal(writes, before); assert.equal(reads, beforeReads + 1, 'no extra rollover reads on the same day');
+  day = '2026-10-15';
+  key = context.readGeminiKeyRows_()[0];
+  assert.equal(key.usedToday, 0); assert.equal(rows[1][6], day);
+  context.markGeminiKeyUsed_(key); assert.equal(rows[1][1], 1);
+  day = '2026-10-16';
+  context.markGeminiKeyUsed_(key); assert.equal(rows[1][1], 1); assert.equal(rows[1][6], day);
+  assert.equal(context.normalizeGeminiGradeKey_('Khối 3'), '3');
+  assert.equal(locked, false);
+});
 
 function installTeacherPasswordUtilities(context, pepper = 'fixture-pepper-địa-phương') {
   const calls = [];
@@ -334,16 +411,16 @@ test('public registration locks append and metadata together and rechecks identi
   context.getBirthPlaceProvince = province => ({ success: true, province, districts: ['Huyện 1'], communesByDistrict: { [province + '|||Huyện 1']: ['Xã 1'] } });
   context.writeRegistrationSchoolMeta_ = context.writeSchoolYearClass_ = (_sheet, rowNumber) => { assert.equal(locked, true); assert.equal(rowNumber, rows); };
   const form = { coSoHoc: 'nguyen-an-ninh', tinhTrangHocSinh: '2025-2026', lopHoc: '6A', maDinhDanh: '123456789012', hoVaTen: 'An', birthProvince: 'Tỉnh A', birthDistrict: 'Huyện 1', birthWard: 'Xã 1' };
-  assert.equal(context.processForm(form, {}).success, true);
+  assert.equal(context.processRegistrationForm_(form, {}).success, true);
   assert.equal(rows, 2);
   assert.equal(locked, false);
   duplicateInsideLock = true;
-  assert.match(context.processForm(form, {}).message, /hồ sơ trùng/);
+  assert.match(context.processRegistrationForm_(form, {}).message, /hồ sơ trùng/);
   assert.equal(rows, 2);
   assert.equal(locked, false);
   duplicateInsideLock = false;
   switchYearWhileUploading = true;
-  assert.match(context.processForm(form, {}).message, /Năm học vừa thay đổi/);
+  assert.match(context.processRegistrationForm_(form, {}).message, /Năm học vừa thay đổi/);
   assert.equal(rows, 2);
   assert.equal(locked, false);
 });

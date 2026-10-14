@@ -67,6 +67,9 @@ import StudentUtilitiesMenu from './StudentUtilitiesMenu';
 import { belongsToEducationLevel, educationGrades, educationLabel } from '../utils/educationLevels';
 import { buildStudentProfileHistory, profileSchoolYear } from '../utils/studentProfileHistory';
 import ProfileChangeTable from './ProfileChangeTable';
+import ProfileFileCleanupQueue from './ProfileFileCleanupQueue';
+import { profileCleanupMessage, retryProfileFileCleanup } from '../services/profileFileCleanup';
+import { replacedProfileFileIds } from '../utils/profileDocumentFiles';
 import { STUDENT_PROFILE_SECTIONS, studentProfileSection } from '../utils/studentProfileLayout';
 
 const STUDENT_FIELDS = [
@@ -3047,6 +3050,36 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
     }
   };
 
+  const approveProfileFieldAndTrash = async (request = {}, fieldKey = '') => {
+    if (isSaving || !request.id || !DOCUMENT_FIELD_KEYS.has(fieldKey)) return;
+    const before = safeStudents.find(student => student.id === request.studentId);
+    if (!before || isReadOnlyStudentRecord(before)) {
+      showNotification?.(before ? readOnlyStudentMessage(before) : 'Không tìm thấy hồ sơ học sinh.', 'error');
+      return;
+    }
+    const value = safePlainValue(request.changes?.[fieldKey]);
+    const count = replacedProfileFileIds(before[fieldKey], value).length;
+    if (!count || !window.confirm(`Duyệt ${STUDENT_FIELD_LABELS[fieldKey] || 'file mới'} của ${before.fullName} và chuyển tối đa ${count} file cũ vào thùng rác Drive?\nChỉ dọn sau khi lưu và đồng bộ ảnh mới. File còn được hồ sơ khác sử dụng sẽ được giữ lại.`)) return;
+    setIsSaving(true);
+    let saved = false;
+    try {
+      const remainingChanges = sanitizeStudentChanges(request.changes);
+      delete remainingChanges[fieldKey];
+      const student = await persistStudent({ ...before, [fieldKey]: value }, {
+        profileDecision: { requestId: request.id, expectedChanges: request.changes, remainingChanges }, profileCleanupField: fieldKey
+      });
+      saved = true;
+      hideProfileRequestFieldLocally(request.id, fieldKey);
+      if (editing?.id === student.id) setEditing(prev => prev ? { ...prev, [fieldKey]: value } : prev);
+      const result = await retryProfileFileCleanup(student.sheetSync.jobId, syncPersistedStudent);
+      showNotification?.('Đã duyệt và đồng bộ hồ sơ. ' + profileCleanupMessage(result));
+    } catch (error) {
+      showNotification?.(saved
+        ? 'Ảnh mới đã được duyệt. File cũ chưa dọn xong; dùng “Thử dọn lại” trong mục File cũ chờ dọn. ' + error.message
+        : 'Chưa duyệt được ảnh mới: ' + error.message, 'error');
+    } finally { setIsSaving(false); }
+  };
+
   const toggleDropout = async student => {
  if (isSaving) return;
  setIsSaving(true);
@@ -4374,6 +4407,7 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
       )}
       {studentTab === 'profileRequests' ? (
         <div className="min-h-0 flex-1 overflow-y-auto p-2 sm:p-3 bg-white">
+          <ProfileFileCleanupQueue students={safeStudents} educationLevel={educationLevel} disabled={isSaving} syncStudent={syncPersistedStudent} showNotification={showNotification} />
           {(profileRequests.length > 0 || profileBatchStatus) && (
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-normal">
               <div className="text-slate-600">
@@ -4418,7 +4452,7 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
                       </div>
                     </div>
                     <div className="mt-2">
-                      <ProfileChangeTable rows={profileChangeRows(request, currentStudent)} label={'Thay đổi hồ sơ ' + (request.studentName || currentStudent?.fullName || 'học sinh')} disabled={isSaving} onApprove={key => approveProfileField(request, key)} onReject={key => rejectProfileField(request, key)} />
+                      <ProfileChangeTable rows={profileChangeRows(request, currentStudent)} label={'Thay đổi hồ sơ ' + (request.studentName || currentStudent?.fullName || 'học sinh')} disabled={isSaving || !currentStudent} onApprove={key => approveProfileField(request, key)} onApproveAndTrash={key => approveProfileFieldAndTrash(request, key)} onReject={key => rejectProfileField(request, key)} />
                     </div>
                   </div>
                 );
@@ -5136,7 +5170,7 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
               })),
               ...(editingProfileRequests.length ? [{ key: 'requests', label: 'Chờ duyệt (' + editingProfileRequests.reduce((count, request) => count + Object.keys(sanitizeStudentChanges(request.changes)).length, 0) + ')', content: (
                 <div className="space-y-3">
-                   {editingProfileRequests.map(request => <ProfileChangeTable key={request.id} rows={profileChangeRows(request, editing)} label={'Thay đổi hồ sơ ' + (editing.fullName || 'học sinh')} disabled={isSaving || profileReadOnly} onApprove={key => approveProfileField(request, key)} onReject={key => rejectProfileField(request, key)} />)}
+                   {editingProfileRequests.map(request => <ProfileChangeTable key={request.id} rows={profileChangeRows(request, editing)} label={'Thay đổi hồ sơ ' + (editing.fullName || 'học sinh')} disabled={isSaving || profileReadOnly} onApprove={key => approveProfileField(request, key)} onApproveAndTrash={key => approveProfileFieldAndTrash(request, key)} onReject={key => rejectProfileField(request, key)} />)}
                 </div>
               ) }] : [])
             ]} />

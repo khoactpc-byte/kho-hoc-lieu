@@ -264,25 +264,7 @@ const makeScheduleNewsHtml = ({ name, rows, visibleDays, schedule, periodCount =
       return `<tr class="${rowClass}">${classCell}<th class="schedule-period-cell">${period}</th>${cells}</tr>`;
     }).join('');
   }).join('');
-  return `<style>
-    .schedule-news table{border:2px solid #93c5fd;border-collapse:collapse;width:100%;font-size:14px;table-layout:fixed}
-    .schedule-news th,.schedule-news td{border-left:1px solid #dbeafe;border-right:1px solid #dbeafe;border-top:1px dashed #cbd5e1;border-bottom:1px dashed #cbd5e1;padding:6px;text-align:center;word-break:normal;overflow-wrap:anywhere}
-    .schedule-news thead th{border:1.5px solid #93c5fd;background:#eff6ff;font-weight:800}
-    .schedule-news .schedule-class-head{width:54px}
-    .schedule-news .schedule-period-head{width:36px}
-    .schedule-news .schedule-class-cell{width:54px;min-width:54px;background:#f8fafc;font-weight:800;line-height:1.2;border:2px solid #93c5fd}
-    .schedule-news .schedule-period-cell{width:36px;min-width:36px;background:#f8fafc;font-weight:800}
-    .schedule-news .schedule-subject-cell{line-height:1.25}
-    .schedule-news tbody tr.schedule-class-start>th,.schedule-news tbody tr.schedule-class-start>td{border-top:2px solid #93c5fd}
-    .schedule-news tbody tr.schedule-class-end>th,.schedule-news tbody tr.schedule-class-end>td{border-bottom:2px solid #93c5fd}
-    @media (max-width:640px){
-      .schedule-news table{font-size:12px}
-      .schedule-news th,.schedule-news td{padding:5px!important}
-      .schedule-news .schedule-class-head,.schedule-news .schedule-class-cell{width:36px!important;min-width:36px!important}
-      .schedule-news .schedule-period-head,.schedule-news .schedule-period-cell{width:28px!important;min-width:28px!important}
-      .schedule-news .schedule-subject-cell{line-height:1.18}
-    }
-  </style><div class="schedule-news"><h2>${name}</h2><p>Thời khóa biểu đã được xuất bản.</p><table><thead><tr><th class="schedule-class-head">Lớp</th><th class="schedule-period-head">Tiết</th>${header}</tr></thead><tbody>${body}</tbody></table></div>`;
+  return `<div class="schedule-news"><h2>${name}</h2><p>Thời khóa biểu đã được xuất bản.</p><table><thead><tr><th class="schedule-class-head">Lớp</th><th class="schedule-period-head">Tiết</th>${header}</tr></thead><tbody>${body}</tbody></table></div>`;
 };
 
 const makeScheduleExportHtml = ({ name, educationLevel = '', schoolName = 'THCS Nguyễn An Ninh', schoolYear, semesterLabel, rows, visibleDays, schedule, periodCount = 5, dayPeriodCounts, principalName = '', pcResponsibleName = '', includePrintButton = false }) => {

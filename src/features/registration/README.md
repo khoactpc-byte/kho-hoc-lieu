@@ -46,8 +46,8 @@ Form → `submitRegistration` của Web App đăng ký → cùng sheet `Data`, c
 ## Triển khai
 
 1. Trong **dự án Apps Script đăng ký học sinh hiện có**, thay `Code.gs` bằng `code_dangky.gs`, thêm file script tên **PublicRegistration** và dán nội dung `PublicRegistration.gs`. Cập nhật `Index.html` để form dự phòng cũng ẩn năm và đặt đúng nhóm trường. Giữ các file, Script Properties, Spreadsheet ID, Folder ID và Web App URL hiện tại.
-2. **Deploy → Manage deployments → Edit → New version → Deploy**, giữ nguyên deployment URL và phạm vi tiếp nhận hồ sơ đã cấu hình trước đây. Không tạo dự án Script mới. Endpoint `?action=version` phải trả `2026-10-14-registration-compact-v13`; `?action=registrationConfig` phải có `publicApiVersion: 1`.
-3. Build và đưa web lên hosting như quy trình hiện tại. Không cần thay máy chủ chính, Firestore Rules hoặc thêm biến môi trường.
+2. **Deploy → Manage deployments → Edit → New version → Deploy**, giữ nguyên deployment URL và phạm vi tiếp nhận hồ sơ đã cấu hình trước đây. Không tạo dự án Script mới. Endpoint `?action=version` phải trả `2026-10-14-script-review-v15`; `?action=registrationConfig` phải có `publicApiVersion: 1`.
+3. Lượt rà soát tổng hợp ngày 14/10 còn cập nhật máy chủ chính (`2026-10-14-script-review-v10`). Dùng bộ file và thứ tự trong [hướng dẫn cập nhật chung](../../../HUONG_DAN_CAP_NHAT_APPS_SCRIPT.md), Deploy mỗi dự án một lần rồi build và đưa web lên hosting. Không cần đổi Firestore Rules hoặc thêm biến môi trường.
 4. Kiểm tra một hồ sơ thử, xác nhận đúng năm/cơ sở/lớp, tệp Drive và danh sách chờ duyệt; duyệt thử trên dữ liệu kiểm thử rồi kiểm tra đồng bộ.
 
 Nếu Script chưa được cập nhật, form không báo gửi thành công giả; học sinh có thể dùng **Biểu mẫu dự phòng**. Không thêm quyền admin vào API công khai; các action quản trị vẫn yêu cầu phiên admin.

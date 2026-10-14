@@ -27,6 +27,7 @@ test('admin profiles save dropouts without classes and offer bounded school year
           else if (args.path.endsWith('utils/helpers')) contents = 'export const postAppsScript=async()=>{throw new Error("Unexpected Sheet request");};export const IMAGE_DRIVE_FOLDER_ID="fixture";';
           else if (args.path.endsWith('jsonpClient')) contents = 'export const requestJsonp=async()=>({success:true,provinces:[],communes:{}});';
           else contents = 'export const saveStudentRecord=async(student,options)=>{window.savedProfiles.push({student,options});return student;};export const retryStudentSync=async()=>{};export const deleteStudentRecord=async()=>{throw new Error("Unexpected delete");};export const retryPendingStudentSync=deleteStudentRecord;';
+          if (args.path === 'firebase/firestore') contents += 'export const getDocFromServer=async()=>{throw new Error("Unexpected cleanup read");}; export const runTransaction=async()=>{throw new Error("Unexpected cleanup transaction");};';
           return { contents, loader: 'js' };
         });
       } }] });

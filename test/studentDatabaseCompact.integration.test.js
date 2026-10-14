@@ -25,6 +25,7 @@ test('compact database loads images on demand, opens the matching profile and pr
           else if (args.path.endsWith('utils/helpers')) contents = 'export const postAppsScript=async()=>{throw new Error("Unexpected Sheet request");}; export const IMAGE_DRIVE_FOLDER_ID="fixture";';
           else if (args.path.endsWith('services/jsonpClient')) contents = 'export const requestJsonp=async()=>({success:true,provinces:[],communes:{}});';
           else contents = 'export const saveStudentRecord=async()=>{throw new Error("Unexpected student write");}; export const deleteStudentRecord=saveStudentRecord; export const retryStudentSync=saveStudentRecord; export const retryPendingStudentSync=saveStudentRecord;';
+          if (args.path === 'firebase/firestore') contents += 'export const getDocFromServer=async()=>{throw new Error("Unexpected cleanup read");}; export const runTransaction=async()=>{throw new Error("Unexpected cleanup transaction");};';
           return { contents, loader: 'js' };
         });
       } }] });
@@ -353,13 +354,13 @@ test('compact database loads images on demand, opens the matching profile and pr
     for (const action of utilities.querySelectorAll('button[aria-describedby]')) {
       assert.ok(body.getElementById(action.getAttribute('aria-describedby'))?.textContent.trim(), `${action.getAttribute('aria-label')} has a reminder`);
     }
-    assert.match(body.getElementById(namedButton('Gửi hồ sơ trên web lên Sheet').getAttribute('aria-describedby')).textContent, /toàn bộ.*năm đang xem.*ngoài bộ lọc/);
-    assert.match(body.getElementById(namedButton('Cập nhật hồ sơ từ Sheet').getAttribute('aria-describedby')).textContent, /hồ sơ khớp.*tích chọn.*hồ sơ thiếu/);
-    assert.ok(namedButton('Đối chiếu Sheet / thêm học sinh thiếu'));
+    assert.match(body.getElementById(namedButton('Web → Sheet: gửi toàn bộ năm').getAttribute('aria-describedby')).textContent, /toàn bộ.*năm đang xem.*ngoài bộ lọc/);
+    assert.match(body.getElementById(namedButton('Sheet → Web: cập nhật hồ sơ').getAttribute('aria-describedby')).textContent, /từ Google Sheet.*trên Web.*chọn thêm hồ sơ thiếu/);
+    assert.ok(namedButton('Chỉ đối chiếu Web ↔ Sheet'));
     assert.ok(namedButton('Kiểm tra học sinh nghi trùng'));
     assert.equal(namedButton('Gửi thư cho học sinh đã chọn (1)').disabled, true, 'unavailable mailbox callbacks remain disabled');
-    assert.ok(buttonWithText('Thử lại đồng bộ (1)'), 'retry stays available after removing the summary banner');
-    const sheetGroup = [...utilities.querySelectorAll('details')].find(group => group.querySelector('summary').textContent.includes('Nhập và đồng bộ Sheet'));
+    assert.ok(buttonWithText('Thử lại Web → Sheet (1)'), 'retry stays available after removing the summary banner');
+    const sheetGroup = [...utilities.querySelectorAll('details')].find(group => group.querySelector('summary').textContent.includes('Dữ liệu Web ↔ Sheet'));
     await click(sheetGroup.querySelector('summary'));
     assert.equal(sheetGroup.open, true);
     await click(namedButton('Nhập danh sách mới'));

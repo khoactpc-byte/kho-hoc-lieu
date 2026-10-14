@@ -97,13 +97,13 @@ test('public registration rejects missing birth locations before accessing Data 
   const location = { birthProvince: 'Tỉnh A', birthDistrict: 'Huyện 1', birthWard: 'Xã Ánh' };
   for (const [key, label] of [['birthProvince', 'tỉnh/thành phố'], ['birthDistrict', 'huyện/quận'], ['birthWard', 'xã/phường']]) {
     for (const value of ['', '   ', undefined, null, ['Tỉnh A']]) {
-      const result = context.processForm({ ...location, [key]: value }, {});
+      const result = context.processRegistrationForm_({ ...location, [key]: value }, {});
       assert.equal(result.success, false);
       assert.ok(result.message.includes(label), `${key} must identify the missing field`);
       assert.doesNotMatch(result.message, /Unexpected/);
     }
   }
-  assert.equal(context.processForm(null, {}).success, false);
+  assert.equal(context.processRegistrationForm_(null, {}).success, false);
 });
 
 test('public registration validates province/district/ward relationships against tinhhuyenxa before saving', () => {
@@ -114,13 +114,13 @@ test('public registration validates province/district/ward relationships against
     { birthProvince: 'Tỉnh A', birthDistrict: 'Huyện B', birthWard: 'Xã Bình' },
     { birthProvince: 'Tỉnh A', birthDistrict: 'Huyện 1', birthWard: 'Xã Ba' }
   ]) {
-    const result = context.processForm(location, {});
+    const result = context.processRegistrationForm_(location, {});
     assert.equal(result.success, false);
     assert.match(result.message, /chọn lại/);
     assert.doesNotMatch(result.message, /Unexpected/);
   }
   const unavailable = server({});
-  const result = unavailable.context.processForm({ birthProvince: 'Tỉnh A', birthDistrict: 'Huyện 1', birthWard: 'Xã Ánh' }, {});
+  const result = unavailable.context.processRegistrationForm_({ birthProvince: 'Tỉnh A', birthDistrict: 'Huyện 1', birthWard: 'Xã Ánh' }, {});
   assert.equal(result.success, false);
   assert.match(result.message, /kiểm tra được danh mục nơi sinh/);
 });
@@ -138,7 +138,7 @@ test('validated registration writes and reads birth locations in AN/AO/AP withou
   context.ensureExtraHeaders_ = context.writeRegistrationSchoolMeta_ = context.writeSchoolYearClass_ = () => {};
   context.hasExistingIdentity_ = () => false;
   context.saveFiles_ = context.saveHocBaFiles_ = () => '';
-  const result = context.processForm({ coSoHoc: 'nguyen-an-ninh', tinhTrangHocSinh: '2025-2026', lopHoc: '6A',
+  const result = context.processRegistrationForm_({ coSoHoc: 'nguyen-an-ninh', tinhTrangHocSinh: '2025-2026', lopHoc: '6A',
     maDinhDanh: '123456789012', hoVaTen: 'Nguyễn Văn An', tinhThanh: 'Tỉnh Đang Ở', tinhThanhHK: 'Tỉnh Thường Trú',
     hometownProvince: 'Tỉnh Quê Quán', birthProvince: ' Tỉnh A ', birthDistrict: ' Huyện 1 ', birthWard: ' Xã Ánh ' }, {});
   assert.equal(result.success, true);
@@ -204,17 +204,17 @@ test('registration accepts only the configured year and rechecks it after upload
   const input = { coSoHoc: 'nguyen-an-ninh', tinhTrangHocSinh: '2026-2027', lopHoc: '9A',
     maDinhDanh: '123456789012', hoVaTen: 'Học sinh thử', birthProvince: 'Tỉnh A', birthDistrict: 'Huyện 1', birthWard: 'Xã Ánh' };
   for (const year of ['2025-2026', '2027-2028']) {
-    const result = context.processForm({ ...input, tinhTrangHocSinh: year }, {});
+    const result = context.processRegistrationForm_({ ...input, tinhTrangHocSinh: year }, {});
     assert.equal(result.success, false);
     assert.match(result.message, /chỉ nhận đăng ký năm 2026-2027/);
   }
   assert.equal(uploads, 0);
-  assert.equal(context.processForm(input, {}).success, true);
+  assert.equal(context.processRegistrationForm_(input, {}).success, true);
   assert.equal(written[0][7], '2026-2027');
   assert.equal(written[0][52], '2026-2027');
   assert.deepEqual(history, [{ year: '2026-2027', className: '9A' }]);
   changeYearDuringUpload = true;
-  const stale = context.processForm(input, {});
+  const stale = context.processRegistrationForm_(input, {});
   assert.equal(stale.success, false);
   assert.match(stale.message, /Năm học vừa thay đổi/);
   assert.equal(written.length, 1, 'stale forms cannot create a row after admin changes the year');
@@ -265,6 +265,40 @@ test('birth location inputs are required and submitted values stay fixed while i
     assert.equal(submitted.args[0].birthProvince, 'Tỉnh A');
     assert.equal(submitted.args[0].birthDistrict, 'Huyện Tỉnh A');
     assert.equal(submitted.args[0].birthWard, 'Xã Tỉnh A');
+  } finally { subject.dom.window.close(); }
+});
+
+test('fallback form blocks double submit, retries the same receipt after timeout and ignores a late success', async () => {
+  const subject = await form(), { calls, element, change, window } = subject;
+  try {
+    calls[0].resolve(bootstrap()); await flush();
+    change('coSoHoc', 'nguyen-an-ninh'); change('lopHoc', '6A'); change('hoVaTen', 'Học sinh An');
+    element('myForm').checkValidity = () => true;
+    element('myForm').querySelectorAll(':disabled').forEach(input => { input.disabled = false; });
+    window.validateIdentityCode = window.validateHocBaFiles = () => '';
+    window.readFilesFromInput = async () => [];
+    let timeout;
+    const setTimeout = window.setTimeout.bind(window);
+    window.setTimeout = (callback, ms) => { if (ms === 180000) timeout = callback; return setTimeout(callback, ms); };
+    const send = () => window.handleFormSubmit({ preventDefault() {} });
+    const submissions = () => calls.filter(call => call.method === 'processForm');
+    send(); send(); await flush();
+    assert.equal(submissions().length, 1); assert.equal(element('submitButton').disabled, true);
+    const first = submissions()[0];
+    assert.match(first.args[2], /^dk-[a-f0-9-]{36}$/);
+    timeout(); assert.equal(element('submitButton').disabled, false);
+    assert.match(element('status').textContent, /gửi lại/);
+    send(); await flush();
+    const retry = submissions()[1];
+    assert.equal(retry.args[2], first.args[2]);
+    first.resolve({ success: true, message: 'Late success' });
+    assert.equal(element('hoVaTen').value, 'Học sinh An'); assert.equal(element('submitButton').disabled, true);
+    retry.reject(new Error('Network lost'));
+    change('hoVaTen', 'Học sinh Bình'); send(); await flush();
+    const changed = submissions()[2];
+    assert.notEqual(changed.args[2], first.args[2]);
+    changed.resolve({ success: true, message: 'Đã nộp hồ sơ' });
+    assert.equal(element('submitButton').disabled, false); assert.equal(element('hoVaTen').value, '');
   } finally { subject.dom.window.close(); }
 });
 

@@ -1,4 +1,5 @@
-import { CheckCircle2, X } from 'lucide-react';
+import { CheckCircle2, Trash2, X } from 'lucide-react';
+import { profileDriveFileIds, replacedProfileFileIds } from '../utils/profileDocumentFiles';
 
 function ChangeValue({ value, isDocument }) {
   if (!value) return <span className="text-slate-400">(trống)</span>;
@@ -8,7 +9,7 @@ function ChangeValue({ value, isDocument }) {
   return <div className="flex flex-wrap gap-x-3 gap-y-1">{urls.map((url, index) => <a key={`${url}-${index}`} href={url} target="_blank" rel="noreferrer" className="text-sky-700 hover:underline">{urls.length > 1 ? `Mở file ${index + 1}` : 'Mở file/ảnh'}</a>)}</div>;
 }
 
-export default function ProfileChangeTable({ rows, onApprove, onReject, disabled, label = 'Thay đổi hồ sơ' }) {
+export default function ProfileChangeTable({ rows, onApprove, onApproveAndTrash, onReject, disabled, label = 'Thay đổi hồ sơ' }) {
   return (
     <div className="overflow-x-auto rounded border border-slate-200 bg-white">
       <table aria-label={label} className="w-full min-w-[620px] table-fixed border-collapse text-left text-xs font-normal text-slate-700">
@@ -31,6 +32,13 @@ export default function ProfileChangeTable({ rows, onApprove, onReject, disabled
                   <button type="button" onClick={() => onApprove(row.key)} disabled={disabled} title="Duyệt dòng này" aria-label={`Duyệt ${row.label}`} className="flex h-7 w-7 items-center justify-center rounded border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 disabled:opacity-50"><CheckCircle2 className="h-4 w-4" /></button>
                   <button type="button" onClick={() => onReject(row.key)} disabled={disabled} title="Từ chối dòng này" aria-label={`Từ chối ${row.label}`} className="flex h-7 w-7 items-center justify-center rounded border border-rose-200 bg-rose-50 text-rose-600 hover:bg-rose-100 disabled:opacity-50"><X className="h-4 w-4" /></button>
                 </div>
+                {onApproveAndTrash && row.isDocument && profileDriveFileIds(row.nextValue).length > 0 && replacedProfileFileIds(row.currentValue, row.nextValue).length > 0 && (
+                  <button type="button" onClick={() => onApproveAndTrash(row.key)} disabled={disabled}
+                    aria-label={`Duyệt ${row.label} và dọn file cũ`}
+                    className="mt-2 flex w-full items-center justify-center gap-1 rounded border border-amber-200 bg-amber-50 px-1 py-1.5 text-[10px] leading-tight text-amber-900 hover:bg-amber-100 disabled:opacity-50">
+                    <Trash2 className="h-3 w-3 shrink-0" /> Duyệt và dọn file cũ
+                  </button>
+                )}
               </td>
             </tr>
           ))}

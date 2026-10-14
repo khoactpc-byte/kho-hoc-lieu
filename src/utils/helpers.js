@@ -4,12 +4,13 @@ export const SCHOOL_YEARS = Array.from({length: 11}, (_, i) => `${2025 + i}-${20
 
 export const GOOGLE_API_KEY = 'AIzaSyAQwyUzt2jb8kBh_S4V2_SjuFKZi5K3Mc4';
 export const GEMINI_MODELS = [
-  { id: 'gemini-2.0-flash-lite', label: 'Gemini 2.0 Flash Lite' },
-  { id: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash' },
+  { id: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash Lite' },
   { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
+  { id: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash' },
+  { id: 'gemini-3.5-flash-lite', label: 'Gemini 3.5 Flash Lite' },
   { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' }
 ];
-export const DEFAULT_GEMINI_MODEL = 'gemini-2.0-flash-lite';
+export const DEFAULT_GEMINI_MODEL = 'gemini-2.5-flash-lite';
 
 export const TEXTBOOK_FOLDERS = {
   '6': '1Y7JgYgb4WlFNZUQ-caMsFk-VKXn2oz_u',
@@ -142,7 +143,7 @@ export const cleanDriveTitle = (name) => getDriveBaseName(name).toLowerCase();
 
 export const normalizeServiceErrorMessage = (message, action = '') => {
   const raw = String(message || '').replace(/\s+/g, ' ').trim();
-  const isRegistrationAction = ['registrationAdminAction', 'syncStudent', 'listStudents', 'listPending', 'markExistingRegistration', 'markDropout', 'syncSchoolYearClasses', 'syncCurrentSchoolYear'].includes(action);
+  const isAiAction = ['gemini', 'askAI', 'gradeStudentWork', 'generate', ''].includes(action);
   if (!raw) return 'May chu bao loi khong xac dinh.';
   if (['createAdminSession', 'createStaffSession'].includes(action)
     && /Cần đăng nhập Admin để truy cập dữ liệu học sinh/i.test(raw)) {
@@ -175,10 +176,10 @@ export const normalizeServiceErrorMessage = (message, action = '') => {
       return 'Apps Script chưa có quyền tạo PDF. Chủ dự án cần kiểm tra quyền Google Docs và Drive.';
     }
   }
-  if (!isRegistrationAction && /429|quota|RESOURCE_EXHAUSTED|rate limit|GenerateRequestsPer|exceeded your current quota/i.test(raw)) {
+  if (isAiAction && /429|quota|RESOURCE_EXHAUSTED|rate limit|GenerateRequestsPer|exceeded your current quota/i.test(raw)) {
     return 'Gemini dang het han muc su dung. Hay doi API key con quota, nang/gia han billing trong Google AI Studio, hoac thu lai sau it phut.';
   }
-  if (!isRegistrationAction && /API key not valid|PERMISSION_DENIED|forbidden|403/i.test(raw)) {
+  if (isAiAction && /API key not valid|PERMISSION_DENIED|forbidden|403/i.test(raw)) {
     return 'Gemini chua nhan API key hoac API key khong co quyen su dung. Hay kiem tra lai API key trong Apps Script.';
   }
   if (raw.length <= 900) return raw;
@@ -215,7 +216,11 @@ export const postAppsScript = async (payload, { timeoutMs = 120000, signal } = {
   let data;
   try { data = JSON.parse(text); }
   catch (e) { throw new Error(normalizeServiceErrorMessage(text || 'May chu Apps Script khong tra JSON.', payload.action), { cause: e }); }
-  if (data.status === 'error' || data.success === false) throw new Error(normalizeServiceErrorMessage(data.message || 'May chu bao loi.', payload.action));
+  if (data.status === 'error' || data.success === false) {
+    const error = new Error(normalizeServiceErrorMessage(data.message || 'May chu bao loi.', payload.action));
+    error.aiFallbackExhausted = data.aiFallbackExhausted === true;
+    throw error;
+  }
   return data;
   } catch (error) {
     if (timedOut) throw new Error('Máy chủ phản hồi quá lâu. Yêu cầu ghi có thể đã được xử lý; hãy kiểm tra trạng thái trước khi thử lại.', { cause: error });

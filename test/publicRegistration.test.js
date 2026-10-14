@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import vm from 'node:vm';
 import { emptyRegistration, hasNoIdentity, previousGrades, registrationPayload, validateFiles, validateStep } from '../src/features/registration/registrationModel.js';
 
@@ -63,7 +63,8 @@ function server() {
     SpreadsheetApp: { openById: () => ({ getSheetByName: () => sheet }), flush() {} },
     PropertiesService: { getScriptProperties: () => ({ getProperty: key => key === 'CURRENT_SCHOOL_YEAR' ? year : '' }) },
     ContentService: { MimeType: { JSON: 'json' }, createTextOutput: value => ({ value, setMimeType() { return this; } }) },
-    Utilities: { DigestAlgorithm: { SHA_256: 'sha256' }, Charset: { UTF_8: 'utf8' }, computeDigest: (_kind, text) => [...createHash('sha256').update(text).digest()] },
+    Utilities: { getUuid: randomUUID, DigestAlgorithm: { SHA_256: 'sha256' }, Charset: { UTF_8: 'utf8' }, computeDigest: (_kind, text) => [...createHash('sha256').update(text).digest()],
+      base64Decode: text => [...Buffer.from(text, 'base64')], newBlob: (_bytes, mime) => ({ getContentType: () => mime }) },
     LockService: { getScriptLock: () => ({ waitLock() { assert.equal(locked, false); locked = true; }, releaseLock() { locked = false; } }) },
     DriveApp: { getFolderById: () => ({}) }
   });
@@ -76,10 +77,82 @@ function server() {
   context.ensureExtraHeaders_ = context.writeRegistrationSchoolMeta_ = context.writeSchoolYearClass_ = () => {};
   context.getSchoolYearHistoryColumn_ = () => 57;
   context.hasExistingIdentity_ = () => false;
+  const realUploads = { saveFiles_: context.saveFiles_, saveHocBaFiles_: context.saveHocBaFiles_ };
   context.saveFiles_ = context.saveHocBaFiles_ = () => { uploads++; if (changeDuringUpload) year = '2027-2028'; return 'https://drive.google.com/file/d/fixture/view'; };
-  return { context, rows, setYear: value => { year = value; }, changeDuringUpload: () => { changeDuringUpload = true; }, uploads: () => uploads, locked: () => locked };
+  return { context, rows, sheet, realUploads, setYear: value => { year = value; }, changeDuringUpload: () => { changeDuringUpload = true; }, uploads: () => uploads, locked: () => locked };
 }
 const post = (subject, input) => JSON.parse(subject.context.doPost({ postData: { contents: JSON.stringify(input) } }).value);
+
+test('HTML-service entry applies the public validations, normalizes legacy dates and reuses the receipt on retry', () => {
+  const subject = server();
+  const legacy = { ...form(), ngaySinh: '20/01/2014', tinhTrangHocSinh: '2026-2027' };
+  for (const [input, attached] of [
+    [{ ...legacy, soNha: '=IMPORTDATA("https://example.test")' }, files()],
+    [legacy, { ...files(), anhChanDung: [] }],
+    [{ ...legacy, ngaySinh: '31/02/2014' }, files()],
+    [legacy, { ...files(), anhHocBa: [{ ...file, type: 'text/html' }] }]
+  ]) assert.equal(subject.context.processForm(input, attached, requestId).success, false);
+  assert.equal(subject.uploads(), 0);
+  const first = subject.context.processForm(legacy, files(), requestId);
+  assert.equal(first.success, true, first.message);
+  const uploads = subject.uploads();
+  subject.setYear('2027-2028');
+  const retry = subject.context.processForm(legacy, files(), requestId);
+  assert.equal(retry.replayed, true); assert.equal(retry.receipt, first.receipt);
+  assert.equal(subject.uploads(), uploads); assert.equal(subject.rows.length, 2);
+  assert.equal(subject.rows[1][2], '2014-01-20');
+  assert.equal(subject.context.processForm({ ...legacy, hoVaTen: 'Người khác' }, files(), requestId).success, false);
+});
+
+test('malformed public payloads are rejected before hashing or reading Google services', () => {
+  const subject = server();
+  subject.context.Utilities.computeDigest = () => { throw new Error('unexpected hashing'); };
+  for (const bad of [
+    { form: { ...form(), nested: { enormous: [] } }, files: files() },
+    { form: form(), files: { ...files(), anhHocBa: Array(21).fill(file) } },
+    { form: form(), files: { ...files(), anhChanDung: [{ ...file, bytes: 'YW=J' }] } }
+  ]) {
+    const result = post(subject, { action: 'submitRegistration', requestId, ...bad });
+    assert.equal(result.success, false); assert.doesNotMatch(result.message, /unexpected hashing/);
+  }
+  assert.equal(subject.rows.length, 1);
+});
+
+function actualUploads(subject, onCreate = () => {}) {
+  const created = [];
+  Object.assign(subject.context, subject.realUploads);
+  subject.context.DriveApp = { getFolderById: () => ({ createFile: () => {
+    const saved = { trashed: false, getId: () => `file-${created.length}`, getUrl: () => `https://drive.google.com/file/d/file-${created.length}/view`,
+      setName() { return this; }, setTrashed(value) { this.trashed = value; } };
+    created.push(saved); onCreate(saved, created.length); return saved;
+  } }) };
+  return created;
+}
+
+test('failed or superseded registration uploads trash only newly created files, while uncertain Sheet writes preserve their files', () => {
+  const input = { action: 'submitRegistration', requestId, form: form(), files: files() };
+  for (const mode of ['name-error', 'changed-year', 'uncertain-append', 'committed']) {
+    const subject = server();
+    const created = actualUploads(subject, (saved, index) => {
+      if (mode === 'name-error' && index === 2) saved.setName = () => { throw new Error('Drive naming error'); };
+      if (mode === 'changed-year') subject.setYear('2027-2028');
+    });
+    if (mode === 'uncertain-append') subject.sheet.appendRow = row => { subject.rows.push(row); throw new Error('response lost after append'); };
+    const result = post(subject, input);
+    assert.equal(result.success, mode === 'committed', mode);
+    assert.ok(created.length > 0);
+    assert.ok(created.every(saved => saved.trashed === ['name-error', 'changed-year'].includes(mode)), mode);
+    assert.equal(subject.locked(), false);
+  }
+  const subject = server();
+  assert.equal(post(subject, input).success, true);
+  const winner = subject.rows.pop();
+  const created = actualUploads(subject, (_saved, index) => { if (index === 1) subject.rows.push(winner); });
+  const replay = post(subject, input);
+  assert.equal(replay.replayed, true); assert.equal(subject.rows.length, 2);
+  assert.ok(created.every(saved => saved.trashed), 'the losing upload leaves no duplicate files');
+  assert.equal(subject.rows[1][26], winner[26], 'the committed receipt still refers to its original files');
+});
 
 test('server rejects a grade 8 registration missing either prior result and saves both prior grades in the existing Sheet columns', () => {
   const subject = server();

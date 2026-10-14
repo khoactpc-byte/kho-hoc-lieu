@@ -17,6 +17,7 @@ import { buildQuizTracking } from './utils/quizTracking';
 import { stableRecordId } from './utils/idempotency';
 import { vietnamDateKey } from './utils/vietnamDate';
 import { requestJsonp } from './services/jsonpClient';
+import { requestWithGeminiFallback } from './services/geminiFallback';
 import { createAsyncScope } from './utils/asyncScope';
 import { PROFILE_REQUEST_PENDING_MESSAGE } from './utils/profileRequestPolicy';
 import { readFileBase64, studentUploadMime, STUDENT_UPLOAD_ACCEPT } from './utils/fileUpload';
@@ -896,7 +897,10 @@ function App() {
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [isGeneratingQuizAnswer, setIsGeneratingQuizAnswer] = useState(false);
   const [aiError, setAiError] = useState('');
-  const [selectedGeminiModel, setSelectedGeminiModel] = useState(() => localStorage.getItem('khohoclieu-gemini-model') || DEFAULT_GEMINI_MODEL);
+  const [selectedGeminiModel, setSelectedGeminiModel] = useState(() => {
+    const saved = localStorage.getItem('khohoclieu-gemini-model');
+    return GEMINI_MODELS.some(model => model.id === saved) ? saved : DEFAULT_GEMINI_MODEL;
+  });
   const [aiSelectedLessons, setAiSelectedLessons] = useState([]);
   const [aiToolTab, setAiToolTab] = useState('quick');
   const [showAiLessonPicker, setShowAiLessonPicker] = useState(false);
@@ -4692,44 +4696,15 @@ YEU CAU:
     return 'AI không trả về nội dung văn bản.';
   };
 
-  const getGeminiModelLabel = (modelId) => GEMINI_MODELS.find(model => model.id === modelId)?.label || modelId;
-
-  const getGeminiFallbackOrder = () => {
-    const preferredModels = [DEFAULT_GEMINI_MODEL, 'gemini-2.0-flash', selectedGeminiModel, ...GEMINI_MODELS.map(model => model.id)];
-    return [...new Set(preferredModels.filter(Boolean))];
-  };
-
-  const shouldTryNextGeminiModel = (message) => (
-    /429|quota|RESOURCE_EXHAUSTED|rate limit|TooManyRequests|GenerateRequestsPer|exceeded your current quota|503|ServiceUnavailable|UNAVAILABLE|overloaded|404|not found|model/i
-      .test(String(message || ''))
-  );
-
   const rememberWorkingGeminiModel = (modelId) => {
     if (!modelId || modelId === selectedGeminiModel) return;
     setSelectedGeminiModel(modelId);
-    localStorage.setItem('khohoclieu-gemini-model', modelId);
+    try { localStorage.setItem('khohoclieu-gemini-model', modelId); } catch { /* The AI result remains usable when browser storage is full. */ }
   };
 
-  const runWithGeminiModelFallback = async (requestForModel) => {
-    const modelIds = getGeminiFallbackOrder();
-    const failures = [];
-    for (const modelId of modelIds) {
-      try {
-        const data = await requestForModel(modelId);
-        rememberWorkingGeminiModel(modelId);
-        return { data, modelId };
-      } catch (error) {
-        const cleanMessage = normalizeServiceErrorMessage(error?.message || error);
-        failures.push(`${getGeminiModelLabel(modelId)}: ${cleanMessage}`);
-        const isLastModel = modelId === modelIds[modelIds.length - 1];
-        if (!shouldTryNextGeminiModel(cleanMessage) || isLastModel) {
-          const triedModels = failures.map(item => `- ${item}`).join('\n');
-          throw new Error(failures.length > 1 ? `Da tu dong thu cac model AI nhung chua thanh cong:\n${triedModels}` : cleanMessage, { cause: error });
-        }
-      }
-    }
-    throw new Error('AI chua tao duoc noi dung.');
-  };
+  const runWithGeminiModelFallback = requestForModel => requestWithGeminiFallback(requestForModel, {
+    preferredModel: selectedGeminiModel, onWorkingModel: rememberWorkingGeminiModel
+  });
 
   const generateWithGeminiFallback = async (payload) => {
     const { data, modelId } = await runWithGeminiModelFallback(async (modelId) => {
