@@ -31,6 +31,7 @@ import { completeBackupExport } from './services/serverSystemClient';
 import { observeTeachingAssignments, saveTeachingAssignments, saveSimpleTeachingAssignments } from './services/teachingAssignments';
 import { useTeacherNavigation } from './hooks/useTeacherNavigation';
 import { useDefaultLearningGrade } from './hooks/useDefaultLearningGrade';
+import { buildStudentProfileProvinceOptions, studentProfileProvinceDirectoryKey, studentProfileProvinceLabel, updateStudentProfileAddressDraft } from './utils/studentProfileProvinces';
 import TeacherSubjectSelect from './components/TeacherSubjectSelect';
 import { listDriveFiles } from './services/driveClient';
 import { sanitizeHtml, formatSafeAiText } from './utils/safeHtml';
@@ -279,7 +280,7 @@ class WorkspaceErrorBoundary extends React.Component {
   }
 }
 
-const ADDRESS_DIRECTORY_CACHE_KEY = 'khl-address-directory-v2';
+const ADDRESS_DIRECTORY_CACHE_KEY = 'khl-profile-address-directory-v3';
 const getCurrentTimestamp = () => Date.now();
 const NEWS_TEXT_COLORS = [
   { label: 'Đen', value: '#0f172a' },
@@ -831,7 +832,10 @@ function App() {
   const [studentProfileImageAppendModes, setStudentProfileImageAppendModes] = useState({});
   const [studentProfileDocumentOverrides, setStudentProfileDocumentOverrides] = useState({});
   const [isSubmittingProfileRequest, setIsSubmittingProfileRequest] = useState(false);
-  const [addressDirectory, setAddressDirectory] = useState({ provinces: [], communes: {} });
+  const [addressDirectory, setAddressDirectory] = useState({ provinces: [], birthProvinces: [], communes: {} });
+  const [studentProfileProvinceDirectoryStatus, setStudentProfileProvinceDirectoryStatus] = useState('ready');
+  const [studentProfileProvinceDirectoryRetry, setStudentProfileProvinceDirectoryRetry] = useState(0);
+  const retryStudentProfileProvinceDirectory = useCallback(() => setStudentProfileProvinceDirectoryRetry(value => value + 1), []);
   const [showStudentAccessModal, setShowStudentAccessModal] = useState(false);
   const [studentAccessCode, setStudentAccessCode] = useState('');
   const [studentForgotMode, setStudentForgotMode] = useState(false);
@@ -1084,18 +1088,11 @@ function App() {
       return {};
     });
   }, [showStudentProfileModal, activeStudentProfile, activeStudentPendingProfileChanges, studentProfileEditableFields]);
-  const derivedProvinceOptions = useMemo(() => uniqueTextItems([
-    ...addressDirectory.provinces,
-    ...allStudents.flatMap(student => [student.province, student.householdProvince]),
-    activeStudentProfile?.province,
-    activeStudentProfile?.householdProvince,
-    studentProfileDraft.province,
-    studentProfileDraft.householdProvince
-  ]).sort((a, b) => a.localeCompare(b, 'vi', { sensitivity: 'base' })), [addressDirectory.provinces, allStudents, activeStudentProfile, studentProfileDraft.province, studentProfileDraft.householdProvince]);
+  const studentProfileProvinceOptions = useMemo(() => buildStudentProfileProvinceOptions(addressDirectory), [addressDirectory]);
   const getStudentProfileWardOptions = useCallback((province = '', currentValue = '', household = false) => {
-    const sheetOptions = addressDirectory.communes[String(province || '').trim()] || [];
+    const sheetOptions = addressDirectory.communes[studentProfileProvinceLabel(province)] || [];
     const studentOptions = allStudents
-      .filter(student => !province || student.province === province || student.householdProvince === province)
+      .filter(student => !province || studentProfileProvinceLabel(student.province) === studentProfileProvinceLabel(province) || studentProfileProvinceLabel(student.householdProvince) === studentProfileProvinceLabel(province))
       .flatMap(student => household ? [student.householdWard, student.ward] : [student.ward, student.householdWard]);
     return uniqueTextItems([...sheetOptions, ...studentOptions, currentValue])
       .sort((a, b) => a.localeCompare(b, 'vi', { sensitivity: 'base' }));
@@ -1291,12 +1288,14 @@ function App() {
     if (!validMessages.length) throw new Error('Chưa có học sinh hoặc nội dung thư để gửi.');
     let sentCount = 0;
     const failedNames = [];
+    const failedMessages = [];
     for (const message of validMessages) {
       try {
         await sendGeneratedStudentMailboxMessage(message);
         sentCount += 1;
       } catch {
         failedNames.push(message.student?.fullName || message.student?.accessCode || 'Học sinh');
+        failedMessages.push(message);
       }
     }
     if (failedNames.length) {
@@ -1304,7 +1303,7 @@ function App() {
     } else {
       showNotification(`Đã gửi thư cho ${sentCount} học sinh.`);
     }
-    return { sentCount, failedNames };
+    return { sentCount, failedNames, failedMessages };
   }, [sendGeneratedStudentMailboxMessage, showNotification]);
   const deleteStudentMailboxMessages = useCallback(() => {
     const fromTime = mailboxDeleteFrom ? new Date(`${mailboxDeleteFrom}T00:00:00`).getTime() : 0;
@@ -1368,10 +1367,10 @@ function App() {
   }, [activeStudentProfile, currentStudent, fetchStudentMailbox]);
 
   const loadStudentProfileCommunes = useCallback(async (province) => {
-    const provinceName = String(province || '').trim();
-    if (!provinceName || addressDirectory.communes[provinceName]) return;
+    const provinceName = studentProfileProvinceLabel(province);
+    if (!provinceName || !addressDirectory.provinces.length || addressDirectory.communes[provinceName]) return;
     try {
-      const data = await loadRegistrationJsonp({ action: 'communes', province: provinceName });
+      const data = await loadRegistrationJsonp({ action: 'communes', province: studentProfileProvinceDirectoryKey(province, addressDirectory.provinces) });
       const items = uniqueTextItems(data.items || data.communes || []);
       setAddressDirectory(prev => ({
         ...prev,
@@ -1389,64 +1388,52 @@ function App() {
         }
       }));
     }
-  }, [addressDirectory.communes]);
+  }, [addressDirectory.communes, addressDirectory.provinces]);
 
   const handleStudentProfileFieldChange = useCallback((key, value) => {
     const nextValue = isStudentResultRatingField(key)
       ? normalizeStudentResultRating(value)
       : (key === 'fullName' ? String(value || '').toLocaleUpperCase('vi-VN') : value);
-    setStudentProfileDraft(prev => {
-      const next = { ...prev, [key]: nextValue };
-      if (key === 'province' && prev.province !== nextValue) next.ward = '';
-      if (key === 'householdProvince' && prev.householdProvince !== nextValue) next.householdWard = '';
-      return next;
-    });
+    setStudentProfileDraft(prev => updateStudentProfileAddressDraft(prev, key, nextValue));
   }, []);
 
   useEffect(() => {
-    if (!showStudentProfileModal || addressDirectory.provinces.length) return;
+    if (!showStudentProfileModal) return;
     try {
       const cached = JSON.parse(localStorage.getItem(ADDRESS_DIRECTORY_CACHE_KEY) || 'null');
-      if (cached?.provinces?.length) {
-        setAddressDirectory({
-          provinces: uniqueTextItems(cached.provinces),
-          communes: cached.communes || {}
-        });
+      if (cached?.provinces?.length && cached.birthProvinces?.length && Date.now() - cached.fetchedAt < 86400000) {
+        setAddressDirectory(previous => ({ ...cached, communes: { ...cached.communes, ...previous.communes } }));
+        setStudentProfileProvinceDirectoryStatus('ready');
         return;
       }
     } catch {
       localStorage.removeItem(ADDRESS_DIRECTORY_CACHE_KEY);
     }
     let active = true;
-    loadRegistrationJsonp({ action: 'addressDirectory' })
-      .then(data => {
-        if (!active) return;
-        if (data.provinces?.length || data.communes) {
-          const nextDirectory = {
-            provinces: uniqueTextItems(data.provinces || data.items || []),
-            communes: data.communes || {}
-          };
-          setAddressDirectory(nextDirectory);
-          localStorage.setItem(ADDRESS_DIRECTORY_CACHE_KEY, JSON.stringify(nextDirectory));
-          return;
-        }
-        return loadRegistrationJsonp({ action: 'provinces' }).then(fallback => {
-          if (!active) return;
-          const items = uniqueTextItems(fallback.items || fallback.provinces || []);
-          setAddressDirectory(prev => ({ ...prev, provinces: items }));
-        });
-      })
-      .catch(() => {
-        loadRegistrationJsonp({ action: 'provinces' })
-          .then(fallback => {
-            if (!active) return;
-            const items = uniqueTextItems(fallback.items || fallback.provinces || []);
-            setAddressDirectory(prev => ({ ...prev, provinces: items }));
-          })
-          .catch(() => {});
-      });
+    setStudentProfileProvinceDirectoryStatus('loading');
+    const loadDirectory = async () => {
+      try {
+        const data = await loadRegistrationJsonp({ action: 'locationBootstrap' });
+        if (data.success === false || !data.provinces?.length || !data.birthProvinces?.length) throw new Error('Danh mục chưa đầy đủ.');
+        return data;
+      } catch {
+        const [address, birth] = await Promise.all([
+          loadRegistrationJsonp({ action: 'addressDirectory' }),
+          loadRegistrationJsonp({ action: 'birthPlaceDirectory' })
+        ]);
+        if (address.success === false || birth.success === false || !address.provinces?.length || !birth.provinces?.length) throw new Error('Chưa tải được danh mục tỉnh/thành.');
+        return { provinces: address.provinces, birthProvinces: birth.provinces, communes: address.communes || {} };
+      }
+    };
+    loadDirectory().then(data => {
+      if (!active) return;
+      const nextDirectory = { provinces: uniqueTextItems(data.provinces), birthProvinces: uniqueTextItems(data.birthProvinces), communes: data.communes || {}, fetchedAt: Date.now() };
+      setAddressDirectory(previous => ({ ...nextDirectory, communes: { ...nextDirectory.communes, ...previous.communes } }));
+      setStudentProfileProvinceDirectoryStatus('ready');
+      try { localStorage.setItem(ADDRESS_DIRECTORY_CACHE_KEY, JSON.stringify(nextDirectory)); } catch { /* The current directory remains usable when storage is full. */ }
+    }).catch(() => { if (active) setStudentProfileProvinceDirectoryStatus('error'); });
     return () => { active = false; };
-  }, [showStudentProfileModal, addressDirectory.provinces.length]);
+  }, [showStudentProfileModal, studentProfileProvinceDirectoryRetry]);
 
   useEffect(() => {
     if (!showStudentProfileModal) return;
@@ -1637,7 +1624,7 @@ function App() {
 
   const submitStudentProfileRequest = async () => {
     const { submitStudentProfileChange } = await import('./services/studentProfileRequests');
-    return submitStudentProfileChange({ activeStudentProfile, isSubmittingProfileRequest, activeStudentIsReadOnly, showNotification, activeStudentReadOnlyReason, studentRequestScopeRef, setIsSubmittingProfileRequest, STUDENT_PROFILE_IMAGE_FIELDS, studentProfileImages, studentProfileDocumentOverrides, activeStudentPendingProfileChanges, studentProfileImageAppendModes, studentProfileEditableFields, normalizeStudentResultRating, studentProfileDraft, activeStudentPendingProfileRequests, currentSchoolYear, setShowStudentProfileModal, IMAGE_DRIVE_FOLDER_ID });
+    return submitStudentProfileChange({ activeStudentProfile, isSubmittingProfileRequest, activeStudentIsReadOnly, showNotification, activeStudentReadOnlyReason, studentRequestScopeRef, setIsSubmittingProfileRequest, STUDENT_PROFILE_IMAGE_FIELDS, studentProfileImages, studentProfileDocumentOverrides, activeStudentPendingProfileChanges, studentProfileImageAppendModes, studentProfileEditableFields, studentProfileProvinceOptions, normalizeStudentResultRating, studentProfileDraft, activeStudentPendingProfileRequests, currentSchoolYear, setShowStudentProfileModal, IMAGE_DRIVE_FOLDER_ID });
   };
 
   const escapeHtml = (value = '') => String(value).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
@@ -8435,7 +8422,7 @@ ${lessonBlocks}`;
       )}
 
       {showStudentProfileModal && activeStudentProfile?.id && (
-        <WorkspaceErrorBoundary title="Hồ sơ học sinh" onClose={() => setShowStudentProfileModal(false)}><Suspense fallback={<div className="fixed inset-0 z-[115] bg-white flex items-center justify-center font-bold text-blue-700">Đang mở hồ sơ học sinh...</div>}><StudentProfileModal view={{ studentHistoryRecords: allStudents, studentAttendance: attendanceDocs, STUDENT_PROFILE_IMAGE_FIELDS, activeStudentIsReadOnly, activeStudentPendingProfileChanges, activeStudentPendingProfileFieldKeys, activeStudentPendingProfileFieldLabels, activeStudentPendingProfileRequests, activeStudentProfile, activeStudentReadOnlyReason, applyStudentProfileImageFiles, currentSchoolYear, currentWardOptions, derivedProvinceOptions, getStudentProfileEmbedUrl, getStudentProfileImageUrl, handleStudentProfileFieldChange, handleStudentProfileImageChange, householdWardOptions, isSubmittingProfileRequest, removeStudentProfileExistingDocumentPage, removeStudentProfileSelectedImage, setShowStudentProfileModal, studentProfileDocumentOverrides, studentProfileDraft, studentProfileEditableFields, studentProfileImageAppendModes, studentProfileImagePreviews, studentProfileImages, submitStudentProfileRequest }} /></Suspense></WorkspaceErrorBoundary>
+        <WorkspaceErrorBoundary title="Hồ sơ học sinh" onClose={() => setShowStudentProfileModal(false)}><Suspense fallback={<div className="fixed inset-0 z-[115] bg-white flex items-center justify-center font-bold text-blue-700">Đang mở hồ sơ học sinh...</div>}><StudentProfileModal view={{ studentHistoryRecords: allStudents, studentAttendance: attendanceDocs, STUDENT_PROFILE_IMAGE_FIELDS, activeStudentIsReadOnly, activeStudentPendingProfileChanges, activeStudentPendingProfileFieldKeys, activeStudentPendingProfileFieldLabels, activeStudentPendingProfileRequests, activeStudentProfile, activeStudentReadOnlyReason, applyStudentProfileImageFiles, currentSchoolYear, currentWardOptions, studentProfileProvinceOptions, studentProfileProvinceDirectoryStatus, retryStudentProfileProvinceDirectory, getStudentProfileEmbedUrl, getStudentProfileImageUrl, handleStudentProfileFieldChange, handleStudentProfileImageChange, householdWardOptions, isSubmittingProfileRequest, removeStudentProfileExistingDocumentPage, removeStudentProfileSelectedImage, setShowStudentProfileModal, studentProfileDocumentOverrides, studentProfileDraft, studentProfileEditableFields, studentProfileImageAppendModes, studentProfileImagePreviews, studentProfileImages, submitStudentProfileRequest }} /></Suspense></WorkspaceErrorBoundary>
           )}
 
           {role === 'teacher' && showQuizComposeWorkspace && (

@@ -4,8 +4,9 @@ import { postAppsScript } from '../utils/helpers';
 import { studentUploadMime, readFileBase64 } from '../utils/fileUpload';
 import { assertNoPendingProfileRequest, createPendingProfileRequest } from './profileRequestGate';
 import { PROFILE_REQUEST_PENDING_MESSAGE } from '../utils/profileRequestPolicy';
+import { assertStudentProfileProvinceChanges } from '../utils/studentProfileProvinces';
 
-export async function submitStudentProfileChange({ activeStudentProfile, isSubmittingProfileRequest, activeStudentIsReadOnly, showNotification, activeStudentReadOnlyReason, studentRequestScopeRef, setIsSubmittingProfileRequest, STUDENT_PROFILE_IMAGE_FIELDS, studentProfileImages, studentProfileDocumentOverrides, activeStudentPendingProfileChanges, studentProfileImageAppendModes, studentProfileEditableFields, normalizeStudentResultRating, studentProfileDraft, activeStudentPendingProfileRequests, currentSchoolYear, setShowStudentProfileModal, IMAGE_DRIVE_FOLDER_ID }) {
+export async function submitStudentProfileChange({ activeStudentProfile, isSubmittingProfileRequest, activeStudentIsReadOnly, showNotification, activeStudentReadOnlyReason, studentRequestScopeRef, setIsSubmittingProfileRequest, STUDENT_PROFILE_IMAGE_FIELDS, studentProfileImages, studentProfileDocumentOverrides, activeStudentPendingProfileChanges, studentProfileImageAppendModes, studentProfileEditableFields, studentProfileProvinceOptions, normalizeStudentResultRating, studentProfileDraft, activeStudentPendingProfileRequests, currentSchoolYear, setShowStudentProfileModal, IMAGE_DRIVE_FOLDER_ID }) {
   const fileToBase64Payload = async (file, field = {}) => {
     const mimeType = studentUploadMime(file);
     const filenameTag = field.filename || field.key || 'anh';
@@ -24,6 +25,13 @@ export async function submitStudentProfileChange({ activeStudentProfile, isSubmi
     }
     if (activeStudentIsReadOnly) {
       showNotification(activeStudentReadOnlyReason || 'Hồ sơ này đang ở chế độ chỉ xem.', 'error');
+      return;
+    }
+    try {
+      assertStudentProfileProvinceChanges({ draft: studentProfileDraft, current: activeStudentProfile,
+        optionsByField: studentProfileProvinceOptions, editableFields: studentProfileEditableFields });
+    } catch (error) {
+      showNotification(error.message, 'error');
       return;
     }
     const request = studentRequestScopeRef.current.begin('profile');

@@ -7,6 +7,7 @@ import { build } from 'esbuild';
 import { memoryStore } from './helpers/memoryStore.js';
 import { createAsyncScope } from '../src/utils/asyncScope.js';
 import { PROFILE_REQUEST_PENDING_MESSAGE } from '../src/utils/profileRequestPolicy.js';
+import { buildStudentProfileProvinceOptions, STUDENT_PROFILE_PROVINCE_FIELDS } from '../src/utils/studentProfileProvinces.js';
 
 test('student request client preserves pending requests and prevents duplicate tabs before uploading', async t => {
   const directory = await mkdtemp(resolve('node_modules/.profile-single-request-'));
@@ -52,6 +53,36 @@ test('student request client preserves pending requests and prevents duplicate t
         });
       } }] });
     const service = await import(pathToFileURL(outfile));
+    await t.test('invalid province edits cannot upload files or create requests', async () => {
+      for (const [key, field] of Object.entries(STUDENT_PROFILE_PROVINCE_FIELDS)) {
+        store = memoryStore(); uploads = 0;
+        const input = options();
+        input.studentProfileEditableFields.push({ key, label: field.label });
+        input.studentProfileDraft[key] = 'Tphcm';
+        input.studentProfileProvinceOptions = buildStudentProfileProvinceOptions({ provinces: ['Hồ Chí Minh'], birthProvinces: ['Hồ Chí Minh'] });
+        input.studentProfileImages = { portraitUrl: { name: 'photo.jpg' } };
+        await service.submitStudentProfileChange(input);
+        assert.match(input.notices.at(-1)[0], /chọn.*danh sách.*không nhập tên viết tắt/);
+        assert.equal(uploads, 0); assert.equal(store.commits, 0);
+        assert.deepEqual(input.states, []); assert.deepEqual(input.closed, []);
+      }
+    });
+    await t.test('province selections store complete names while unrelated edits preserve existing legacy values', async () => {
+      store = memoryStore();
+      const input = options();
+      input.studentProfileEditableFields.push({ key: 'birthProvince', label: 'Tỉnh nơi sinh' }, { key: 'province', label: 'Tỉnh / Thành' });
+      input.studentProfileProvinceOptions = buildStudentProfileProvinceOptions({ provinces: ['Hồ Chí Minh'], birthProvinces: ['Bến Tre'] });
+      Object.assign(input.studentProfileDraft, { birthProvince: 'Tỉnh Bến Tre', province: 'Thành phố Hồ Chí Minh' });
+      await service.submitStudentProfileChange(input);
+      assert.deepEqual(store.get(`${root}/student_profile_requests/profile-an`).changes, { phone: '456', birthProvince: 'Tỉnh Bến Tre', province: 'Thành phố Hồ Chí Minh' });
+      store = memoryStore();
+      const legacy = options();
+      legacy.activeStudentProfile.birthProvince = 'Tphcm';
+      legacy.studentProfileDraft.birthProvince = 'Tphcm';
+      legacy.studentProfileEditableFields.push({ key: 'birthProvince', label: 'Tỉnh nơi sinh' });
+      await service.submitStudentProfileChange(legacy);
+      assert.deepEqual(store.get(`${root}/student_profile_requests/profile-an`).changes, { phone: '456' });
+    });
     await t.test('cached pending request blocks immediately without uploading or writing', async () => {
       store = memoryStore(); uploads = 0;
       const input = options();

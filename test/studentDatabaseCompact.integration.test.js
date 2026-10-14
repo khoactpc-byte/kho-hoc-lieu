@@ -460,6 +460,35 @@ test('compact database loads images on demand, opens the matching profile and pr
     assert.equal(row('Nguyễn Văn Tiểu'), undefined);
     assert.ok(row('Nguyễn Văn An'));
     assert.equal(table().querySelectorAll('tbody tr').length, 3);
+
+    const gradeNine = Array.from({ length: 40 }, (_, index) => ({
+      ...students[0], id: `nine-${index}`, fullName: `Học sinh mẫu ${index + 1}`, accessCode: `HS9${index + 1}`,
+      className: '9A', grade: '8', entryGrade: '6', birthProvince: index < 26 ? '' : 'Tỉnh Bến Tre',
+      phone: '0900000000', identityCode: `079000000${index}`, address: 'Địa chỉ mẫu',
+      portraitUrl: 'https://example.com/portrait.png', birthCertificateUrl: 'https://example.com/birth.png',
+      identityCardUrl: 'https://example.com/identity.png', transcriptUrl: 'https://example.com/transcript.png'
+    }));
+    windowObject.localStorage.setItem('khl-student-db-prefs-v1', JSON.stringify({ quickIssueFilter: 'missingInfo' }));
+    await act(async () => root.render(React.createElement(Manager, { key: 'persisted-issue-filter', educationLevel: 'thcs',
+      students: [...gradeNine, { ...students[0], id: 'other-grade', className: '8A' },
+        { ...gradeNine[0], id: 'previous-year', schoolYear: '2025-2026' }],
+      configuredClassOptions: ['8A', '9A', '9B'], initialTab: 'countStats', currentSchoolYear: '2026-2027', user: { uid: 'fixture' } })));
+    const statsRow = [...body.querySelectorAll('tr')].find(item => item.cells[0]?.textContent.trim() === 'Lớp 9A');
+    assert.equal(statsRow.cells[1].textContent.trim(), '40', 'class statistics count the entire current-year class');
+    await click(body.querySelector('button[title="Đóng"]'));
+    await selectFilter('Khối', ['Khối 9']);
+    await selectFilter('Lớp', ['9A']);
+    assert.equal(table().querySelectorAll('tbody tr').length, 26, 'the restored issue filter can hide 14 members of a class');
+    assert.equal(body.querySelector('[aria-label="Số học sinh đang hiển thị"]').textContent.trim(), 'Hiển thị 26/40 học sinh');
+    assert.equal(body.querySelector('[aria-label="Tiện ích học sinh"]'), null);
+    assert.ok(namedButton('Bỏ lọc Thiếu hồ sơ'), 'the active issue filter remains visible while utilities are closed');
+    await click(namedButton('Bỏ lọc Thiếu hồ sơ'));
+    assert.equal(table().querySelectorAll('tbody tr').length, 40);
+    assert.equal(namedButton('Khối').textContent.trim(), 'Khối 9');
+    assert.equal(namedButton('Lớp').textContent.trim(), '9A', 'clearing only the issue filter preserves the selected grade and class');
+    assert.equal(body.querySelector('[aria-label="Số học sinh đang hiển thị"]').textContent.trim(), '40 học sinh');
+    assert.equal(namedButton('Bỏ lọc Thiếu hồ sơ'), null);
+    assert.equal(JSON.parse(windowObject.localStorage.getItem('khl-student-db-prefs-v1')).quickIssueFilter, 'all');
   } finally {
     if (root) await act(async () => root.unmount());
     windowObject.close();

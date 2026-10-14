@@ -4,7 +4,7 @@ import StudentProfileHistory from './StudentProfileHistory';
 import { buildStudentProfileHistory } from '../utils/studentProfileHistory';
 import { STUDENT_PROFILE_SECTIONS, studentProfileSection } from '../utils/studentProfileLayout';
 import { PROFILE_REQUEST_PENDING_MESSAGE } from '../utils/profileRequestPolicy';
-import { provinceOptionLabel } from '../utils/provinceLabels';
+import { buildStudentProfileProvinceOptions, STUDENT_PROFILE_PROVINCE_FIELDS } from '../utils/studentProfileProvinces';
 
 export default function StudentProfileModal({ view }) {
   const {
@@ -19,7 +19,10 @@ export default function StudentProfileModal({ view }) {
     applyStudentProfileImageFiles,
     currentSchoolYear,
     currentWardOptions,
-    derivedProvinceOptions,
+    derivedProvinceOptions = [],
+    studentProfileProvinceOptions,
+    studentProfileProvinceDirectoryStatus = 'ready',
+    retryStudentProfileProvinceDirectory,
     getStudentProfileEmbedUrl,
     getStudentProfileImageUrl,
     handleStudentProfileFieldChange,
@@ -41,11 +44,13 @@ export default function StudentProfileModal({ view }) {
   } = view;
   const hasPendingRequest = activeStudentPendingProfileRequests.length > 0;
   const editingBlocked = activeStudentIsReadOnly || hasPendingRequest;
+  const provinceOptions = studentProfileProvinceOptions || buildStudentProfileProvinceOptions({ provinces: derivedProvinceOptions, birthProvinces: derivedProvinceOptions });
   const renderProfileField = field => {
     const isFieldPending = activeStudentPendingProfileFieldKeys.has(field.key);
-    const listId = field.key === 'province' || field.key === 'householdProvince'
-      ? 'student-profile-province-options'
-      : field.key === 'ward'
+    const isProvince = Object.hasOwn(STUDENT_PROFILE_PROVINCE_FIELDS, field.key);
+    const choices = provinceOptions[field.key] || [];
+    const provinceValue = String(studentProfileDraft[field.key] || '');
+    const listId = field.key === 'ward'
         ? 'student-profile-current-ward-options'
         : field.key === 'householdWard'
           ? 'student-profile-household-ward-options'
@@ -63,7 +68,20 @@ export default function StudentProfileModal({ view }) {
           {field.label}
           {isFieldPending && <span className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[8px] text-amber-700">Chờ duyệt</span>}
         </span>
-        {field.type === 'select' ? (
+        {isProvince ? (
+          <select
+            value={provinceValue}
+            disabled={editingBlocked || !choices.length}
+            onChange={event => handleStudentProfileFieldChange(field.key, event.target.value)}
+            className={`rounded-2xl border px-3 py-3 text-sm font-normal text-slate-800 focus:outline-none focus:border-blue-400 ${isFieldPending ? 'border-amber-200 bg-amber-50' : 'border-slate-200 bg-white'}`}
+          >
+            <option value="">{choices.length ? 'Chọn tỉnh / thành phố' : studentProfileProvinceDirectoryStatus === 'error' ? 'Chưa tải được danh mục' : 'Đang tải danh mục…'}</option>
+            {provinceValue && !choices.some(option => option.value === provinceValue) && (
+              <option value={provinceValue} disabled>Hiện tại: {provinceValue}</option>
+            )}
+            {choices.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select>
+        ) : field.type === 'select' ? (
           <select
             value={studentProfileDraft[field.key] || ''}
             disabled={editingBlocked}
@@ -122,9 +140,12 @@ export default function StudentProfileModal({ view }) {
               )}
             </div>
             )}
-              <datalist id="student-profile-province-options">
-                {derivedProvinceOptions.map(item => <option key={item} value={item} label={provinceOptionLabel(item)} />)}
-              </datalist>
+              {studentProfileProvinceDirectoryStatus === 'loading' && <p role="status" className="shrink-0 px-3 py-2 text-xs text-slate-500">Đang tải danh mục tỉnh/thành phố…</p>}
+              {studentProfileProvinceDirectoryStatus === 'error' && (
+                <div role="alert" className="shrink-0 px-3 py-2 text-xs text-amber-800">
+                  Chưa tải được danh mục tỉnh/thành phố. {retryStudentProfileProvinceDirectory && <button type="button" onClick={retryStudentProfileProvinceDirectory} className="text-blue-700 underline">Tải lại danh mục</button>}
+                </div>
+              )}
               <datalist id="student-profile-current-ward-options">
                 {currentWardOptions.map(item => <option key={item} value={item} />)}
               </datalist>

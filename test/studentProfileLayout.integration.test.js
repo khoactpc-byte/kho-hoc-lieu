@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
 import React, { act, useState } from 'react';
 import { JSDOM } from 'jsdom';
+import { buildStudentProfileProvinceOptions, STUDENT_PROFILE_PROVINCE_FIELDS } from '../src/utils/studentProfileProvinces.js';
 
 test('profile sections preserve edits, respect read-only access and keep review actions attached to the correct field', async () => {
   const directory = await mkdtemp(resolve('node_modules/.profile-layout-test-'));
@@ -18,8 +19,8 @@ test('profile sections preserve edits, respect read-only access and keep review 
     await build({ stdin: { contents: "export { default as Profile } from './src/components/StudentProfileModal.jsx'; export { default as Changes } from './src/components/ProfileChangeTable.jsx';", resolveDir: resolve('.'), loader: 'js' }, absWorkingDir: resolve('.'), tsconfigRaw: {}, outfile, bundle: true, platform: 'node', format: 'esm', packages: 'external', jsx: 'automatic' });
     const { Profile, Changes } = await import(pathToFileURL(outfile));
     const { createRoot } = await import('react-dom/client');
-    const submitted = [], approved = [], rejected = [];
-    function Harness({ readOnly = false, pending = false }) {
+    const submitted = [], approved = [], rejected = [], directoryRetries = [];
+    function Harness({ readOnly = false, pending = false, directoryStatus = 'ready' }) {
       const [draft, setDraft] = useState({ fullName: 'Nguyễn Văn An', birthProvince: 'TP. Hồ Chí Minh', fatherName: 'Nguyễn Văn Ba', phone: '0900000000', hocLucLop6: 'Khá' });
       const view = {
         activeStudentProfile: { id: 'an', fullName: 'Nguyễn Văn An', accessCode: 'HS001', className: '7A', schoolYear: '2026-2027', portraitUrl: 'https://example.com/an.png' },
@@ -27,7 +28,9 @@ test('profile sections preserve edits, respect read-only access and keep review 
         activeStudentPendingProfileRequests: pending ? [{ id: 'request', changes: { phone: '0900000000' } }] : [],
         activeStudentPendingProfileChanges: {}, activeStudentPendingProfileFieldKeys: new Set(['phone']), activeStudentPendingProfileFieldLabels: ['Số điện thoại'],
         derivedProvinceOptions: ['TP. Hồ Chí Minh'], currentWardOptions: [], householdWardOptions: [],
-        studentProfileDraft: draft, studentProfileEditableFields: [{ key: 'fullName', label: 'Họ và tên' }, { key: 'phone', label: 'Số điện thoại' }, { key: 'birthProvince', label: 'Tỉnh nơi sinh' }, { key: 'fatherName', label: 'Tên cha' }, { key: 'hocLucLop6', label: 'Học lực lớp 6', type: 'select', options: ['Tốt', 'Khá', 'Đạt'] }],
+        studentProfileProvinceOptions: directoryStatus === 'error' ? {} : buildStudentProfileProvinceOptions({ provinces: ['Hồ Chí Minh', 'Cần Thơ'], birthProvinces: ['Hồ Chí Minh', 'Bến Tre'] }),
+        studentProfileProvinceDirectoryStatus: directoryStatus, retryStudentProfileProvinceDirectory: () => directoryRetries.push(true),
+        studentProfileDraft: draft, studentProfileEditableFields: [{ key: 'fullName', label: 'Họ và tên' }, { key: 'phone', label: 'Số điện thoại' }, ...Object.entries(STUDENT_PROFILE_PROVINCE_FIELDS).map(([key, field]) => ({ key, label: field.label })), { key: 'fatherName', label: 'Tên cha' }, { key: 'hocLucLop6', label: 'Học lực lớp 6', type: 'select', options: ['Tốt', 'Khá', 'Đạt'] }],
         handleStudentProfileFieldChange: (key, value) => setDraft(current => ({ ...current, [key]: value })),
         STUDENT_PROFILE_IMAGE_FIELDS: [{ key: 'portraitUrl', label: 'Ảnh thẻ' }], studentProfileDocumentOverrides: {}, studentProfileImagePreviews: {}, studentProfileImages: {}, studentProfileImageAppendModes: {},
         getStudentProfileImageUrl: value => value, getStudentProfileEmbedUrl: () => '', isSubmittingProfileRequest: false,
@@ -54,6 +57,14 @@ test('profile sections preserve edits, respect read-only access and keep review 
     await click(tab('Địa chỉ & Gia đình'));
     await typeValue(input('Tên cha'), 'Nguyễn Văn Bốn');
     assert.equal(input('Tỉnh nơi sinh').value, 'TP. Hồ Chí Minh');
+    for (const field of Object.values(STUDENT_PROFILE_PROVINCE_FIELDS)) assert.equal(input(field.label).tagName, 'SELECT', `${field.label} must not accept free text`);
+    assert.equal(input('Tỉnh nơi sinh').selectedOptions[0].disabled, true, 'legacy values remain visible without becoming new choices');
+    assert.ok([...input('Tỉnh nơi sinh').options].some(option => option.value === 'Tỉnh Bến Tre'));
+    assert.ok(![...input('Tỉnh / Thành').options].some(option => option.value === 'Tỉnh Bến Tre'), 'current addresses use their separate directory');
+    await act(async () => {
+      input('Tỉnh quê quán').value = 'Tỉnh Bến Tre';
+      input('Tỉnh quê quán').dispatchEvent(new windowObject.Event('change', { bubbles: true }));
+    });
     await click(tab('Học tập & Giấy tờ'));
     assert.equal(input('Học lực lớp 6').value, 'Khá');
     assert.equal(body.querySelector('img').getAttribute('src'), 'https://example.com/an.png');
@@ -67,6 +78,7 @@ test('profile sections preserve edits, respect read-only access and keep review 
     await click([...body.querySelectorAll('button')].find(element => element.textContent.trim() === 'Gửi yêu cầu sửa'));
     assert.equal(submitted[0].fullName, 'Nguyễn Văn An mới');
     assert.equal(submitted[0].fatherName, 'Nguyễn Văn Bốn');
+    assert.equal(submitted[0].hometownProvince, 'Tỉnh Bến Tre', 'the selected complete name survives navigation and submission');
 
     await act(async () => root.render(React.createElement(Harness, { key: 'pending', pending: true })));
     assert.match(body.body.textContent, /đang chờ quản trị viên duyệt/);
@@ -84,6 +96,13 @@ test('profile sections preserve edits, respect read-only access and keep review 
     assert.equal([...body.querySelectorAll('button')].find(element => element.textContent.trim() === 'Chỉ xem hồ sơ').disabled, true);
     await click(tab('Học tập & Giấy tờ'));
     assert.equal(body.querySelector('input[type="file"]').disabled, true);
+
+    await act(async () => root.render(React.createElement(Harness, { key: 'directory-error', directoryStatus: 'error' })));
+    await click(tab('Địa chỉ & Gia đình'));
+    for (const field of Object.values(STUDENT_PROFILE_PROVINCE_FIELDS)) assert.equal(input(field.label).disabled, true);
+    assert.match(body.querySelector('[role="alert"]').textContent, /Chưa tải được danh mục/);
+    await click([...body.querySelectorAll('button')].find(element => element.textContent.trim() === 'Tải lại danh mục'));
+    assert.deepEqual(directoryRetries, [true], 'failed province loading has a retry action');
 
     const rows = [
       { key: 'phone', label: 'Số điện thoại', currentValue: '0900000001', nextValue: '0900000002' },

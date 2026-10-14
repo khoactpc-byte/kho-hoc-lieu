@@ -64,6 +64,7 @@ import StudentProfileSections from './StudentProfileSections';
 import StudentProfileHistory from './StudentProfileHistory';
 import StudentFilterDropdown from './StudentFilterDropdown';
 import StudentUtilitiesMenu from './StudentUtilitiesMenu';
+import StudentProfileReminderDialog from './StudentProfileReminderDialog';
 import { belongsToEducationLevel, educationGrades, educationLabel } from '../utils/educationLevels';
 import { buildStudentProfileHistory, profileSchoolYear } from '../utils/studentProfileHistory';
 import ProfileChangeTable from './ProfileChangeTable';
@@ -1518,6 +1519,7 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
   const [sharedPdfLink, setSharedPdfLink] = useState('');
   const [sharedSheetLink, setSharedSheetLink] = useState('');
   const [missingInfoReport, setMissingInfoReport] = useState('');
+  const [profileReminderCheck, setProfileReminderCheck] = useState(null);
   const [addressDirectory, setAddressDirectory] = useState({ provinces: [], communes: {} });
   const [quickEdit, setQuickEdit] = useState(null);
   const [quickEditSaving, setQuickEditSaving] = useState(false);
@@ -2280,6 +2282,7 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
   );
 
   const activeSourceRows = studentTab === 'registrations' ? registrationRows : yearStudentsWithResults;
+  const activeIssueFilter = QUICK_ISSUE_FILTERS.find(item => item.key === quickIssueFilter && item.key !== 'all');
   const classOptions = useMemo(
     () => [...new Set([
       ...(studentTab === 'current' ? configuredClassOptions.filter(className => belongsToEducationLevel({ className }, educationLevel)) : []),
@@ -3272,6 +3275,20 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
     }
   };
 
+  const closeProfileReminderCheck = useCallback(() => setProfileReminderCheck(null), []);
+  const openProfileReminderCheck = () => {
+    const sourceRows = (selectedIds.size ? filteredStudents.filter(student => selectedIds.has(student.id)) : filteredStudents)
+      .filter(student => student.status === 'active');
+    if (!sourceRows.length) {
+      showNotification?.('Không có học sinh đang học trong phạm vi đã chọn để kiểm tra.', 'error');
+      return;
+    }
+    setProfileReminderCheck({
+      rows: sourceRows.map(student => ({ student, missing: getMissingStudentInfo(student) })),
+      scope: selectedIds.size ? 'đã chọn trong danh sách đang lọc' : 'trong danh sách đang lọc'
+    });
+  };
+
   const createMissingInfoReport = async () => {
     const selectedRows = filteredStudents.filter(student => activeSelectedIds.has(student.id));
     const sourceRows = (selectedRows.length ? selectedRows : filteredStudents)
@@ -3934,6 +3951,11 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
         <span id="student-issue-filter-note" className="text-[11px] leading-4 text-slate-500">Chỉ lọc danh sách đang xem; không sửa dữ liệu.</span>
       </label>,
       actions: studentTab === 'current' ? [{
+        id: 'profileReminder', label: 'Kiểm tra và gửi nhắc bổ sung hồ sơ',
+        note: 'Kiểm tra học sinh đã chọn, hoặc danh sách đang lọc nếu chưa chọn. Xem từng bạn thiếu gì rồi gửi thư riêng vào hộp thư; bỏ qua hồ sơ đã đủ và báo các bạn chưa có mã học sinh.',
+        icon: <Mail className="h-4 w-4 text-emerald-600" />, disabled: !onSendMailboxMessages || isSaving,
+        onClick: utilityAction(openProfileReminderCheck)
+      }, {
         id: 'duplicates', label: 'Kiểm tra học sinh nghi trùng',
         note: 'Liệt kê hồ sơ cùng họ tên/ngày sinh, mã định danh hoặc mã học sinh trong cùng năm. Xem từng hồ sơ trước khi chọn xóa.',
         icon: <Users className="h-4 w-4 text-amber-600" />, disabled: isSaving,
@@ -4794,22 +4816,33 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
         ) : (
           <span className="col-span-2 text-xs text-slate-500">{duplicateRegistrationCount ? `${duplicateRegistrationCount} hồ sơ cần kiểm tra` : 'Hồ sơ đăng ký mới'}</span>
         )}
-        <button type="button" onClick={filterCheckedStudents} title="Lọc học sinh đã chọn" aria-label="Lọc học sinh đã chọn" className={`flex h-8 w-8 items-center justify-center rounded border ${quickIssueFilter === 'selected' ? 'border-sky-700 bg-sky-700 text-white' : 'border-slate-300 bg-white text-slate-500 hover:bg-slate-100'}`}>
-          <Filter className="h-4 w-4" />
-        </button>
-        {(gradeFilter != null || quickIssueFilter !== 'all' || classFilter != null || query || (studentTab === 'current' && (statusFilter?.length !== 1 || statusFilter[0] !== 'active')) || Object.values(columnFilters).some(value => value != null)) && (
-          <button type="button" onClick={() => {
-            setGradeFilter(null);
-            setClassFilter(null);
-            setStatusFilter(studentTab === 'current' ? ['active'] : null);
-            setQuickIssueFilter('all');
-            setColumnFilters({});
-            setOpenFilterKey(null);
-            setQuery('');
-          }} className="h-8 rounded border border-slate-300 bg-white px-2 text-xs text-slate-600 hover:bg-slate-100">
-            Xóa lọc
+        <div className="col-span-2 flex min-w-0 flex-wrap items-center gap-2 sm:contents">
+          <button type="button" onClick={filterCheckedStudents} title="Lọc học sinh đã chọn" aria-label="Lọc học sinh đã chọn" className={`flex h-8 w-8 items-center justify-center rounded border ${quickIssueFilter === 'selected' ? 'border-sky-700 bg-sky-700 text-white' : 'border-slate-300 bg-white text-slate-500 hover:bg-slate-100'}`}>
+            <Filter className="h-4 w-4" />
           </button>
-        )}
+          {activeIssueFilter && (
+            <button type="button" onClick={() => setQuickIssueFilter('all')} aria-label={`Bỏ lọc ${activeIssueFilter.label}`} title="Bỏ bộ lọc hồ sơ, giữ nguyên khối và lớp"
+              className="col-span-2 flex min-h-8 min-w-0 items-center gap-1.5 rounded border border-amber-300 bg-amber-50 px-2 py-1 text-left text-xs text-amber-900">
+              <span>{activeIssueFilter.label}</span><X className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+            </button>
+          )}
+          {(gradeFilter != null || quickIssueFilter !== 'all' || classFilter != null || query || (studentTab === 'current' && (statusFilter?.length !== 1 || statusFilter[0] !== 'active')) || Object.values(columnFilters).some(value => value != null)) && (
+            <button type="button" onClick={() => {
+              setGradeFilter(null);
+              setClassFilter(null);
+              setStatusFilter(studentTab === 'current' ? ['active'] : null);
+              setQuickIssueFilter('all');
+              setColumnFilters({});
+              setOpenFilterKey(null);
+              setQuery('');
+            }} className="h-8 rounded border border-slate-300 bg-white px-2 text-xs text-slate-600 hover:bg-slate-100">
+              Xóa lọc
+            </button>
+          )}
+          <span role="status" aria-label="Số học sinh đang hiển thị" className="col-span-2 text-xs tabular-nums text-slate-500 sm:ml-auto">
+            {filteredStudents.length === issueStats.all ? `${filteredStudents.length} học sinh` : `Hiển thị ${filteredStudents.length}/${issueStats.all} học sinh`}
+          </span>
+        </div>
       </div>
       {showSearch && (
         <div id="student-database-search" className="flex shrink-0 items-center gap-2 border-b border-slate-200 px-2 py-2">
@@ -5038,6 +5071,10 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
       </div>
       )}
 
+      {profileReminderCheck && typeof document !== 'undefined' && createPortal(
+        <StudentProfileReminderDialog check={profileReminderCheck} onSend={onSendMailboxMessages} onClose={closeProfileReminderCheck} />,
+        document.body
+      )}
       {mailComposerStudents.length > 0 && typeof document !== 'undefined' && createPortal((
         <div className="fixed inset-0 z-[1200] flex items-center justify-center bg-slate-950/60 p-3 backdrop-blur-sm">
           <div className="flex max-h-[92vh] w-full max-w-xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
