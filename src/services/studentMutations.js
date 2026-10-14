@@ -5,7 +5,7 @@ import { processRecords } from '../utils/bulkOperations';
 import { assertStudentSchoolYear, getSchoolYearStart } from '../utils/schoolYearText';
 import { buildStudentYearReconciliation } from '../utils/studentYearReconciliation';
 import { getStudentEntryGrade, normalizeSchoolYearKey } from '../utils/schoolClasses';
-import { PROFILE_DOCUMENT_FIELDS, profileDriveFileIds, replacedProfileFileIds } from '../utils/profileDocumentFiles';
+import { PROFILE_DOCUMENT_FIELDS, hasNewProfileFiles, replacedProfileFileIds } from '../utils/profileDocumentFiles';
 
 const records = name => collection(db, 'artifacts', appId, 'public', 'data', name);
 const ref = (name, id) => doc(records(name), id);
@@ -13,7 +13,7 @@ const plain = data => Object.fromEntries(Object.entries(data).filter(([key, valu
 const ownsCode = (owner, studentKey, id, sourceId) => owner?.studentKey === studentKey || (!owner?.studentKey && [id, sourceId].includes(owner?.studentId));
 
 // Freeze the legacy score identity before changing a login code. Never derive it from the new code.
-export async function saveStudentRecord(input, { codePrefix, allocateCode = false, actor = '', expected, id: targetId, registration, createOnly = false, profileDecision, profileDecisions = [], profileCleanupField, academicDecision, reactivateDropout = false, collapseToPreviousYear = false, collapseSourceExpected } = {}) {
+export async function saveStudentRecord(input, { codePrefix, allocateCode = false, actor = '', expected, id: targetId, registration, createOnly = false, profileDecision, profileDecisions = [], academicDecision, reactivateDropout = false, collapseToPreviousYear = false, collapseSourceExpected } = {}) {
   assertStudentSchoolYear(input);
   const decisions = [...profileDecisions, ...(profileDecision ? [profileDecision] : [])];
   if (decisions.length > 400 || decisions.some(item => !item?.requestId) || new Set(decisions.map(item => item.requestId)).size !== decisions.length) throw new Error('Danh sách yêu cầu duyệt không hợp lệ.');
@@ -166,19 +166,20 @@ export async function saveStudentRecord(input, { codePrefix, allocateCode = fals
       }
       assertStudentSchoolYear(data);
       if (!data.fullName || (!data.className && data.status !== 'dropped') || !data.schoolYear) throw new Error('Hồ sơ thiếu họ tên, lớp hoặc năm học.');
-      let cleanupJob;
-      if (profileCleanupField) {
-        const approved = requestDecisions.some(({ decision }) => Object.hasOwn(decision.expectedChanges, profileCleanupField)
-          && !Object.hasOwn(decision.remainingChanges || {}, profileCleanupField)
-          && sameData(decision.expectedChanges[profileCleanupField], input[profileCleanupField]));
-        const fileIds = replacedProfileFileIds(current?.[profileCleanupField], data[profileCleanupField]);
-        if (!PROFILE_DOCUMENT_FIELDS.includes(profileCleanupField) || !approved || !fileIds.length || fileIds.length > 20 || !profileDriveFileIds(data[profileCleanupField]).length) {
-          throw new Error('Chỉ dọn file cũ khi duyệt ảnh hoặc giấy tờ mới hợp lệ.');
-        }
-        cleanupJob = { studentId: target.id, studentKey, studentName: data.fullName, schoolCode: data.schoolCode || '', className: data.className || '', grade: data.grade || '',
-          educationLevel: data.educationLevel || '', fieldKey: profileCleanupField, expectedValue: data[profileCleanupField],
-          fileIds, status: 'pending', createdAt: Date.now(), actor };
-      }
+      const cleanupFields = PROFILE_DOCUMENT_FIELDS.flatMap(fieldKey => {
+        const approved = requestDecisions.some(({ decision }) => Object.hasOwn(decision.expectedChanges, fieldKey)
+          && !Object.hasOwn(decision.remainingChanges || {}, fieldKey)
+          && sameData(decision.expectedChanges[fieldKey], data[fieldKey]));
+        if (!approved || !hasNewProfileFiles(current?.[fieldKey], data[fieldKey])) return [];
+        const fileIds = replacedProfileFileIds(current?.[fieldKey], data[fieldKey]);
+        return fileIds.length ? [{ fieldKey, expectedValue: data[fieldKey], fileIds }] : [];
+      });
+      const cleanupJob = cleanupFields.length ? {
+        studentId: target.id, studentKey, studentName: data.fullName, schoolCode: data.schoolCode || '', className: data.className || '', grade: data.grade || '',
+        educationLevel: data.educationLevel || '', fields: cleanupFields,
+        fileIds: [...new Set(cleanupFields.flatMap(field => field.fileIds))], status: 'pending', createdAt: Date.now(), actor
+      } : null;
+      if (cleanupJob) data.sheetSync.cleanupJobId = data.sheetSync.jobId;
       transaction.set(codeRef, { studentKey, studentId: target.id, studentIds: [...new Set([...(owner?.studentIds || (owner?.studentId ? [owner.studentId] : [])), target.id])], updatedAt: Date.now() });
       // Retain aliases, so old work and a historical-year login code never belong to another child.
       if (oldRef && (!oldOwner || ownsCode(oldOwner, studentKey, target.id, sourceId))) transaction.set(oldRef, { ...(oldOwner || {}), studentKey, studentId: oldOwner?.studentId || target.id, retired: true, updatedAt: Date.now() });

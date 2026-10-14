@@ -2,7 +2,7 @@ import { collection, doc, getDocFromServer, getDocsFromServer, runTransaction } 
 import { appId, db } from '../config/firebase';
 import { postAppsScript } from '../utils/helpers';
 import { sameData } from '../utils/dataEquality';
-import { referencedProfileFileIds } from '../utils/profileDocumentFiles';
+import { PROFILE_DOCUMENT_FIELDS, referencedProfileFileIds } from '../utils/profileDocumentFiles';
 
 const records = name => collection(db, 'artifacts', appId, 'public', 'data', name);
 const record = (name, id) => doc(records(name), id);
@@ -23,38 +23,53 @@ export async function retryProfileFileCleanup(jobId, syncStudent) {
   if (!job) return { alreadyDone: true, results: [] };
   let result, failure;
   try {
+    // Keep jobs created by the previous, single-field approval flow retryable.
+    const fields = job.fields || [{ fieldKey: job.fieldKey, expectedValue: job.expectedValue, fileIds: job.fileIds }];
+    if (!Array.isArray(fields) || !fields.length || fields.length > PROFILE_DOCUMENT_FIELDS.length
+      || fields.some(field => !PROFILE_DOCUMENT_FIELDS.includes(field.fieldKey) || !Array.isArray(field.fileIds) || typeof field.expectedValue !== 'string')) {
+      throw new Error('Yêu cầu dọn file không hợp lệ. File cũ được giữ lại.');
+    }
+    const matchesApproval = student => student && student.studentKey === job.studentKey
+      && fields.every(field => sameData(student[field.fieldKey], field.expectedValue));
     const studentRef = record('students', job.studentId);
     const before = (await getDocFromServer(studentRef)).data();
-    if (!before || before.studentKey !== job.studentKey || !sameData(before[job.fieldKey], job.expectedValue)) {
+    if (!matchesApproval(before)) {
       throw new Error('Ảnh hoặc hồ sơ đã thay đổi. File cũ được giữ để đối chiếu.');
     }
-    await syncStudent({ ...before, id: job.studentId });
+    if (before.sheetSync?.status !== 'success') await syncStudent({ ...before, id: job.studentId });
     const [current, students, requests, archives] = await Promise.all([
       getDocFromServer(studentRef), getDocsFromServer(records('students')),
       getDocsFromServer(records('student_profile_requests')), getDocsFromServer(records('student_archives'))
     ]);
     const student = current.data();
-    if (!student || student.studentKey !== job.studentKey || !sameData(student[job.fieldKey], job.expectedValue) || student.sheetSync?.status !== 'success') {
+    if (!matchesApproval(student) || student.sheetSync?.status !== 'success') {
       throw new Error('Ảnh mới chưa được lưu và đồng bộ đầy đủ. Chưa dọn file cũ.');
     }
     const referenced = referencedProfileFileIds([
       ...students.docs.map(item => item.data()), ...archives.docs.map(item => item.data()),
       ...requests.docs.map(item => item.data().changes)
     ]);
-    const retained = job.fileIds.filter(id => referenced.has(id)).map(fileId => ({ fileId, status: 'retained', message: 'File còn được hồ sơ hoặc yêu cầu khác sử dụng.' }));
-    const fileIds = job.fileIds.filter(id => !referenced.has(id));
+    const candidates = [...new Set(fields.flatMap(field => field.fileIds))];
+    const retained = candidates.filter(id => referenced.has(id)).map(fileId => ({ fileId, status: 'retained', message: 'File còn được hồ sơ hoặc yêu cầu khác sử dụng.' }));
     result = { results: retained };
-    if (fileIds.length) {
-      const response = await postAppsScript({ action: 'registrationAdminAction', registrationAction: 'trashReplacedStudentFiles', params: {
-        studentRecordId: job.studentId, studentKey: student.studentKey, accessCode: student.accessCode,
-        syncRevision: student.syncRevision, syncJobId: student.sheetSync.jobId,
-        fieldKey: job.fieldKey, expectedValue: job.expectedValue, fileIds
-      } });
-      if (response.status !== 'success' || !response.result?.success || !Array.isArray(response.result.results)
-        || fileIds.some(id => !response.result.results.some(item => item.fileId === id && ['trashed', 'alreadyTrashed', 'retained', 'failed'].includes(item.status)))) {
-        throw new Error(response.message || 'Máy chủ chưa xác nhận kết quả dọn file.');
+    const handled = new Set();
+    for (const field of fields) {
+      const eligible = [...new Set(field.fileIds)].filter(id => !referenced.has(id) && !handled.has(id));
+      eligible.forEach(id => handled.add(id));
+      // The Apps Script endpoint accepts at most 20 files per request.
+      for (let offset = 0; offset < eligible.length; offset += 20) {
+        const fileIds = eligible.slice(offset, offset + 20);
+        const response = await postAppsScript({ action: 'registrationAdminAction', registrationAction: 'trashReplacedStudentFiles', params: {
+          studentRecordId: job.studentId, studentKey: student.studentKey, accessCode: student.accessCode,
+          syncRevision: student.syncRevision, syncJobId: student.sheetSync.jobId,
+          fieldKey: field.fieldKey, expectedValue: field.expectedValue, fileIds
+        } });
+        if (response.status !== 'success' || !response.result?.success || !Array.isArray(response.result.results)
+          || fileIds.some(id => !response.result.results.some(item => item.fileId === id && ['trashed', 'alreadyTrashed', 'retained', 'failed'].includes(item.status)))) {
+          throw new Error(response.message || 'Máy chủ chưa xác nhận kết quả dọn file.');
+        }
+        result.results.push(...response.result.results);
       }
-      result.results.push(...response.result.results);
     }
     const failed = result.results.filter(item => item.status === 'failed');
     if (failed.length) throw new Error(failed[0].message || 'Một số file chưa chuyển được vào thùng rác.');

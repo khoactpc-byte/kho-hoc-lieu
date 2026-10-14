@@ -5,19 +5,22 @@ import { resolve, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
 import { memoryStore } from './helpers/memoryStore.js';
-import { profileDriveFileIds, replacedProfileFileIds } from '../src/utils/profileDocumentFiles.js';
+import { hasNewProfileFiles, profileDriveFileIds, replacedProfileFileIds } from '../src/utils/profileDocumentFiles.js';
 
 const url = id => `https://drive.google.com/file/d/${id}/view`;
 test('cleanup identifies Drive aliases and never treats an appended page as replaced', () => {
   assert.deepEqual(profileDriveFileIds(`${url('old-photo-id')}\nhttps://drive.google.com/open?id=old-photo-id`), ['old-photo-id']);
   assert.deepEqual(replacedProfileFileIds(url('old-photo-id'), `${url('old-photo-id')}\n${url('new-photo-id')}`), []);
+  assert.equal(hasNewProfileFiles(url('old-photo-id'), url('new-photo-id')), true);
+  assert.equal(hasNewProfileFiles(url('old-photo-id'), ''), false);
+  assert.equal(hasNewProfileFiles(url('old-photo-id'), 'https://example.com/new.jpg'), false);
   assert.deepEqual(profileDriveFileIds('https://drive.google.com.attacker.example/file/d/old-photo-id/view\njavascript:alert(1)\nhttps://example.com/photo.jpg'), []);
 });
 
 test('approval saves a durable cleanup job and deletion follows successful synchronization and fresh reference checks', async t => {
   const directory = await mkdtemp(resolve('node_modules/.profile-cleanup-test-'));
   const base = 'artifacts/fixture/public/data';
-  let store, calls, syncCalls, sendFailure, syncFailure;
+  let store, calls, syncCalls, sendFailure, syncFailure, sendFailureField;
   const studentPath = `${base}/students/an`;
   const fixture = {
     collection: (_db, ...parts) => store.collection(parts.join('/')),
@@ -29,13 +32,13 @@ test('approval saves a durable cleanup job and deletion follows successful synch
     send: async payload => {
       calls.push(payload);
       assert.equal(store.get(studentPath).sheetSync.status, 'success', 'Drive cannot be called before Sheet sync is confirmed');
-      if (sendFailure) throw new Error('Drive unavailable');
+      if (sendFailure || payload.params.fieldKey === sendFailureField) throw new Error('Drive unavailable');
       return { status: 'success', result: { success: true, results: payload.params.fileIds.map(fileId => ({ fileId, status: 'trashed' })) } };
     }
   };
   globalThis.__profileCleanup = fixture;
   const reset = () => {
-    store = memoryStore(); calls = []; syncCalls = 0; sendFailure = false; syncFailure = false;
+    store = memoryStore(); calls = []; syncCalls = 0; sendFailure = false; syncFailure = false; sendFailureField = '';
     store.put(`${base}/settings/global`, {});
     store.put(studentPath, { fullName: 'An', className: '8A', grade: '8', schoolYear: '2026-2027', schoolCode: 'NAN', studentKey: 'stable-an', accessCode: 'HS001', portraitUrl: url('old-photo-id') });
     store.put(`${base}/student_profile_requests/request`, { studentId: 'an', changes: { portraitUrl: url('new-photo-id'), phone: '123' }, status: 'pending' });
@@ -59,12 +62,13 @@ test('approval saves a durable cleanup job and deletion follows successful synch
       } }] });
     const service = await import(pathToFileURL(outfile));
     const approve = () => service.saveStudentRecord({ ...store.get(studentPath), id: 'an', portraitUrl: url('new-photo-id') }, {
-      profileDecision: { requestId: 'request', expectedChanges: { portraitUrl: url('new-photo-id'), phone: '123' }, remainingChanges: { phone: '123' } }, profileCleanupField: 'portraitUrl'
+      profileDecision: { requestId: 'request', expectedChanges: { portraitUrl: url('new-photo-id'), phone: '123' }, remainingChanges: { phone: '123' } }
     });
     await t.test('approval and job commit together; unrelated requested fields remain pending', async () => {
       reset();
       const student = await approve();
       const jobId = student.sheetSync.jobId;
+      assert.equal(student.sheetSync.cleanupJobId, jobId, 'every approved replacement automatically schedules cleanup');
       assert.deepEqual(store.get(`${base}/student_profile_requests/request`).changes, { phone: '123' });
       assert.deepEqual(store.get(`${base}/student_file_cleanup_jobs/${jobId}`).fileIds, ['old-photo-id']);
       assert.equal(calls.length, 0);
@@ -82,12 +86,84 @@ test('approval saves a durable cleanup job and deletion follows successful synch
       assert.equal((await store.collection(`${base}/student_file_cleanup_jobs`).get()).size, 0);
       assert.equal(calls.length, 0);
     });
-    await t.test('ordinary approval does not create a cleanup job', async () => {
+    await t.test('text-only approvals and manual profile edits do not schedule file cleanup', async () => {
       reset();
-      await service.saveStudentRecord({ ...store.get(studentPath), id: 'an', portraitUrl: url('new-photo-id') }, {
-        profileDecision: { requestId: 'request', expectedChanges: { portraitUrl: url('new-photo-id'), phone: '123' }, remainingChanges: { phone: '123' } }
+      await service.saveStudentRecord({ ...store.get(studentPath), id: 'an', phone: '123' }, {
+        profileDecision: { requestId: 'request', expectedChanges: { portraitUrl: url('new-photo-id'), phone: '123' }, remainingChanges: { portraitUrl: url('new-photo-id') } }
       });
       assert.equal((await store.collection(`${base}/student_file_cleanup_jobs`).get()).size, 0);
+      reset();
+      await service.saveStudentRecord({ ...store.get(studentPath), id: 'an', portraitUrl: url('new-photo-id') });
+      assert.equal((await store.collection(`${base}/student_file_cleanup_jobs`).get()).size, 0);
+    });
+    await t.test('appending pages, removing links and non-Drive replacements do not trash old files', async () => {
+      for (const value of [`${url('old-photo-id')}\n${url('new-photo-id')}`, '', 'https://example.com/new.jpg']) {
+        reset();
+        const changes = { portraitUrl: value };
+        store.put(`${base}/student_profile_requests/request`, { studentId: 'an', changes, status: 'pending' });
+        const student = await service.saveStudentRecord({ ...store.get(studentPath), id: 'an', ...changes }, {
+          profileDecision: { requestId: 'request', expectedChanges: changes, remainingChanges: {} }
+        });
+        assert.equal(student.sheetSync.cleanupJobId, undefined);
+        assert.equal((await store.collection(`${base}/student_file_cleanup_jobs`).get()).size, 0);
+      }
+    });
+    const approveDocuments = async (before, changes, bulk = false) => {
+      store.put(studentPath, { ...store.get(studentPath), ...before });
+      store.put(`${base}/student_profile_requests/request`, { studentId: 'an', changes, status: 'pending' });
+      const decision = { requestId: 'request', expectedChanges: changes, remainingChanges: {} };
+      return service.saveStudentRecord({ ...store.get(studentPath), id: 'an', ...changes }, bulk ? { profileDecisions: [decision] } : { profileDecision: decision });
+    };
+    await t.test('whole-request and bulk approvals schedule every replaced document together', async () => {
+      for (const bulk of [false, true]) {
+        reset();
+        const student = await approveDocuments({ transcriptUrl: url('old-transcript-id') }, { portraitUrl: url('new-photo-id'), transcriptUrl: url('new-transcript-id') }, bulk);
+        const job = store.get(`${base}/student_file_cleanup_jobs/${student.sheetSync.jobId}`);
+        assert.equal(job.fields.length, 2);
+        assert.deepEqual(job.fileIds, ['old-photo-id', 'old-transcript-id']);
+        assert.equal(store.get(`${base}/student_profile_requests/request`), undefined);
+        const result = await service.retryProfileFileCleanup(student.sheetSync.jobId, sync);
+        assert.equal(syncCalls, 1);
+        assert.deepEqual(calls.map(call => [call.params.fieldKey, call.params.expectedValue]), [['portraitUrl', url('new-photo-id')], ['transcriptUrl', url('new-transcript-id')]]);
+        assert.equal(result.results.length, 2);
+      }
+    });
+    await t.test('duplicate old files are handled once and long documents use bounded Drive requests', async () => {
+      reset();
+      const oldIds = Array.from({ length: 25 }, (_, i) => 'old-page-' + i);
+      const student = await approveDocuments({ portraitUrl: oldIds.map(url).join('\n'), transcriptUrl: url(oldIds[0]) }, { portraitUrl: url('new-photo-id'), transcriptUrl: url('new-transcript-id') });
+      const result = await service.retryProfileFileCleanup(student.sheetSync.jobId, sync);
+      assert.deepEqual(calls.map(call => call.params.fileIds.length), [20, 5]);
+      assert.deepEqual(result.results.map(item => item.fileId), oldIds);
+    });
+    await t.test('partial multi-document failure keeps results and retries without another Sheet write', async () => {
+      reset();
+      const student = await approveDocuments({ transcriptUrl: url('old-transcript-id') }, { portraitUrl: url('new-photo-id'), transcriptUrl: url('new-transcript-id') });
+      sendFailureField = 'transcriptUrl';
+      await assert.rejects(service.retryProfileFileCleanup(student.sheetSync.jobId, sync), /Drive unavailable/);
+      const job = store.get(`${base}/student_file_cleanup_jobs/${student.sheetSync.jobId}`);
+      assert.equal(job.status, 'failed');
+      assert.deepEqual(job.results.map(item => item.fileId), ['old-photo-id']);
+      sendFailureField = '';
+      await service.retryProfileFileCleanup(student.sheetSync.jobId, sync);
+      assert.equal(syncCalls, 1);
+      assert.equal(store.get(`${base}/student_file_cleanup_jobs/${student.sheetSync.jobId}`).status, 'done');
+    });
+    await t.test('a later change to any approved document stops the entire job before sync or Drive', async () => {
+      reset();
+      const student = await approveDocuments({ transcriptUrl: url('old-transcript-id') }, { portraitUrl: url('new-photo-id'), transcriptUrl: url('new-transcript-id') });
+      store.put(studentPath, { ...store.get(studentPath), transcriptUrl: url('different-transcript-id') });
+      await assert.rejects(service.retryProfileFileCleanup(student.sheetSync.jobId, sync), /đã thay đổi/);
+      assert.equal(syncCalls, 0); assert.equal(calls.length, 0);
+    });
+    await t.test('jobs from the previous single-document flow remain retryable', async () => {
+      reset(); const student = await approve();
+      const path = `${base}/student_file_cleanup_jobs/${student.sheetSync.jobId}`;
+      const { fields, ...legacy } = store.get(path);
+      store.put(path, { ...legacy, ...fields[0] });
+      await service.retryProfileFileCleanup(student.sheetSync.jobId, sync);
+      assert.equal(calls.length, 1);
+      assert.equal(store.get(path).status, 'done');
     });
     await t.test('failed Sheet sync keeps old files and a durable retry job while retaining the approved image', async () => {
       reset(); const student = await approve(); syncFailure = true;

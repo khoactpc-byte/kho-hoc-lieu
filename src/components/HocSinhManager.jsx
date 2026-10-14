@@ -69,7 +69,6 @@ import { buildStudentProfileHistory, profileSchoolYear } from '../utils/studentP
 import ProfileChangeTable from './ProfileChangeTable';
 import ProfileFileCleanupQueue from './ProfileFileCleanupQueue';
 import { profileCleanupMessage, retryProfileFileCleanup } from '../services/profileFileCleanup';
-import { replacedProfileFileIds } from '../utils/profileDocumentFiles';
 import { STUDENT_PROFILE_SECTIONS, studentProfileSection } from '../utils/studentProfileLayout';
 
 const STUDENT_FIELDS = [
@@ -2963,6 +2962,19 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
     await callSheetAction('markExistingRegistration', { rowNumber: registration.rowNumber, identityCode: student.identityCode || '', fullName: student.fullName || '', birthDate: student.birthDate || '', note: 'Da chuyen vao database. Ma hoc sinh: ' + student.accessCode });
   };
   const syncPersistedStudent = student => retryStudentSync(student.id, saved => syncStudentToSheet(saved, saved.schoolYear), { registrationComplete: completeRegistrationSync });
+
+  const completeApprovedProfile = async student => {
+    await syncPersistedStudent(student);
+    if (!student.sheetSync?.cleanupJobId) return {};
+    try {
+      return { cleanup: await retryProfileFileCleanup(student.sheetSync.cleanupJobId, syncPersistedStudent) };
+    } catch (error) {
+      return { cleanupError: error.message };
+    }
+  };
+  const approvedProfileCleanupNote = completion => completion.cleanupError
+    ? ' File cũ chưa dọn xong; dùng “Thử dọn lại” trong mục File cũ chờ dọn. ' + completion.cleanupError
+    : completion.cleanup ? ' ' + profileCleanupMessage(completion.cleanup) : '';
   const reportStudentBatch = (result, label) => showNotification?.(label + ': ' + result.succeeded.length + '/' + (result.succeeded.length + result.failed.length) + ' hồ sơ thành công, đồng bộ Sheet được xếp hàng.' + (result.failed.length ? ' Còn ' + result.failed.length + ' hồ sơ lỗi: ' + result.failed[0].error.message : ''), result.failed.length ? 'error' : 'success');
   const retrySheetJobs = async () => {
     if (isSaving) return;
@@ -3047,7 +3059,7 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
   const student=await persistStudent({...before,id:request.studentId,[fieldKey]:value,...(fieldKey==='className'?{grade:getGradeFromClass(value)}:{})},{profileDecision:{requestId:request.id,expectedChanges:request.changes,remainingChanges:changes}});
   hideProfileRequestFieldLocally(request.id,fieldKey);
   if(editing?.id===student.id)setEditing(prev=>prev?{...prev,[fieldKey]:value}:prev);
-  try{await syncPersistedStudent(student);showNotification?.('Đã duyệt thông tin và đồng bộ Sheet.');}
+  try{const completion=await completeApprovedProfile(student);showNotification?.('Đã duyệt thông tin và đồng bộ Sheet.'+approvedProfileCleanupNote(completion),completion.cleanupError?'error':'success');}
   catch(error){showNotification?.('Đã duyệt thông tin; việc đồng bộ được giữ để thử lại: '+error.message,'error');}
  }catch(error){showNotification?.('Chưa duyệt được thông tin: '+error.message,'error');}
  finally{setIsSaving(false);}
@@ -3064,36 +3076,6 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
     } finally {
       setIsSaving(false);
     }
-  };
-
-  const approveProfileFieldAndTrash = async (request = {}, fieldKey = '') => {
-    if (isSaving || !request.id || !DOCUMENT_FIELD_KEYS.has(fieldKey)) return;
-    const before = safeStudents.find(student => student.id === request.studentId);
-    if (!before || isReadOnlyStudentRecord(before)) {
-      showNotification?.(before ? readOnlyStudentMessage(before) : 'Không tìm thấy hồ sơ học sinh.', 'error');
-      return;
-    }
-    const value = safePlainValue(request.changes?.[fieldKey]);
-    const count = replacedProfileFileIds(before[fieldKey], value).length;
-    if (!count || !window.confirm(`Duyệt ${STUDENT_FIELD_LABELS[fieldKey] || 'file mới'} của ${before.fullName} và chuyển tối đa ${count} file cũ vào thùng rác Drive?\nChỉ dọn sau khi lưu và đồng bộ ảnh mới. File còn được hồ sơ khác sử dụng sẽ được giữ lại.`)) return;
-    setIsSaving(true);
-    let saved = false;
-    try {
-      const remainingChanges = sanitizeStudentChanges(request.changes);
-      delete remainingChanges[fieldKey];
-      const student = await persistStudent({ ...before, [fieldKey]: value }, {
-        profileDecision: { requestId: request.id, expectedChanges: request.changes, remainingChanges }, profileCleanupField: fieldKey
-      });
-      saved = true;
-      hideProfileRequestFieldLocally(request.id, fieldKey);
-      if (editing?.id === student.id) setEditing(prev => prev ? { ...prev, [fieldKey]: value } : prev);
-      const result = await retryProfileFileCleanup(student.sheetSync.jobId, syncPersistedStudent);
-      showNotification?.('Đã duyệt và đồng bộ hồ sơ. ' + profileCleanupMessage(result));
-    } catch (error) {
-      showNotification?.(saved
-        ? 'Ảnh mới đã được duyệt. File cũ chưa dọn xong; dùng “Thử dọn lại” trong mục File cũ chờ dọn. ' + error.message
-        : 'Chưa duyệt được ảnh mới: ' + error.message, 'error');
-    } finally { setIsSaving(false); }
   };
 
   const toggleDropout = async student => {
@@ -3817,11 +3799,16 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
       screenUnlocked = true;
       const summary = { total, completed: total, succeeded, failed, error, syncTotal: result.succeeded.length };
       setProfileBatchStatus({ ...summary, phase: 'syncing', synced: 0 });
-      const sync = await processRecords(result.succeeded, item => syncPersistedStudent(item.value), progress => {
+      const sync = await processRecords(result.succeeded, item => completeApprovedProfile(item.value), progress => {
         setProfileBatchStatus({ ...summary, phase: 'syncing', synced: progress.completed });
       });
-      setProfileBatchStatus({ ...summary, phase: 'done', synced: sync.succeeded.length, syncFailed: sync.failed.length });
-      showNotification?.('Đã duyệt ' + succeeded + '/' + total + ' yêu cầu.' + (failed ? ' Còn ' + failed + ' yêu cầu chưa duyệt: ' + error : '') + (sync.failed.length ? ' Đồng bộ Sheet chưa xong được giữ để thử lại.' : ''), failed || sync.failed.length ? 'error' : 'success');
+      const completions = sync.succeeded.map(item => item.value);
+      const cleanupPending = completions.filter(item => item.cleanupError).length;
+      const cleanupResults = completions.filter(item => item.cleanup).flatMap(item => item.cleanup.results);
+      const cleanupNote = (cleanupResults.length ? ' ' + profileCleanupMessage({ results: cleanupResults }) : '')
+        + (cleanupPending ? ' Còn ' + cleanupPending + ' hồ sơ chờ dọn file cũ; dùng “Thử dọn lại” trong mục File cũ chờ dọn.' : '');
+      setProfileBatchStatus({ ...summary, phase: 'done', synced: sync.succeeded.length, syncFailed: sync.failed.length, cleanupNote });
+      showNotification?.('Đã duyệt ' + succeeded + '/' + total + ' yêu cầu.' + (failed ? ' Còn ' + failed + ' yêu cầu chưa duyệt: ' + error : '') + (sync.failed.length ? ' Đồng bộ Sheet chưa xong được giữ để thử lại.' : '') + cleanupNote, failed || sync.failed.length || cleanupPending ? 'error' : 'success');
     } catch (error) {
       setProfileBatchStatus(current => ({ ...current, phase: 'error', error: error.message }));
       showNotification?.('Duyệt tất cả chưa hoàn tất: ' + error.message, 'error');
@@ -3840,7 +3827,7 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
  try {
   const student=await persistStudent({...before,...changes,id:request.studentId},{profileDecision:{requestId:request.id,expectedChanges:request.changes,remainingChanges:{}}});
   hideProfileRequestFieldLocally(request.id);
-  try{await syncPersistedStudent(student);showNotification?.('Đã duyệt hồ sơ và đồng bộ Sheet.');}
+  try{const completion=await completeApprovedProfile(student);showNotification?.('Đã duyệt hồ sơ và đồng bộ Sheet.'+approvedProfileCleanupNote(completion),completion.cleanupError?'error':'success');}
   catch(error){showNotification?.('Hồ sơ đã cập nhật; đồng bộ Sheet được giữ để thử lại: '+error.message,'error');}
  }catch(error){showNotification?.('Chưa duyệt được yêu cầu: '+error.message,'error');}
  finally{setIsSaving(false);}
@@ -4426,13 +4413,15 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-normal">
               <div className="text-slate-600">
                 <div>{profileRequests.length} yêu cầu chờ duyệt · Cùng một thông tin, ưu tiên bản gửi mới nhất.</div>
+                <div className="mt-1">Duyệt ảnh/giấy tờ mới sẽ tự dọn file cũ sau khi lưu và đồng bộ thành công. File còn được sử dụng sẽ được giữ lại.</div>
                 {profileBatchStatus && <div role="status" aria-live="polite" className="mt-1">
                   {profileBatchStatus.phase === 'saving'
                     ? 'Đang duyệt ' + profileBatchStatus.completed + '/' + profileBatchStatus.total + ' yêu cầu…'
                     : 'Đã duyệt ' + profileBatchStatus.succeeded + '/' + profileBatchStatus.total + ' yêu cầu.'}
-                  {profileBatchStatus.phase === 'syncing' && ' Đang đồng bộ Sheet ' + profileBatchStatus.synced + '/' + profileBatchStatus.syncTotal + ' học sinh; bạn có thể tiếp tục thao tác.'}
+                  {profileBatchStatus.phase === 'syncing' && ' Đang đồng bộ Sheet ' + profileBatchStatus.synced + '/' + profileBatchStatus.syncTotal + ' học sinh và dọn file cũ; bạn có thể tiếp tục thao tác.'}
                   {profileBatchStatus.phase === 'done' && profileBatchStatus.syncTotal > 0 && (profileBatchStatus.syncFailed ? ' Còn ' + profileBatchStatus.syncFailed + ' hồ sơ chờ đồng bộ lại Sheet.' : ' Đã đồng bộ Sheet.')}
                   {profileBatchStatus.failed > 0 && ' Còn ' + profileBatchStatus.failed + ' yêu cầu chưa duyệt.'}
+                  {profileBatchStatus.cleanupNote}
                   {profileBatchStatus.error && ' ' + profileBatchStatus.error}
                 </div>}
               </div>
@@ -4466,7 +4455,7 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
                       </div>
                     </div>
                     <div className="mt-2">
-                      <ProfileChangeTable rows={profileChangeRows(request, currentStudent)} label={'Thay đổi hồ sơ ' + (request.studentName || currentStudent?.fullName || 'học sinh')} disabled={isSaving || !currentStudent} onApprove={key => approveProfileField(request, key)} onApproveAndTrash={key => approveProfileFieldAndTrash(request, key)} onReject={key => rejectProfileField(request, key)} />
+                      <ProfileChangeTable rows={profileChangeRows(request, currentStudent)} label={'Thay đổi hồ sơ ' + (request.studentName || currentStudent?.fullName || 'học sinh')} disabled={isSaving || !currentStudent} onApprove={key => approveProfileField(request, key)} onReject={key => rejectProfileField(request, key)} />
                     </div>
                   </div>
                 );
@@ -5184,7 +5173,7 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
               })),
               ...(editingProfileRequests.length ? [{ key: 'requests', label: 'Chờ duyệt (' + editingProfileRequests.reduce((count, request) => count + Object.keys(sanitizeStudentChanges(request.changes)).length, 0) + ')', content: (
                 <div className="space-y-3">
-                   {editingProfileRequests.map(request => <ProfileChangeTable key={request.id} rows={profileChangeRows(request, editing)} label={'Thay đổi hồ sơ ' + (editing.fullName || 'học sinh')} disabled={isSaving || profileReadOnly} onApprove={key => approveProfileField(request, key)} onApproveAndTrash={key => approveProfileFieldAndTrash(request, key)} onReject={key => rejectProfileField(request, key)} />)}
+                   {editingProfileRequests.map(request => <ProfileChangeTable key={request.id} rows={profileChangeRows(request, editing)} label={'Thay đổi hồ sơ ' + (editing.fullName || 'học sinh')} disabled={isSaving || profileReadOnly} onApprove={key => approveProfileField(request, key)} onReject={key => rejectProfileField(request, key)} />)}
                 </div>
               ) }] : [])
             ]} />

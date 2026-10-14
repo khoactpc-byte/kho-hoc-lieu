@@ -30,7 +30,7 @@ Chi tiết phát hiện, kiểm thử và giới hạn xác nhận có trong [b�
 
 ### Duyệt ảnh mới và dọn file cũ — 14/10/2026
 
-Trong **Học sinh → Yêu cầu sửa**, mỗi dòng ảnh/giấy tờ có file Drive cũ bị thay thế sẽ có thêm **Duyệt và dọn file cũ**. Nút duyệt thông thường và duyệt hàng loạt giữ nguyên file cũ. Lựa chọn dọn chỉ chuyển file vào thùng rác Drive sau khi hồ sơ và Google Sheet lưu thành công; không xóa vĩnh viễn. Các file còn được hồ sơ năm khác, hồ sơ lưu trữ, yêu cầu đang chờ hoặc dòng Sheet sử dụng được giữ lại. Chỉ dọn ảnh/PDF trong thư mục ảnh hồ sơ và thư mục đăng ký hiện có.
+Trong **Học sinh → Yêu cầu sửa**, cả nút duyệt từng dòng, **Đồng ý yêu cầu này** và **Đồng ý tất cả yêu cầu** đều tự dọn file Drive cũ khi duyệt ảnh/giấy tờ mới thay thế. Một yêu cầu có nhiều loại giấy tờ được dọn cùng lượt; dòng có file thay thế hiển thị **Tự dọn file cũ**. Chỉ chuyển file vào thùng rác Drive sau khi hồ sơ và Google Sheet lưu thành công; không xóa vĩnh viễn. Thêm trang mà vẫn giữ file cũ, chỉ xóa liên kết hoặc sửa thông tin chữ không tự dọn file. Các file còn được hồ sơ năm khác, hồ sơ lưu trữ, yêu cầu đang chờ hoặc dòng Sheet sử dụng được giữ lại. Chỉ dọn ảnh/PDF trong thư mục ảnh hồ sơ và thư mục đăng ký hiện có. Thay đổi áp dụng cho các lượt duyệt mới, không quét dọn lại các lượt đã duyệt trước đó.
 
 Nếu mạng, quyền Drive hoặc phiên bản máy chủ chưa sẵn sàng, yêu cầu dọn được lưu cùng giao dịch duyệt trong `student_file_cleanup_jobs`. Mục **File cũ chờ dọn → Thử dọn lại** vẫn có sau khi tải lại trang; ảnh mới không bị mất và thao tác duyệt không cần làm lại. Apps Script đăng ký đối chiếu mã học sinh, phiên bản đồng bộ và liên kết mới dưới cùng khóa với thao tác ghi Sheet trước khi dọn. File đã ở thùng rác được coi là hoàn tất khi thử lại.
 

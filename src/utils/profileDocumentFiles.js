@@ -17,6 +17,11 @@ export function replacedProfileFileIds(before, after) {
   return profileDriveFileIds(before).filter(id => !retained.has(id));
 }
 
+export function hasNewProfileFiles(before, after) {
+  const existing = new Set(profileDriveFileIds(before));
+  return profileDriveFileIds(after).some(id => !existing.has(id));
+}
+
 export function referencedProfileFileIds(records) {
   return new Set(records.flatMap(record => PROFILE_DOCUMENT_FIELDS.flatMap(key => profileDriveFileIds(record?.[key]))));
 }
