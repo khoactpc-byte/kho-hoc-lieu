@@ -41,6 +41,18 @@
 .reg-section-heading h3 { display:flex; align-items:center; gap:8px; margin:0; color:#314b3e; font-size:16px; font-weight:600; }
 .reg-section-heading h3>span { font-size:12px; color:#60736a; border:1px solid #e0e8e2; border-radius:5px; padding:1px 5px; }
 .reg-section-heading p { margin:4px 0 0; font-size:13px; color:var(--reg-muted); }
+
+/* Birth and address groups: distinct cards without adding another navigation step. */
+.reg-address-sections { padding-top:12px; }
+.reg-section-card { padding:0; border:1px solid #d4e1d9; border-radius:8px; background:#fff; }
+.reg-section-card+.reg-section-card { margin-top:12px; border-top:1px solid #d4e1d9; }
+.reg-section-card>.reg-section-heading { margin:0; padding:9px 12px; border-bottom:1px solid #dfe9e2; border-radius:7px 7px 0 0; background:#eef5f1; }
+.reg-section-card>.reg-section-heading>div { display:flex; align-items:baseline; flex-wrap:wrap; gap:2px 14px; }
+.reg-section-card>.reg-section-heading h3 { color:#24513d; font-weight:650; }
+.reg-section-card>.reg-section-heading p { margin:0; }
+.reg-section-body { padding:10px 12px 0; min-width:0; }
+.reg-section-body>.reg-checkbox { margin-bottom:10px; }
+
 .reg-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:0 16px; }
 .reg-grid-three { grid-template-columns:repeat(3,minmax(0,1fr)); gap:0 12px; }
 .reg-campus-grid { grid-template-columns:minmax(0,2fr) minmax(0,1fr); }
@@ -164,10 +176,13 @@
   .reg-student-grid [data-field=hoVaTen],.reg-student-grid [data-field=soDienThoai] { grid-column:1/-1; }
   .reg-grid-three { grid-template-columns:1fr 1fr; gap:0 10px; }
   .reg-grid-three .reg-search-field { grid-column:1/-1; }
+  .reg-address-grid { grid-template-columns:1fr; }
   .reg-field>label { font-size:14px; }
   .reg-field input,.reg-field select { font-size:16px; padding-left:10px; }
   .reg-search-wrap>input { padding-left:32px; }
   .reg-section-heading h3 { font-size:16px; }
+  .reg-section-card>.reg-section-heading { padding:8px 10px; }
+  .reg-section-body { padding:10px 10px 0; }
   .reg-uploads { grid-template-columns:1fr; gap:10px; }
   .reg-upload { padding:11px; }
   .reg-upload-heading { gap:8px; }

@@ -4,9 +4,10 @@ import { REGISTRATION_WEB_APP_URL } from '../../config/registration';
 import useRegistrationDirectories from './useRegistrationDirectories';
 import { FILE_FIELDS, REGISTRATION_STEPS, emptyRegistration, formatFileSize, hasNoIdentity, registrationPayload, validateStep } from './registrationModel';
 import { submitRegistration } from './registrationApi';
-import { AddressFields, Field, FileUpload, LoadingState, LocationFields, Section, SelectField } from './components/RegistrationFields';
+import { Field, FileUpload, LoadingState, Section, SelectField } from './components/RegistrationFields';
 import RegistrationReview from './components/RegistrationReview';
 import AcademicHistoryFields from './components/AcademicHistoryFields';
+import RegistrationAddressStep from './components/RegistrationAddressStep';
 import './registration.css';
 
 export default function RegistrationPage() {
@@ -76,10 +77,24 @@ export default function RegistrationPage() {
       if (Object.keys(found).length) { move(index); setErrors(found); focusError(found); return; }
     }
     if (!confirmed) { setErrors({ confirmed: 'Vui lòng xác nhận thông tin trước khi gửi.' }); return; }
-    if (Number(config.publicApiVersion) < 1 || !config.publicApiVersion) { setMessage('Biểu mẫu đang được cập nhật. Bạn có thể gửi hồ sơ bằng biểu mẫu dự phòng bên dưới.'); return; }
     submitting.current = true; setSending(true); setMessage('');
     try {
-      const form = registrationPayload(values, config);
+      let submitConfig = config;
+      // A page opened before a Script deployment can still hold the old capability flag.
+      // Refresh in place so the student keeps the completed form and selected files.
+      if (!(Number(submitConfig.publicApiVersion) >= 1)) {
+        setProgress('Đang kiểm tra kết nối đăng ký…');
+        const refreshed = await directories.refresh();
+        if (!refreshed) throw new Error('Chưa kiểm tra được kết nối đăng ký. Thông tin và tệp đã chọn vẫn được giữ; vui lòng thử lại.');
+        if (refreshed.addressError || refreshed.birthError) throw new Error('Chưa tải đủ danh mục địa chỉ. Vui lòng bấm Tải lại trước khi gửi hồ sơ.');
+        submitConfig = refreshed.config;
+        if (!(Number(submitConfig.publicApiVersion) >= 1)) throw new Error('Máy chủ đăng ký chưa sẵn sàng tiếp nhận hồ sơ. Thông tin và tệp đã chọn vẫn được giữ; vui lòng thử lại hoặc dùng biểu mẫu dự phòng.');
+        if (submitConfig.currentSchoolYear !== config.currentSchoolYear) {
+          setConfirmed(false);
+          throw new Error(`Năm đăng ký đã thay đổi thành ${submitConfig.currentSchoolYear}. Vui lòng kiểm tra lại thông tin và xác nhận trước khi gửi.`);
+        }
+      }
+      const form = registrationPayload(values, submitConfig);
       const fingerprint = JSON.stringify([form, Object.fromEntries(Object.entries(files).map(([key, list]) => [key, list.map(file => [file.name, file.size, file.lastModified])]))]);
       if (submission.current?.fingerprint !== fingerprint) submission.current = { fingerprint, id: `dk-${globalThis.crypto.randomUUID()}` };
       setResult(await submitRegistration(form, files, submission.current.id, setProgress));
@@ -120,16 +135,10 @@ export default function RegistrationPage() {
                   <Field {...fieldProps} name="soDienThoai" label="Số điện thoại liên hệ" required type="tel" inputMode="tel" autoComplete="tel" placeholder="Nhập số điện thoại" maxLength={20} />
                 </div><Field {...fieldProps} name="maDinhDanh" label="Mã định danh cá nhân" required placeholder="12 số hoặc ghi: học sinh chưa có" maxLength={30} hint="Có mã định danh: cần đính kèm ảnh CCCD ở bước hồ sơ." /></Section>
               </>}
-              {step === 1 && <>
-                <Section title="Thông tin trên giấy khai sinh" description="Tỉnh, huyện, xã theo chính quyền 3 cấp cũ, như trên giấy tờ.">
-                  <LocationFields {...fieldProps} prefix="birth" label="Nơi sinh" directories={directories} />
-                  <Field {...fieldProps} name="birthPlaceName" label="Tên bệnh viện / nơi sinh" placeholder="Tên bệnh viện hoặc nơi sinh ghi trên giấy khai sinh" maxLength={200} />
-                  <LocationFields {...fieldProps} prefix="birthRegistration" label="Nơi đăng ký khai sinh" directories={directories} />
-                  <LocationFields {...fieldProps} prefix="hometown" label="Quê quán" directories={directories} />
-                </Section>
-                <Section title="Nơi ở hiện tại" description="Tỉnh, thành phố và xã, phường theo chính quyền 2 cấp hiện tại."><AddressFields {...fieldProps} directories={directories} /></Section>
-                <Section title="Địa chỉ thường trú" description="Điền theo thông tin thường trú của học sinh."><label className="reg-checkbox"><input type="checkbox" checked={sameAddress} onChange={event => { setSameAddress(event.target.checked); if (event.target.checked) update({ tinhThanhHK: values.tinhThanh, xaPhuongHK: values.xaPhuong, soNhaHK: values.soNha }); }} /><span>Giống địa chỉ nơi ở hiện tại</span></label><AddressFields {...fieldProps} household directories={directories} readOnly={sameAddress} /></Section>
-              </>}
+              {step === 1 && <RegistrationAddressStep {...fieldProps} directories={directories} sameAddress={sameAddress} onSameAddressChange={checked => {
+                setSameAddress(checked);
+                if (checked) update({ tinhThanhHK: values.tinhThanh, xaPhuongHK: values.xaPhuong, soNhaHK: values.soNha });
+              }} />}
               {step === 2 && <>
                 {['Cha', 'Mẹ'].map((label, index) => { const suffix = index ? 'Me' : 'Cha'; return <Section key={suffix} title={`Thông tin ${label.toLocaleLowerCase('vi-VN')}`} description="Có thể bỏ trống thông tin không có."><div className="reg-grid">
                   <Field {...fieldProps} name={`ten${suffix}`} label={`Họ và tên ${label.toLocaleLowerCase('vi-VN')}`} placeholder="Nhập họ và tên" maxLength={120} />

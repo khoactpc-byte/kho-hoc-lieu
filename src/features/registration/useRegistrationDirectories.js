@@ -19,7 +19,8 @@ export default function useRegistrationDirectories() {
       revision.current = data.revision;
       setBootstrap(data);
       if (data.addressError || data.birthError) setError('Chưa tải đủ danh mục địa chỉ. Vui lòng thử tải lại trước khi tiếp tục.');
-    } catch (problem) { if (mounted.current) setError(problem.message || 'Chưa kết nối được. Vui lòng thử lại.'); }
+      return data;
+    } catch (problem) { if (mounted.current) setError(problem.message || 'Chưa kết nối được. Vui lòng thử lại.'); return null; }
     finally { if (mounted.current) setLoading(false); }
   }, []);
   useEffect(() => { mounted.current = true; refresh(); return () => { mounted.current = false; }; }, [refresh]);

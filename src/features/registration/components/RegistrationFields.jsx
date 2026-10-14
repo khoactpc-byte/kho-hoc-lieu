@@ -51,8 +51,9 @@ function ProvinceField({ name, label, options, values, onChange, errors, disable
   </div>;
 }
 
-export function Section({ number, title, description, children, action }) {
-  return <section className="reg-section"><div className="reg-section-heading"><div><h3>{number && <span>{number}</span>}{title}</h3>{description && <p>{description}</p>}</div>{action}</div>{children}</section>;
+export function Section({ number, title, description, children, action, framed = false }) {
+  const titleId = useId();
+  return <section className={`reg-section${framed ? ' reg-section-card' : ''}`} aria-labelledby={titleId}><div className="reg-section-heading"><div><h3 id={titleId}>{number && <span>{number}</span>}{title}</h3>{description && <p>{description}</p>}</div>{action}</div>{framed ? <div className="reg-section-body">{children}</div> : children}</section>;
 }
 
 export function LocationFields({ prefix, label, values, onChange, errors, directories }) {
@@ -70,13 +71,13 @@ export function LocationFields({ prefix, label, values, onChange, errors, direct
   }, [province, lookup, retry, directories.bootstrap?.revision]);
   const data = state.province === province ? state.data : null;
   const loading = Boolean(province && (!data && !state.error || state.loading));
-  return <div className="reg-location-block"><h4>{label}</h4><div className="reg-grid reg-grid-three">
+  return <div className="reg-location-block">{label && <h4>{label}</h4>}<div className="reg-grid reg-grid-three">
     <ProvinceField name={`${prefix}Province`} label="Tỉnh / Thành phố" options={directories.bootstrap?.birthProvinces || []} values={values} errors={errors}
       onChange={patch => onChange({ ...patch, [`${prefix}District`]: '', [`${prefix}Ward`]: '' })} />
     <SelectField name={`${prefix}District`} label="Quận / Huyện" required values={values} errors={errors} disabled={!data || loading}
-      onChange={patch => onChange({ ...patch, [`${prefix}Ward`]: '' })} options={data?.districts || []} placeholder={loading ? 'Đang tải…' : 'Chọn quận / huyện'} />
+      onChange={patch => onChange({ ...patch, [`${prefix}Ward`]: '' })} options={data?.districts || []} placeholder={loading ? 'Đang tải…' : 'Chọn huyện'} />
     <SelectField name={`${prefix}Ward`} label="Phường / Xã" required values={values} errors={errors} onChange={onChange} disabled={!data || !values[`${prefix}District`]}
-      options={data?.communesByDistrict?.[`${province}|||${values[`${prefix}District`]}`] || []} placeholder="Chọn phường / xã" />
+      options={data?.communesByDistrict?.[`${province}|||${values[`${prefix}District`]}`] || []} placeholder="Chọn xã" />
   </div>{province && state.province === province && state.error && <p className="reg-inline-error" role="alert">Chưa tải được danh mục. <button type="button" onClick={() => setRetry(value => value + 1)}>Thử lại</button></p>}</div>;
 }
 
@@ -96,7 +97,7 @@ export function AddressFields({ household, values, onChange, errors, directories
     return () => { current = false; };
   }, [province, lookup, retry, directories.bootstrap?.revision]);
   const data = state.province === province ? state.data : null;
-  return <><div className="reg-grid">
+  return <><div className="reg-grid reg-address-grid">
     <ProvinceField name={provinceKey} label="Tỉnh / Thành phố" options={directories.bootstrap?.provinces || []} values={values} errors={errors} disabled={readOnly}
       onChange={patch => onChange({ ...patch, [wardKey]: '' })} />
     <SelectField name={wardKey} label="Phường / Xã" required values={values} errors={errors} onChange={onChange} options={data?.items || []} disabled={readOnly || !data}

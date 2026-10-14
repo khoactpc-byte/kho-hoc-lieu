@@ -18,9 +18,10 @@ test('registration preserves fields, groups campus/class and phone correctly, re
   dom.window.requestAnimationFrame = callback => callback();
   const config = { currentSchoolYear: '2026-2027', publicApiVersion: 1, schools: [{ key: 'nan', name: 'THCS Nguyễn An Ninh', suffix: 'A' }, { key: 'tqk', name: 'THCS Trần Quang Khải', suffix: 'B' }] };
   const sent = [];
+  let deploymentReady = false, bootstrapReads = 0;
   let resolveSubmission, rejectSubmission;
   globalThis.__registrationFixture = {
-    bootstrap: async () => ({ success: true, revision: 'one', config, provinces: ['Tỉnh A'], birthProvinces: ['Tỉnh A'] }),
+    bootstrap: async () => { bootstrapReads++; return { success: true, revision: 'one', config: { ...config, publicApiVersion: deploymentReady ? 1 : 0 }, provinces: ['Tỉnh A'], birthProvinces: ['Tỉnh A'] }; },
     birth: async province => ({ success: true, districts: ['Huyện A'], communesByDistrict: { [`${province}|||Huyện A`]: ['Xã A'] } }),
     address: async () => ({ success: true, items: ['Xã A'] }),
     submit: (...args) => { sent.push(args); return new Promise((resolve, reject) => { resolveSubmission = resolve; rejectSubmission = reject; }); }
@@ -122,7 +123,16 @@ test('registration preserves fields, groups campus/class and phone correctly, re
     await sendForm();
     await sendForm(); assert.equal(sent.length, 0, 'confirmation is required');
     await act(async () => { document.querySelector('input[type="checkbox"]').click(); });
+    const readsBeforeSubmit = bootstrapReads;
     await sendForm();
+    assert.equal(bootstrapReads, readsBeforeSubmit + 1, 'an old page checks the current deployment before rejecting submission');
+    assert.equal(sent.length, 0, 'an unavailable receiver must not upload files or report success');
+    assert.match(document.querySelector('[role="alert"]').textContent, /chưa sẵn sàng tiếp nhận hồ sơ/);
+    assert.ok(document.querySelector('.reg-review').textContent.includes('Nguyễn Văn An'));
+    assert.equal(document.querySelector('input[type="checkbox"]').checked, true, 'readiness errors keep the confirmation and completed form');
+    deploymentReady = true;
+    await sendForm();
+    assert.equal(bootstrapReads, readsBeforeSubmit + 2, 'deployment becomes ready without reloading the page');
     assert.equal(sent.length, 1); assert.equal(sent[0][0].tinhTrangHocSinh, '2026-2027'); assert.equal(sent[0][0].lopHoc, '8B');
     assert.equal(sent[0][0].hocLucLop6, 'Khá'); assert.equal(sent[0][0].hanhKiemLop6, 'Tốt');
     assert.equal(sent[0][0].hocLucLop7, 'Tốt'); assert.equal(sent[0][0].hanhKiemLop7, 'Khá');
@@ -130,6 +140,7 @@ test('registration preserves fields, groups campus/class and phone correctly, re
     assert.equal(sent[0][0].maDinhDanh, '123456789012'); assert.equal(sent[0][1].anhCanCuoc.length, 1);
     assert.equal(document.querySelector('fieldset').disabled, true);
     await sendForm(); assert.equal(sent.length, 1, 'double submit cannot start another request');
+    assert.equal(bootstrapReads, readsBeforeSubmit + 2, 'duplicate clicks do not start additional deployment checks');
     await act(async () => { rejectSubmission(new Error('Mất kết nối thử nghiệm')); });
     assert.ok(document.querySelector('[role="alert"]').textContent.includes('Mất kết nối'));
     await sendForm(); assert.equal(sent.length, 2);

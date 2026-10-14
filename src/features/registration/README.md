@@ -11,6 +11,7 @@
 | Ô nhập, tìm tỉnh, tải huyện/xã, tệp và ảnh xem trước | `components/RegistrationFields.jsx` |
 | Trang kiểm tra trước khi gửi | `components/RegistrationReview.jsx` |
 | Học lực, hạnh kiểm các lớp THCS trước lớp đăng ký | `components/AcademicHistoryFields.jsx` |
+| Năm khối khai sinh, quê quán, nơi ở và thường trú ở bước 2 | `components/RegistrationAddressStep.jsx` |
 | Quy tắc kiểm tra, giới hạn tệp, tên trường gửi sang Sheet | `registrationModel.js` |
 | Kết nối Apps Script, đọc tệp, tiến trình và lỗi mạng | `registrationApi.js` |
 | Bộ nhớ danh mục, chia sẻ request và tải lại | `useRegistrationDirectories.js` |
@@ -23,6 +24,7 @@
 
 - Form dùng toàn bộ bề ngang, không có thanh bước bên trái. Số bước nằm gọn ở đầu form; cơ sở và lớp dùng ô chọn cùng nhóm.
 - Chữ nhập liệu 16 px, nhãn 14 px; giảm khoảng cách giữa hàng. Điện thoại vẫn giữ nút thao tác tối thiểu 44 px và không cuộn ngang.
+- Bước khai sinh và địa chỉ chia thành năm khối có viền, nền tiêu đề nhẹ: Nơi sinh, Nơi đăng ký khai sinh, Quê quán, Nơi ở hiện tại, Địa chỉ thường trú. Mỗi khối ghi rõ danh mục 3 cấp cũ hay 2 cấp hiện tại; ô tên bệnh viện nằm trong khối Nơi sinh. Các khối luôn mở để dễ đối chiếu khi điền.
 - Hồ sơ dùng nút **Chọn tệp / Thêm tệp** nhỏ, giữ ảnh xem trước, tên tệp và nút xóa.
 - Nếu có mã định danh 12 số, mục **Căn cước công dân (CCCD)** xuất hiện và bắt buộc đính kèm ảnh. Nếu chưa có mã, ghi **học sinh chưa có**; bước hồ sơ giải thích vì sao không cần ảnh CCCD.
 - Máy chủ và biểu mẫu dự phòng đều dùng cách ghi mới. Cách ghi cũ vẫn được nhận để tương thích nháp và dữ liệu trước đây, nhưng đầu ra mới được chuẩn hóa thành **học sinh chưa có**. Không sửa hàng loạt dữ liệu cũ.
@@ -37,6 +39,7 @@ Form → `submitRegistration` của Web App đăng ký → cùng sheet `Data`, c
 - Hai cột kỹ thuật **Mã yêu cầu đăng ký** và **Kiểm tra yêu cầu đăng ký** được thêm sau các cột hiện có khi nhận hồ sơ đầu tiên từ form mới. Không sửa/xóa hai cột này: chúng giúp cùng một yêu cầu gửi lại chỉ tạo một dòng, kể cả học sinh chưa có mã định danh.
 - Mã yêu cầu và nội dung dòng được ghi trong cùng `appendRow`. Gửi lại cùng mã/nội dung trả biên nhận cũ; khác nội dung bị từ chối. Nếu mất phản hồi sau khi lưu, retry đọc biên nhận trước khi kiểm tra năm mới.
 - Form giữ thông tin và tệp trong bộ nhớ khi chuyển bước/lỗi mạng. Không lưu thông tin cá nhân vào localStorage. Đóng hoặc tải lại trang sẽ mất thông tin chưa gửi; trình duyệt cảnh báo trước khi rời.
+- Nếu trang được mở trước lúc triển khai Script, cờ tiếp nhận hồ sơ có thể còn cũ. Khi bấm gửi, form tự đọc lại cấu hình tại chỗ trước khi quyết định gửi; giữ nguyên dữ liệu và tệp đã chọn. Nếu năm học vừa đổi, người điền phải kiểm tra và xác nhận lại; chỉ báo thành công sau khi máy chủ trả biên nhận lưu hồ sơ.
 - Danh mục tỉnh được tải một lần; huyện/xã tải theo tỉnh và dùng chung request giữa các ô. Phản hồi của tỉnh đã bỏ chọn không thay ô hiện tại. Chỉ cache kết quả tải thành công trong phiên, không cache năm học cố định.
 - Form được tải riêng, không khởi động giao diện admin/Firebase khi học sinh mở đường dẫn đăng ký.
 
