@@ -29,6 +29,8 @@ import { studentEditKey, studentScoreIdentity } from './utils/studentScoreKeys';
 import { captureSystemSnapshot, restoreAtomicSnapshot } from './services/systemBackup';
 import { completeBackupExport } from './services/serverSystemClient';
 import { observeTeachingAssignments, saveTeachingAssignments, saveSimpleTeachingAssignments } from './services/teachingAssignments';
+import { useTeacherNavigation } from './hooks/useTeacherNavigation';
+import TeacherSubjectSelect from './components/TeacherSubjectSelect';
 import { listDriveFiles } from './services/driveClient';
 import { sanitizeHtml, formatSafeAiText } from './utils/safeHtml';
 import { normalizeNumericScore } from './utils/scoreValues';
@@ -1024,19 +1026,8 @@ function App() {
   const quizCampusPrefix = noteSchoolCode === 'NAN' ? '' : `${noteSchoolCode}_`;
   const noteId = currentTeacherHasScope && selectedGrade && selectedSubject && selectedLesson ? `${noteCampusPrefix}g${selectedGrade}_${selectedSubject.replace(/\s/g, '')}_l${selectedLesson}` : null;
   const quizId = currentTeacherHasScope && selectedGrade && selectedSubject && selectedLesson && activeSchoolYear ? `${activeSchoolYear}_${quizCampusPrefix}g${selectedGrade}_${selectedSubject.replace(/\s/g, '')}_l${selectedLesson}` : null;
-  useEffect(() => {
-    if (role !== 'teacher' || !teacherProfile) return;
-    if (!navigationGrades.includes(String(selectedGrade || ''))) {
-      setSelectedGrade(String(navigationGrades[0] || ''));
-      setSelectedSubject(String(navigationSubjects[0] || ''));
-      setSelectedLesson(null);
-      return;
-    }
-    if (!navigationSubjects.includes(String(selectedSubject || ''))) {
-      setSelectedSubject(String(navigationSubjects[0] || ''));
-      setSelectedLesson(null);
-    }
-  }, [role, teacherProfile, navigationGrades, navigationSubjects, selectedGrade, selectedSubject]);
+  useTeacherNavigation({ role, profile: teacherProfile, grades: navigationGrades, subjects: navigationSubjects,
+    grade: selectedGrade, subject: selectedSubject, setGrade: setSelectedGrade, setSubject: setSelectedSubject, setLesson: setSelectedLesson });
   const activeStudentIsReadOnly = useMemo(() => isReadOnlyStudentRecord(activeStudentProfile), [activeStudentProfile]);
   const activeStudentReadOnlyReason = activeStudentProfile?.status === 'dropped'
     ? 'Hồ sơ đã đánh dấu bỏ học nên chỉ xem, không chỉnh sửa/nộp bài.'
@@ -3821,7 +3812,7 @@ function App() {
         window.sessionStorage.setItem(TEACHER_PROFILE_STORAGE_KEY, JSON.stringify(response.teacherProfile));
         setTeacherProfile(response.teacherProfile);
         setSelectedGrade(String(response.teacherProfile.grades?.[0] || ''));
-        setSelectedSubject(String(response.teacherProfile.subjects?.[0] || ''));
+        setSelectedSubject(null);
         setSelectedLesson(null);
         setRole('teacher');
         setLoginRole('teacher');
@@ -5659,6 +5650,13 @@ ${lessonBlocks}`;
 
   const handleDeleteMaterial = async (id) => { if (role !== 'teacher') return; setConfirmModal({ show: true, message: 'Gỡ tài liệu này khỏi bài học?', onConfirm: async () => { const material = allMaterials.find(item => item.id === id); if (!material || !isContentForCurrentCampus(material) || !teacherCanUseScope(material.grade, material.subject)) { showNotification('Tài khoản không có quyền gỡ tài liệu này.', 'error'); return; } await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'materials', id)); showNotification("Đã gỡ tài liệu"); } }); };
   const resetNavigationWithClean = () => { setSelectedGrade(null); setSelectedSubject(null); setSelectedLesson(null); setViewingMaterial(null); setShowCommonLibraryWorkspace(false); setTeacherTab('giang_day'); setPlanSubject(''); setIsTextbookExpanded(window.innerWidth >= 640); };
+  const selectLearningSubject = subject => {
+    setSelectedSubject(subject);
+    setSelectedLesson(null);
+    setPlanSubject(subject);
+    setShowLearningResultsWorkspace(false);
+    setQuickScoreLockedContext(null);
+  };
   const handleCopyLink = async (url) => { try { await navigator.clipboard.writeText(url); showNotification("Đã copy liên kết tải tài liệu"); } catch { const t = document.createElement("textarea"); t.value = url; document.body.appendChild(t); t.select(); try { document.execCommand('copy'); showNotification("Đã copy liên kết tải tài liệu"); } catch { /* intentionally ignored */ } document.body.removeChild(t); } };
   const renderIcon = (type) => { switch(type) { case 'quick_quiz': return <ListChecks className="w-6 h-6 text-emerald-600" />; case 'pdf': return <FileText className="w-6 h-6 text-red-500" />; case 'ppt': return <MonitorPlay className="w-6 h-6 text-orange-500" />; case 'image': return <ImageIcon className="w-6 h-6 text-green-500" />; default: return <LinkIcon className="w-6 h-6 text-blue-500" />; } };
 
@@ -8669,7 +8667,9 @@ ${lessonBlocks}`;
         <div className={`student-learning-navigation flex flex-nowrap items-center text-[clamp(9px,2.35vw,11px)] sm:text-xs font-black text-slate-400 ${selectedLesson && role === 'teacher' ? 'mb-2' : 'mb-2 sm:mb-8'} bg-white/80 backdrop-blur-md px-2.5 sm:px-6 py-2 sm:py-4 rounded-xl sm:rounded-2xl shadow-sm border border-white/60 uppercase tracking-wide sm:tracking-widest shrink-0 overflow-hidden`}>
             <button onClick={resetNavigationWithClean} className="hover:text-blue-600 flex items-center transition-colors whitespace-nowrap flex-shrink-0" title="Trang chủ"><Home className="w-3.5 h-3.5 sm:w-4 sm:h-4 mr-0 sm:mr-2" /> <span className="hidden sm:inline">{'Trang ch\u1ee7'}</span></button>
             {selectedGrade && <><ChevronRight className="w-3 h-3 sm:w-4 sm:h-4 mx-0.5 sm:mx-2 opacity-30 flex-shrink-0" /><div className="relative flex-shrink-0"><select value={selectedGrade} onChange={(e) => { setSelectedGrade(e.target.value); setIsTextbookExpanded(true); }} className="appearance-none bg-emerald-50 text-emerald-700 border border-emerald-100 pl-1.5 pr-5 sm:pl-2 sm:pr-7 py-0.5 rounded-md sm:rounded-lg whitespace-nowrap font-black focus:outline-none focus:ring-2 focus:ring-emerald-100 cursor-pointer">{navigationGrades.map(g => <option key={g} value={g}>{'Kh\u1ed1i ' + g}</option>)}</select><ChevronDown className="pointer-events-none absolute right-1 sm:right-2 top-1/2 -translate-y-1/2 w-3 h-3 opacity-60" /></div></>}
-            {selectedSubject && <><ChevronRight className="w-3 h-3 sm:w-4 sm:h-4 mx-0.5 sm:mx-2 opacity-30 flex-shrink-0" /><button onClick={() => setSelectedLesson(null)} className="bg-sky-50 text-sky-700 border border-sky-100 px-1.5 sm:px-2 py-0.5 rounded-md sm:rounded-lg whitespace-nowrap truncate min-w-0 max-w-[82px] sm:max-w-none">{selectedSubject}</button></>}
+            {selectedSubject && <><ChevronRight className="w-3 h-3 sm:w-4 sm:h-4 mx-0.5 sm:mx-2 opacity-30 flex-shrink-0" />{role === 'teacher'
+              ? <TeacherSubjectSelect subjects={navigationSubjects} value={selectedSubject} onChange={selectLearningSubject} />
+              : <button onClick={() => setSelectedLesson(null)} className="bg-sky-50 text-sky-700 border border-sky-100 px-1.5 sm:px-2 py-0.5 rounded-md sm:rounded-lg whitespace-nowrap truncate min-w-0 max-w-[82px] sm:max-w-none">{selectedSubject}</button>}</>}
             {role === 'student' && activeStudentProfile?.isClassLeader && !selectedLesson && (
               <button type="button" onClick={() => setShowClassOps(true)} className="ml-auto sm:ml-3 bg-emerald-600 text-white px-2.5 sm:px-3 py-1.5 rounded-lg sm:rounded-xl whitespace-nowrap flex items-center gap-1.5 shadow-sm">
                 <ListChecks className="w-3.5 h-3.5" /> <span>Điểm danh</span>
@@ -8732,7 +8732,7 @@ ${lessonBlocks}`;
                      <div className="student-learning-panels flex-1 flex flex-col gap-6 sm:gap-8 animate-in fade-in zoom-in-95 duration-300">
                         {<>
                                <LearningSubjectPanel role={role} subjects={navigationSubjects} getShortName={getSubjectShortName} getCardStyle={getSubjectCardStyle}
-                                 onSelect={subject => { setSelectedSubject(subject); setPlanSubject(subject); setShowLearningResultsWorkspace(false); setQuickScoreLockedContext(null); }} />
+                                 onSelect={selectLearningSubject} />
 
                                <div className="student-textbook-panel bg-white/70 backdrop-blur-md rounded-[1.5rem] sm:rounded-[2rem] p-4 sm:p-8 border border-white/60 shadow-xl shrink-0">
                                   <button onClick={() => setIsTextbookExpanded(!isTextbookExpanded)} className="w-full flex justify-between items-center focus:outline-none group">
