@@ -349,20 +349,67 @@ test('compact database loads images on demand, opens the matching profile and pr
     assert.ok(utilities);
     assert.equal(body.activeElement, namedButton('Đóng bảng tiện ích'));
     assert.doesNotMatch(utilities.textContent, /Dong bo nam truoc|Đồng bộ năm trước/);
-    assert.equal(utilities.querySelectorAll('details').length, 2, 'Sheet and legacy repair tools are grouped rather than mixed with common actions');
-    assert.ok([...utilities.querySelectorAll('details')].every(group => !group.open), 'occasional tools start collapsed');
+    const utilityTab = label => [...body.querySelectorAll('[role="tablist"][aria-label="Nhóm tiện ích"] [role="tab"]')].find(tab => tab.textContent.startsWith(label));
+    assert.equal(utilities.querySelectorAll('[role="tab"]').length, 4);
+    assert.equal(utilityTab('Thường dùng').getAttribute('aria-selected'), 'true');
+    assert.equal(utilities.querySelectorAll('[role="tabpanel"]').length, 1, 'only the selected group is mounted');
+    assert.equal(namedButton('Kiểm tra học sinh nghi trùng'), null, 'other groups do not crowd the common actions');
+    assert.ok([...utilities.querySelectorAll('[role="tab"][aria-selected="false"]')].every(tab => tab.tabIndex === -1));
     for (const action of utilities.querySelectorAll('button[aria-describedby]')) {
       assert.ok(body.getElementById(action.getAttribute('aria-describedby'))?.textContent.trim(), `${action.getAttribute('aria-label')} has a reminder`);
     }
+    const utilityHelp = () => utilities.querySelector('aside[aria-label="Giải thích chức năng"]');
+    await act(async () => namedButton('Quản lý mã học sinh').dispatchEvent(new windowObject.MouseEvent('mouseover', { bubbles: true })));
+    assert.match(utilityHelp().textContent, /Cấp mã đăng nhập còn thiếu/);
+    assert.equal(namedButton('Đóng quản lý mã học sinh'), null, 'hover explains the action without running it');
+    assert.equal(namedButton('Gửi thư cho học sinh đã chọn (1)').disabled, true, 'unavailable mailbox callbacks remain disabled');
+    await click(namedButton('Giải thích: Gửi thư cho học sinh đã chọn (1)'));
+    assert.match(utilityHelp().textContent, /hộp thư trên web/);
+    assert.ok(utilities.isConnected, 'touch help remains available even for a disabled action');
+    await click(namedButton('Nhóm tiện ích tiếp theo'));
+    assert.equal(utilityTab('Rà soát hồ sơ').getAttribute('aria-selected'), 'true');
+    assert.ok(namedButton('Kiểm tra học sinh nghi trùng'));
+    assert.ok(utilities.querySelector('select[aria-label="Lọc hồ sơ"]'));
+    assert.equal(namedButton('Quản lý mã học sinh'), null);
+    await act(async () => {
+      utilityTab('Rà soát hồ sơ').focus();
+      body.activeElement.dispatchEvent(new windowObject.KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }));
+    });
+    assert.equal(body.activeElement, utilityTab('Web ↔ Sheet'), 'arrow navigation moves focus with the selected group');
+    assert.equal(utilityTab('Web ↔ Sheet').getAttribute('aria-selected'), 'true');
+    assert.ok(utilityTab('Web ↔ Sheet').querySelector('[aria-label="1 hồ sơ chờ đồng bộ"]'));
+    const originalViewport = { width: windowObject.innerWidth, height: windowObject.innerHeight };
+    await act(async () => {
+      windowObject.innerWidth = 390;
+      windowObject.innerHeight = 844;
+      windowObject.dispatchEvent(new windowObject.Event('resize'));
+    });
+    assert.ok(utilities.isConnected, 'resizing keeps the selected group open');
+    assert.equal(utilities.style.width, '366px', 'the menu fits a phone viewport with margins');
+    assert.equal(utilityTab('Web ↔ Sheet').getAttribute('aria-selected'), 'true');
+    await act(async () => {
+      windowObject.innerWidth = originalViewport.width;
+      windowObject.innerHeight = originalViewport.height;
+      windowObject.dispatchEvent(new windowObject.Event('resize'));
+    });
     assert.match(body.getElementById(namedButton('Web → Sheet: gửi toàn bộ năm').getAttribute('aria-describedby')).textContent, /toàn bộ.*năm đang xem.*ngoài bộ lọc/);
     assert.match(body.getElementById(namedButton('Sheet → Web: cập nhật hồ sơ').getAttribute('aria-describedby')).textContent, /từ Google Sheet.*trên Web.*chọn thêm hồ sơ thiếu/);
     assert.ok(namedButton('Chỉ đối chiếu Web ↔ Sheet'));
-    assert.ok(namedButton('Kiểm tra học sinh nghi trùng'));
-    assert.equal(namedButton('Gửi thư cho học sinh đã chọn (1)').disabled, true, 'unavailable mailbox callbacks remain disabled');
     assert.ok(buttonWithText('Thử lại Web → Sheet (1)'), 'retry stays available after removing the summary banner');
-    const sheetGroup = [...utilities.querySelectorAll('details')].find(group => group.querySelector('summary').textContent.includes('Dữ liệu Web ↔ Sheet'));
-    await click(sheetGroup.querySelector('summary'));
-    assert.equal(sheetGroup.open, true);
+    await click(namedButton('Nhóm tiện ích trước'));
+    assert.equal(utilityTab('Rà soát hồ sơ').getAttribute('aria-selected'), 'true');
+    await click(utilityTab('Sửa dữ liệu cũ'));
+    assert.ok(namedButton('Sửa khối theo lớp'));
+    await act(async () => {
+      utilityTab('Sửa dữ liệu cũ').focus();
+      body.activeElement.dispatchEvent(new windowObject.KeyboardEvent('keydown', { key: 'Home', bubbles: true, cancelable: true }));
+    });
+    assert.equal(body.activeElement, utilityTab('Thường dùng'));
+    await click(namedButton('Nhóm tiện ích trước'));
+    assert.equal(utilityTab('Sửa dữ liệu cũ').getAttribute('aria-selected'), 'true', 'navigation wraps at the first group');
+    await click(namedButton('Nhóm tiện ích tiếp theo'));
+    assert.equal(utilityTab('Thường dùng').getAttribute('aria-selected'), 'true');
+    await click(utilityTab('Web ↔ Sheet'));
     await click(namedButton('Nhập danh sách mới'));
     assert.equal(body.querySelector('[aria-label="Tiện ích học sinh"]'), null);
     assert.ok(body.querySelector('textarea[placeholder^="Dán dữ liệu"]'), 'the consolidated Sheet group still opens the new-student importer');
@@ -374,7 +421,9 @@ test('compact database loads images on demand, opens the matching profile and pr
     await click(namedButton('Đóng quản lý mã học sinh'));
     await click(buttonWithText('Tiện ích'));
     await act(async () => body.activeElement.dispatchEvent(new windowObject.KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true })));
-    assert.equal(body.activeElement.tagName, 'SUMMARY', 'keyboard focus stays inside the utility dialog and skips collapsed actions');
+    assert.equal(body.activeElement, namedButton('Giải thích: Đối chiếu lớp theo kết quả năm trước'), 'focus wraps to the last help button in the current group');
+    await act(async () => body.activeElement.dispatchEvent(new windowObject.KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true })));
+    assert.equal(body.activeElement, namedButton('Đóng bảng tiện ích'), 'forward Tab also stays inside the dialog');
     await act(async () => body.activeElement.dispatchEvent(new windowObject.KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
     assert.equal(body.querySelector('[aria-label="Tiện ích học sinh"]'), null);
     assert.equal(body.activeElement, buttonWithText('Tiện ích'), 'closing utilities restores focus to the launcher');

@@ -1490,6 +1490,22 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
   const [schoolYearPromotionPreview, setSchoolYearPromotionPreview] = useState(null);
   const [utilitiesMenuPosition, setUtilitiesMenuPosition] = useState({ top: 0, left: 12, width: 360, maxHeight: 420 });
   const utilitiesButtonRef = useRef(null);
+  const updateUtilitiesMenuPosition = useCallback(() => {
+    const viewportWidth = document.documentElement.clientWidth || window.innerWidth;
+    const viewportHeight = window.innerHeight;
+    if (!viewportWidth || !viewportHeight) return;
+    const rect = utilitiesButtonRef.current?.getBoundingClientRect();
+    const width = Math.min(400, viewportWidth - 24);
+    const left = Math.max(12, Math.min(viewportWidth - width - 12, (rect?.right || viewportWidth - 12) - width));
+    const maxHeight = Math.min(560, viewportHeight - 24);
+    const top = Math.max(12, Math.min((rect?.bottom || 80) + 6, viewportHeight - maxHeight - 12));
+    setUtilitiesMenuPosition({ top, left, width, maxHeight });
+  }, []);
+  useEffect(() => {
+    if (!showUtilitiesMenu) return;
+    window.addEventListener('resize', updateUtilitiesMenuPosition);
+    return () => window.removeEventListener('resize', updateUtilitiesMenuPosition);
+  }, [showUtilitiesMenu, updateUtilitiesMenuPosition]);
   const [mailComposerStudents, setMailComposerStudents] = useState([]);
   const [mailCategory, setMailCategory] = useState('general');
   const [mailTitle, setMailTitle] = useState('');
@@ -3908,27 +3924,15 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
       closeUtilitiesMenu();
       return;
     }
-    const rect = utilitiesButtonRef.current?.getBoundingClientRect();
-    const viewportWidth = window.innerWidth;
-    const viewportHeight = window.innerHeight;
-    const width = Math.min(360, viewportWidth - 16);
-    const left = Math.max(8, Math.min(viewportWidth - width - 8, (rect?.right || viewportWidth - 8) - width));
-    const top = Math.max(8, Math.min((rect?.bottom || 80) + 6, viewportHeight - 180));
-    setUtilitiesMenuPosition({ top, left, width, maxHeight: Math.max(0, viewportHeight - top - 8) });
+    updateUtilitiesMenuPosition();
     setShowUtilitiesMenu(true);
   };
   const utilityAction = action => () => { closeUtilitiesMenu(); action(); };
   const utilityGroups = [
-    pendingSheetSyncCount > 0 && {
-      id: 'pendingSync', label: 'Web → Sheet đang chờ', actions: [{
-        id: 'retry', label: `Thử lại Web → Sheet (${pendingSheetSyncCount})`,
-        note: 'Web đã lưu các hồ sơ này nhưng Google Sheet chưa nhận xong. Bấm để gửi lại từ Web sang Sheet; không đọc dữ liệu từ Sheet về Web.',
-        icon: <RefreshCw className="h-4 w-4 text-amber-600" />, disabled: isSaving,
-        onClick: utilityAction(retrySheetJobs)
-      }]
-    },
     ['current', 'registrations'].includes(studentTab) && {
       id: 'review', label: 'Rà soát hồ sơ',
+      note: 'Tìm hồ sơ cần kiểm tra và lập danh sách bổ sung thông tin.',
+      icon: <ClipboardCheck className="h-4 w-4" />,
       content: <label className="mb-1 flex flex-col gap-1 px-2 py-1 text-xs text-slate-600">
         Lọc hồ sơ
         <select aria-label="Lọc hồ sơ" aria-describedby="student-issue-filter-note" value={quickIssueFilter} onChange={event => setQuickIssueFilter(event.target.value)} className="h-8 rounded border border-slate-200 bg-white px-2 text-sm text-slate-700">
@@ -3959,7 +3963,9 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
       }]
     },
     studentTab === 'current' && {
-      id: 'common', label: 'Thường dùng', actions: [{
+      id: 'common', label: 'Thường dùng',
+      note: 'Các thao tác thường dùng với học sinh của năm đang xem.',
+      icon: <Users className="h-4 w-4" />, actions: [{
         id: 'mail', label: `Gửi thư cho học sinh đã chọn (${selectedIds.size})`,
         note: selectedIds.size ? 'Soạn thông báo vào hộp thư trên web của học sinh đã chọn.' : 'Tích chọn học sinh trước, rồi soạn thư gửi qua web.',
         icon: <Mail className="h-4 w-4 text-emerald-600" />, disabled: !onSendMailboxMessages || selectedIds.size === 0,
@@ -3983,8 +3989,15 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
     },
     {
       id: 'sheet', label: studentTab === 'current' ? 'Dữ liệu Web ↔ Sheet' : 'Dữ liệu Sheet',
-      note: 'Chọn đúng chiều dữ liệu: Sheet → Web hoặc Web → Sheet.', collapsible: studentTab === 'current',
-      actions: [{
+      tabLabel: studentTab === 'current' ? 'Web ↔ Sheet' : 'Dữ liệu Sheet',
+      icon: <FileSpreadsheet className="h-4 w-4" />, badge: pendingSheetSyncCount,
+      note: 'Chọn đúng chiều dữ liệu: Sheet → Web hoặc Web → Sheet.',
+      actions: [...(pendingSheetSyncCount > 0 ? [{
+        id: 'retry', label: `Thử lại Web → Sheet (${pendingSheetSyncCount})`,
+        note: 'Web đã lưu các hồ sơ này nhưng Google Sheet chưa nhận xong. Bấm để gửi lại từ Web sang Sheet; không đọc dữ liệu từ Sheet về Web.',
+        icon: <RefreshCw className="h-4 w-4 text-amber-600" />, disabled: isSaving,
+        onClick: utilityAction(retrySheetJobs)
+      }] : []), {
         id: 'openSheet', label: 'Mở bảng dữ liệu gốc',
         note: 'Mở Google Sheet ở tab mới để xem hoặc đối chiếu thông tin.',
         icon: <ExternalLink className="h-4 w-4 text-emerald-600" />,
@@ -4013,7 +4026,8 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
     },
     studentTab === 'current' && {
       id: 'repair', label: 'Sửa dữ liệu cũ',
-      note: 'Dùng khi dữ liệu cũ sai tên, khối hoặc mất ký hiệu lớp.', collapsible: true,
+      note: 'Dùng khi dữ liệu cũ sai tên, khối hoặc mất ký hiệu lớp.',
+      icon: <Pencil className="h-4 w-4" />,
       actions: [{
         id: 'names', label: 'Chuẩn hóa họ tên cũ',
         note: 'Viết hoa đầu từ và bỏ khoảng trắng thừa trong hồ sơ của năm đang xem.',

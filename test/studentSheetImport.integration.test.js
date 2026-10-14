@@ -52,17 +52,21 @@ test('Sheet import shows real progress, retains assigned classes and reports par
     const document = dom.window.document;
     const button = label => [...document.querySelectorAll('button')].find(element => element.getAttribute('aria-label') === label || element.textContent.trim() === label);
     const click = element => act(async () => { assert.ok(element, 'expected button'); element.click(); });
+    const openSheetUtilities = async () => {
+      await click(button('Tiện ích'));
+      await click([...document.querySelectorAll('[role="tablist"][aria-label="Nhóm tiện ích"] [role="tab"]')].find(tab => tab.textContent.startsWith('Web ↔ Sheet')));
+    };
     const status = () => document.querySelector('[aria-label="Kết quả cập nhật từ Sheet"]');
     root = createRoot(document.getElementById('root'));
     await act(async () => root.render(React.createElement(Manager, { students, currentSchoolYear: '2026-2027', educationLevel: 'thcs', user: { uid: 'admin' } })));
     const start = async () => {
-      await click(button('Tiện ích'));
+      await openSheetUtilities();
       await click(button('Sheet → Web: cập nhật hồ sơ'));
     };
     await start();
     assert.match(status().textContent, /Đang đọc hồ sơ từ Sheet/);
     assert.equal(reads, 1);
-    await click(button('Tiện ích'));
+    await openSheetUtilities();
     assert.equal(button('Sheet → Web: cập nhật hồ sơ').disabled, true, 'a pending import cannot start twice');
     await click(button('Đóng bảng tiện ích'));
     const sheetRow = (student, patch = {}) => ({ ...student, currentClassName: '6A', className: '6A', ...patch });
@@ -138,7 +142,7 @@ test('Sheet import shows real progress, retains assigned classes and reports par
     const currentRecords = [original, prior, wrongClass, duplicateOne, duplicateTwo];
     dom.window.fixture.serverStudents = currentRecords;
     await render(currentRecords);
-    await click(button('Tiện ích'));
+    await openSheetUtilities();
     await click(button('Chỉ đối chiếu Web ↔ Sheet'));
     const compare = () => document.querySelector('[role="dialog"][aria-label="Đối chiếu học sinh với Sheet"]');
     assert.match(compare().textContent, /Đang đọc và đối chiếu/);
@@ -175,7 +179,7 @@ test('Sheet import shows real progress, retains assigned classes and reports par
     dom.window.fixture.serverStudents = [misplaced];
     await render([misplaced]);
     const beforeYearRead = writes.length;
-    await click(button('Tiện ích'));
+    await openSheetUtilities();
     await click(button('Sheet → Web: cập nhật hồ sơ'));
     await act(async () => finishRead({ result: { success: true, items: [sheetRow(misplaced, { rowNumber: 119, schoolYear: '2026-2027', currentClassName: '9A', classHistory: { '2026-2027': '9A' } })] } }));
     assert.match(compare().textContent, /Năm nhập học \(Sheet\)/);
