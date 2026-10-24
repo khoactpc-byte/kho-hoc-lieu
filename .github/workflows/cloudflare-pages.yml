@@ -1,0 +1,62 @@
+name: Update Cloudflare website
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloudflare-htcdtrungmytay-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Read the Cloudflare website branch
+        uses: actions/checkout@v6
+        with:
+          ref: codex/cloudflare-live
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Check deployment credentials
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          test -n "$CLOUDFLARE_API_TOKEN" || { echo 'Missing CLOUDFLARE_API_TOKEN secret'; exit 1; }
+          test -n "$CLOUDFLARE_ACCOUNT_ID" || { echo 'Missing CLOUDFLARE_ACCOUNT_ID secret'; exit 1; }
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check the API gateway and login error handling
+        run: node --test test/cloudflareGateway.test.js test/serviceErrors.test.js
+
+      - name: Build the website
+        env:
+          VITE_SUPABASE_LESSONS_ENABLED: ${{ vars.VITE_SUPABASE_LESSONS_ENABLED }}
+          VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ vars.VITE_SUPABASE_PUBLISHABLE_KEY }}
+          VITE_SUPABASE_LESSON_SYNC_ENABLED: ${{ vars.VITE_SUPABASE_LESSON_SYNC_ENABLED }}
+        run: |
+          test -n "$VITE_SUPABASE_LESSONS_ENABLED" || { echo 'Missing VITE_SUPABASE_LESSONS_ENABLED variable'; exit 1; }
+          test -n "$VITE_SUPABASE_URL" || { echo 'Missing VITE_SUPABASE_URL variable'; exit 1; }
+          test -n "$VITE_SUPABASE_PUBLISHABLE_KEY" || { echo 'Missing VITE_SUPABASE_PUBLISHABLE_KEY variable'; exit 1; }
+          test -n "$VITE_SUPABASE_LESSON_SYNC_ENABLED" || { echo 'Missing VITE_SUPABASE_LESSON_SYNC_ENABLED variable'; exit 1; }
+          npm run build
+
+      - name: Publish the built website to the existing project
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy dist --project-name=htcdtrungmytay --branch=main
