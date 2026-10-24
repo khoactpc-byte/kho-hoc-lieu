@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createGateway } from '../cloudflare/gateway.mjs';
-const origin = 'https://tthtcdtrungmytay.pages.dev';
+const origin = 'https://htcdtrungmytay.pages.dev';
 const req = (path = 'essay-work', options = {}) => new Request(`${origin}/.netlify/functions/${path}`, { method: 'POST',
   headers: { 'Content-Type': 'application/json', origin, ...options.headers }, body: '{}', ...Object.fromEntries(Object.entries(options).filter(([key]) => key !== 'headers')) });
 test('static requests bypass backend; health reports the actual transitional architecture', async () => {

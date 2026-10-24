@@ -1,6 +1,6 @@
 # Web Trung Mỹ Tây trên Cloudflare Pages
 
-Địa chỉ dùng thật: https://tthtcdtrungmytay.pages.dev/
+Địa chỉ dùng thật (đã đối chiếu dashboard ngày 25/10/2026): https://tthtcdtrungmytay.pages.dev/
 
 Nhánh: `codex/cloudflare-live`. Checkout: `.worktrees/cloudflare-live`. Giữ bản Netlify `https://phocaptmt.netlify.app/` và bản thử `https://phocaptmt-thu.pages.dev/`.
 

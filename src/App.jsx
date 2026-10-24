@@ -52,7 +52,6 @@ import TeacherEssayReview from './components/TeacherEssayReview';
 import { requestEssayWork } from './services/essayWork';
 import { buildEssayGradingPrompt, essayReviewNumberText } from './utils/essayGrading';
 import TeacherQuizWorkspace, { TeacherQuizPublishPanel } from './components/TeacherQuizWorkspace';
-import LoginSubmitButton from './components/LoginSubmitButton';
 import { sortTeachingSubjects, teacherClassLabel } from './utils/teacherPresentation';
 import { listDriveFiles } from './services/driveClient';
 import { sanitizeHtml } from './utils/safeHtml';
@@ -99,12 +98,15 @@ import { normalizeNumericScore } from './utils/scoreValues';
 import { draftPatch } from './utils/documentDraft';
 import React, { lazy, Suspense, useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import PasswordWorkspace from './components/PasswordWorkspace';
+import UnifiedLoginDialog from './components/UnifiedLoginDialog';
+import StudentAccountManager from './components/StudentAccountManager';
+import { normalizeLoginUsername, isStudentUsername } from './utils/loginAccount';
 import LearningSubjectPanel from './components/LearningSubjectPanel';
 import { 
-  BookOpen, User, GraduationCap, Lock, ChevronRight, ChevronLeft, 
+  BookOpen, User, GraduationCap, ChevronRight, ChevronLeft,
   FileText, Link as LinkIcon, MonitorPlay, Plus, Trash2, Home, 
   Image as ImageIcon, Save, Loader2, CheckCircle2, Folder, X, 
-  ExternalLink, Copy, Download, Library, Bell, Settings, Newspaper, 
+  ExternalLink, Copy, Download, Library, Bell, Newspaper,
   Calendar, Clock, Sparkles, UploadCloud, RefreshCw, ListChecks, Maximize, 
   Minimize, ArrowUpAZ, ArrowDownAZ, Bold, Italic, Palette,
   Camera, ArrowUp,
@@ -630,7 +632,7 @@ function App() {
   ));
   const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
   const [confirmModal, setConfirmModal] = useState({ show: false, message: '', onConfirm: null });
-  const [modalMode, setModalMode] = useState('teacher');
+  const [modalMode, setModalMode] = useState('unified');
   const [passwordInput, setPasswordInput] = useState('');
   const [teacherUsername, setTeacherUsername] = useState('');
   const [signedInTeacherProfile, setTeacherProfile] = useState(null);
@@ -842,12 +844,6 @@ function App() {
   const [studentProfileImageAppendModes, setStudentProfileImageAppendModes] = useState({});
   const [studentProfileDocumentOverrides, setStudentProfileDocumentOverrides] = useState({});
   const [isSubmittingProfileRequest, setIsSubmittingProfileRequest] = useState(false);
-  const [showStudentAccessModal, setShowStudentAccessModal] = useState(false);
-  const [studentAccessCode, setStudentAccessCode] = useState('');
-  const [studentForgotMode, setStudentForgotMode] = useState(false);
-  const [studentForgotName, setStudentForgotName] = useState('');
-  const [studentForgotVerify, setStudentForgotVerify] = useState('');
-  const [studentFoundCode, setStudentFoundCode] = useState('');
   const [studentQuizName, setStudentQuizName] = useState('');
   const [studentQuizAnswers, setStudentQuizAnswers] = useState({});
   const [studentQuizResult, setStudentQuizResult] = useState(null);
@@ -1419,11 +1415,6 @@ function App() {
     setStudentProfileDraft(prev => updateStudentProfileAddressDraft(prev, key, nextValue));
   }, []);
 
-  const normalizeStudentAccessSuffix = (value = '') => String(value || '').toUpperCase().replace(/\s/g, '').replace(/^HS/, '').replace(/\D/g, '');
-  const getStudentAccessLoginCode = (value = studentAccessCode) => {
-    const suffix = normalizeStudentAccessSuffix(value);
-    return suffix ? `HS${suffix}` : '';
-  };
   const openStudentArea = (student = {}) => {
     clearStoredAdminSession();
     setIsAdmin(false);
@@ -1444,10 +1435,7 @@ function App() {
     }
     setRole('student');
     setLoginRole('student');
-    setShowStudentAccessModal(false);
-    setStudentAccessCode('');
-    setStudentForgotMode(false);
-    setStudentFoundCode('');
+    setShowPasswordModal(false);
     const pendingUpdate = pendingLearningUpdateRef.current;
     pendingLearningUpdateRef.current = null;
     if (pendingUpdate) {
@@ -1467,17 +1455,15 @@ function App() {
     activeLoginRequestRef.current = null;
     setIsLoggingIn(false);
     setShowPasswordModal(false);
-    setShowStudentAccessModal(false);
     setPasswordInput('');
     setErrorMsg('');
   };
-  const handleStudentCodeLogin = async () => {
+  const handleStudentCodeLogin = async (credentials = {}) => {
     if (activeLoginRequestRef.current != null) return;
     const request = ++loginSequenceRef.current;
-    const suffix = normalizeStudentAccessSuffix(studentAccessCode);
-    const code = getStudentAccessLoginCode(suffix);
+    const code = normalizeLoginUsername(credentials.username);
 
-    if (!suffix) {
+    if (!isStudentUsername(code)) {
       showNotification('Em nhập mã HS hoặc mã định danh trước nhé.', 'error');
       return;
     }
@@ -1488,12 +1474,13 @@ function App() {
     setIsLoggingIn(true);
     try {
       if (SCOPED_AUTH_ENABLED) {
-        const response = await exchangeScopedIdentity({ kind: 'student', accessCode: code }, { signal: controller.signal });
+        const response = await exchangeScopedIdentity({ kind: 'student', accessCode: code, password: credentials.password || passwordInput }, { signal: controller.signal });
         student = response.student;
       } else {
-        const response = await postAppsScript({ action: 'createStudentSession', accessCode: code }, { signal: controller.signal });
+        const response = await postAppsScript({ action: 'createStudentSession', accessCode: code, password: credentials.password || passwordInput }, { signal: controller.signal });
         if (request !== loginSequenceRef.current) return;
         if (!response.studentSessionToken) throw new Error('Máy chủ chưa xác thực được học sinh.');
+        if (!Number.isSafeInteger(response.studentProfile?.accountVersion) || response.studentProfile.accountVersion < 0) throw new Error('Máy chủ chưa bật mật khẩu học sinh. Cần cập nhật máy chủ đăng nhập.');
 
         const matching = await getDocsFromServer(query(collection(db, 'artifacts', appId, 'public', 'data', 'students'), where('accessCode', '==', code)));
         const candidates = matching.docs.map(item => ({ ...item.data(), id: item.id })).filter(item => item.status !== 'dropped'
@@ -1504,13 +1491,11 @@ function App() {
         if (request !== loginSequenceRef.current) return;
         window.sessionStorage.setItem(STUDENT_SESSION_KEY, response.studentSessionToken);
       }
-    } catch (error) { if (request === loginSequenceRef.current) showNotification(error.message, 'error'); return; }
+    } catch (error) { if (request === loginSequenceRef.current) { setErrorMsg(error.message); showNotification(error.message, 'error'); } return; }
     finally { if (activeLoginRequestRef.current === request) { activeLoginRequestRef.current = null; loginAbortRef.current = null; setIsLoggingIn(false); } }
     if (request !== loginSequenceRef.current) return;
+    setPasswordInput('');
     openStudentArea(student);
-  };
-  const handleFindStudentCode = () => {
-    showNotification('Liên hệ giáo viên để xác minh và cấp lại mã học sinh.', 'error');
   };
 
   const applyStudentProfileImageFile = (key, file) => {
@@ -3764,7 +3749,7 @@ function App() {
     if (typeof window !== 'undefined' && window.location.hash.toLowerCase().startsWith('#/admin')) {
       window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
     }
-    setModalMode('teacher');
+    setModalMode('unified');
     setTeacherUsername('');
     setPasswordInput('');
     setErrorMsg('');
@@ -3773,7 +3758,12 @@ function App() {
 
   const handleLogin = async () => {
     if (activeLoginRequestRef.current != null) return;
-    if (!passwordInput || (modalMode === 'teacher' && !teacherUsername.trim())) { setErrorMsg('Nhập đầy đủ tên đăng nhập và mật khẩu.'); return; }
+    if (!passwordInput || (['teacher', 'unified'].includes(modalMode) && !teacherUsername.trim())) { setErrorMsg('Nhập đầy đủ tên đăng nhập và mật khẩu.'); return; }
+    if (modalMode === 'unified' && isStudentUsername(teacherUsername)) {
+      setErrorMsg('');
+      await handleStudentCodeLogin({ username: normalizeLoginUsername(teacherUsername), password: passwordInput });
+      return;
+    }
     const request = ++loginSequenceRef.current;
     activeLoginRequestRef.current = request;
     const controller = new AbortController();
@@ -3781,10 +3771,15 @@ function App() {
     setIsLoggingIn(true);
     setErrorMsg('');
     try {
-    if (modalMode === 'admin') {
+    const accountResponse = modalMode === 'unified'
+      ? await postAppsScript({ action: 'loginAccount', username: normalizeLoginUsername(teacherUsername), password: passwordInput }, { signal: controller.signal }) : null;
+    if (request !== loginSequenceRef.current) return;
+    const resolvedMode = accountResponse ? ({ admin: 'admin', thd: 'thdAdmin', teacher: 'teacher' })[accountResponse.role] : modalMode;
+    if (!resolvedMode) throw new Error(accountResponse?.message || 'Máy chủ chưa hỗ trợ đăng nhập chung. Cần cập nhật máy chủ đăng nhập.');
+    if (resolvedMode === 'admin') {
       try {
         setErrorMsg('');
-        const response = await postAppsScript({ action: 'createAdminSession', password: passwordInput }, { signal: controller.signal });
+        const response = accountResponse || await postAppsScript({ action: 'createAdminSession', password: passwordInput }, { signal: controller.signal });
         if (request !== loginSequenceRef.current) return;
         if (response.status !== 'success' || !response.adminSessionToken) throw new Error(response.message || 'Không tạo được phiên admin.');
         if (SCOPED_AUTH_ENABLED) await exchangeScopedIdentity({ kind: 'staff', adminSessionToken: response.adminSessionToken }, { signal: controller.signal });
@@ -3806,9 +3801,9 @@ function App() {
       } catch (error) {
         if (request === loginSequenceRef.current) setErrorMsg(error.message || 'Mật khẩu không chính xác!');
       }
-    } else if (modalMode === 'thdAdmin') {
+    } else if (resolvedMode === 'thdAdmin') {
       try {
-        const response = await postAppsScript({ action: 'createStaffSession', role: 'thd', password: passwordInput }, { signal: controller.signal });
+        const response = accountResponse || await postAppsScript({ action: 'createStaffSession', role: 'thd', password: passwordInput }, { signal: controller.signal });
         if (request !== loginSequenceRef.current) return;
         if (!response.staffSessionToken) throw new Error(response.message || 'Không tạo được phiên Trần Hưng Đạo.');
         if (SCOPED_AUTH_ENABLED) await exchangeScopedIdentity({ kind: 'staff', staffSessionToken: response.staffSessionToken }, { signal: controller.signal });
@@ -3828,9 +3823,9 @@ function App() {
       } catch (error) {
         if (request === loginSequenceRef.current) setErrorMsg(error.message || 'Mật khẩu Trần Hưng Đạo không chính xác!');
       }
-    } else if (modalMode === 'teacher') {
+    } else if (resolvedMode === 'teacher') {
       try {
-        const response = await postAppsScript({ action: 'createStaffSession', role: 'teacher', username: teacherUsername, password: passwordInput }, { signal: controller.signal });
+        const response = accountResponse || await postAppsScript({ action: 'createStaffSession', role: 'teacher', username: teacherUsername, password: passwordInput }, { signal: controller.signal });
         if (request !== loginSequenceRef.current) return;
         if (!response.staffSessionToken || !response.teacherProfile) throw new Error(response.message || 'Không tạo được phiên giáo viên.');
         if (SCOPED_AUTH_ENABLED) await exchangeScopedIdentity({ kind: 'staff', staffSessionToken: response.staffSessionToken }, { signal: controller.signal });
@@ -3851,6 +3846,8 @@ function App() {
       }
     }
     if (request === loginSequenceRef.current) setPasswordInput('');
+    } catch (error) {
+      if (request === loginSequenceRef.current) setErrorMsg(error.message || 'Chưa đăng nhập được. Hãy thử lại.');
     } finally {
       if (activeLoginRequestRef.current === request) { activeLoginRequestRef.current = null; loginAbortRef.current = null; setIsLoggingIn(false); }
     }
@@ -3866,14 +3863,6 @@ function App() {
     resetNavigationWithClean();
     if (window.location.hash.toLowerCase().startsWith('#/admin')) window.history.replaceState(null, '', window.location.pathname + window.location.search);
     return true;
-  };
-
-  const openStudentLogin = async () => {
-    if (!await handleLogout()) return;
-    pendingLearningUpdateRef.current = null;
-    if (isStudentCodeEnabled || SCOPED_AUTH_ENABLED) {
-      setShowStudentAccessModal(true); setStudentForgotMode(false); setStudentFoundCode('');
-    } else { setRole('student'); setLoginRole('student'); }
   };
 
   const handleExitAdmin = async () => {
@@ -6564,11 +6553,8 @@ ${lessonBlocks}`;
     if (item.isAuto) {
       if (role !== 'student' || !activeStudentProfile?.accessCode) {
         pendingLearningUpdateRef.current = item;
-        setStudentAccessCode('');
-        setStudentForgotMode(false);
-        setStudentFoundCode('');
-        setShowStudentAccessModal(true);
-        showNotification('Học sinh đăng nhập mã HS để xem bài được giao.');
+        setModalMode('unified'); setTeacherUsername(''); setPasswordInput(''); setErrorMsg(''); setShowPasswordModal(true);
+        showNotification('Đăng nhập để xem bài được giao.');
         return;
       }
       const destination = learningUpdateDestination(item, { grade: activeStudentGrade, schoolCode: currentContentSchoolCode });
@@ -6746,6 +6732,12 @@ ${lessonBlocks}`;
         )}
 
         <div className={`flex-1 flex flex-col items-center relative z-10 w-full mx-auto min-h-0 ${isAdmin ? 'max-w-none pt-0 px-0 pb-3' : 'max-w-7xl pt-3 px-4 pb-1 sm:pb-4'}`}>
+          {!isAdmin && (
+            <nav aria-label="Tài khoản" className="home-account-bar flex w-full shrink-0 items-center justify-end gap-1.5">
+              <button type="button" onClick={openTeacherLogin} className="inline-flex h-8 shrink-0 items-center justify-center gap-1 whitespace-nowrap rounded-md bg-blue-700 px-2.5 text-xs font-semibold text-white shadow-sm hover:bg-blue-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-700"><User aria-hidden="true" className="h-3.5 w-3.5" />Đăng nhập</button>
+              <a href="#/dang-ky" className="inline-flex h-8 shrink-0 items-center justify-center whitespace-nowrap rounded-md border border-emerald-200 bg-white px-2.5 text-xs font-semibold text-emerald-700 no-underline hover:bg-emerald-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700">Đăng ký mới</a>
+            </nav>
+          )}
           {!isAdmin && <div className="home-public-heading text-center mt-3 sm:mt-5 mb-3 sm:mb-5 leading-tight shrink-0 w-full">
             <h1 className="text-[15px] sm:text-2xl md:text-[32px] font-extrabold text-[#1238a8] uppercase leading-tight" style={{ textShadow: '0 1px 0 rgba(255,255,255,0.75)' }}>
                 <span className="sm:hidden block">Trung tâm Học Tập Cộng Đồng</span>
@@ -7275,6 +7267,7 @@ ${lessonBlocks}`;
                 isStudentCodeEnabled={isStudentCodeEnabled}
                 onToggleStudentCode={() => updateGlobalSetting('isStudentCodeEnabled', !isStudentCodeEnabled).catch(() => undefined)}
                 onClose={() => setShowPasswordWorkspace(false)}
+                students={<StudentAccountManager students={allStudents} showNotification={showNotification} />}
               >
                 <Suspense fallback={<div className="password-panel p-3 text-sm text-slate-500">Đang tải quản lý tài khoản...</div>}>
                   <TeacherAccountManager key={adminEducationLevel} grades={adminGrades} subjects={[...adminSubjects, 'Chủ nhiệm']} showNotification={showNotification} nanTeachers={nanTeachers} tqkTeachers={tqkTeachers} />
@@ -7666,62 +7659,10 @@ ${lessonBlocks}`;
             </div>
           )}
 
-          <div className="home-role-actions w-full max-w-5xl mx-auto px-2 relative z-20 shrink-0 pb-1 sm:pb-2 mt-3 sm:mt-7">
-            {!isAdmin && (
-              <div className="flex flex-col gap-1.5 sm:gap-3">
-                  <div role="group" aria-label="Chọn tài khoản đăng nhập" className="grid grid-cols-4 gap-1.5 sm:gap-3">
-                    <button onClick={openStudentLogin} className="min-w-0 flex h-10 items-center justify-center gap-0.5 bg-violet-700 hover:bg-violet-800 ring-2 ring-white/80 px-1 text-white rounded-xl text-[9px] font-black uppercase whitespace-nowrap shadow-lg transition-all active:scale-95 sm:h-12 sm:gap-2 sm:px-2 sm:text-xs sm:rounded-2xl lg:h-14 lg:text-sm">
-                       <User className="w-3.5 h-3.5 shrink-0 sm:w-4 sm:h-4 lg:w-5 lg:h-5" />
-                       <span className="lg:hidden">Học sinh</span><span className="hidden lg:inline">Tôi là Học sinh</span>
-                    </button>
-                    <button onClick={openTeacherLogin} className="min-w-0 flex h-10 items-center justify-center gap-0.5 bg-emerald-50 px-1 text-emerald-700 border border-emerald-200 rounded-xl text-[9px] font-black uppercase whitespace-nowrap shadow-md transition-all active:scale-95 sm:h-12 sm:gap-2 sm:px-2 sm:text-xs sm:rounded-2xl lg:h-14 lg:text-sm">
-                       <GraduationCap className="w-3.5 h-3.5 shrink-0 sm:w-4 sm:h-4 lg:w-5 lg:h-5" />
-                       <span className="lg:hidden">Giáo viên</span><span className="hidden lg:inline">Tôi là Giáo viên</span>
-                    </button>
-                    <button onClick={() => { setModalMode('thdAdmin'); setPasswordInput(''); setErrorMsg(''); setShowPasswordModal(true); }} className="min-w-0 flex h-10 items-center justify-center gap-0.5 rounded-xl border border-sky-200/70 bg-white/55 px-1 text-[9px] font-black uppercase whitespace-nowrap text-sky-600 backdrop-blur-sm transition-all hover:bg-white hover:text-sky-700 sm:h-12 sm:gap-2 sm:px-2 sm:text-xs sm:rounded-2xl lg:h-14 lg:text-sm"><Briefcase className="w-3.5 h-3.5 shrink-0 sm:w-4 sm:h-4 lg:w-5 lg:h-5" /><span className="sm:hidden">THĐ</span><span className="hidden sm:inline">Trần Hưng Đạo</span></button>
-                    <button onClick={() => { setModalMode('admin'); setPasswordInput(''); setErrorMsg(''); setShowPasswordModal(true); }} className="min-w-0 flex h-10 items-center justify-center gap-0.5 rounded-xl border border-slate-200/60 bg-white/40 px-1 text-[9px] font-black uppercase whitespace-nowrap text-slate-500 backdrop-blur-sm transition-all hover:bg-white hover:text-slate-600 sm:h-12 sm:gap-2 sm:px-2 sm:text-xs sm:rounded-2xl lg:h-14 lg:text-sm"><Settings className="w-3.5 h-3.5 shrink-0 sm:w-4 sm:h-4 lg:w-5 lg:h-5" /><span className="sm:hidden">Admin</span><span className="hidden sm:inline">Quản trị</span></button>
-                  </div>
-                  <div className="home-contact-line text-center text-[10px] font-bold text-blue-950/75 sm:hidden">Liên hệ: 0354.66.7174 (Thầy Khoa)</div>
-              </div>
-            )}
-          </div>
+          {!isAdmin && <div className="home-contact-line shrink-0 text-center text-[10px] font-bold text-blue-950/75 sm:hidden">Liên hệ: 0354.66.7174 (Thầy Khoa)</div>}
         </div>
         
-        {showPasswordModal && <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-in fade-in duration-300"><div className="bg-white rounded-[2.5rem] shadow-2xl max-w-sm w-full p-7 sm:p-10 border border-white/20"><div className="flex items-center space-x-3 mb-6"><div className="bg-slate-100 p-3.5 rounded-full"><Lock className="w-6 h-6 text-slate-800" /></div><h3 className="text-xl sm:text-2xl font-black text-slate-800">{modalMode === 'admin' ? 'Hệ thống Quản trị' : (modalMode === 'thdAdmin' ? 'Trần Hưng Đạo' : 'Đăng nhập Giáo viên')}</h3></div>{modalMode === 'teacher' && <input type="text" aria-label="Tên đăng nhập giáo viên" placeholder="Tên đăng nhập giáo viên" autoComplete="username" disabled={isLoggingIn} className="w-full border-2 border-slate-200 rounded-2xl p-4 focus:outline-none focus:border-emerald-500 focus:ring-4 focus:ring-emerald-50 mb-3 text-base font-bold" value={teacherUsername} onChange={(e) => setTeacherUsername(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleLogin()} />}<input type="password" autoComplete={modalMode === 'teacher' ? 'current-password' : 'current-password'} aria-label="Mật khẩu" disabled={isLoggingIn} placeholder="Nhập mật khẩu..." className="w-full border-2 border-slate-200 rounded-2xl p-4 focus:outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-50 mb-4 text-base font-black tracking-widest text-center" value={passwordInput} onChange={(e) => setPasswordInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleLogin()} />{errorMsg && <p role="alert" className="text-rose-500 text-sm mb-5 font-black text-center">{errorMsg}</p>}<div className="flex space-x-3"><button onClick={cancelLogin} className="flex-1 py-3.5 bg-slate-100 text-slate-700 rounded-2xl font-bold hover:bg-slate-200 transition-colors">Hủy bỏ</button><LoginSubmitButton onClick={handleLogin} pending={isLoggingIn} /></div></div></div>}
-        {showStudentAccessModal && (
-          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-in fade-in duration-300">
-            <div className="bg-white rounded-[2rem] shadow-2xl max-w-md w-full p-5 sm:p-7 border border-white/20">
-              <div className="flex items-center justify-between gap-3 mb-5">
-                <div className="flex items-center gap-3">
-                  <div className="bg-blue-50 p-3 rounded-2xl"><User className="w-6 h-6 text-blue-600" /></div>
-                  <div><h3 className="text-lg sm:text-xl font-black text-slate-900 uppercase">Vào học</h3><p className="text-[11px] font-bold text-slate-500 leading-tight">Mã học sinh đã có sẵn chữ HS, em chỉ nhập số phía sau.</p></div>
-                </div>
-                <button type="button" onClick={cancelLogin} className="p-2 rounded-xl bg-slate-50 text-slate-500 hover:bg-rose-50 hover:text-rose-600"><X className="w-5 h-5" /></button>
-              </div>
-              {!studentForgotMode ? (
-                <div className="space-y-3">
-                  <div className="flex items-stretch rounded-2xl border-2 border-blue-100 bg-white overflow-hidden focus-within:border-blue-500 focus-within:ring-4 focus-within:ring-blue-50">
-                    <div className="px-4 flex items-center justify-center bg-blue-50 text-blue-700 font-black text-lg tracking-widest border-r border-blue-100">HS</div>
-                    <input value={studentAccessCode} onChange={(e) => setStudentAccessCode(normalizeStudentAccessSuffix(e.target.value))} onKeyDown={(e) => e.key === 'Enter' && handleStudentCodeLogin()} inputMode="numeric" aria-label="Mã học sinh" placeholder="VD: 22601" className="min-w-0 flex-1 p-4 focus:outline-none text-lg font-black tracking-widest text-center text-slate-800" />
-                  </div>
-                  <button type="button" onClick={handleStudentCodeLogin} disabled={isLoggingIn} className="w-full py-3.5 bg-blue-600 text-white rounded-2xl font-black shadow-lg hover:bg-blue-700 transition-all">Vào học</button>
-                  <div className="grid grid-cols-2 gap-2">
-                    <button type="button" onClick={() => { setStudentForgotMode(true); setStudentFoundCode(''); }} className="py-2.5 text-[11px] font-black uppercase text-slate-500 hover:text-blue-600">Quên mã?</button>
-                    <button type="button" onClick={() => { window.location.hash = '/dang-ky'; }} className="py-2.5 text-[11px] font-black uppercase text-emerald-600 hover:text-emerald-700">Đăng ký mới</button>
-                  </div>
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  <input value={studentForgotName} onChange={(e) => setStudentForgotName(e.target.value)} placeholder="Nhập họ tên có dấu hoặc không dấu" className="w-full border border-slate-200 rounded-2xl p-4 focus:outline-none focus:border-blue-400 text-sm font-bold" />
-                  <input value={studentForgotVerify} onChange={(e) => setStudentForgotVerify(e.target.value.replace(/\D/g, '').slice(0, 2))} onKeyDown={(e) => e.key === 'Enter' && handleFindStudentCode()} placeholder="2 số cuối mã định danh, nếu không có thì dùng ngày sinh" className="w-full border border-slate-200 rounded-2xl p-4 focus:outline-none focus:border-blue-400 text-sm font-bold text-center tracking-widest" />
-                  <button type="button" onClick={handleFindStudentCode} className="w-full py-3 bg-blue-600 text-white rounded-2xl font-black shadow-md">Tìm mã</button>
-                  {studentFoundCode && <div className="rounded-2xl bg-emerald-50 border border-emerald-100 p-3 text-center"><div className="text-[10px] font-black uppercase text-emerald-700 mb-1">Mã học sinh của em</div><div className="text-xl font-black text-emerald-900 tracking-widest">{studentFoundCode}</div>{!studentFoundCode.includes(',') && <button type="button" onClick={handleStudentCodeLogin} className="mt-3 px-4 py-2 bg-emerald-600 text-white rounded-xl text-xs font-black uppercase">Dùng mã này vào học</button>}</div>}
-                  <button type="button" onClick={() => setStudentForgotMode(false)} className="w-full py-2.5 text-xs font-black uppercase text-slate-500 hover:text-blue-600">Quay lại nhập mã</button>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
+        {showPasswordModal && <UnifiedLoginDialog username={teacherUsername} password={passwordInput} onUsernameChange={setTeacherUsername} onPasswordChange={setPasswordInput} onSubmit={handleLogin} onClose={cancelLogin} pending={isLoggingIn} error={errorMsg} onRegister={() => { cancelLogin(); window.location.hash = '/dang-ky'; }} />}
         {viewingNews && (
           <Suspense fallback={<div className="fixed inset-0 z-50 flex items-center justify-center bg-white text-sm font-black text-blue-700">Đang mở bản tin...</div>}>
             <NewsViewerModal

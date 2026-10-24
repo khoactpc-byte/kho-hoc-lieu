@@ -25,9 +25,11 @@ const index = new TextDecoder().decode(entries['index.html']);
 if (!index.includes('TTHTCĐ phường Trung Mỹ Tây') || !entries['_worker.js']) throw new Error('Invalid live package');
 await mkdir('.cloudflare-artifacts', { recursive: true });
 const archive = zipSync(entries, { level: 6 });
-await writeFile('.cloudflare-artifacts/tthtcdtrungmytay.zip', archive);
+await writeFile('.cloudflare-artifacts/htcdtrungmytay.zip', archive);
 const manifest = { site: 'https://tthtcdtrungmytay.pages.dev', files: count, bytes: archive.length,
   sha256: createHash('sha256').update(archive).digest('hex'), mode: 'live-existing-data',
-  backend: 'https://phocaptmt.netlify.app', serverSecretsCopied: false, netlifyDeploymentRequired: false };
+  backend: 'https://phocaptmt.netlify.app', serverSecretsCopied: false,
+  netlifyDeploymentRequired: process.argv.includes('--requires-backend-update'),
+  appsScriptDeploymentRequired: process.argv.includes('--requires-apps-script-update') };
 await writeFile('.cloudflare-artifacts/manifest.json', JSON.stringify(manifest, null, 2));
 console.log(JSON.stringify(manifest));

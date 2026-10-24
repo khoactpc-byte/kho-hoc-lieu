@@ -1,10 +1,18 @@
 import { REGISTRATION_WEB_APP_URL } from '../../config/registration';
 import { requestJsonp } from '../../services/jsonpClient';
 import { FILE_FIELDS, hasNoIdentity } from './registrationModel';
+import { loadBundledStudentProfileLocations } from '../../services/studentProfileLocations';
+import { createRegistrationBootstrapLoader } from './registrationBootstrap';
 
-export const loadRegistrationBootstrap = options => requestJsonp(REGISTRATION_WEB_APP_URL, { action: 'locationBootstrap' }, { timeoutMs: 20000, ...options });
-export const loadBirthProvince = province => requestJsonp(REGISTRATION_WEB_APP_URL, { action: 'birthPlaceProvince', province }, { timeoutMs: 20000 });
-export const loadAddressCommunes = province => requestJsonp(REGISTRATION_WEB_APP_URL, { action: 'communes', province }, { timeoutMs: 20000 })
+const remote = (params, options) => requestJsonp(REGISTRATION_WEB_APP_URL, params, { timeoutMs: 20000, ...options });
+const localFirst = params => loadBundledStudentProfileLocations(params).catch(() => remote(params));
+export const loadRegistrationBootstrap = createRegistrationBootstrapLoader({
+  config: options => remote({ action: 'registrationConfig' }, options),
+  locations: () => loadBundledStudentProfileLocations({ action: 'locationBootstrap' }),
+  fallbackLocations: options => remote({ action: 'locationBootstrap' }, options)
+});
+export const loadBirthProvince = province => localFirst({ action: 'birthPlaceProvince', province });
+export const loadAddressCommunes = province => localFirst({ action: 'communes', province })
   .then(data => ({ ...data, success: data.success !== false && Array.isArray(data.items) }));
 
 function readFile(file) {

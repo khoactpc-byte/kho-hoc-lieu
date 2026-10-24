@@ -40,7 +40,9 @@ Form → `submitRegistration` của Web App đăng ký → cùng sheet `Data`, c
 - Mã yêu cầu và nội dung dòng được ghi trong cùng `appendRow`. Gửi lại cùng mã/nội dung trả biên nhận cũ; khác nội dung bị từ chối. Nếu mất phản hồi sau khi lưu, retry đọc biên nhận trước khi kiểm tra năm mới.
 - Form giữ thông tin và tệp trong bộ nhớ khi chuyển bước/lỗi mạng. Không lưu thông tin cá nhân vào localStorage. Đóng hoặc tải lại trang sẽ mất thông tin chưa gửi; trình duyệt cảnh báo trước khi rời.
 - Nếu trang được mở trước lúc triển khai Script, cờ tiếp nhận hồ sơ có thể còn cũ. Khi bấm gửi, form tự đọc lại cấu hình tại chỗ trước khi quyết định gửi; giữ nguyên dữ liệu và tệp đã chọn. Nếu năm học vừa đổi, người điền phải kiểm tra và xác nhận lại; chỉ báo thành công sau khi máy chủ trả biên nhận lưu hồ sơ.
-- Danh mục tỉnh được tải một lần; huyện/xã tải theo tỉnh và dùng chung request giữa các ô. Phản hồi của tỉnh đã bỏ chọn không thay ô hiện tại. Chỉ cache kết quả tải thành công trong phiên, không cache năm học cố định.
+- Các ô thông tin cá nhân hiện ngay, không chờ Apps Script hoặc danh mục địa chỉ. Năm học/cơ sở lấy từ endpoint cấu hình nhẹ, không đoán năm; chỉ cho tiếp tục sau khi cấu hình hợp lệ. Thông tin đã nhập giữ nguyên khi tải xong hoặc tải lại cấu hình.
+- Danh mục tỉnh/huyện/xã ưu tiên bản JSON tích hợp cùng web, giống phần sửa hồ sơ; nếu tệp không tải được thì dùng endpoint địa chỉ công khai hiện có. Request dùng chung giữa các ô; phản hồi của tỉnh đã bỏ chọn không thay ô hiện tại.
+- Cấu hình và danh mục công khai hoàn chỉnh được dùng lại trong bộ nhớ tối đa 60 giây; không lưu hồ sơ hay thông tin cá nhân vào cache. Nút Tải lại và kiểm tra phiên bản trước khi gửi luôn yêu cầu dữ liệu mới, không dùng năm học cố định.
 - Form được tải riêng, không khởi động giao diện admin/Firebase khi học sinh mở đường dẫn đăng ký.
 
 ## Triển khai

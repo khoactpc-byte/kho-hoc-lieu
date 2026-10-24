@@ -29,3 +29,18 @@ test('Apps Script failures retain registration context through the POST client',
     await assert.rejects(postAppsScript({ action: 'registrationAdminAction', registrationAction: 'syncStudent' }), error => error.message === '403 Forbidden');
   } finally { globalThis.fetch = originalFetch; }
 });
+
+test('an older login server reports a login upgrade instead of an export error', async () => {
+  const raw = 'Apps Script da nhan request nhung khong dung action hoac thieu base64. version=2026-10-24-weekly-essay-v13, action=loginAccount';
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => ({ ok: true, text: async () => JSON.stringify({ status: 'error', message: raw }) });
+    await assert.rejects(postAppsScript({ action: 'loginAccount', username: 'fixture', password: 'fixture-only' }), error => {
+      assert.match(error.message, /đăng nhập/);
+      assert.match(error.message, /Code.gs.*Apps Script chính.*code_hoclieu.gs/);
+      assert.doesNotMatch(error.message, /thao tác xuất|base64|fixture-only/);
+      return true;
+    });
+    assert.match(normalizeServiceErrorMessage(raw, 'upload'), /thao tác xuất/);
+  } finally { globalThis.fetch = originalFetch; }
+});

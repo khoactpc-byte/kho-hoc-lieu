@@ -2763,6 +2763,16 @@ export default function ScorebookWorkspace({
   const transcriptStudentClass = (student = selectedTranscriptStudent, yearEntry = {}) => transcriptClassForYear({
     student: student || {}, records: students, schoolYear: yearEntry.schoolYear || currentSchoolYear, currentSchoolYear
   });
+  const isHistoricalTranscriptYear = yearEntry => Number(yearEntry?.startYear || getSchoolYearStartYear(yearEntry?.schoolYear)) < ROSTER_DIGITAL_START_YEAR;
+  const transcriptHomeroomTeacherForYear = (yearEntry, student) => {
+    if (!isHistoricalTranscriptYear(yearEntry)) return homeroomTeacherName;
+    const className = transcriptStudentClass(student, yearEntry);
+    const assigned = getTranscriptAssignmentTeacherName({
+      teacherKeys: ['Chủ nhiệm', 'Chu nhiem', 'CN', 'GVCN', 'GV chủ nhiệm', 'Giáo viên chủ nhiệm']
+    }, { schoolYear: yearEntry.schoolYear, gradeValue: yearEntry.gradeNumber, className });
+    const saved = getTeacherAssignmentsForYearGrade(yearEntry.schoolYear, className);
+    return assigned || decodeDisplayText(saved?.['Chủ nhiệm'] || saved?.['GVCN'] || '').trim();
+  };
   const transcriptRegisterCode = (student = selectedTranscriptStudent) => decodeDisplayText(student?.pcgdCode || student?.registerCode || student?.studentCode || student?.accessCode || '');
   const transcriptStudentPhotoUrl = (student = selectedTranscriptStudent) => {
     const directPhoto = student?.portraitUrl || student?.portraitURL || student?.photoUrl || student?.photoURL || student?.avatarUrl || student?.avatarURL || student?.imageUrl || student?.profileImageUrl || student?.studentPhotoUrl || student?.pictureUrl || student?.portrait || student?.photo || student?.avatar || student?.picture || '';
@@ -2789,21 +2799,25 @@ export default function ScorebookWorkspace({
   };
   const getTranscriptStartDateText = (schoolYearLabel = currentSchoolYear) => {
     const key = compactSchoolYearLabel(schoolYearLabel);
-    const fallback = getTranscriptDateFallback(transcriptStartDates, schoolYearLabel, defaultTranscriptStartDateText(schoolYearLabel), 'hk1');
+    const fallback = getTranscriptDateFallback(transcriptStartDates, schoolYearLabel,
+      getSchoolYearStartYear(schoolYearLabel) < ROSTER_DIGITAL_START_YEAR ? '' : defaultTranscriptStartDateText(schoolYearLabel), 'hk1');
     return customText(`transcript:date:start:${key}`, fallback);
   };
   const getTranscriptEndDateText = (schoolYearLabel = currentSchoolYear, gradeNumber = grade) => {
     const key = compactSchoolYearLabel(schoolYearLabel);
     const isGrade9 = String(gradeNumber || '').replace(/[^\d]/g, '') === '9';
     const fallback = isGrade9
-      ? getTranscriptDateFallback(transcriptGrade9EndDates, schoolYearLabel, defaultTranscriptGrade9EndDateText(schoolYearLabel), 'hk2')
-      : getTranscriptDateFallback(transcriptEndDates, schoolYearLabel, defaultTranscriptEndDateText(schoolYearLabel), 'hk2');
+      ? getTranscriptDateFallback(transcriptGrade9EndDates, schoolYearLabel,
+        getSchoolYearStartYear(schoolYearLabel) < ROSTER_DIGITAL_START_YEAR ? '' : defaultTranscriptGrade9EndDateText(schoolYearLabel), 'hk2')
+      : getTranscriptDateFallback(transcriptEndDates, schoolYearLabel,
+        getSchoolYearStartYear(schoolYearLabel) < ROSTER_DIGITAL_START_YEAR ? '' : defaultTranscriptEndDateText(schoolYearLabel), 'hk2');
     const legacyFallback = isGrade9 ? customText(`transcript:date:end:${key}`, fallback) : fallback;
     return customText(`transcript:date:${isGrade9 ? 'grade9-end' : 'end'}:${key}`, legacyFallback);
   };
   const getTranscriptSignerFallback = (signerMap = {}, schoolYearLabel = currentSchoolYear, preferredSemester = 'hk2') => {
     const key = compactSchoolYearLabel(schoolYearLabel);
-    return decodeSemesterDisplayText(signerMap?.[key] || signerMap?.[schoolYearLabel] || principalName || '', preferredSemester).trim();
+    const defaultSigner = getSchoolYearStartYear(schoolYearLabel) < ROSTER_DIGITAL_START_YEAR ? '' : principalName;
+    return decodeSemesterDisplayText(signerMap?.[key] || signerMap?.[schoolYearLabel] || defaultSigner || '', preferredSemester).trim();
   };
   const getTranscriptStartSignerText = (schoolYearLabel = currentSchoolYear) => {
     const key = compactSchoolYearLabel(schoolYearLabel);
@@ -2832,7 +2846,7 @@ export default function ScorebookWorkspace({
     const found = values.find(value => String(value || '').match(/\d{4}/));
     return found ? getSchoolYearStartYear(found) : null;
   }, []);
-  const getTranscriptYearEntriesForStudent = useCallback((student = selectedTranscriptStudent) => {
+  const getTranscriptYearEntriesForStudent = useCallback((student = selectedTranscriptStudent, startYearSetting = transcriptStartYear) => {
     const currentStart = getSchoolYearStartYear(currentSchoolYear);
     const currentGradeNumber = Number(getGradeFromClass(student?.className || grade) || grade || 6);
     const inferredStart = currentStart - Math.max(0, currentGradeNumber - 6);
@@ -2840,7 +2854,7 @@ export default function ScorebookWorkspace({
     const enrollmentYear = profileSchoolYear(student?.enrollmentYear);
     const firstStart = Math.max(
       TRANSCRIPT_DIGITAL_START_YEAR,
-      Number(transcriptStartYear.slice(0, 4)),
+      Number(startYearSetting.slice(0, 4)),
       enrollmentYear ? Number(enrollmentYear.slice(0, 4)) : 0,
       Math.min(
         currentStart,
@@ -2864,6 +2878,24 @@ export default function ScorebookWorkspace({
     () => getTranscriptYearEntriesForStudent(selectedTranscriptStudent),
     [getTranscriptYearEntriesForStudent, selectedTranscriptStudent]
   );
+  const historicalTranscriptYearEntries = selectedTranscriptStudent
+    ? getTranscriptYearEntriesForStudent(selectedTranscriptStudent, `${HISTORICAL_FIRST_YEAR}-${HISTORICAL_FIRST_YEAR + 1}`)
+      .filter(entry => entry.startYear < ROSTER_DIGITAL_START_YEAR)
+    : [];
+  const openHistoricalTranscriptPrint = () => {
+    const year = historicalTranscriptYearEntries[historicalTranscriptYearEntries.length - 1]?.schoolYear;
+    if (!year) {
+      showNotification?.('Học sinh này chưa có năm học trước 2025–2026 trong hồ sơ. Hãy kiểm tra năm nhập học và lịch sử lớp.', 'error');
+      return;
+    }
+    setTranscriptStartYear(`${HISTORICAL_FIRST_YEAR}-${HISTORICAL_FIRST_YEAR + 1}`);
+    setTranscriptPrintDraft({ includeCover: true, mode: 'year', year, duplexBlank: true });
+    setTranscriptPrintStudentIds(previous => {
+      const valid = previous.filter(id => transcriptStudents.some(student => student.id === id));
+      return valid.length ? valid : [selectedTranscriptStudent?.id].filter(Boolean);
+    });
+    setShowTranscriptPrintPanel(true);
+  };
   const renderTranscriptStartYearSelect = (label) => (
     <label className="flex flex-wrap items-center gap-2 text-sm text-slate-700">
       {label}
@@ -2915,6 +2947,12 @@ export default function ScorebookWorkspace({
       rowIndex: matchedStudent ? yearStudents.findIndex(student => student.id === matchedStudent.id) : -1
     };
   };
+  const getTranscriptRosterForSchool = (yearEntry = {}, schoolCode = scorebookSchoolCode) => getRosterForYear(yearEntry.schoolYear)
+    .filter(student => (student.status || 'active') !== 'dropped')
+    .filter(student => String(getGradeFromClass(student.className || student.grade || '')) === String(yearEntry.gradeNumber || ''))
+    .filter(student => !student.schoolYear || sameSchoolYear(student.schoolYear, yearEntry.schoolYear))
+    .filter(student => getStudentSchoolCode(student) === schoolCode)
+    .sort(compareSchoolRosterStudents);
   const getEditTextFromMap = (map = {}, key, fallback = '') => {
     const normalizedKey = String(key || '');
     const candidates = normalizedKey.startsWith('custom:')
@@ -2925,7 +2963,7 @@ export default function ScorebookWorkspace({
   };
   const getYearScoreInputValue = (yearEntry, semester, pageIndex, rowIndex, scoreIndex, schoolCode = scorebookSchoolCode) => {
     const yearEdits = getScorebookEditsForYearGrade(yearEntry?.schoolYear, yearEntry?.gradeNumber, schoolCode);
-    const roster = getTranscriptYearContext(yearEntry).yearStudents;
+    const roster = getTranscriptRosterForSchool(yearEntry, schoolCode);
     return getEditTextFromMap(yearEdits, studentEditKey(`${semester}Score:${pageIndex}:r${rowIndex}:s${scoreIndex}`, roster[rowIndex]), '');
   };
   const getYearSemesterTermAverage = (yearEntry, semester, pageIndex, rowIndex, schoolCode = scorebookSchoolCode) => { return calculateSemesterAverage(index => getYearScoreInputValue(yearEntry, semester, pageIndex, rowIndex, index, schoolCode)); };
@@ -2946,7 +2984,7 @@ export default function ScorebookWorkspace({
     if (pageIndex === null || pageIndex === undefined || rowIndex < 0) return '';
     const yearEdits = getScorebookEditsForYearGrade(yearEntry?.schoolYear, yearEntry?.gradeNumber, schoolCode);
     const gradeIndex = semester === 'hkii' ? 7 : 6;
-    const historicalStudent = getTranscriptYearContext(yearEntry).yearStudents[rowIndex];
+    const historicalStudent = getTranscriptRosterForSchool(yearEntry, schoolCode)[rowIndex];
     const saved = getEditTextFromMap(yearEdits, studentEditKey(`${semester}Review:${pageIndex}:r${rowIndex}:g${gradeIndex}`, historicalStudent), '');
     if (saved || semester !== 'hkii') return saved;
     return getEditTextFromMap(yearEdits, studentEditKey(`${semester}Review:${pageIndex}:r${rowIndex}:g6`, historicalStudent), '');
@@ -2954,16 +2992,16 @@ export default function ScorebookWorkspace({
   const getYearFullReviewResult = (yearEntry, pageIndex, rowIndex, schoolCode = scorebookSchoolCode) => {
     if (pageIndex === null || pageIndex === undefined || rowIndex < 0) return '';
     const yearEdits = getScorebookEditsForYearGrade(yearEntry?.schoolYear, yearEntry?.gradeNumber, schoolCode);
-    const historicalStudent = getTranscriptYearContext(yearEntry).yearStudents[rowIndex];
+    const historicalStudent = getTranscriptRosterForSchool(yearEntry, schoolCode)[rowIndex];
     const saved = getEditTextFromMap(yearEdits, studentEditKey(`hkiiReview:${pageIndex}:r${rowIndex}:g7`, historicalStudent), '');
     if (saved) return saved;
     return getEditTextFromMap(yearEdits, studentEditKey(`hkiiReview:${pageIndex}:r${rowIndex}:g6`, historicalStudent), '');
   };
-  const normalizeTranscriptReviewValue = (value = '', subject = {}) => {
+  const normalizeTranscriptReviewValue = (value = '', subject = {}, allowDefault = true) => {
     const text = String(value || '').trim();
     if (text === 'Đ') return 'Đạt';
     if (text) return text;
-    return subject.reviewPage === 2 || subject.reviewPage === 3 ? 'Đạt' : '';
+    return allowDefault && (subject.reviewPage === 2 || subject.reviewPage === 3) ? 'Đạt' : '';
   };
   const transcriptSubjectValue = (yearEntry, subject, semester, student = selectedTranscriptStudent) => {
     const context = getTranscriptYearContext(yearEntry, student);
@@ -2974,15 +3012,20 @@ export default function ScorebookWorkspace({
       return getYearSemesterScoreResult(yearEntry, 'hkii', subject.scorePage, context.rowIndex, 7, context.schoolCode);
     }
     if (subject.reviewPage !== undefined) {
-      if (semester === 'hki') return normalizeTranscriptReviewValue(getYearSemesterReviewResult(yearEntry, 'hki', subject.reviewPage, context.rowIndex, context.schoolCode), subject);
-      if (semester === 'hkii') return normalizeTranscriptReviewValue(getYearSemesterReviewResult(yearEntry, 'hkii', subject.reviewPage, context.rowIndex, context.schoolCode), subject);
-      return normalizeTranscriptReviewValue(getYearFullReviewResult(yearEntry, subject.reviewPage, context.rowIndex, context.schoolCode), subject);
+      const allowDefault = !isHistoricalTranscriptYear(yearEntry);
+      if (semester === 'hki') return normalizeTranscriptReviewValue(getYearSemesterReviewResult(yearEntry, 'hki', subject.reviewPage, context.rowIndex, context.schoolCode), subject, allowDefault);
+      if (semester === 'hkii') return normalizeTranscriptReviewValue(getYearSemesterReviewResult(yearEntry, 'hkii', subject.reviewPage, context.rowIndex, context.schoolCode), subject, allowDefault);
+      return normalizeTranscriptReviewValue(getYearFullReviewResult(yearEntry, subject.reviewPage, context.rowIndex, context.schoolCode), subject, allowDefault);
     }
     return '';
   };
   const transcriptSubjectTeacher = (subject, yearEntry, student = selectedTranscriptStudent) => {
     if (!subject.teacherSubject) return '';
     const context = getTranscriptYearContext(yearEntry, student);
+    if (isHistoricalTranscriptYear(yearEntry)) {
+      const assignments = getTeacherAssignmentsForYearGrade(yearEntry.schoolYear, context.student?.className || transcriptStudentClass(student, yearEntry));
+      return decodeSemesterDisplayText(assignments?.[subject.teacherSubject] || '', 'hk2').trim();
+    }
     return getAssignedTeacherName(
       { classSubject: subject.teacherSubject, teacherKeys: [subject.teacherSubject] },
       {
@@ -2998,10 +3041,12 @@ export default function ScorebookWorkspace({
     if (!context.student || context.rowIndex < 0) return '';
     const semester = period === 'hki' ? 'hki' : 'hkii';
     const scoreIndex = period === 'fullYear' ? 7 : 6;
-    const scores = HKI_SUMMARY_SCORE_COLUMNS
-      .filter(column => column.academic)
+    const academicColumns = HKI_SUMMARY_SCORE_COLUMNS.filter(column => column.academic);
+    const scores = academicColumns
       .map(column => parseScoreNumber(getYearSemesterScoreResult(yearEntry, semester, column.sourcePage, context.rowIndex, scoreIndex, context.schoolCode)))
       .filter(value => value !== null);
+    // A handwritten year may have only some scores digitized. Do not certify a yearly result from partial entries.
+    if (isHistoricalTranscriptYear(yearEntry) && scores.length < academicColumns.length) return '';
     return academicSummary(scores).result;
   };
   const getStudentAttendanceStatusForYear = (student, date, gradeKey) => {
@@ -3038,6 +3083,7 @@ export default function ScorebookWorkspace({
     return count;
   };
   const getTranscriptConductResult = (yearEntry, semester = 'full', student = selectedTranscriptStudent) => {
+    if (isHistoricalTranscriptYear(yearEntry)) return '';
     const absenceCount = getTranscriptAbsenceCount(yearEntry, semester, student);
     return absenceCount < (semester === 'full' ? 20 : 10) ? 'Tốt' : 'Khá';
   };
@@ -3282,7 +3328,9 @@ export default function ScorebookWorkspace({
     const cell = { border: '1.15px solid #111', padding: '4px 4px', verticalAlign: 'middle', fontSize: 16.8, lineHeight: 1.12 };
     const header = { ...cell, textAlign: 'center', fontWeight: 700 };
     const finalSignerText = getTranscriptEndSignerText(yearEntry?.schoolYear || currentSchoolYear);
-    const finalSignerSignatureUrl = getTeacherSignatureUrl(finalSignerText || principalName);
+    const finalSignerSignatureUrl = getTeacherSignatureUrl(finalSignerText);
+    const yearHomeroomTeacherName = transcriptHomeroomTeacherForYear(yearEntry, student);
+    const yearHomeroomTeacherSignatureUrl = getTeacherSignatureUrl(yearHomeroomTeacherName);
     return renderTranscriptPageShell((
       <>
         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 18, fontWeight: 700, fontStyle: 'italic', marginBottom: 4 }}>
@@ -3365,10 +3413,10 @@ export default function ScorebookWorkspace({
             <div style={{ fontStyle: 'italic', fontWeight: 400 }}>(Ký và ghi rõ họ tên)</div>
             <div style={{ position: 'absolute', left: 0, right: 0, top: 82, height: 92, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
               {transcriptSignatureSettings.teacher && (
-                <TeacherSignatureImage url={homeroomTeacherSignatureUrl} alt={`Chu ky ${homeroomTeacherName}`} style={{ height: 82 }} />
+                <TeacherSignatureImage url={yearHomeroomTeacherSignatureUrl} alt={`Chu ky ${yearHomeroomTeacherName}`} style={{ height: 82 }} />
               )}
             </div>
-            <div style={{ position: 'absolute', left: 0, right: 0, bottom: 8 }}>{homeroomTeacherName}</div>
+            <div style={{ position: 'absolute', left: 0, right: 0, bottom: 8 }}>{yearHomeroomTeacherName}</div>
           </div>
           <div style={{ textAlign: 'center', paddingTop: 18, fontSize: 17, fontWeight: 700, position: 'relative' }}>
             <div>Xác nhận của Phó Giám đốc</div>
@@ -3393,7 +3441,7 @@ export default function ScorebookWorkspace({
     const transcriptHkiiAcademicResult = getTranscriptAcademicResult(yearEntry, 'hkii', student);
     const transcriptHkiConductResult = getTranscriptConductResult(yearEntry, 'hki', student);
     const transcriptHkiiConductResult = getTranscriptConductResult(yearEntry, 'hkii', student);
-    const transcriptAbsenceTotal = getTranscriptAbsenceCount(yearEntry, 'full', student);
+    const transcriptAbsenceTotal = isHistoricalTranscriptYear(yearEntry) ? '' : getTranscriptAbsenceCount(yearEntry, 'full', student);
     const transcriptYearConductResult = getTranscriptConductResult(yearEntry, 'full', student);
     const assessmentSchoolYear = yearEntry?.schoolYear || currentSchoolYear;
     const assessmentSchoolYearKey = compactSchoolYearLabel(assessmentSchoolYear);
@@ -3406,14 +3454,18 @@ export default function ScorebookWorkspace({
       : '';
     const finalGradeCompletionText = isGrade9Assessment && isPassingFullYear ? 'Hoàn thành chương trình trung học cơ sở' : '';
     const assessmentDateFallback = isGrade9Assessment
-      ? getTranscriptDateFallback(transcriptGrade9EndDates, assessmentSchoolYear, defaultTranscriptGrade9EndDateText(assessmentSchoolYear), 'hk2')
-      : getTranscriptDateFallback(transcriptEndDates, assessmentSchoolYear, defaultTranscriptEndDateText(assessmentSchoolYear), 'hk2');
+      ? getTranscriptDateFallback(transcriptGrade9EndDates, assessmentSchoolYear,
+        isHistoricalTranscriptYear(yearEntry) ? '' : defaultTranscriptGrade9EndDateText(assessmentSchoolYear), 'hk2')
+      : getTranscriptDateFallback(transcriptEndDates, assessmentSchoolYear,
+        isHistoricalTranscriptYear(yearEntry) ? '' : defaultTranscriptEndDateText(assessmentSchoolYear), 'hk2');
     const assessmentDateKey = `transcript:date:${isGrade9Assessment ? 'grade9-end' : 'end'}:${assessmentSchoolYearKey}`;
     const assessmentDateText = getTranscriptEndDateText(assessmentSchoolYear, yearEntry?.gradeNumber);
     const assessmentSignerText = getTranscriptEndSignerText(assessmentSchoolYear);
-    const assessmentSignerSignatureUrl = getTeacherSignatureUrl(assessmentSignerText || principalName);
+    const assessmentSignerSignatureUrl = getTeacherSignatureUrl(assessmentSignerText);
     const homeroomCommentKey = transcriptEditKey('assessment', `${yearEntry?.startYear || 'year'}:homeroom-comment`, student);
-    const homeroomCommentFallback = getHomeroomCommentFallback(student, transcriptAcademicResult, assessmentSchoolYear);
+    const homeroomCommentFallback = isHistoricalTranscriptYear(yearEntry) ? '' : getHomeroomCommentFallback(student, transcriptAcademicResult, assessmentSchoolYear);
+    const yearHomeroomTeacherName = transcriptHomeroomTeacherForYear(yearEntry, student);
+    const yearHomeroomTeacherSignatureUrl = getTeacherSignatureUrl(yearHomeroomTeacherName);
     return renderTranscriptPageShell((
       <>
         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 18, fontWeight: 700, fontStyle: 'italic', marginBottom: 4 }}>
@@ -3461,7 +3513,7 @@ export default function ScorebookWorkspace({
                 <td style={{ ...cell, textAlign: 'center' }}>{row[0]}</td>
                 <td style={{ ...cell, textAlign: 'center' }}>{row[1]}</td>
                 <td style={{ ...cell, textAlign: 'center' }}>{row[2]}</td>
-                {index === 0 && <td rowSpan={3} style={{ ...cell, textAlign: 'center', fontSize: 18 }}>{transcriptAbsenceTotal || 'Không'}</td>}
+                {index === 0 && <td rowSpan={3} style={{ ...cell, textAlign: 'center', fontSize: 18 }}>{transcriptAbsenceTotal === '' ? '' : transcriptAbsenceTotal || 'Không'}</td>}
                 <td style={{ ...cell }} />
                 <td style={{ ...cell }} />
               </tr>
@@ -3490,10 +3542,10 @@ export default function ScorebookWorkspace({
           />
           <div style={{ position: 'absolute', left: 0, right: 0, bottom: 40, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             {transcriptSignatureSettings.teacher && (
-              <TeacherSignatureImage url={homeroomTeacherSignatureUrl} alt={`Chu ky ${homeroomTeacherName}`} style={{ height: 48 }} />
+              <TeacherSignatureImage url={yearHomeroomTeacherSignatureUrl} alt={`Chu ky ${yearHomeroomTeacherName}`} style={{ height: 48 }} />
             )}
           </div>
-          <div style={{ position: 'absolute', left: 0, right: 0, bottom: 14 }}>{homeroomTeacherName}</div>
+          <div style={{ position: 'absolute', left: 0, right: 0, bottom: 14 }}>{yearHomeroomTeacherName}</div>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: '0.75fr 1.25fr', height: 246, fontSize: 19 }}>
           <div style={{ borderLeft: '1.15px solid #111', borderBottom: '1.15px solid #111', paddingTop: 22, paddingLeft: 4, whiteSpace: 'nowrap', lineHeight: 1.35 }}>
@@ -3742,6 +3794,11 @@ export default function ScorebookWorkspace({
           {isTranscriptMode ? (
             <div className="scorebook-student-picker min-w-0 space-y-1">
               {renderTranscriptStartYearSelect('Học bạ từ năm học')}
+              <button type="button" onClick={openHistoricalTranscriptPrint}
+                disabled={!historicalTranscriptYearEntries.length}
+                className="w-full rounded-md border border-amber-300 bg-amber-50 px-2 py-1.5 text-xs font-medium text-amber-900 hover:bg-amber-100 disabled:opacity-50 disabled:cursor-not-allowed">
+                In lại học bạ năm cũ (2023–2025)
+              </button>
               <TranscriptStudentPicker key={`${currentSchoolYear}-${grade}-${scorebookSchoolCode}`}
                 students={transcriptStudents.map(student => ({ ...student, label: titleCaseText(student.fullName), classLabel: displaySchoolClass(student.className) || 'Chưa rõ lớp' }))}
                 selectedId={selectedTranscriptStudent?.id} selectedPrintIds={transcriptDraftStudentIds}
@@ -3836,7 +3893,7 @@ export default function ScorebookWorkspace({
               <div className="space-y-3">
                 <div className="rounded-md border border-blue-100 bg-blue-50 p-3">
                   {renderTranscriptStartYearSelect('In từ năm học')}
-                  <p className="mt-2 text-xs text-slate-600">Các năm trước đã ghi tay sẽ không in lại. Danh sách học sinh và sổ điểm vẫn quản lý đầy đủ theo năm.</p>
+                  <p className="mt-2 text-xs text-slate-600">Có thể in lại học bạ năm 2023–2024, 2024–2025 dù bản gốc đã ghi tay. Điểm đã lưu đúng năm sẽ được điền vào; thông tin chưa có dữ liệu sẽ để trống để nhà trường đối chiếu trước khi ký, đóng dấu xác nhận.</p>
                   {!transcriptYearEntries.length && <p className="mt-1 text-xs text-amber-800">Không có trang kết quả trong khoảng năm đã chọn của học sinh đang xem.</p>}
                 </div>
                 <div className="rounded-md border border-emerald-100 bg-emerald-50 p-3 text-sm font-normal text-emerald-950">
@@ -3887,7 +3944,7 @@ export default function ScorebookWorkspace({
                 </div>
               </div>
               <div className="mt-4 rounded-md bg-emerald-50 p-3 text-xs font-normal text-emerald-900">
-                Để nối tiếp học bạ ghi tay, chọn năm bắt đầu và bỏ chọn “3 trang đầu”. Nếu chỉ cần bổ sung một năm, chọn “một năm học” để in đúng 2 trang kết quả.
+                In lại học bạ bị mất: chọn năm cũ, chọn “In kết quả một năm học” và giữ “3 trang đầu” nếu cần cấp lại cả quyển. Nếu chỉ bổ sung kết quả vào học bạ còn giữ, bỏ chọn “3 trang đầu” để in 2 trang của năm đó. Kiểm tra với bản lưu giấy trước khi xác nhận.
               </div>
               <div className="mt-4 flex justify-end gap-2">
                 <button type="button" onClick={() => setShowTranscriptPrintPanel(false)} className="h-9 rounded border border-slate-200 bg-white px-4 text-sm font-normal text-slate-600 hover:bg-slate-50">Đóng</button>

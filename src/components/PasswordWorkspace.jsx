@@ -1,10 +1,12 @@
+import { useState } from 'react';
 import { Loader2, Lock, Save, X } from 'lucide-react';
 
 export default function PasswordWorkspace({
   newAdminPassword, onAdminPasswordChange, onSaveAdminPassword, isSavingAdminPassword,
   staffPassword, onStaffPasswordChange, onSaveStaffPassword, isSavingStaffPassword,
-  isStudentCodeEnabled, onToggleStudentCode, onClose, children
+  onClose, children, students
 }) {
+  const [tab, setTab] = useState('teachers');
   return (
     <section className="password-workspace" aria-label="Quản lý mật khẩu">
       <header className="password-workspace-header">
@@ -15,10 +17,15 @@ export default function PasswordWorkspace({
       </header>
 
       <div className="password-workspace-content">
+        <div role="tablist" aria-label="Nhóm tài khoản" className="mb-3 flex gap-2">
+          {[['teachers', 'Giáo viên'], ['students', 'Học sinh'], ['system', 'Quản trị & Trần Hưng Đạo']].map(([key, label]) => <button key={key} type="button" role="tab" aria-selected={tab === key} id={`password-tab-${key}`} aria-controls={`password-panel-${key}`} onClick={() => setTab(key)} className={`password-button ${tab === key ? 'password-primary' : ''}`}>{label}</button>)}
+        </div>
+        <div role="tabpanel" id={`password-panel-${tab}`} aria-labelledby={`password-tab-${tab}`}>
+        {tab === 'system' && <>
         <div className="password-settings-grid">
           <form className="password-panel password-setting" onSubmit={event => { event.preventDefault(); onSaveAdminPassword(); }}>
             <h4 className="password-section-title">Mật khẩu admin</h4>
-            <p id="admin-password-note" className="password-note">Đăng nhập khu quản trị · ít nhất 8 ký tự.</p>
+            <p id="admin-password-note" className="password-note">Tài khoản addmin · ít nhất 8 ký tự.</p>
             <div className="password-setting-controls">
               <input aria-label="Mật khẩu admin mới" aria-describedby="admin-password-note" type="password" autoComplete="new-password" minLength={8} required placeholder="Nhập mật khẩu mới" className="password-input" value={newAdminPassword} onChange={event => onAdminPasswordChange(event.target.value)} />
               <button type="submit" disabled={isSavingAdminPassword || newAdminPassword.length < 8} className="password-button password-primary">
@@ -29,7 +36,7 @@ export default function PasswordWorkspace({
 
           <form className="password-panel password-setting" onSubmit={event => { event.preventDefault(); onSaveStaffPassword(); }}>
             <h4 className="password-section-title">Mật khẩu Trần Hưng Đạo</h4>
-            <p id="staff-password-note" className="password-note">Truy cập khu Trần Hưng Đạo · ít nhất 8 ký tự.</p>
+            <p id="staff-password-note" className="password-note">Tài khoản thd · ít nhất 8 ký tự.</p>
             <div className="password-setting-controls">
               <input aria-label="Mật khẩu Trần Hưng Đạo mới" aria-describedby="staff-password-note" type="password" autoComplete="new-password" minLength={8} required placeholder="Nhập mật khẩu mới" className="password-input" value={staffPassword} onChange={event => onStaffPasswordChange(event.target.value)} />
               <button type="submit" disabled={isSavingStaffPassword || staffPassword.length < 8} className="password-button password-primary">
@@ -38,17 +45,11 @@ export default function PasswordWorkspace({
             </div>
           </form>
 
-          <section className="password-panel password-setting">
-            <h4 className="password-section-title">Mã học sinh</h4>
-            <label className="password-code-toggle">
-              <input type="checkbox" checked={isStudentCodeEnabled} onChange={onToggleStudentCode} />
-              Bật yêu cầu nhập mã học sinh
-            </label>
-            <p className="password-note">{isStudentCodeEnabled ? 'Học sinh phải nhập mã để vào học.' : 'Học sinh vào học không cần mã.'}</p>
-          </section>
         </div>
-
-        {children}
+        </>}
+        {tab === 'teachers' && children}
+        {tab === 'students' && students}
+        </div>
       </div>
     </section>
   );

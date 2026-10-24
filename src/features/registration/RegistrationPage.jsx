@@ -4,7 +4,7 @@ import { REGISTRATION_WEB_APP_URL } from '../../config/registration';
 import useRegistrationDirectories from './useRegistrationDirectories';
 import { FILE_FIELDS, REGISTRATION_STEPS, emptyRegistration, formatFileSize, hasNoIdentity, registrationPayload, validateStep } from './registrationModel';
 import { submitRegistration } from './registrationApi';
-import { Field, FileUpload, LoadingState, Section, SelectField } from './components/RegistrationFields';
+import { Field, FileUpload, Section, SelectField } from './components/RegistrationFields';
 import RegistrationReview from './components/RegistrationReview';
 import AcademicHistoryFields from './components/AcademicHistoryFields';
 import RegistrationAddressStep from './components/RegistrationAddressStep';
@@ -64,6 +64,7 @@ export default function RegistrationPage() {
     });
   };
   const advance = () => {
+    if (!config || directories.loading || directories.error) { setMessage('Đang lấy thông tin đăng ký. Bạn có thể điền thông tin cá nhân trước.'); return; }
     const found = validateStep(step, values, files, config);
     if (Object.keys(found).length) { setErrors(found); focusError(found); return; }
     move(step + 1);
@@ -108,7 +109,7 @@ export default function RegistrationPage() {
     window.location.hash = '';
   };
   const fieldProps = { values, errors, onChange: update };
-  const school = config?.schools.find(item => item.key === values.coSoHoc);
+  const school = config?.schools?.find(item => item.key === values.coSoHoc);
   const visibleFiles = FILE_FIELDS.filter(spec => spec.key !== 'anhCanCuoc' || !hasNoIdentity(values.maDinhDanh)).flatMap(spec => files[spec.key] || []);
   const totalFiles = visibleFiles.length;
   const totalSize = visibleFiles.reduce((sum, file) => sum + file.size, 0);
@@ -119,12 +120,13 @@ export default function RegistrationPage() {
       <div className="reg-intro"><h1>Đăng ký nhập học</h1>{config && <span className="reg-year"><i aria-hidden="true" /><span className="reg-year-label">Năm học</span>{config.currentSchoolYear}</span>}</div>
       {result ? <div className="reg-success" role="status"><div className="reg-success-icon"><CheckCircle2 size={34} /></div><span className="reg-eyebrow">ĐÃ TIẾP NHẬN HỒ SƠ</span><h2>Đăng ký thành công!</h2><p>Hồ sơ của <strong>{values.hoVaTen}</strong> đã được gửi đến nhà trường để xét duyệt.</p><dl><div><dt>Cơ sở</dt><dd>{school?.name}</dd></div><div><dt>Lớp đăng ký</dt><dd>{values.lopHoc}</dd></div><div><dt>Năm học</dt><dd>{result.schoolYear || config.currentSchoolYear}</dd></div></dl><p className="reg-hint">Bạn chưa cần gửi lại hồ sơ. Nhà trường sẽ kiểm tra và hướng dẫn bước tiếp theo.</p><button className="reg-primary" onClick={backToLogin}>Về trang đăng nhập<ArrowRight size={16} /></button></div> : <div className="reg-layout">
         <div className="reg-form-shell"><div className="reg-form-heading" ref={content} tabIndex={-1}><div className="reg-step-caption">Bước {step + 1} / {REGISTRATION_STEPS.length}<span>Dấu <b>*</b> là bắt buộc</span></div><h2>{REGISTRATION_STEPS[step]}</h2></div>
-          {directories.loading && !config ? <LoadingState /> : <>
+          <>
+            {directories.loading && !config && <div className="reg-banner" role="status">Đang lấy năm học và cơ sở đăng ký… Bạn có thể điền thông tin cá nhân trước.</div>}
             {directories.error && <div className="reg-banner reg-banner-error" role="alert"><span>{directories.error}</span><button type="button" onClick={directories.refresh} disabled={directories.loading}>{directories.loading ? 'Đang tải…' : 'Tải lại'}</button></div>}
-            {config && <form onSubmit={submit} noValidate><fieldset className="reg-form-fields" disabled={sending}>
+            <form onSubmit={submit} noValidate><fieldset className="reg-form-fields" disabled={sending}>
               {step === 0 && <>
                 <Section title="Cơ sở và lớp đăng ký"><div className="reg-grid reg-campus-grid">
-                  <SelectField {...fieldProps} name="coSoHoc" label="Cơ sở đăng ký học" required options={config.schools.map(item => ({ value: item.key, label: item.name }))} placeholder="Chọn cơ sở đăng ký" />
+                  <SelectField {...fieldProps} name="coSoHoc" label="Cơ sở đăng ký học" required options={(config?.schools || []).map(item => ({ value: item.key, label: item.name }))} disabled={!config} placeholder={config ? 'Chọn cơ sở đăng ký' : 'Đang lấy cơ sở đăng ký…'} />
                   <SelectField {...fieldProps} name="lopHoc" label="Lớp đăng ký" required options={school ? Array.from({ length: 9 }, (_, index) => ({ value: `${index + 1}${school.suffix}`, label: `Lớp ${index + 1}${school.suffix}` })) : []} disabled={!school} placeholder={school ? 'Chọn lớp đăng ký' : 'Vui lòng chọn cơ sở trước'} />
                 </div></Section>
                 <AcademicHistoryFields {...fieldProps} />
@@ -153,9 +155,9 @@ export default function RegistrationPage() {
             </fieldset>
             {message && <div className="reg-banner reg-banner-error" role="alert"><span>{message}</span>{/Năm.*thay đổi/i.test(message) && <button type="button" onClick={directories.refresh}>Cập nhật năm học</button>}</div>}
             {sending && <div className="reg-sending" role="status"><Loader2 size={18} className="reg-spin" />{progress}</div>}
-            <div className="reg-form-footer"><button type="button" className="reg-secondary" onClick={() => step ? move(step - 1) : backToLogin()} disabled={sending}><ArrowLeft size={16} />{step ? 'Quay lại' : 'Đăng nhập'}</button><button type="submit" className="reg-primary" disabled={sending || directories.loading || Boolean(directories.error)}>{sending ? 'Đang gửi hồ sơ…' : step === 4 ? 'Gửi hồ sơ đăng ký' : 'Tiếp tục'}{sending ? <Loader2 size={17} className="reg-spin" /> : <ArrowRight size={17} />}</button></div>
-          </form>}
-          </>}
+            <div className="reg-form-footer"><button type="button" className="reg-secondary" onClick={() => step ? move(step - 1) : backToLogin()} disabled={sending}><ArrowLeft size={16} />{step ? 'Quay lại' : 'Đăng nhập'}</button><button type="submit" className="reg-primary" disabled={!config || sending || directories.loading || Boolean(directories.error)}>{sending ? 'Đang gửi hồ sơ…' : step === 4 ? 'Gửi hồ sơ đăng ký' : 'Tiếp tục'}{sending ? <Loader2 size={17} className="reg-spin" /> : <ArrowRight size={17} />}</button></div>
+          </form>
+          </>
         </div>
       </div>}
       <footer className="reg-page-footer"><span>© {new Date().getFullYear()} Kho học liệu · Cổng đăng ký học sinh</span>{!sending && !result && <a href={REGISTRATION_WEB_APP_URL} target="_blank" rel="noopener noreferrer">Biểu mẫu dự phòng<ArrowRight size={13} /></a>}</footer>

@@ -168,6 +168,9 @@ export const normalizeServiceErrorMessage = (message, action = '') => {
     return 'May chu Apps Script chua cap nhat phan tao PDF. Hay dan lai file code_hoclieu.gs vao Apps Script chinh roi Deploy ban moi.';
   }
   if (/khong dung action hoac thieu base64/i.test(raw)) {
+    if (['loginAccount', 'createAdminSession', 'createStaffSession', 'createTeacherAccountSession', 'createStudentSession'].includes(action)) {
+      return 'Máy chủ chưa hỗ trợ cách đăng nhập này. Cần cập nhật Code.gs của Apps Script chính bằng bản code_hoclieu.gs mới và triển khai phiên bản mới trên URL hiện có.';
+    }
     return 'Máy chủ Apps Script chưa hỗ trợ thao tác xuất này. Cần cập nhật Apps Script chính và Deploy bản mới.';
   }
   // Naming a service in an error is not evidence that its OAuth permissions are missing.

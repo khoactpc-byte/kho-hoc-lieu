@@ -8,6 +8,7 @@ import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { JSDOM } from 'jsdom';
 import { scorebookDocumentId } from '../src/utils/scorebookArchive.js';
+import { studentEditKey } from '../src/utils/studentScoreKeys.js';
 
 async function buildOfflineWorkspace(outfile) {
     await build({ entryPoints: ['src/components/ScorebookWorkspace.jsx'], outfile, bundle: true, platform: 'node', format: 'esm', packages: 'external', jsx: 'automatic',
@@ -19,6 +20,58 @@ async function buildOfflineWorkspace(outfile) {
       } }] });
 
 }
+
+test('historical rosters and scores stay available while transcript printing starts at the chosen year', async () => {
+  const directory = await mkdtemp(resolve('node_modules/.historical-transcript-test-'));
+  const page = new JSDOM('<div id="root"></div>', { url: 'http://localhost' }).window;
+  const previous = Object.fromEntries(['window', 'document', 'requestAnimationFrame', 'IS_REACT_ACT_ENVIRONMENT'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { window: page, document: page.document, requestAnimationFrame: callback => callback(), IS_REACT_ACT_ENVIRONMENT: true });
+  const sourceFile = 'so diem 9pc tmt 2025-2026 MAU.xlsx';
+  const student = { id: 'current', studentKey: 'stable-an', accessCode: 'HS22901', fullName: 'Nguyễn An',
+    schoolYear: '2025-2026', schoolCode: 'NAN', className: '9A', grade: '9', entryGrade: '6', enrollmentYear: '2022-2023' };
+  const book = (schoolYear, grade, score) => {
+    const scope = { schoolYear, grade, schoolCode: 'NAN', sourceFile };
+    return { ...scope, id: scorebookDocumentId(scope), edits: { [studentEditKey('custom:hkiScore:0:r0:s6', student)]: score } };
+  };
+  globalThis.__scorebookFixtures = { books: [book('2024-2025', '8', '7.7'), book('2025-2026', '9', '8.8')], reads: [] };
+  const root = createRoot(page.document.getElementById('root'));
+  try {
+    const outfile = join(directory, 'workspace.mjs'); await buildOfflineWorkspace(outfile);
+    const { default: Workspace } = await import(pathToFileURL(outfile));
+    const props = { grade: '9', currentSchoolYear: '2025-2026', initialMode: 'transcript', students: [student], user: { uid: 'fixture' } };
+    await act(async () => root.render(React.createElement(Workspace, props)));
+    const body = page.document;
+    const button = text => [...body.querySelectorAll('button')].find(item => item.textContent.trim() === text);
+    const select = async (label, value) => act(async () => {
+      const input = body.querySelector(`select[aria-label="${label}"]`); assert.ok(input, label);
+      input.value = value; input.dispatchEvent(new page.Event('change', { bubbles: true }));
+    });
+    const text = () => body.querySelector('.transcript-print-root').textContent;
+    assert.equal(body.querySelector('select[aria-label="Học bạ từ năm học"]').value, '2025-2026');
+    assert.match(text(), /2025\s*-\s*2026/); assert.doesNotMatch(text(), /2024\s*-\s*2025/);
+    assert.match(text(), /8\.8/); assert.doesNotMatch(text(), /7\.7/);
+    await select('Học bạ từ năm học', '2023-2024');
+    assert.match(text(), /2023\s*-\s*2024/); assert.match(text(), /2024\s*-\s*2025/); assert.match(text(), /7\.7/);
+    await act(async () => button('In học bạ').click());
+    await select('In từ năm học', '2025-2026');
+    assert.equal(page.localStorage.getItem('khl-transcript-start-year-v1'), '2025-2026');
+    const cover = [...body.querySelectorAll('label')].find(label => label.textContent.includes('In 3 trang đầu')).querySelector('input');
+    await act(async () => cover.click());
+    let html = '';
+    page.open = () => ({ document: { open() {}, close() {}, write(value) { html = value; } }, focus() {}, close() {} });
+    await act(async () => button('Mở cửa sổ in').click());
+    assert.match(html, /2025\s*-\s*2026/); assert.doesNotMatch(html, /2024\s*-\s*2025|2023\s*-\s*2024|7\.7/);
+    await act(async () => button('Sổ gọi tên').click());
+    await act(async () => root.render(React.createElement(Workspace, { ...props, grade: '8', currentSchoolYear: '2024-2025' })));
+    assert.match(body.querySelector('.scorebook-print-root').textContent, /LỚP 8A/);
+    assert.match(body.querySelector('.scorebook-print-root').textContent, /2024/);
+    assert.equal(page.localStorage.getItem('khl-transcript-start-year-v1'), '2025-2026', 'managing old scorebooks does not change the transcript start year');
+  } finally {
+    await act(async () => root.unmount()); page.close(); delete globalThis.__scorebookFixtures;
+    for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete globalThis[key]; else globalThis[key] = value; }
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test('compact scorebook keeps page navigation, printing, transcript settings and roster groups working', async () => {
   const directory = await mkdtemp(resolve('node_modules/.scorebook-render-test-'));
@@ -37,6 +90,8 @@ test('compact scorebook keeps page navigation, printing, transcript settings and
       fullName: `Học sinh ${String(index + 1).padStart(2, '0')}`, grade: '6', className: '6A', schoolCode: 'NAN', schoolYear: '2026-2027' }));
     await act(async () => root.render(React.createElement(Workspace, { grade: '6', currentSchoolYear: '2026-2027', students, user: { uid: 'fixture' } })));
     const body = windowObject.document;
+    assert.match(body.querySelector('.scorebook-print-root').textContent, /LỚP 6A/);
+    assert.doesNotMatch(body.querySelector('.scorebook-print-root').textContent, /6PC/);
     const button = text => [...body.querySelectorAll('button')].find(item => item.textContent.trim() === text);
     const click = element => act(async () => element.click());
     const labelled = text => body.querySelector(`button[aria-label="${text}"]`);
@@ -53,7 +108,7 @@ test('compact scorebook keeps page navigation, printing, transcript settings and
     assert.equal(button('In trang này'), undefined);
     assert.equal(body.activeElement, printButton, 'Escape returns focus to the print button');
     await click(printButton);
-    await act(async () => body.body.dispatchEvent(new windowObject.Event('pointerdown', { bubbles: true })));
+    await act(async () => body.body.dispatchEvent(new windowObject.Event('click', { bubbles: true })));
     assert.equal(printButton.getAttribute('aria-expanded'), 'false');
     await act(async () => { group.value = '1'; group.dispatchEvent(new windowObject.Event('change', { bubbles: true })); });
     // The sheet selector is present in the toolbar and uses stable template names.
@@ -87,6 +142,23 @@ test('compact scorebook keeps page navigation, printing, transcript settings and
 
     await click(button('Học bạ'));
     assert.ok(body.querySelector('.transcript-list-panel').textContent.includes('Học Sinh 01'));
+    assert.equal(body.querySelector('.scorebook-main .transcript-list-panel'), null, 'the document no longer has a roster column in the middle');
+    const studentPicker = labelled('Danh sách học sinh');
+    assert.equal(studentPicker.getAttribute('aria-expanded'), 'false');
+    assert.ok(studentPicker.closest('.scorebook-sidebar'));
+    await click(studentPicker);
+    const printSelections = [...body.querySelectorAll('.transcript-list-panel input[type="checkbox"]')];
+    assert.equal(printSelections.length, 45, 'print selection includes the entire roster, beyond the 40-row scorebook page');
+    await click(printSelections[0]);
+    await click(printSelections[1]);
+    assert.equal(printSelections.filter(input => input.checked).length, 2);
+    await click(button('Bỏ chọn'));
+    assert.equal(printSelections.some(input => input.checked), false);
+    await click(button('Chọn hết'));
+    assert.equal(printSelections.filter(input => input.checked).length, 45);
+    await click(labelled('Xem học bạ Học Sinh 45'));
+    assert.equal(studentPicker.getAttribute('aria-expanded'), 'false', 'choosing a document closes the dropdown without clearing print selection');
+    assert.match(studentPicker.textContent, /Học Sinh 45.*45\/45 chọn in/);
     await click(labelled('Cài đặt chữ ký'));
     const teacherSignature = [...body.querySelectorAll('label')].find(label => label.textContent.includes('Hiện chữ ký giáo viên')).querySelector('input');
     assert.equal(teacherSignature.checked, true);
@@ -94,8 +166,26 @@ test('compact scorebook keeps page navigation, printing, transcript settings and
     assert.equal(JSON.parse(windowObject.localStorage.getItem('khl-transcript-signature-settings-v1')).teacher, false);
     await click(button('In học bạ'));
     assert.ok(button('Mở cửa sổ in'), 'transcript print options remain accessible');
+    assert.match(body.body.textContent, /45 học sinh · \d+ trang sẽ in/, 'the print dialog receives all selected students');
     await click(button('Đóng'));
     assert.equal(button('Mở cửa sổ in'), undefined);
+    await click(studentPicker);
+    await click(button('Bỏ chọn'));
+    await click(printSelections[0]);
+    await click(printSelections[44]);
+    await click(button('In học bạ'));
+    assert.match(body.body.textContent, /2 học sinh · \d+ trang sẽ in/);
+    let preparedPrintHtml = '';
+    windowObject.open = () => ({ document: { open() {}, close() {}, write(html) { preparedPrintHtml = html; } }, focus() {}, close() {} });
+    await click(button('Mở cửa sổ in'));
+    assert.match(preparedPrintHtml, /Học Sinh 01/);
+    assert.match(preparedPrintHtml, /Học Sinh 45/);
+    const transcriptPrint = new JSDOM(preparedPrintHtml).window;
+    assert.match(transcriptPrint.document.body.textContent, /Lớp:\s*6A/);
+    assert.doesNotMatch(transcriptPrint.document.body.textContent, /6PC/);
+    transcriptPrint.close();
+    assert.doesNotMatch(preparedPrintHtml, /Học Sinh 02/);
+    assert.match(preparedPrintHtml, /scorebook-page-content[^}]*transform: none !important/, 'the print document removes the viewing scale');
     await click(button('Sổ gọi tên'));
     const restoredSheets = [...body.querySelectorAll('select')].find(select => [...select.options].some(option => option.value === 'Diem_HKI_MonTinhDiem'));
     assert.equal(restoredSheets.value, 'DiemTongKet_HKI', 'switching modes keeps the selected scorebook sheet');

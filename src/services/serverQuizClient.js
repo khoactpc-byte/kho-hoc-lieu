@@ -38,7 +38,8 @@ export async function requestPrivateApi(endpoint, action, payload, { signal, tim
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, signal: controller.signal,
       body: JSON.stringify({ ...payload, action,
         adminSessionToken: window.sessionStorage.getItem(ADMIN_SERVER_SESSION_STORAGE_KEY) || '',
-        staffSessionToken: window.sessionStorage.getItem(STAFF_SERVER_SESSION_STORAGE_KEY) || '' }) }));
+        staffSessionToken: window.sessionStorage.getItem(STAFF_SERVER_SESSION_STORAGE_KEY) || '',
+        studentSessionToken: window.sessionStorage.getItem('khl-student-server-session-v1') || '' }) }));
     let data;
     try { data = await untilAbort(response.json()); } catch (error) {
       if (error.name === 'AbortError') throw error;

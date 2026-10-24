@@ -46,6 +46,7 @@ export async function exchangeScopedIdentity(payload, { signal, timeoutMs = 2500
       headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), signal: controller.signal });
     const data = await response.json();
     if (!response.ok || !data.firebaseToken) throw new Error(data.error || 'Không xác thực được phiên.');
+    if (payload.kind === 'student' && data.studentPasswordVerified !== true) throw new Error('Máy chủ chưa bật mật khẩu học sinh. Cần cập nhật máy chủ đăng nhập.');
     await mutateAuth(async () => {
       requireCurrent();
       let signInStarted = false;
