@@ -46,6 +46,8 @@ export function useAttendanceEdits(scopeKey) {
         do {
           const entry = await saveAttendanceEntry({ ...input, status: edit.status, expectedEntry: edit.confirmed });
           edit.confirmed = entry;
+          // Monitor edits respect approved leave and admin corrections; admin clicks can queue a new status.
+          if (!input.overrideApprovedLeave && entry.leaveRequestId) edit.status = entry.status;
           if (generation.current === edit.revision) onCommit(entry, input);
         } while (edit.status !== edit.confirmed.status);
       } catch (error) {

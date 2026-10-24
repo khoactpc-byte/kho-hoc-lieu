@@ -26,17 +26,20 @@ export default function AdminMailboxPanel({
   onDeleteCategoryChange,
   onDeleteFromChange,
   onDeleteToChange,
-  onDelete
+  onDelete,
+  onOpenConversations,
+  conversationUnreadCount = 0
 }) {
   return (
     <div className="rounded-2xl border border-emerald-100 bg-white p-4 shadow-sm animate-in fade-in slide-in-from-top-3 duration-200">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div>
           <h3 className="flex items-center gap-2 text-base font-semibold text-emerald-950"><Mail className="h-5 w-5 text-emerald-600" /> Hộp thư học sinh</h3>
-          <p className="mt-1 text-xs font-medium text-slate-500">Gửi riêng cho học sinh, một lớp hoặc toàn trường. Thư được lưu trong Drive hộp thư.</p>
+          <p className="mt-1 text-xs font-medium text-slate-500">Gửi thông báo cho học sinh, một lớp hoặc toàn trường. Mở Tin nhắn học sinh để xem và trả lời các em.</p>
         </div>
         <a href={driveUrl} target="_blank" rel="noopener noreferrer" className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-emerald-100 bg-emerald-50 px-3 text-xs font-semibold text-emerald-700 hover:bg-emerald-100"><Folder className="h-4 w-4" /> Mở Drive hộp thư</a>
       </div>
+      {onOpenConversations && <button type="button" onClick={onOpenConversations} className="mb-3 inline-flex min-h-10 items-center gap-2 rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-sm font-semibold text-blue-700"><Mail className="h-4 w-4" />Tin nhắn học sinh{conversationUnreadCount > 0 && <span className="rounded-full bg-rose-500 px-2 text-xs text-white">{conversationUnreadCount} chưa đọc</span>}</button>}
       <div className="grid gap-2 sm:grid-cols-3">
         <select value={recipientType} onChange={event => onRecipientTypeChange(event.target.value)} className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold outline-none focus:border-emerald-400">
           <option value="student">Một học sinh</option><option value="class">Một lớp</option><option value="all">Toàn trường</option>

@@ -1,5 +1,13 @@
+import { prepareLessonMathAlignment, alignRenderedLessonSteps } from './lessonMathAlignment.js';
+
 export function createMathTypesetter(getWindow = () => window, timeoutMs = 15000) {
   const pending = new Set();
+  const completions = new Map();
+  const complete = (root, success) => {
+    const callbacks = completions.get(root) || [];
+    completions.delete(root);
+    callbacks.forEach(callback => callback(success));
+  };
   let running = false, boundScript, warned = false;
   const report = () => {
     if (warned) return;
@@ -28,17 +36,38 @@ export function createMathTypesetter(getWindow = () => window, timeoutMs = 15000
       await math.startup?.promise;
       while (pending.size) {
         const roots = [...pending].filter(root => root.isConnected);
+        for (const root of pending) if (!root.isConnected) complete(root, false);
         pending.clear();
         if (!roots.length) continue;
-        math.typesetClear?.(roots);
-        await math.typesetPromise(roots);
+        const callbacks = roots.map(root => { const list = completions.get(root) || []; completions.delete(root); return list; });
+        const sourceRoots = roots.filter(root => {
+          if (!root.querySelector('mjx-container')) return true;
+          const source = root.cloneNode(true);
+          source.querySelectorAll('mjx-container').forEach(node => node.remove());
+          return /\\[([]/.test(source.textContent) || !!source.querySelector('math');
+        });
+        // Clearing live rendered formulas forgets their MathItems while leaving
+        // assistive MathML in the DOM; the next pass can render that MathML again.
+        // Only reset roots whose source HTML has actually been replaced.
+        const freshRoots = sourceRoots.filter(root => !root.querySelector('mjx-container'));
+        sourceRoots.forEach(prepareLessonMathAlignment);
+        if (freshRoots.length) math.typesetClear?.(freshRoots);
+        try {
+          if (sourceRoots.length) await math.typesetPromise(sourceRoots);
+          roots.forEach(alignRenderedLessonSteps);
+          callbacks.forEach(list => list.forEach(callback => callback(true)));
+        } catch (error) {
+          callbacks.forEach(list => list.forEach(callback => callback(false)));
+          throw error;
+        }
       }
       warned = false;
-    } catch { report(); }
+    } catch { for (const root of completions.keys()) complete(root, false); report(); }
     finally { running = false; }
   };
-  return root => {
-    if (!root || !root.isConnected) return;
+  return (root, onComplete) => {
+    if (!root || !root.isConnected) { onComplete?.(false); return; }
+    if (onComplete) completions.set(root, [...(completions.get(root) || []), onComplete]);
     const target = getWindow(), script = target.document.getElementById('MathJax-script');
     if (script && boundScript !== script) {
       boundScript = script;

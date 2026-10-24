@@ -181,10 +181,10 @@ export default function ClassMonitorAttendance({ currentSchoolYear, currentStude
                   const currentStatus = records[student.id]?.status || '';
                   const busy = changes.has(attendanceCellKey({ schoolYear: currentSchoolYear, schoolCode, className, date: selectedDate, student }));
                   return <tr key={student.id}>
-                    <td>{index + 1}</td><th scope="row">{student.fullName || '(Chưa có tên)'}</th>
+                    <td>{index + 1}</td><th scope="row">{student.fullName || '(Chưa có tên)'}{records[student.id]?.leaveRequestId && <span className="block text-[10px] font-normal text-emerald-700">{records[student.id]?.leaveAttendanceOverride ? `Admin đã điều chỉnh · ${currentStatus === '' ? 'Có mặt' : currentStatus === 'KP' ? 'Vắng không phép' : 'Có phép'}` : 'Đơn nghỉ đã duyệt · Có phép'}</span>}</th>
                     {['CP', 'KP'].map(status => <td key={status}><button type="button" className="monitor-status-button" data-status={status}
                       aria-label={`${status === 'CP' ? 'Vắng có phép' : 'Vắng không phép'}: ${student.fullName}`}
-                      aria-pressed={currentStatus === status} aria-busy={busy} title={busy ? 'Đang lưu điểm danh' : undefined}
+                      aria-pressed={currentStatus === status} aria-busy={busy} title={busy ? 'Đang lưu điểm danh' : records[student.id]?.leaveAttendanceOverride ? 'Admin đã điều chỉnh điểm danh thực tế. Báo admin nếu cần thay đổi.' : records[student.id]?.leaveRequestId ? 'Admin đã đồng ý đơn xin nghỉ. Ngày này được tính Có phép.' : undefined}
                       onClick={() => updateAttendance(student, status)}>{status}</button></td>)}
                   </tr>;
                 })}</tbody>

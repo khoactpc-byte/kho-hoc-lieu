@@ -1,12 +1,19 @@
 import ScorebookMigrationNotice from './ScorebookMigrationNotice';
 import { Loader2 } from 'lucide-react';
+import { useEffect } from 'react';
 
 export default function TeacherQuickScorePanel({ scope, selection, draft, actions, table }) {
-  const { quickScoreGrade, quickScoreLockedContext, selectedSubject, canWriteCurrentSchoolYear, activeSchoolYear, user } = scope;
+  const { popup, classLabel, quickScoreGrade, quickScoreLockedContext, selectedSubject, canWriteCurrentSchoolYear, activeSchoolYear, user } = scope;
   const { quickVisibleSemesters, setQuickVisibleSemesters, quickSelectedSubjects, quickSelectedSemesters, quickSubjectColSpanBySubject } = selection;
   const { quickScorebookSavingKey, quickScorebookDocId, quickScorebookEdits, setQuickScorebookEdits, quickInputDrafts, setQuickInputDrafts, quickScorebookLoaded } = draft;
   const { setShowLearningResultsWorkspace, setQuickScoreLockedContext, showNotification, setActiveQuickScoreRowKey, toggleQuickPriorityStudent, handleQuickScoreInputKeyDown, saveQuickScoreValue } = actions;
   const { quickScoreStudents, getQuickScoreColumnWidth, getQuickScoreStudentKey, quickPriorityStudentIds, activeQuickScoreRowKey, quickVisibleScoreColumnsBySubject, getQuickScoreKey, getQuickScoreInputValue, getQuickSemesterTermAverage, getQuickSemesterScoreResult, formatScoreDisplayValue, getQuickScoreTextClass, quickQuizScoreKeySet, parseScoreNumber, getQuickAcademicResult } = table;
+  useEffect(() => {
+    if (!popup) return undefined;
+    const previous = document.activeElement, overflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = overflow; previous?.focus?.(); };
+  }, [popup]);
   return (<>
       <style>{`
         @media (max-width: 639px) {
@@ -50,14 +57,14 @@ export default function TeacherQuickScorePanel({ scope, selection, draft, action
       <div className="teacher-quick-score-landscape fixed inset-0 z-[260] m-0 flex h-[100dvh] w-screen flex-col rounded-none border-0 bg-white p-2 shadow-2xl sm:static sm:mt-4 sm:block sm:h-auto sm:w-auto sm:rounded-2xl sm:border sm:border-slate-200 sm:p-4 sm:shadow-sm">
       <div className="teacher-quick-score-toolbar mb-2 flex shrink-0 flex-nowrap items-center justify-between gap-2 border-b border-slate-100 pb-2 sm:mb-3 sm:flex-wrap sm:border-b-0 sm:pb-0">
         <div className="teacher-quick-score-title min-w-0">
-          <div className="teacher-quick-score-title-main font-black text-slate-900 uppercase text-sm">Bảng nhập điểm nhanh</div>
-          <div className="text-[11px] font-bold text-slate-500">Khối {quickScoreGrade} · {quickScoreLockedContext?.subjectLabel || selectedSubject}</div>
+          <div className="teacher-quick-score-title-main font-black text-slate-900 uppercase text-sm">{popup ? 'Điểm số' : 'Bảng nhập điểm nhanh'}</div>
+          <div className="text-[11px] font-bold text-slate-500">{classLabel || `Khối ${quickScoreGrade}`} · {quickScoreLockedContext?.subjectLabel || selectedSubject} · {activeSchoolYear}</div>
         </div>
         <div className="flex shrink-0 flex-nowrap items-center gap-1.5 sm:flex-wrap sm:gap-2">
           {quickScorebookSavingKey && <div className="text-xs font-black text-emerald-700 flex items-center gap-1"><Loader2 className="w-3.5 h-3.5 animate-spin" /> Đang lưu...</div>}
           <button type="button" onClick={() => setQuickVisibleSemesters({ hki: !quickVisibleSemesters.hki, hkii: quickVisibleSemesters.hkii })} className={`h-8 rounded-lg border px-3 text-[11px] font-black uppercase ${quickVisibleSemesters.hki ? 'bg-violet-600 text-white border-violet-600' : 'bg-white text-slate-700 border-slate-200'}`}>HK1</button>
           <button type="button" onClick={() => setQuickVisibleSemesters({ hki: quickVisibleSemesters.hki, hkii: !quickVisibleSemesters.hkii })} className={`h-8 rounded-lg border px-3 text-[11px] font-black uppercase ${quickVisibleSemesters.hkii ? 'bg-violet-600 text-white border-violet-600' : 'bg-white text-slate-700 border-slate-200'}`}>HK2</button>
-          <button type="button" onClick={() => { setShowLearningResultsWorkspace(false); setQuickScoreLockedContext(null); }} className="h-8 rounded-lg border border-rose-100 bg-rose-50 px-3 text-[11px] font-black uppercase text-rose-600">Đóng</button>
+          <button type="button" autoFocus={popup} onClick={() => { setShowLearningResultsWorkspace(false); setQuickScoreLockedContext(null); }} className="h-8 rounded-lg border border-rose-100 bg-rose-50 px-3 text-[11px] font-black uppercase text-rose-600">Đóng</button>
         </div>
       </div>
       {!canWriteCurrentSchoolYear && (

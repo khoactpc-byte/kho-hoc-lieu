@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
-import { Eye, EyeOff, KeyRound, Loader2, Pencil, Plus, RefreshCw, Save, ShieldCheck, UserRound, UserRoundX } from 'lucide-react';
+import { Download, Eye, EyeOff, KeyRound, Loader2, Pencil, Plus, RefreshCw, Save, ShieldCheck, UserRound, UserRoundX } from 'lucide-react';
 import { postAppsScript } from '../utils/helpers';
 import { teacherUsernameFromName } from '../utils/teacherAccess';
 import TeacherNameInput from './TeacherNameInput';
+import TeacherPasswordExportDialog from './TeacherPasswordExportDialog';
+import {reconcileIssuedTeacherPasswords} from '../utils/teacherAccountExport';
 
 const GRADES = ['1', '2', '3', '4', '5', '6', '7', '8', '9'];
 const SUBJECTS = [
@@ -15,7 +17,7 @@ const SCHOOLS = [
 ];
 const emptyDraft = () => ({ id: '', username: '', fullName: '', password: '123456', schoolCode: 'NAN', grades: [], subjects: [] });
 
-export default function TeacherAccountManager({ showNotification, nanTeachers = [], tqkTeachers = [], grades = GRADES, subjects = SUBJECTS }) {
+export default function TeacherAccountManager({ showNotification, nanTeachers = [], tqkTeachers = [], grades = GRADES, subjects = SUBJECTS, request = postAppsScript }) {
   const [accounts, setAccounts] = useState([]);
   const [draft, setDraft] = useState(emptyDraft);
   const passwordInputId = useId();
@@ -26,20 +28,25 @@ export default function TeacherAccountManager({ showNotification, nanTeachers = 
   const [isSaving, setIsSaving] = useState(false);
   const [busyAccountId, setBusyAccountId] = useState('');
   const [error, setError] = useState('');
+  const [exportOpen,setExportOpen] = useState(false);
+  const issuedPasswords=useRef(new Map());
+  useEffect(()=>()=>issuedPasswords.current.clear(),[]);
 
   const loadAccounts = useCallback(async () => {
     setIsLoading(true);
     setError('');
     try {
-      const response = await postAppsScript({ action: 'listTeacherAccounts' });
+      const response = await request({ action: 'listTeacherAccounts' });
       if (response.status !== 'success') throw new Error(response.message || 'Không tải được danh sách tài khoản.');
-      setAccounts(Array.isArray(response.accounts) ? response.accounts : []);
+      const next=Array.isArray(response.accounts)?response.accounts:[];
+      issuedPasswords.current=reconcileIssuedTeacherPasswords(issuedPasswords.current,next);
+      setAccounts(next);
     } catch (loadError) {
       setError(loadError.message || 'Không tải được danh sách tài khoản.');
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [request]);
 
   useEffect(() => { loadAccounts(); }, [loadAccounts]);
 
@@ -60,8 +67,13 @@ export default function TeacherAccountManager({ showNotification, nanTeachers = 
     setIsSaving(true);
     setError('');
     try {
-      const response = await postAppsScript({ action: 'saveTeacherAccount', ...draft });
+      const response = await request({ action: 'saveTeacherAccount', ...draft });
       if (response.status !== 'success') throw new Error(response.message || 'Không lưu được tài khoản.');
+      if(draft.password)issuedPasswords.current.set(draft.username,{password:draft.password,revision:null});
+      else if(draft.id) {
+        const previous=accounts.find(account=>account.id===draft.id),known=issuedPasswords.current.get(previous?.username);
+        if(known){issuedPasswords.current.delete(previous.username);issuedPasswords.current.set(draft.username,{...known,revision:null});}
+      }
       showNotification?.(draft.id ? 'Đã cập nhật tài khoản và phạm vi giảng dạy.' : `Đã tạo tài khoản ${draft.username}.`);
       resetDraft();
       await loadAccounts();
@@ -91,7 +103,7 @@ export default function TeacherAccountManager({ showNotification, nanTeachers = 
     setBusyAccountId(account.id);
     setError('');
     try {
-      const response = await postAppsScript({ action: 'setTeacherAccountStatus', id: account.id, isActive: !account.isActive });
+      const response = await request({ action: 'setTeacherAccountStatus', id: account.id, isActive: !account.isActive });
       if (response.status !== 'success') throw new Error(response.message || 'Không đổi được trạng thái tài khoản.');
       await loadAccounts();
       showNotification?.(account.isActive ? `Đã khóa tài khoản ${account.username}.` : `Đã mở lại tài khoản ${account.username}.`);
@@ -105,7 +117,7 @@ export default function TeacherAccountManager({ showNotification, nanTeachers = 
   const visibleAccounts = accounts.filter(account => !account.grades?.length || account.grades.some(grade => grades.includes(String(grade))));
 
   return (
-    <div className="teacher-account-manager">
+    <><div className="teacher-account-manager" inert={exportOpen?'':undefined} aria-hidden={exportOpen?true:undefined}>
       <form ref={formRef} onSubmit={saveAccount} className="password-panel account-form">
         <div className="account-section-header">
           <div>
@@ -189,9 +201,10 @@ export default function TeacherAccountManager({ showNotification, nanTeachers = 
       <section className="password-panel account-list" aria-label="Tài khoản giáo viên đã tạo">
         <div className="account-section-header">
           <h4 className="password-section-title">Tài khoản đã tạo <span className="ml-1 text-xs text-slate-500">({visibleAccounts.length})</span></h4>
-          <button type="button" onClick={loadAccounts} disabled={isLoading} className="password-button">
+          <div className="flex flex-wrap gap-2"><button type="button" onClick={()=>setExportOpen(true)} disabled={isLoading||isSaving||!!busyAccountId||!visibleAccounts.length} className="password-button password-primary"><Download className="h-3.5 w-3.5"/>Xuất danh sách mật khẩu</button>
+          <button type="button" onClick={loadAccounts} disabled={isLoading||isSaving||exportOpen} className="password-button">
             {isLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />} Tải lại
-          </button>
+          </button></div>
         </div>
         {isLoading ? <div className="account-empty" role="status">Đang tải...</div> : visibleAccounts.length === 0 ? <div className="account-empty">Chưa có tài khoản giáo viên.</div> : (
           <>
@@ -236,6 +249,6 @@ export default function TeacherAccountManager({ showNotification, nanTeachers = 
           </>
         )}
       </section>
-    </div>
+    </div>{exportOpen&&<TeacherPasswordExportDialog accounts={visibleAccounts} issuedPasswords={issuedPasswords.current} onClose={()=>setExportOpen(false)} onExported={count=>showNotification?.(`Đã xuất ${count} tài khoản giáo viên ra file Excel.`)}/>}</>
   );
 }

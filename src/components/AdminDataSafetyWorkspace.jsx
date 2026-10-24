@@ -11,6 +11,7 @@ import { readSystemSummary } from '../services/systemSummary';
 
 const formatDateTime = (value) => value ? new Date(value).toLocaleString('vi-VN') : '-';
 const normalizeCode = (value) => String(value || '').trim().toUpperCase().replace(/\s+/g, '');
+const mailboxSearchKey = value => String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/gi, 'd').toLowerCase().trim();
 
 export default function AdminDataSafetyWorkspace({
   snapshot,
@@ -18,9 +19,12 @@ export default function AdminDataSafetyWorkspace({
   onRestore,
   captureSnapshot,
   onClose,
-  showNotification
+  showNotification,
+  initialTab = 'backup',
+  schoolYear = ''
 }) {
-  const [tab, setTab] = useState('backup');
+  const [tab, setTab] = useState(initialTab);
+  const [mailQuery, setMailQuery] = useState('');
   const [backups, setBackups] = useState([]);
   const [logs, setLogs] = useState([]);
   const [messages, setMessages] = useState([]);
@@ -28,6 +32,13 @@ export default function AdminDataSafetyWorkspace({
   const [loading, setLoading] = useState({});
   const loadRequests = useRef({});
   const operation = useRef(false);
+  const historyPanel = useRef(null);
+  useEffect(() => {
+    if (initialTab !== 'mail') return undefined;
+    const previousFocus = document.activeElement;
+    historyPanel.current?.querySelector('button')?.focus();
+    return () => { if (previousFocus?.isConnected) previousFocus.focus(); };
+  }, [initialTab]);
   const [summary, setSummary] = useState(null);
   const loadSummary = useCallback(async () => {
     const request = Symbol(); loadRequests.current.summary = request; setLoading(state => ({ ...state, summary: true }));
@@ -131,11 +142,12 @@ export default function AdminDataSafetyWorkspace({
   }, [showNotification]);
 
   const loadMessages = useCallback(async () => {
-    const request = Symbol(); loadRequests.current.messages = request; setLoading(state => ({ ...state, messages: true }));
+    const request = Symbol(); loadRequests.current.messages = request; setLoading(state => ({ ...state, messages: true, messagesError: '' }));
     try {
       const response = await postAppsScript({ action: 'listAdminMailboxMessages', limit: 500, actor: 'Admin' });
       if (loadRequests.current.messages === request) setMessages(response.messages || []);
     } catch (error) {
+      if (loadRequests.current.messages === request) setLoading(state => ({ ...state, messagesError: error.message }));
       showNotification?.(`Chưa tải được thư đã gửi: ${error.message}`, 'error');
     } finally {
       if (loadRequests.current.messages === request) setLoading(state => ({ ...state, messages: false }));
@@ -194,7 +206,7 @@ export default function AdminDataSafetyWorkspace({
   };
 
   const deleteMessage = async (message) => {
-    if (!window.confirm(`Xóa riêng thư "${message.title}"?`)) return;
+    if (!window.confirm(`Xóa riêng thư "${message.title}" gửi tới ${message.recipientLabel || message.recipientValue}, lúc ${formatDateTime(message.createdAt)}?\nThư sẽ bị xóa khỏi hộp thư. Nếu học sinh đã đọc, việc xóa không thể hoàn tác nội dung đã đọc.`)) return;
     if (!beginOperation(`delete-${message.id}`)) return;
     try {
       const result = await postAppsScript({ action: 'deleteStudentMailboxMessage', messageId: message.id, actor: 'Admin' });
@@ -233,22 +245,34 @@ export default function AdminDataSafetyWorkspace({
     }
   };
 
+  const visibleMessages = messages.filter(message => (!schoolYear || message.schoolYear === schoolYear)
+    && mailboxSearchKey([message.recipientLabel, message.recipientValue, message.title, message.body].join(' ')).includes(mailboxSearchKey(mailQuery)));
+
   return (
-    <div className="fixed inset-x-0 top-[114px] bottom-0 z-[140] overflow-y-auto bg-slate-100 p-2 sm:top-[84px] sm:p-4">
+    <div className={initialTab === 'mail' ? 'fixed inset-0 z-[1300] overflow-y-auto bg-slate-100 p-2 sm:p-4' : 'fixed inset-x-0 top-[76px] bottom-0 z-[140] overflow-y-auto bg-slate-100 p-2 sm:top-[84px] sm:p-4'}
+      ref={historyPanel} role="dialog" aria-modal="true" aria-label={initialTab === 'mail' ? 'Thư đã gửi' : 'An toàn dữ liệu'} onKeyDown={event => {
+        if (event.key === 'Escape') { event.stopPropagation(); if (!busy) onClose?.(); }
+        if (event.key === 'Tab' && initialTab === 'mail') {
+          const controls = [...event.currentTarget.querySelectorAll('button:not(:disabled), input:not(:disabled), summary')];
+          const first = controls[0], last = controls[controls.length - 1];
+          if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+          else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+        }
+      }}>
       <div className="mx-auto max-w-7xl">
         <div className="sticky top-0 z-10 mb-3 flex items-center justify-between rounded-2xl border border-slate-200 bg-white/95 p-3 shadow-sm backdrop-blur">
           <div>
-            <h2 className="text-lg font-black uppercase text-slate-900">An toàn dữ liệu</h2>
-            <p className="text-xs font-semibold text-slate-500">Sao lưu, phục hồi, nhật ký và thư đã gửi</p>
+            <h2 className="text-lg font-medium text-slate-900">{initialTab === 'mail' ? `Thư đã gửi${schoolYear ? ` · ${schoolYear}` : ''}` : 'An toàn dữ liệu'}</h2>
+            <p className="text-xs text-slate-500">{initialTab === 'mail' ? 'Đối chiếu người nhận, nội dung, thời gian và trạng thái đã đọc.' : 'Sao lưu, phục hồi, nhật ký và thư đã gửi'}</p>
           </div>
-          <button type="button" onClick={onClose} disabled={Boolean(busy)} className="flex h-10 w-10 items-center justify-center rounded-full bg-rose-600 text-white disabled:opacity-50" title="Đóng"><X className="h-5 w-5" /></button>
+          <button type="button" onClick={onClose} disabled={Boolean(busy)} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-rose-600 text-white disabled:opacity-50" title="Đóng" aria-label="Đóng lịch sử và an toàn dữ liệu"><X className="h-5 w-5" /></button>
         </div>
 
-        <div className="mb-3 flex gap-2 overflow-x-auto rounded-xl bg-white p-2">
+        {initialTab !== 'mail' && <div className="mb-3 flex gap-2 overflow-x-auto rounded-xl bg-white p-2">
           {[['backup', DatabaseBackup, 'Sao lưu'], ['logs', Clock3, 'Nhật ký'], ['mail', Mail, 'Thư đã gửi']].map(([key, Icon, label]) => (
             <button key={key} type="button" disabled={Boolean(busy)} onClick={() => setTab(key)} className={`inline-flex h-10 shrink-0 items-center gap-2 rounded-lg px-4 text-xs font-black uppercase ${tab === key ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-700'}`}><Icon className="h-4 w-4" />{label}</button>
           ))}
-        </div>
+        </div>}
 
         {loading[tab === 'mail' ? 'messages' : tab === 'backup' ? 'backups' : 'logs'] && <p className="mb-3 text-sm text-slate-500">Đang tải danh sách...</p>}
         {tab === 'backup' && (
@@ -298,10 +322,32 @@ export default function AdminDataSafetyWorkspace({
 
         {tab === 'mail' && (
           <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
-            {messages.map(message => {
+            <div className="space-y-2 border-b border-slate-200 p-3">
+              <div className="flex flex-wrap gap-2">
+                <input type="search" aria-label="Tìm thư đã gửi" placeholder="Tìm tên, mã học sinh, tiêu đề hoặc nội dung..." value={mailQuery} onChange={event => setMailQuery(event.target.value)} className="h-10 min-w-0 flex-1 rounded-lg border border-slate-300 px-3 text-sm sm:min-w-64" />
+                <button type="button" onClick={loadMessages} disabled={Boolean(busy) || loading.messages} className="min-h-10 rounded-lg border border-slate-300 px-3 text-xs disabled:opacity-40">Tải lại thư đã gửi</button>
+              </div>
+              <p className="text-xs text-slate-500">Tra cứu trong 500 thư gần nhất. Xóa riêng thư gửi nhầm sẽ gỡ thư khỏi hộp thư; không thể hoàn tác việc học sinh đã đọc.</p>
+              {!loading.messages && !loading.messagesError && <p role="status" className="text-xs text-slate-600">{visibleMessages.length} thư phù hợp · {messages.length} thư đã tải</p>}
+              {loading.messagesError && <p role="alert" className="text-sm text-rose-700">Chưa tải được thư đã gửi: {loading.messagesError}</p>}
+            </div>
+            {visibleMessages.map(message => {
               const targetCount = getTargetCodes(message).length;
-              return <div key={message.id} className="border-b border-slate-100 p-3 last:border-0"><div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0 flex-1"><div className="text-sm font-black text-slate-900">{message.title}</div><div className="mt-1 text-xs font-semibold text-slate-500">{message.recipientLabel} · đã đọc {message.readCount}/{targetCount || '?'} · {formatDateTime(message.createdAt)}</div><div className="mt-2 line-clamp-2 text-xs text-slate-600">{message.body}</div></div><div className="flex gap-2"><button type="button" onClick={() => resendUnread(message)} disabled={Boolean(busy)} className="flex h-9 w-9 items-center justify-center rounded-lg border border-blue-200 bg-blue-50 text-blue-700" title="Gửi lại cho học sinh chưa đọc">{busy === `resend-${message.id}` ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}</button><button type="button" onClick={() => deleteMessage(message)} disabled={Boolean(busy)} className="flex h-9 w-9 items-center justify-center rounded-lg border border-rose-200 bg-rose-50 text-rose-700" title="Xóa thư">{busy === `delete-${message.id}` ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}</button></div></div></div>;
+              return <article key={message.id} aria-label={`Thư gửi tới ${message.recipientLabel || message.recipientValue}`} className="border-b border-slate-100 p-3 last:border-0">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-medium text-slate-900">{message.title}</div>
+                    <div className="mt-1 break-words text-xs text-slate-600">{message.recipientLabel} · đã đọc {message.readCount}/{targetCount || '?'} · {formatDateTime(message.createdAt)}</div>
+                    <details className="mt-2 text-xs text-slate-600"><summary className="cursor-pointer py-1">Xem nội dung đầy đủ</summary><p className="mt-1 whitespace-pre-wrap break-words leading-6">{message.body}</p></details>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button type="button" onClick={() => resendUnread(message)} disabled={Boolean(busy)} className="flex h-10 w-10 items-center justify-center rounded-lg border border-blue-200 bg-blue-50 text-blue-700" title="Gửi lại cho học sinh chưa đọc">{busy === `resend-${message.id}` ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}</button>
+                    <button type="button" onClick={() => deleteMessage(message)} disabled={Boolean(busy)} className="flex min-h-10 items-center gap-1.5 rounded-lg border border-rose-200 bg-rose-50 px-2 text-xs text-rose-700" aria-label={`Xóa riêng thư gửi tới ${message.recipientLabel || message.recipientValue}`}>{busy === `delete-${message.id}` ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}Xóa thư này</button>
+                  </div>
+                </div>
+              </article>;
             })}
+            {!loading.messages && !loading.messagesError && !visibleMessages.length && <p className="p-3 text-sm text-slate-500">{messages.length ? 'Không có thư khớp với tìm kiếm và năm đang xem.' : 'Chưa có thư đã gửi.'}</p>}
           </div>
         )}
 

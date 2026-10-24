@@ -6,7 +6,12 @@ export function collectionForView(name, { scoped, identity, role, isAdmin, stude
   const base = collection(db, 'artifacts', appId, 'public', 'data', name);
   if (name === 'news') return base;
   if (scoped) return scopedCollection(name, identity, { grade, subject, schoolYear });
-  if (isAdmin || role === 'admin') return base;
+  if (isAdmin || role === 'admin') {
+    const filters = [];
+    if (schoolYear && ['students', 'lesson_progress', 'class_attendance'].includes(name)) filters.push(where('schoolYear', '==', schoolYear));
+    if (grade && ['materials', 'lesson_notes', 'lesson_quizzes'].includes(name)) filters.push(where('grade', '==', String(grade)));
+    return filters.length ? query(base, ...filters) : base;
+  }
   if (role !== 'teacher' && role !== 'student') return null;
   if (name === 'admission_applications') return null;
   if (name === 'students') {

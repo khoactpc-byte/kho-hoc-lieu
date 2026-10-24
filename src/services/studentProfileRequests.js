@@ -5,8 +5,9 @@ import { studentUploadMime, readFileBase64 } from '../utils/fileUpload';
 import { assertNoPendingProfileRequest, createPendingProfileRequest } from './profileRequestGate';
 import { PROFILE_REQUEST_PENDING_MESSAGE } from '../utils/profileRequestPolicy';
 import { assertStudentProfileProvinceChanges } from '../utils/studentProfileProvinces';
+import { assertStudentProfileAddressChanges } from './studentProfileLocations';
 
-export async function submitStudentProfileChange({ activeStudentProfile, isSubmittingProfileRequest, activeStudentIsReadOnly, showNotification, activeStudentReadOnlyReason, studentRequestScopeRef, setIsSubmittingProfileRequest, STUDENT_PROFILE_IMAGE_FIELDS, studentProfileImages, studentProfileDocumentOverrides, activeStudentPendingProfileChanges, studentProfileImageAppendModes, studentProfileEditableFields, studentProfileProvinceOptions, normalizeStudentResultRating, studentProfileDraft, activeStudentPendingProfileRequests, currentSchoolYear, setShowStudentProfileModal, IMAGE_DRIVE_FOLDER_ID }) {
+export async function submitStudentProfileChange({ activeStudentProfile, isSubmittingProfileRequest, activeStudentIsReadOnly, showNotification, activeStudentReadOnlyReason, studentRequestScopeRef, setIsSubmittingProfileRequest, STUDENT_PROFILE_IMAGE_FIELDS, studentProfileImages, studentProfileDocumentOverrides, activeStudentPendingProfileChanges, studentProfileImageAppendModes, studentProfileEditableFields, studentProfileProvinceOptions, studentProfileLocationLookup, normalizeStudentResultRating, studentProfileDraft, activeStudentPendingProfileRequests, currentSchoolYear, setShowStudentProfileModal, IMAGE_DRIVE_FOLDER_ID }) {
   const fileToBase64Payload = async (file, field = {}) => {
     const mimeType = studentUploadMime(file);
     const filenameTag = field.filename || field.key || 'anh';
@@ -38,6 +39,9 @@ export async function submitStudentProfileChange({ activeStudentProfile, isSubmi
     if (!request) return;
     setIsSubmittingProfileRequest(true);
     try {
+      await assertStudentProfileAddressChanges({ draft: studentProfileDraft, current: activeStudentProfile,
+        optionsByField: studentProfileProvinceOptions, editableFields: studentProfileEditableFields, lookup: studentProfileLocationLookup });
+      if (!studentRequestScopeRef.current.isCurrent(request)) return;
       await assertNoPendingProfileRequest(activeStudentProfile.id);
       if (!studentRequestScopeRef.current.isCurrent(request)) return;
       const uploadedImageChanges = {};

@@ -1,10 +1,14 @@
 import { Clock, X, Image as ImageIcon } from 'lucide-react';
+import { createPortal } from 'react-dom';
 import StudentProfileSections from './StudentProfileSections';
+import StudentProfileAddressSelect from './StudentProfileAddressSelect';
+import StudentProfileAddressFields from './StudentProfileAddressFields';
+import StudentProfileFamilyFields from './StudentProfileFamilyFields';
 import StudentProfileHistory from './StudentProfileHistory';
 import { buildStudentProfileHistory } from '../utils/studentProfileHistory';
-import { STUDENT_PROFILE_SECTIONS, studentProfileSection } from '../utils/studentProfileLayout';
+import { STUDENT_PROFILE_SECTIONS, isStudentProfileFamilyField, studentProfileSection } from '../utils/studentProfileLayout';
 import { PROFILE_REQUEST_PENDING_MESSAGE } from '../utils/profileRequestPolicy';
-import { buildStudentProfileProvinceOptions, STUDENT_PROFILE_PROVINCE_FIELDS } from '../utils/studentProfileProvinces';
+import { buildStudentProfileProvinceOptions, STUDENT_PROFILE_ADDRESS_GROUPS, STUDENT_PROFILE_PROVINCE_FIELDS } from '../utils/studentProfileProvinces';
 
 export default function StudentProfileModal({ view }) {
   const {
@@ -18,16 +22,15 @@ export default function StudentProfileModal({ view }) {
     activeStudentReadOnlyReason,
     applyStudentProfileImageFiles,
     currentSchoolYear,
-    currentWardOptions,
     derivedProvinceOptions = [],
     studentProfileProvinceOptions,
+    studentProfileAddressFields,
     studentProfileProvinceDirectoryStatus = 'ready',
     retryStudentProfileProvinceDirectory,
     getStudentProfileEmbedUrl,
     getStudentProfileImageUrl,
     handleStudentProfileFieldChange,
     handleStudentProfileImageChange,
-    householdWardOptions,
     isSubmittingProfileRequest,
     removeStudentProfileExistingDocumentPage,
     removeStudentProfileSelectedImage,
@@ -40,47 +43,24 @@ export default function StudentProfileModal({ view }) {
     studentProfileImages,
     studentHistoryRecords = [],
     studentAttendance = [],
+    studentProfileAcademicHistory,
     submitStudentProfileRequest
   } = view;
   const hasPendingRequest = activeStudentPendingProfileRequests.length > 0;
   const editingBlocked = activeStudentIsReadOnly || hasPendingRequest;
   const provinceOptions = studentProfileProvinceOptions || buildStudentProfileProvinceOptions({ provinces: derivedProvinceOptions, birthProvinces: derivedProvinceOptions });
+  const addressFields = studentProfileAddressFields || Object.fromEntries(STUDENT_PROFILE_ADDRESS_GROUPS.flatMap(group => [group.province, group.district, group.ward].filter(Boolean).map(key => [key, { choices: provinceOptions[key] || [], disabled: !(provinceOptions[key]?.length), placeholder: Object.hasOwn(STUDENT_PROFILE_PROVINCE_FIELDS, key) ? 'Chọn tỉnh / thành phố' : 'Chọn cấp trên trước' }])));
   const renderProfileField = field => {
     const isFieldPending = activeStudentPendingProfileFieldKeys.has(field.key);
-    const isProvince = Object.hasOwn(STUDENT_PROFILE_PROVINCE_FIELDS, field.key);
-    const choices = provinceOptions[field.key] || [];
-    const provinceValue = String(studentProfileDraft[field.key] || '');
-    const listId = field.key === 'ward'
-        ? 'student-profile-current-ward-options'
-        : field.key === 'householdWard'
-          ? 'student-profile-household-ward-options'
-          : undefined;
-    const placeholder = field.key === 'birthDate'
-      ? 'dd/mm/yyyy'
-      : field.key === 'identityCode'
-        ? '12 số hoặc học sinh chưa có'
-        : (field.key === 'ward' || field.key === 'householdWard')
-          ? 'Chọn tỉnh trước, rồi gõ/chọn phường xã'
-          : '';
+    const placeholder = field.key === 'birthDate' ? 'dd/mm/yyyy' : field.key === 'identityCode' ? '12 số hoặc học sinh chưa có' : '';
     return (
       <label key={field.key} className="flex flex-col gap-1">
         <span className="flex items-center gap-1 text-[10px] font-normal text-slate-400">
           {field.label}
           {isFieldPending && <span className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[8px] text-amber-700">Chờ duyệt</span>}
         </span>
-        {isProvince ? (
-          <select
-            value={provinceValue}
-            disabled={editingBlocked || !choices.length}
-            onChange={event => handleStudentProfileFieldChange(field.key, event.target.value)}
-            className={`rounded-2xl border px-3 py-3 text-sm font-normal text-slate-800 focus:outline-none focus:border-blue-400 ${isFieldPending ? 'border-amber-200 bg-amber-50' : 'border-slate-200 bg-white'}`}
-          >
-            <option value="">{choices.length ? 'Chọn tỉnh / thành phố' : studentProfileProvinceDirectoryStatus === 'error' ? 'Chưa tải được danh mục' : 'Đang tải danh mục…'}</option>
-            {provinceValue && !choices.some(option => option.value === provinceValue) && (
-              <option value={provinceValue} disabled>Hiện tại: {provinceValue}</option>
-            )}
-            {choices.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
-          </select>
+        {addressFields[field.key] ? (
+          <StudentProfileAddressSelect field={field} value={studentProfileDraft[field.key] || ''} state={addressFields[field.key]} disabled={editingBlocked || isSubmittingProfileRequest} onChange={handleStudentProfileFieldChange} className={`rounded-2xl border px-3 py-3 text-sm font-normal text-slate-800 focus:outline-none focus:border-blue-400 disabled:bg-slate-50 ${isFieldPending ? 'border-amber-200 bg-amber-50' : 'border-slate-200 bg-white'}`} />
         ) : field.type === 'select' ? (
           <select
             value={studentProfileDraft[field.key] || ''}
@@ -94,7 +74,6 @@ export default function StudentProfileModal({ view }) {
         ) : (
           <input
             value={studentProfileDraft[field.key] || ''}
-            list={listId}
             placeholder={placeholder}
             readOnly={editingBlocked}
             disabled={editingBlocked}
@@ -105,11 +84,11 @@ export default function StudentProfileModal({ view }) {
       </label>
     );
   };
-  return (
-<div role="dialog" aria-modal="true" aria-labelledby="student-profile-title" className="fixed inset-0 z-[115] bg-slate-900/60 backdrop-blur-sm p-2 sm:p-3 flex items-center justify-center">
-          <div className="bg-white rounded-lg shadow-2xl w-full min-w-0 min-h-0 max-w-[1280px] max-h-[min(94dvh,100%)] overflow-hidden flex flex-col font-normal">
-            <div className="shrink-0 px-3 py-2 border-b bg-slate-50 flex items-center justify-between gap-3">
-              <div className="min-w-0">
+  const content = (
+<div role="dialog" aria-modal="true" aria-labelledby="student-profile-title" className="student-profile-overlay z-[115] bg-slate-900/60 backdrop-blur-sm" onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); setShowStudentProfileModal(false); } }}>
+          <div className="student-profile-panel bg-white rounded-lg shadow-2xl font-normal">
+            <div className="student-profile-header shrink-0 px-3 py-2 border-b bg-slate-50">
+              <div className="student-profile-heading min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
                   <h3 id="student-profile-title" className="font-normal text-slate-900 truncate">Hồ sơ học sinh</h3>
                   {activeStudentPendingProfileRequests.length > 0 && (
@@ -120,13 +99,19 @@ export default function StudentProfileModal({ view }) {
                 </div>
                 <p className="text-xs text-slate-500 font-normal">Em gửi yêu cầu sửa, admin duyệt xong mới cập nhật hồ sơ chính.</p>
               </div>
-              <button type="button" onClick={() => setShowStudentProfileModal(false)} aria-label="Đóng hồ sơ" className="p-2 rounded-xl bg-white border border-slate-200 text-slate-500 hover:text-rose-600">
+              <div className="student-profile-actions flex flex-wrap items-center justify-end gap-2">
+                <button type="button" onClick={() => setShowStudentProfileModal(false)} className="h-8 px-4 rounded border border-slate-200 bg-white text-sm text-slate-700 font-normal">Hủy</button>
+                <button type="button" onClick={submitStudentProfileRequest} disabled={isSubmittingProfileRequest || editingBlocked} className="min-h-8 px-4 py-1 rounded bg-blue-600 text-sm text-white font-normal shadow-lg disabled:opacity-60 disabled:cursor-not-allowed">
+                  {activeStudentIsReadOnly ? 'Chỉ xem hồ sơ' : (hasPendingRequest ? 'Đang chờ duyệt' : (isSubmittingProfileRequest ? 'Đang gửi...' : 'Gửi yêu cầu sửa'))}
+                </button>
+              </div>
+              <button type="button" autoFocus onClick={() => setShowStudentProfileModal(false)} aria-label="Đóng hồ sơ" className="student-profile-close shrink-0 p-2 rounded-xl bg-white border border-slate-200 text-slate-500 hover:text-rose-600">
                 <X className="w-5 h-5" />
               </button>
             </div>
 
             {(activeStudentPendingProfileRequests.length > 0 || activeStudentIsReadOnly) && (
-            <div className="shrink-0 space-y-1.5 px-3 py-2 text-xs">
+            <div className="max-h-[20dvh] shrink-0 space-y-1.5 overflow-y-auto px-3 py-2 text-xs">
               {activeStudentPendingProfileRequests.length > 0 && (
                 <details className="rounded border border-amber-100 bg-amber-50 px-3 py-1.5 text-xs font-normal text-amber-800">
                   <summary className="cursor-pointer">{PROFILE_REQUEST_PENDING_MESSAGE}</summary>
@@ -146,17 +131,11 @@ export default function StudentProfileModal({ view }) {
                   Chưa tải được danh mục tỉnh/thành phố. {retryStudentProfileProvinceDirectory && <button type="button" onClick={retryStudentProfileProvinceDirectory} className="text-blue-700 underline">Tải lại danh mục</button>}
                 </div>
               )}
-              <datalist id="student-profile-current-ward-options">
-                {currentWardOptions.map(item => <option key={item} value={item} />)}
-              </datalist>
-              <datalist id="student-profile-household-ward-options">
-                {householdWardOptions.map(item => <option key={item} value={item} />)}
-              </datalist>
-
             <StudentProfileSections sections={[
               ...STUDENT_PROFILE_SECTIONS.filter(section => ['identity', 'learning'].includes(section.key) || studentProfileEditableFields.some(field => studentProfileSection(field.key) === section.key)).map(section => ({
                 ...section,
                 content: <div className="space-y-3">
+                  {section.key === 'address' && <p className="text-xs text-slate-500">Nơi sinh, khai sinh, quê quán: chọn theo giấy tờ. Nơi ở và thường trú: chọn địa chỉ hiện hành.</p>}
                   {section.key === 'identity' && (
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-x-3 gap-y-2">
                 {[
@@ -180,12 +159,17 @@ export default function StudentProfileModal({ view }) {
               )}
 
                   </>)}
-                  <div className="grid grid-cols-1 gap-x-3 gap-y-2 sm:grid-cols-2 lg:grid-cols-4">
-                    {studentProfileEditableFields.filter(field => studentProfileSection(field.key) === section.key).map(renderProfileField)}
-                  </div>
+                  {section.key === 'address' ? <StudentProfileAddressFields fields={studentProfileEditableFields.filter(field => studentProfileSection(field.key) === 'address')} renderField={renderProfileField} /> : <div className="grid grid-cols-1 gap-x-3 gap-y-2 sm:grid-cols-2 lg:grid-cols-4">
+                    {studentProfileEditableFields.filter(field => studentProfileSection(field.key) === section.key && !isStudentProfileFamilyField(field.key)).map(renderProfileField)}
+                  </div>}
+                  {section.key === 'identity' && (
+                    <StudentProfileFamilyFields fields={studentProfileEditableFields.filter(field => isStudentProfileFamilyField(field.key))} renderField={renderProfileField} />
+                  )}
                   {section.key === 'identity' && (
                     <section aria-label="Quá trình học" className="border-t border-slate-200 pt-3">
-                      <StudentProfileHistory rows={buildStudentProfileHistory({ student: activeStudentProfile, records: studentHistoryRecords, currentSchoolYear, attendance: studentAttendance })} />
+                      {studentProfileAcademicHistory?.status === 'loading' && <p role="status" className="mb-2 text-xs text-slate-500">Đang đối chiếu học lực, hạnh kiểm theo từng năm…</p>}
+                      {studentProfileAcademicHistory?.status === 'error' && <p role="alert" className="mb-2 text-xs text-amber-800">{studentProfileAcademicHistory.error} <button type="button" onClick={studentProfileAcademicHistory.retry} className="text-blue-700 underline">Tải lại kết quả</button></p>}
+                      <StudentProfileHistory rows={studentProfileAcademicHistory?.rows || buildStudentProfileHistory({ student: activeStudentProfile, records: studentHistoryRecords, currentSchoolYear, attendance: studentAttendance })} />
                     </section>
                   )}
                   {section.key === 'learning' && (
@@ -345,13 +329,8 @@ export default function StudentProfileModal({ view }) {
                 </div>
               }))
             ]} />
-            <div className="shrink-0 px-3 py-2 border-t bg-slate-50 flex flex-wrap justify-end gap-2">
-              <button type="button" onClick={() => setShowStudentProfileModal(false)} className="h-8 px-4 rounded border border-slate-200 bg-white text-sm text-slate-700 font-normal">Hủy</button>
-              <button type="button" onClick={submitStudentProfileRequest} disabled={isSubmittingProfileRequest || editingBlocked} className="min-h-8 px-4 py-1 rounded bg-blue-600 text-sm text-white font-normal shadow-lg disabled:opacity-60 disabled:cursor-not-allowed">
-                {activeStudentIsReadOnly ? 'Chỉ xem hồ sơ' : (hasPendingRequest ? 'Đang chờ duyệt' : (isSubmittingProfileRequest ? 'Đang gửi...' : 'Gửi yêu cầu sửa'))}
-              </button>
-            </div>
               </div>
             </div>
   );
+  return typeof document === 'undefined' ? content : createPortal(content, document.body);
 }

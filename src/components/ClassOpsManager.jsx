@@ -4,17 +4,23 @@ import { saveAttendanceEntry } from '../services/attendance';
 import { attendanceDocumentId } from '../utils/classNormalization';
 import ClassMonitorAttendance from './ClassMonitorAttendance';
 import AttendanceCopyButton from './AttendanceCopyButton';
+import AdminLeaveRequestsButton from './AdminLeaveRequestsButton';
 import { useAttendanceEdits } from '../hooks/useAttendanceEdits';
-import { applyAttendanceEntry, attendanceCellKey, buildAttendanceSummary } from '../utils/attendance';
+import { applyAttendanceEntry, attendanceCellKey, buildAttendanceSummary, buildAttendancePeriodSummary } from '../utils/attendance';
+import { escapeHtmlText } from '../utils/safeHtml';
 import { copyTextSafely } from '../utils/clipboard';
+import { parseCalendarDate } from '../utils/calendarDate';
+import { vietnamDateKey } from '../utils/vietnamDate';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { collection, doc, getDoc, onSnapshot, query, setDoc, where } from 'firebase/firestore';
 import {
   ArrowDown,
   ArrowUp,
   CalendarDays,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
+  ChevronUp,
   CheckCircle2,
   Clock3,
   Download,
@@ -44,6 +50,7 @@ const pad2 = (value) => String(value).padStart(2, '0');
 const toDateKey = (date) => `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
 const parseYearStart = (schoolYear = '') => Number(String(schoolYear).match(/\d{4}/)?.[0]) || new Date().getFullYear();
 const getClassName = (student = {}) => normalizeSchoolClassName(student.className || student.grade || '');
+const attendanceScopeKey = (date, schoolCode, className) => `${date}__${schoolCode}__${className}`;
 const extractDriveFileId = (url = '') => {
   const match = String(url || '').match(/\/file\/d\/([a-zA-Z0-9_-]+)|[?&]id=([a-zA-Z0-9_-]+)/);
   return match ? (match[1] || match[2]) : '';
@@ -127,6 +134,10 @@ const formatVietnamDateKey = (dateKey = '') => {
   const [year, month, day] = String(dateKey || '').split('-');
   return year && month && day ? `${day}/${month}/${year}` : dateKey;
 };
+const formatBirthDate = (value = '') => {
+  const date = parseCalendarDate(value);
+  return date ? formatVietnamDateKey(toDateKey(date)) : String(value || '').trim() || '—';
+};
 const makeMonthDates = (monthInfo) => {
   if (!monthInfo) return [];
   const total = new Date(monthInfo.year, monthInfo.month, 0).getDate();
@@ -188,7 +199,7 @@ function AttendanceAvatar({ student = {} }) {
 
 function AdminAttendanceStaticTable({ currentSchoolYear = '', students = [], classOptions = [], user, onClose, onOpenDatabase, showNotification }) {
   const today = new Date();
-  const months = monthOptionsForSchoolYear(currentSchoolYear);
+  const months = useMemo(() => monthOptionsForSchoolYear(currentSchoolYear), [currentSchoolYear]);
   const [selectedClasses, setSelectedClasses] = useState([]);
   const [activeGradeFilter, setActiveGradeFilter] = useState('');
   const [selectedMonth, setSelectedMonth] = useState(() => getInitialMonth(months) || { month: today.getMonth() + 1, year: today.getFullYear(), label: `Tháng ${today.getMonth() + 1}/${today.getFullYear()}` });
@@ -200,6 +211,13 @@ function AdminAttendanceStaticTable({ currentSchoolYear = '', students = [], cla
   const { changes, updateEntry } = useAttendanceEdits(currentSchoolYear);
   const [showAttendanceStats, setShowAttendanceStats] = useState(false);
   const [showPortraits, setShowPortraits] = useState(false);
+  const [todayDateKey, setTodayDateKey] = useState(() => vietnamDateKey());
+  useEffect(() => {
+    const refreshToday = () => setTodayDateKey(vietnamDateKey());
+    const timer = window.setInterval(refreshToday, 60000);
+    window.addEventListener('focus', refreshToday);
+    return () => { window.clearInterval(timer); window.removeEventListener('focus', refreshToday); };
+  }, []);
   useEffect(() => {
     const dates = makeMonthDates(selectedMonth);
     const todayKey = toDateKey(new Date());
@@ -207,13 +225,33 @@ function AdminAttendanceStaticTable({ currentSchoolYear = '', students = [], cla
     setSummaryDate(previous => previous.startsWith(monthPrefix) ? previous
       : dates.some(date => toDateKey(date) === todayKey) ? todayKey : dates[0] ? toDateKey(dates[0]) : '');
   }, [selectedMonth]);
-  const days = useMemo(() => reportMode === 'month' ? makeMonthDates(selectedMonth) : [], [reportMode, selectedMonth]);
+  const schoolYearStart = `${parseYearStart(currentSchoolYear)}-09-01`;
+  const schoolYearEnd = `${parseYearStart(currentSchoolYear) + 1}-05-31`;
+  const firstSchoolDate = toDateKey(makeMonthDates(months[0])[0]);
+  const lastSchoolDate = toDateKey(makeMonthDates(months.at(-1)).at(-1));
+  const boundWeekDate = value => value < firstSchoolDate ? firstSchoolDate : value > lastSchoolDate ? lastSchoolDate : value;
+  const showsDays = ['day', 'week', 'month'].includes(reportMode);
+  const showBirthDates = ['day', 'week'].includes(reportMode);
+  const days = useMemo(() => {
+    if (reportMode === 'month') return makeMonthDates(selectedMonth);
+    if (!['day', 'week'].includes(reportMode)) return [];
+    const dateKey = summaryDate || `${selectedMonth.year}-${pad2(selectedMonth.month)}-01`;
+    const weekAnchor = dateKey < firstSchoolDate ? firstSchoolDate : dateKey > lastSchoolDate ? lastSchoolDate : dateKey;
+    const anchor = new Date(`${reportMode === 'week' ? weekAnchor : dateKey}T12:00:00`);
+    return (reportMode === 'week' ? getWeekDates(anchor) : [anchor])
+      .filter(date => toDateKey(date) >= schoolYearStart && toDateKey(date) <= schoolYearEnd);
+  }, [reportMode, selectedMonth, summaryDate, schoolYearStart, schoolYearEnd, firstSchoolDate, lastSchoolDate]);
+  const dayColumnsWidth = days.reduce((width, date) => width + (toDateKey(date) === todayDateKey ? 60 : 42), 0);
   const reportMonths = useMemo(() => {
     if (reportMode === 'hk1') return months.filter(item => [9, 10, 11, 12, 1].includes(item.month));
     if (reportMode === 'hk2') return months.filter(item => [2, 3, 4, 5].includes(item.month));
     if (reportMode === 'year') return months;
     return [selectedMonth];
   }, [months, reportMode, selectedMonth]);
+  const reportDates = useMemo(() => showsDays ? days : reportMonths.flatMap(makeMonthDates), [showsDays, days, reportMonths]);
+  const reportLabel = reportMode === 'day' ? `Ngày ${formatVietnamDateKey(summaryDate)}`
+    : reportMode === 'week' ? `Tuần ${days.length ? formatVietnamDateKey(toDateKey(days[0])) + ' – ' + formatVietnamDateKey(toDateKey(days.at(-1))) : ''}`
+      : reportMode === 'month' ? selectedMonth.label : reportMode === 'hk1' ? 'Học kỳ 1' : reportMode === 'hk2' ? 'Học kỳ 2' : 'Cả năm';
   const classFilters = uniqueClassesFrom(students, {}, classOptions);
   const gradeFilters = [...new Set(classFilters.map(getSchoolGrade).filter(Boolean))]
     .sort((left, right) => Number(left) - Number(right));
@@ -231,10 +269,10 @@ function AdminAttendanceStaticTable({ currentSchoolYear = '', students = [], cla
   const attendanceMap = useMemo(() => {
     const map = new Map();
     attendanceDocs.forEach(item => {
-      map.set(`${item.date}__${item.className}`, item.records || {});
+      map.set(attendanceScopeKey(item.date, getStudentSchoolCode(item), item.className), item.records || {});
     });
     changes.forEach(({ input, status }) => {
-      const key = `${input.date}__${input.className}`;
+      const key = attendanceScopeKey(input.date, input.schoolCode, input.className);
       const records = map.get(key) || {};
       map.set(key, { ...records, [input.student.id]: { ...records[input.student.id], status } });
     });
@@ -244,24 +282,25 @@ function AdminAttendanceStaticTable({ currentSchoolYear = '', students = [], cla
     const className = getClassName(student);
     const statuses = Object.fromEntries(days.map(date => {
       const dateKey = toDateKey(date);
-      const status = attendanceMap.get(`${dateKey}__${className}`)?.[student.id]?.status || '';
+      const status = attendanceMap.get(attendanceScopeKey(dateKey, getStudentSchoolCode(student), className))?.[student.id]?.status || '';
       return [dateKey, status];
     }));
     const monthStats = Object.fromEntries(reportMonths.map(monthInfo => {
       const monthStatuses = makeMonthDates(monthInfo).map(date => {
         const dateKey = toDateKey(date);
-        return attendanceMap.get(`${dateKey}__${className}`)?.[student.id]?.status || '';
+        return attendanceMap.get(attendanceScopeKey(dateKey, getStudentSchoolCode(student), className))?.[student.id]?.status || '';
       });
       return [`${monthInfo.year}-${monthInfo.month}`, {
         cp: monthStatuses.filter(status => status === 'CP').length,
         kp: monthStatuses.filter(status => status === 'KP').length
       }];
     }));
-    const cp = Object.values(monthStats).reduce((sum, item) => sum + item.cp, 0);
-    const kp = Object.values(monthStats).reduce((sum, item) => sum + item.kp, 0);
+    const periodStatuses = reportDates.map(date => attendanceMap.get(attendanceScopeKey(toDateKey(date), getStudentSchoolCode(student), className))?.[student.id]?.status || '');
+    const cp = periodStatuses.filter(status => status === 'CP').length;
+    const kp = periodStatuses.filter(status => status === 'KP').length;
     const nameParts = splitVietnameseName(student.fullName || '');
     return { student, className, nameParts, statuses, monthStats, cp, kp };
-  }), [rows, days, reportMonths, attendanceMap]);
+  }), [rows, days, reportDates, reportMonths, attendanceMap]);
   const monthSummary = useMemo(() => {
     const base = Object.fromEntries(classFilters.map(className => [className, { className, students: 0, cp: 0, kp: 0, total: 0 }]));
     rowsWithStats.forEach(row => {
@@ -313,8 +352,8 @@ function AdminAttendanceStaticTable({ currentSchoolYear = '', students = [], cla
     try {
       const documentId = attendanceDocumentId(attendanceDocs, { schoolYear: currentSchoolYear, schoolCode: getStudentSchoolCode(row.student), className, date: dateKey });
       updateEntry({ documentId, student: row.student, cycle: true,
-        expectedEntry: attendanceMap.get(dateKey + '__' + className)?.[row.student.id], schoolYear: currentSchoolYear,
-        schoolCode: getStudentSchoolCode(row.student), className, date: dateKey, authorId: user?.uid }, {
+        expectedEntry: attendanceMap.get(attendanceScopeKey(dateKey, getStudentSchoolCode(row.student), className))?.[row.student.id], schoolYear: currentSchoolYear,
+        schoolCode: getStudentSchoolCode(row.student), className, date: dateKey, authorId: user?.uid, overrideApprovedLeave: true }, {
         onCommit: (entry, input) => setAttendanceDocs(previous => applyAttendanceEntry(previous, input, entry)),
         onError: error => { setSaveError('Lỗi lưu điểm danh: ' + error.message); showNotification?.('Lỗi lưu điểm danh: ' + error.message, 'error'); }
       });
@@ -322,24 +361,35 @@ function AdminAttendanceStaticTable({ currentSchoolYear = '', students = [], cla
   };
 
   const summaryGroups = new Map();
-  rows.forEach(student => {
+  rowsWithStats.forEach(row => {
+    const student = row.student;
     const className = getClassName(student), schoolCode = getStudentSchoolCode(student);
     const key = `${schoolCode}/${className}`;
     if (!summaryGroups.has(key)) summaryGroups.set(key, { className, schoolName: getSchoolName(schoolCode),
-      students: [], records: attendanceMap.get(`${summaryDate}__${className}`) || {} });
+      students: [], rows: [], records: attendanceMap.get(attendanceScopeKey(summaryDate, schoolCode, className)) || {} });
     summaryGroups.get(key).students.push(student);
+    summaryGroups.get(key).rows.push(row);
   });
-  const summary = buildAttendanceSummary({ date: summaryDate, schoolYear: currentSchoolYear, groups: [...summaryGroups.values()] });
+  const summary = reportMode === 'day'
+    ? buildAttendanceSummary({ date: summaryDate, schoolYear: currentSchoolYear, groups: [...summaryGroups.values()] })
+    : buildAttendancePeriodSummary({ label: reportLabel, schoolYear: currentSchoolYear, groups: [...summaryGroups.values()] });
+
+  const moveReportWeek = direction => {
+    const anchor = new Date(`${summaryDate || schoolYearStart}T12:00:00`);
+    anchor.setDate(anchor.getDate() + direction * 7);
+    const date = toDateKey(anchor);
+    setSummaryDate(boundWeekDate(date));
+  };
 
   const exportPdf = () => {
-    const reportLabel = reportMode === 'hk1' ? 'HỌC KỲ 1' : reportMode === 'hk2' ? 'HỌC KỲ 2' : reportMode === 'year' ? 'CẢ NĂM' : selectedMonth.label.toUpperCase();
-    const title = `ĐIỂM DANH ${reportLabel} - ${currentSchoolYear}`;
+    const title = `ĐIỂM DANH ${reportLabel.toUpperCase()} - ${currentSchoolYear}`;
     const visibleRows = rowsWithStats.map(row => `
       <tr>
-        <td>${row.nameParts.family}</td>
-        <td>${row.nameParts.given}</td>
-        <td style="text-align:center">${row.className}</td>
-        ${reportMode === 'month'
+        <td>${escapeHtmlText(row.nameParts.family)}</td>
+        <td>${escapeHtmlText(row.nameParts.given)}</td>
+        <td style="text-align:center">${escapeHtmlText(row.className)}</td>
+        ${showBirthDates ? `<td style="text-align:center">${escapeHtmlText(formatBirthDate(row.student.birthDate))}</td>` : ''}
+        ${showsDays
           ? days.map(date => `<td style="text-align:center">${row.statuses[toDateKey(date)] || ''}</td>`).join('')
           : reportMonths.map(monthInfo => {
               const key = `${monthInfo.year}-${monthInfo.month}`;
@@ -350,15 +400,15 @@ function AdminAttendanceStaticTable({ currentSchoolYear = '', students = [], cla
         <td style="text-align:center">${row.cp + row.kp}</td>
       </tr>
     `).join('');
-    const detailHeaders = reportMode === 'month'
+    const detailHeaders = showsDays
       ? days.map(date => `<th>${formatShortDate(date)}<br><small>${getShortDayLabel(date)}</small></th>`).join('')
       : reportMonths.map(monthInfo => `<th>T${monthInfo.month} CP</th><th>T${monthInfo.month} KP</th>`).join('');
-    const printHtml = `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title><style>
+    const printHtml = `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtmlText(title)}</title><style>
       body{font-family:Arial,sans-serif;padding:24px;color:#0f172a} h1{text-align:center;font-size:20px;margin:0 0 16px}
       table{width:100%;border-collapse:collapse;font-size:11px} th,td{border:1px solid #94a3b8;padding:6px} th{background:#e0f2fe}
       tr:nth-child(even) td{background:#f8fafc}.sum{margin-top:18px}
       @media print{button{display:none} body{padding:0}}
-    </style></head><body><button onclick="window.print()" style="margin-bottom:12px;padding:10px 14px;font-weight:bold">In / lưu PDF</button><h1>${title}</h1><table><thead><tr><th>Họ và đệm</th><th>Tên</th><th>Lớp</th>${detailHeaders}<th>CP</th><th>KP</th><th>Tổng</th></tr></thead><tbody>${visibleRows}</tbody></table><script>setTimeout(function(){window.focus();window.print();},450);</script></body></html>`;
+    </style></head><body><button onclick="window.print()" style="margin-bottom:12px;padding:10px 14px;font-weight:bold">In / lưu PDF</button><h1>${escapeHtmlText(title)}</h1><table><thead><tr><th>Họ và đệm</th><th>Tên</th><th>Lớp</th>${showBirthDates ? '<th>Ngày sinh</th>' : ''}${detailHeaders}<th>CP</th><th>KP</th><th>Tổng</th></tr></thead><tbody>${visibleRows}</tbody></table><script>setTimeout(function(){window.focus();window.print();},450);</script></body></html>`;
     const printWindow = window.open('', '_blank');
     if (!printWindow) {
       const blob = new Blob([printHtml], { type: 'text/html;charset=utf-8' });
@@ -389,15 +439,16 @@ function AdminAttendanceStaticTable({ currentSchoolYear = '', students = [], cla
             <p className="text-xs text-slate-500">{currentSchoolYear || 'Năm học'} · {rowsWithStats.length} học sinh</p>
           </div>
         </div>
-        <div className="flex shrink-0 items-center gap-1.5">
+        <div className="flex max-w-full flex-wrap items-center gap-1.5">
           <AttendanceCopyButton message={summary} disabled={attendanceLoadedYear !== currentSchoolYear || changes.size > 0 || !rows.length || !summaryDate} className="attendance-tool-button" />
           {onOpenDatabase && <button type="button" title="Mở danh sách học sinh" aria-label="Mở danh sách học sinh" onClick={onOpenDatabase} className="attendance-tool-button">
             <Users className="h-4 w-4" /><span className="hidden sm:inline">Học sinh</span>
           </button>}
-          <button type="button" title="Thống kê" aria-label="Thống kê điểm danh" aria-pressed={showAttendanceStats} onClick={() => setShowAttendanceStats(prev => !prev)} className={'attendance-tool-button ' + (showAttendanceStats ? 'border-sky-300 bg-sky-50 text-sky-700' : '')}>
-            <Users className="h-4 w-4" /><span className="hidden sm:inline">Thống kê</span>
+          <button type="button" title={showAttendanceStats ? 'Ẩn thống kê' : 'Hiện thống kê'} aria-label={showAttendanceStats ? 'Ẩn thống kê' : 'Hiện thống kê'} aria-expanded={showAttendanceStats} aria-controls="attendance-statistics" aria-pressed={showAttendanceStats} onClick={() => setShowAttendanceStats(prev => !prev)} className={'attendance-tool-button ' + (showAttendanceStats ? 'border-sky-300 bg-sky-50 text-sky-700' : '')}>
+            {showAttendanceStats ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}<span>{showAttendanceStats ? 'Ẩn thống kê' : 'Hiện thống kê'}</span>
           </button>
-          <button type="button" title="Xuất PDF" aria-label="Xuất PDF điểm danh" disabled={changes.size > 0} onClick={exportPdf} className="attendance-tool-button text-sky-700">
+          <AdminLeaveRequestsButton schoolYear={currentSchoolYear} students={rows} anchorDate={summaryDate} reportMode={reportMode} disabled={attendanceLoadedYear !== currentSchoolYear || changes.size > 0} />
+          <button type="button" title="Xuất PDF" aria-label="Xuất PDF điểm danh" disabled={attendanceLoadedYear !== currentSchoolYear || changes.size > 0 || !rows.length} onClick={exportPdf} className="attendance-tool-button text-sky-700">
             <Download className="h-4 w-4" /><span className="hidden sm:inline">Xuất PDF</span>
           </button>
           <button type="button" title={changes.size ? 'Đang lưu điểm danh' : 'Đóng'} disabled={changes.size > 0} aria-label="Đóng điểm danh" onClick={onClose} className="attendance-tool-button hover:text-rose-600"><X className="h-4 w-4" /></button>
@@ -411,34 +462,43 @@ function AdminAttendanceStaticTable({ currentSchoolYear = '', students = [], cla
             {gradeFilters.map(grade => <button key={grade} type="button" onClick={() => selectGrade(grade)} aria-pressed={activeGradeFilter === grade} className="attendance-filter-button">Khối {grade}</button>)}
           </div>
           <div className="flex flex-wrap items-center gap-3 sm:ml-auto">
-            <label className="inline-flex items-center gap-2 text-xs text-slate-500">Ngày báo cáo
-              <input type="date" aria-label="Ngày báo cáo Zalo" value={summaryDate} min={`${parseYearStart(currentSchoolYear)}-09-01`} max={`${parseYearStart(currentSchoolYear) + 1}-05-31`}
+            {['day', 'week'].includes(reportMode) && <label className="inline-flex items-center gap-2 text-xs text-slate-500">{reportMode === 'week' ? 'Ngày trong tuần' : 'Ngày báo cáo'}
+              <input type="date" aria-label={reportMode === 'week' ? 'Ngày trong tuần báo cáo' : 'Ngày báo cáo Zalo'} value={summaryDate} min={schoolYearStart} max={schoolYearEnd}
                 onChange={event => {
                   const value = event.target.value;
                   if (!value || value < `${parseYearStart(currentSchoolYear)}-09-01` || value > `${parseYearStart(currentSchoolYear) + 1}-05-31`) return;
                   const [year, month] = value.split('-').map(Number);
                   const found = months.find(item => item.year === year && item.month === month);
-                  if (found && (selectedMonth.year !== year || selectedMonth.month !== month)) { setSelectedMonth(found); setReportMode('month'); }
-                  setSummaryDate(value);
+                  if (found && (selectedMonth.year !== year || selectedMonth.month !== month)) setSelectedMonth(found);
+                  setSummaryDate(reportMode === 'week' ? boundWeekDate(value) : value);
                 }} className="h-8 min-w-0 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700" />
-            </label>
+            </label>}
+            {reportMode === 'week' && <div className="inline-flex items-center gap-1" aria-label="Chuyển tuần báo cáo">
+              <button type="button" aria-label="Tuần báo cáo trước" disabled={!days.length || toDateKey(days[0]) <= firstSchoolDate} onClick={() => moveReportWeek(-1)} className="attendance-tool-button !px-2 disabled:opacity-40"><ChevronLeft className="h-4 w-4" /></button>
+              <button type="button" aria-label="Tuần báo cáo sau" disabled={!days.length || toDateKey(days.at(-1)) >= lastSchoolDate} onClick={() => moveReportWeek(1)} className="attendance-tool-button !px-2 disabled:opacity-40"><ChevronRight className="h-4 w-4" /></button>
+            </div>}
             <label className="inline-flex items-center gap-1.5 whitespace-nowrap text-xs text-slate-600">
               <input type="checkbox" checked={showPortraits} onChange={event => setShowPortraits(event.target.checked)} className="h-3.5 w-3.5 rounded border-slate-300" />Hiện ảnh
             </label>
             <label className="inline-flex items-center gap-2 text-xs text-slate-500">
               Thời gian
               <select aria-label="Thời gian điểm danh" value={reportMode === 'month' ? selectedMonth.year + '-' + selectedMonth.month : reportMode} onChange={event => {
-                if (['hk1', 'hk2', 'year'].includes(event.target.value)) { setReportMode(event.target.value); return; }
+                if (['day', 'week', 'hk1', 'hk2', 'year'].includes(event.target.value)) {
+                  if (event.target.value === 'week') setSummaryDate(value => boundWeekDate(value || firstSchoolDate));
+                  setReportMode(event.target.value); return;
+                }
                 const [year, month] = event.target.value.split('-').map(Number);
                 const found = months.find(item => item.year === year && item.month === month);
                 if (found) { setSelectedMonth(found); setReportMode('month'); }
               }} className="h-8 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700">
-                {months.map(month => <option key={month.year + '-' + month.month} value={month.year + '-' + month.month}>{month.label}</option>)}
-                <option value="hk1">Học kỳ 1</option><option value="hk2">Học kỳ 2</option><option value="year">Cả năm</option>
+                <option value="day">Theo ngày</option><option value="week">Theo tuần</option>
+                <optgroup label="Theo tháng">{months.map(month => <option key={month.year + '-' + month.month} value={month.year + '-' + month.month}>{month.label}</option>)}</optgroup>
+                <optgroup label="Tổng hợp"><option value="hk1">Học kỳ 1</option><option value="hk2">Học kỳ 2</option><option value="year">Cả năm</option></optgroup>
               </select>
             </label>
           </div>
         </div>
+        <p aria-live="polite" className="mt-2 text-xs text-sky-700">Báo cáo {reportLabel.toLowerCase()} · Tổng CP/KP, sao chép Zalo và PDF theo khoảng đang chọn.</p>
         {saveError && <p role="alert" className="attendance-save-error">{saveError}</p>}
         {activeGradeFilter && activeGradeClasses.length > 1 && <div className="mt-2 flex flex-wrap items-center gap-1 border-t border-slate-100 pt-2" aria-label="Lọc lớp">
           <span className="mr-1 text-xs text-slate-500">Lớp</span>
@@ -451,23 +511,28 @@ function AdminAttendanceStaticTable({ currentSchoolYear = '', students = [], cla
 
       <div className="flex min-h-0 flex-1 flex-col gap-2 p-2">
         <div className="attendance-table-scroll min-h-0 flex-1 overflow-auto overscroll-contain rounded-md border border-slate-200">
-          <table className={'attendance-table min-w-full table-fixed border-separate border-spacing-0 text-xs ' + (showPortraits ? 'attendance-with-portraits' : '')} style={{ width: 'calc(var(--attendance-name-width) + var(--attendance-class-width) + ' + ((reportMode === 'month' ? days.length * 42 : reportMonths.length * 96) + 144) + 'px)' }}>
+          <table className={'attendance-table min-w-full table-fixed border-separate border-spacing-0 text-xs ' + (showPortraits ? 'attendance-with-portraits' : '')} style={{ width: 'calc(var(--attendance-name-width) + var(--attendance-class-width) + ' + ((showsDays ? dayColumnsWidth : reportMonths.length * 96) + 144 + (showBirthDates ? 100 : 0)) + 'px)' }}>
             <colgroup>
               <col style={{ width: 'var(--attendance-name-width)' }} /><col style={{ width: 'var(--attendance-class-width)' }} />
-              {reportMode === 'month' ? days.map(date => <col key={toDateKey(date)} style={{ width: 42 }} />) : reportMonths.map(month => <React.Fragment key={month.year + '-' + month.month}><col style={{ width: 48 }} /><col style={{ width: 48 }} /></React.Fragment>)}
+              {showBirthDates && <col style={{ width: 100 }} />}
+              {showsDays ? days.map(date => <col key={toDateKey(date)} style={{ width: toDateKey(date) === todayDateKey ? 60 : 42 }} />) : reportMonths.map(month => <React.Fragment key={month.year + '-' + month.month}><col style={{ width: 48 }} /><col style={{ width: 48 }} /></React.Fragment>)}
               <col style={{ width: 48 }} /><col style={{ width: 48 }} /><col style={{ width: 48 }} />
             </colgroup>
             <thead className="sticky top-0 z-30">
               <tr>
-                <th rowSpan={reportMode === 'month' ? 1 : 2} className="attendance-name-cell text-left">Họ và tên</th>
-                <th rowSpan={reportMode === 'month' ? 1 : 2} className="attendance-class-cell">Lớp</th>
-                {reportMode === 'month' ? days.map(date => <th key={toDateKey(date)}><span className="block">{formatShortDate(date)}</span><span className="block text-[10px] text-sky-100">{getShortDayLabel(date)}</span></th>) : reportMonths.map(month => <th key={month.year + '-' + month.month} colSpan={2}>Tháng {month.month}</th>)}
-                <th rowSpan={reportMode === 'month' ? 1 : 2} title="Có phép">CP</th><th rowSpan={reportMode === 'month' ? 1 : 2} title="Không phép">KP</th><th rowSpan={reportMode === 'month' ? 1 : 2}>Tổng</th>
+                <th rowSpan={showsDays ? 1 : 2} className="attendance-name-cell text-left">Họ và tên</th>
+                <th rowSpan={showsDays ? 1 : 2} className="attendance-class-cell">Lớp</th>
+                {showBirthDates && <th>Ngày sinh</th>}
+                {showsDays ? days.map(date => {
+                  const dateKey = toDateKey(date), isToday = dateKey === todayDateKey;
+                  return <th key={dateKey} data-attendance-date={dateKey} aria-current={isToday ? 'date' : undefined} className={isToday ? 'attendance-today-column' : ''} title={isToday ? `Hôm nay, ${formatVietnamDateKey(dateKey)}` : formatVietnamDateKey(dateKey)}><span className="block">{formatShortDate(date)}</span><span className="block text-[10px] text-sky-100">{getShortDayLabel(date)}</span>{isToday && <span className="block text-[9px] font-medium">Hôm nay</span>}</th>;
+                }) : reportMonths.map(month => <th key={month.year + '-' + month.month} colSpan={2}>Tháng {month.month}</th>)}
+                <th rowSpan={showsDays ? 1 : 2} title="Có phép">CP</th><th rowSpan={showsDays ? 1 : 2} title="Không phép">KP</th><th rowSpan={showsDays ? 1 : 2}>Tổng</th>
               </tr>
-              {reportMode !== 'month' && <tr>{reportMonths.map(month => <React.Fragment key={month.year + '-' + month.month}><th>CP</th><th>KP</th></React.Fragment>)}</tr>}
+              {!showsDays && <tr>{reportMonths.map(month => <React.Fragment key={month.year + '-' + month.month}><th>CP</th><th>KP</th></React.Fragment>)}</tr>}
             </thead>
             <tbody>
-              {!rowsWithStats.length ? <tr><td colSpan={(reportMode === 'month' ? days.length : reportMonths.length * 2) + 5} className="py-8 text-center text-slate-400">Chưa có học sinh trong khối đang chọn.</td></tr> : rowsWithStats.map((row, rowIndex) => <tr key={row.student.id || row.student.fullName + '-' + row.student.birthDate} className={rowIndex % 2 ? 'bg-slate-50' : 'bg-white'}>
+              {!rowsWithStats.length ? <tr><td colSpan={(showsDays ? days.length : reportMonths.length * 2) + 5 + (showBirthDates ? 1 : 0)} className="py-8 text-center text-slate-400">Chưa có học sinh trong khối đang chọn.</td></tr> : rowsWithStats.map((row, rowIndex) => <tr key={row.student.id || row.student.fullName + '-' + row.student.birthDate} className={rowIndex % 2 ? 'bg-slate-50' : 'bg-white'}>
                 <td className="attendance-name-cell" title={row.student.fullName + (row.student.accessCode ? ' · ' + row.student.accessCode : '')}>
                   <div className="flex min-w-0 items-center gap-2">
                     {showPortraits && <div className="h-8 w-7 shrink-0 overflow-hidden rounded border border-slate-200 bg-white text-center text-sky-700"><AttendanceAvatar student={row.student} /></div>}
@@ -475,10 +540,12 @@ function AdminAttendanceStaticTable({ currentSchoolYear = '', students = [], cla
                   </div>
                 </td>
                 <td className="attendance-class-cell text-slate-600">{row.className || '-'}</td>
-                {reportMode === 'month' ? days.map(date => {
-                  const status = row.statuses[toDateKey(date)] || '';
-                  const busy = changes.has(attendanceCellKey({ schoolYear: currentSchoolYear, schoolCode: getStudentSchoolCode(row.student), className: row.className, date: toDateKey(date), student: row.student }));
-                  return <td key={toDateKey(date)} className="p-0 text-center"><button type="button" onClick={() => cycleAttendance(row, date)} disabled={attendanceLoadedYear !== currentSchoolYear} aria-busy={busy} aria-label={row.student.fullName + ', ' + formatVietnamDateKey(toDateKey(date)) + ': ' + (status === 'CP' ? 'Có phép' : status === 'KP' ? 'Không phép' : 'Đi học')} title={busy ? 'Đang lưu điểm danh' : 'Nhấn để đổi: đi học → có phép → không phép'} className={'attendance-day-button ' + (status === 'CP' ? 'bg-amber-50 text-amber-700' : status === 'KP' ? 'bg-rose-50 text-rose-700' : 'text-slate-300')}>{status || '-'}</button></td>;
+                {showBirthDates && <td className="whitespace-nowrap text-center text-slate-600">{formatBirthDate(row.student.birthDate)}</td>}
+                {showsDays ? days.map(date => {
+                  const dateKey = toDateKey(date), isToday = dateKey === todayDateKey;
+                  const status = row.statuses[dateKey] || '';
+                  const busy = changes.has(attendanceCellKey({ schoolYear: currentSchoolYear, schoolCode: getStudentSchoolCode(row.student), className: row.className, date: dateKey, student: row.student }));
+                  return <td key={dateKey} data-attendance-date={dateKey} className={'p-0 text-center ' + (isToday ? 'attendance-today-column' : '')}><button type="button" onClick={() => cycleAttendance(row, date)} disabled={attendanceLoadedYear !== currentSchoolYear} aria-busy={busy} aria-label={row.student.fullName + ', ' + formatVietnamDateKey(dateKey) + ': ' + (status === 'CP' ? 'Có phép' : status === 'KP' ? 'Không phép' : 'Đi học')} title={(isToday ? 'Hôm nay · ' : '') + formatVietnamDateKey(dateKey) + ' · ' + (busy ? 'Đang lưu điểm danh' : 'Nhấn để đổi: đi học → có phép → không phép')} className={'attendance-day-button ' + (status === 'CP' ? 'bg-amber-50 text-amber-700' : status === 'KP' ? 'bg-rose-50 text-rose-700' : isToday ? 'text-teal-700' : 'text-slate-300')}>{status || '-'}</button></td>;
                 }) : reportMonths.map(month => {
                   const stats = row.monthStats[month.year + '-' + month.month] || { cp: 0, kp: 0 };
                   return <React.Fragment key={month.year + '-' + month.month}><td className="text-center text-amber-700">{stats.cp}</td><td className="text-center text-rose-700">{stats.kp}</td></React.Fragment>;
@@ -488,8 +555,8 @@ function AdminAttendanceStaticTable({ currentSchoolYear = '', students = [], cla
             </tbody>
           </table>
         </div>
-        {showAttendanceStats && <section className="max-h-[35%] shrink-0 overflow-auto rounded-md border border-slate-200" aria-label="Thống kê điểm danh">
-          <div className="border-b border-slate-200 bg-slate-50 px-3 py-1.5 text-xs text-slate-600">Thống kê {reportMode === 'month' ? selectedMonth.label : reportMode === 'hk1' ? 'học kỳ 1' : reportMode === 'hk2' ? 'học kỳ 2' : 'cả năm'}</div>
+        {showAttendanceStats && <section id="attendance-statistics" className="max-h-[35%] shrink-0 overflow-auto rounded-md border border-slate-200" aria-label="Thống kê điểm danh">
+          <div className="border-b border-slate-200 bg-slate-50 px-3 py-1.5 text-xs text-slate-600">Thống kê {reportLabel.toLowerCase()}</div>
           <table className="w-full text-xs">
             <thead><tr className="bg-slate-50 text-slate-500"><th className="px-3 py-1.5 text-left font-normal">Lớp</th><th className="font-normal">Học sinh</th><th className="font-normal">CP</th><th className="font-normal">KP</th><th className="font-normal">Tổng vắng</th></tr></thead>
             <tbody>{monthSummary.map(item => <tr key={item.className} className="border-t border-slate-100"><td className="px-3 py-1.5">{getClassFilterLabel(item.className)}</td><td className="text-center">{item.students}</td><td className="text-center text-amber-700">{item.cp}</td><td className="text-center text-rose-700">{item.kp}</td><td className="text-center">{item.total}</td></tr>)}</tbody>
@@ -775,7 +842,7 @@ function InteractiveClassOpsManager({
     try {
       await saveAttendanceEntry({ documentId, student, status, expectedEntry: currentRecords[student.id],
         schoolYear: currentSchoolYear, schoolCode: activeSchoolCode, className: activeClass, date: dateKey,
-        authorId: user?.uid || currentStudent?.id });
+        authorId: user?.uid || currentStudent?.id, overrideApprovedLeave: isAdmin });
     } catch (error) { showNotification?.('Lỗi lưu điểm danh: ' + error.message, 'error'); }
     finally { attendanceSavesRef.current.delete(key); }
   };

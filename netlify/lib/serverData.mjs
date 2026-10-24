@@ -8,6 +8,10 @@ import { primarySubjectsForGrade } from '../../src/utils/primaryAcademic.js';
 import { SCOREBOOK_SOURCE_FILE } from '../../src/config/scorebookDomain.js';
 import { writeScoreAudit } from './scoreAudit.mjs';
 import { activeStudent, documentId, fail, scoreCell, scoreValue, teacherScope, writable } from './dataPolicy.mjs';
+import { readStudentProfileAcademicHistory } from '../../src/utils/studentProfileAcademicHistory.js';
+import { createConversationService } from '../../src/utils/studentConversations.js';
+import { attendanceWithApprovedLeave, createLeaveRequestService, leaveRequestId, LEAVE_REQUEST_COLLECTION } from '../../src/utils/studentLeaveRequests.js';
+import { attendanceDocumentId } from '../../src/utils/classNormalization.js';
 
 const profileFields = new Set(('fullName birthDate birthProvince birthDistrict birthWard birthPlaceName birthRegistrationProvince birthRegistrationDistrict birthRegistrationWard hometownProvince hometownDistrict hometownWard identityCode phone province ward address householdProvince householdWard householdAddress fatherName fatherBirthYear fatherJob fatherPhone motherName motherBirthYear motherJob motherPhone temporaryStatus transport portraitUrl birthCertificateUrl identityCardUrl transcriptUrl hocLucLop6 hocLucLop7 hocLucLop8 hanhKiemLop6 hanhKiemLop7 hanhKiemLop8').split(' '));
 const hash = value => createHash('sha256').update(value).digest('hex');
@@ -15,6 +19,34 @@ const hasValue = value => value !== undefined && value !== null && String(value)
 export function createDataService({ store, appId, now = Date.now, verifySubmissionFile }) {
   const root = `artifacts/${appId}/public/data`, ref = (name, id) => store.doc(`${root}/${name}/${documentId(id)}`);
   const settingsRef = ref('settings', 'global');
+  const conversations = createConversationService({ store, root, now });
+  const leaves = createLeaveRequestService({ store, root, now, resolveAttendanceDocument: async scope => {
+    let source = store.collection(`${root}/class_attendance`);
+    for (const key of ['schoolYear', 'schoolCode', 'className', 'date']) source = source.where(key, '==', scope[key]);
+    const snapshot = await source.limit(3).get();
+    return attendanceDocumentId(snapshot.docs.map(item => ({ ...item.data(), id: item.id })), scope);
+  } });
+  const submitLeaveRequest = (actor, payload) => leaves.submit(actor, payload);
+  const reviewLeaveRequest = (actor, payload) => leaves.review(actor, payload);
+  const sendConversationMessage = (actor, payload) => conversations.send(actor, payload);
+  const markConversationRead = (actor, payload) => conversations.markRead(actor, payload);
+  async function studentProfileHistory(actor) {
+    fail(actor.role === 'student' && actor.studentId, 403, 'Chỉ xem được kết quả của chính học sinh.');
+    const ids = [...new Set([actor.studentId, ...(actor.studentIds || [])])];
+    fail(ids.length <= 30, 400, 'Có quá nhiều hồ sơ cần đối chiếu.');
+    const records = (await Promise.all(ids.map(id => ref('students', id).get()))).filter(item => item.exists)
+      .map(item => ({ ...item.data(), id: item.id }));
+    const student = records.find(item => item.id === actor.studentId);
+    fail(student && student.accessCode === actor.accessCode && student.schoolCode === actor.schoolCode && student.schoolYear === actor.schoolYear,
+      403, 'Hồ sơ đã thay đổi. Vui lòng đăng nhập lại.');
+    return readStudentProfileAcademicHistory({ student, records, currentSchoolYear: actor.schoolYear, read: async query => {
+      let source = store.collection(`${root}/${query.collection}`);
+      for (const [key, value] of Object.entries(query.filters)) source = source.where(key, '==', value);
+      const snapshot = await source.limit(query.limit).get();
+      fail(snapshot.size < query.limit, 409, 'Dữ liệu năm học chưa tải đủ để đối chiếu.');
+      return snapshot.docs.map(item => ({ ...item.data(), id: item.id }));
+    } });
+  }
   async function saveScores(actor, payload) {
     const { documentId: bookId, metadata, expectedEdits = {}, expectedSources = {}, onlyEmpty, draftSaveId } = payload;
     fail(metadata && ['admin', 'teacher'].includes(actor.role), 403, 'Không có quyền sửa điểm.');
@@ -278,8 +310,9 @@ export function createDataService({ store, appId, now = Date.now, verifySubmissi
     const students = roster.docs.map(item => ({ id: item.id, ...Object.fromEntries(['fullName', 'className', 'schoolYear', 'schoolCode', 'grade', 'status'].map(key => [key, item.data()[key] || ''])) }));
     return { students, attendance: attendance.docs.map(item => ({ ...item.data(), id: item.id })), timetable: { classOrder: [profile.className], slots: { [profile.className]: timetable?.slots?.[profile.className] || {} } } };
   }
-  async function saveAttendance(actor, { documentId: id, student, status, expectedEntry, schoolYear, schoolCode, className, date }) {
-    fail(['', 'CP', 'KP'].includes(status) && /^\d{4}-\d{2}-\d{2}$/.test(date) && id === `${schoolYear}_${date}_K${className}`, 400, 'Ngày, mã điểm danh hoặc trạng thái không hợp lệ.');
+  async function saveAttendance(actor, { documentId: id, student, status, expectedEntry, schoolYear, schoolCode, className, date, overrideApprovedLeave = false }) {
+    fail(!overrideApprovedLeave || actor.role === 'admin', 403, 'Chỉ admin được điều chỉnh điểm danh khác đơn nghỉ đã duyệt.');
+    fail(['', 'CP', 'KP'].includes(status) && /^\d{4}-\d{2}-\d{2}$/.test(date) && typeof id === 'string', 400, 'Ngày, mã điểm danh hoặc trạng thái không hợp lệ.');
     const parsed = new Date(date + 'T00:00:00Z'); fail(Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === date, 400, 'Ngày điểm danh không tồn tại.');
     return store.runTransaction(async tx => {
       const settings = (await tx.get(settingsRef)).data() || {}; writable(settings, schoolYear);
@@ -290,12 +323,18 @@ export function createDataService({ store, appId, now = Date.now, verifySubmissi
         fail(leader.isClassLeader && leader.className === className && actor.schoolCode === schoolCode && actor.schoolYear === schoolYear, 403, 'Không có quyền điểm danh lớp này.');
       } else fail(actor.role === 'admin' || actor.role === 'teacher' && actor.schoolCode === schoolCode && actor.grades?.map(String).includes(String(className).match(/^\d+/)?.[0]), 403, 'Chưa được phân công khối/lớp này.');
       const target = ref('class_attendance', id), previous = (await tx.get(target)).data() || {};
+      fail(Object.keys(previous).length > 0 || id === attendanceDocumentId([], { schoolYear, schoolCode, className, date }), 400, 'Mã bảng điểm danh mới không khớp lớp/ngày/cơ sở.');
+      const leaveId = leaveRequestId({ studentId: student.id, schoolYear, schoolCode, date });
+      const leave = (await tx.get(ref(LEAVE_REQUEST_COLLECTION, leaveId))).data();
       fail(['schoolYear', 'schoolCode', 'className', 'date'].every(key => !previous[key] || previous[key] === ({schoolYear, schoolCode, className, date})[key]), 409, 'Điểm danh đổi phạm vi.');
       fail(sameData(previous.records?.[student.id], expectedEntry), 409, 'Trạng thái vừa được người khác sửa.');
-      const entry = { studentId: student.id, studentName: profile.fullName || '', status, updatedAt: now() };
-      tx.set(target, { schoolYear, schoolCode, className, date, grade: String(className).match(/^\d+/)?.[0], records: { [student.id]: entry }, updatedAt: now(), updatedBy: actor.uid },
-        { mergeFields: ['schoolYear', 'schoolCode', 'className', 'date', 'grade', 'updatedAt', 'updatedBy', new FieldPath('records', student.id)] }); return entry;
+      const entry = leave?.status === 'approved' && leave.className === className && leave.studentId === student.id
+        && leave.schoolYear === schoolYear && leave.schoolCode === schoolCode && leave.date === date
+        ? attendanceWithApprovedLeave({ ...leave, id: leaveId }, previous.records?.[student.id], status, now(), { overrideApprovedLeave, authorId: actor.uid })
+        : { studentId: student.id, studentName: profile.fullName || '', status, updatedAt: now() };
+      tx.set(target, { ...previous, schoolYear, schoolCode, className, date, grade: String(className).match(/^\d+/)?.[0],
+        records: { ...previous.records, [student.id]: entry }, updatedAt: now(), updatedBy: actor.uid }); return entry;
     });
   }
-  return { saveScores, syncScore, migrateScores, profileRequest, progress, submitEssay, reviewEssay, aiDraft, resetEssays, workspaceConfig, classOps, saveAttendance };
+  return { submitLeaveRequest, reviewLeaveRequest, sendConversationMessage, markConversationRead, studentProfileHistory, saveScores, syncScore, migrateScores, profileRequest, progress, submitEssay, reviewEssay, aiDraft, resetEssays, workspaceConfig, classOps, saveAttendance };
 }

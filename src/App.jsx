@@ -6,18 +6,26 @@ import { useStudentLearningData } from './hooks/useStudentLearningData';
 import { QUICK_SCORE_SUBJECTS, SCOREBOOK_SOURCE_FILE } from './config/scorebookDomain';
 import { parseScoreNumber, formatScoreNumber, calculateSemesterAverage, calculateYearAverage, academicSummary } from './utils/scorebookCalculations';
 import { requestPrivateApi, requestServerQuiz, SERVER_QUIZ_ENABLED } from './services/serverQuizClient';
-import { syncQuizScore, resetQuizAttempts, reviewHandwrittenSubmission, updateAiGrading, createQuizAttempt } from './services/quizScorebook';
+import { syncQuizScore, resetQuizAttempts, reviewHandwrittenSubmission, createQuizAttempt } from './services/quizScorebook';
 import { useQuickScorebook } from './hooks/useQuickScorebook';
 import { useQuickScoreActions } from './hooks/useQuickScoreActions';
 import { extractSchoolYearFromText, normalizeAdmissionSchoolYear } from './utils/schoolYearText';
 import { exchangeScopedIdentity, resetScopedIdentity, SCOPED_AUTH_ENABLED, STUDENT_SESSION_KEY } from './services/scopedIdentity';
 import { saveLessonDraft } from './services/lessonDrafts';
+import { useLessonDelivery } from './hooks/useLessonDelivery';
+import LessonDeliveryPanel from './components/LessonDeliveryPanel';
+import TeacherHeaderActions from './components/TeacherHeaderActions';
+import { readSupabaseStudentLesson, SUPABASE_LESSONS_ENABLED } from './services/supabaseLessons';
+import { createLessonPdfImportService } from './services/lessonPdfImport';
 import { recordBelongsToStudent, findStudentAttendanceRecord, studentWorkKey } from './utils/studentRecords';
 import { buildQuizTracking } from './utils/quizTracking';
 import { stableRecordId } from './utils/idempotency';
 import { vietnamDateKey } from './utils/vietnamDate';
-import { requestJsonp } from './services/jsonpClient';
 import { requestWithGeminiFallback } from './services/geminiFallback';
+import { sendStudentMailboxBatch, studentMailboxFailureSummary } from './services/studentMailboxBatch';
+import useStudentConversations from './hooks/useStudentConversations';
+import { resolveConversationStudent } from './utils/studentConversations';
+import { createPortal } from 'react-dom';
 import { createAsyncScope } from './utils/asyncScope';
 import { PROFILE_REQUEST_PENDING_MESSAGE } from './utils/profileRequestPolicy';
 import { readFileBase64, studentUploadMime, STUDENT_UPLOAD_ACCEPT } from './utils/fileUpload';
@@ -30,14 +38,65 @@ import { captureSystemSnapshot, restoreAtomicSnapshot } from './services/systemB
 import { completeBackupExport } from './services/serverSystemClient';
 import { observeTeachingAssignments, saveTeachingAssignments, saveSimpleTeachingAssignments } from './services/teachingAssignments';
 import { useTeacherNavigation } from './hooks/useTeacherNavigation';
+import useAdminTeaching from './hooks/useAdminTeaching';
+import AdminTeachingToolbar from './components/AdminTeachingToolbar';
 import { useDefaultLearningGrade } from './hooks/useDefaultLearningGrade';
-import { buildStudentProfileProvinceOptions, studentProfileProvinceDirectoryKey, studentProfileProvinceLabel, updateStudentProfileAddressDraft } from './utils/studentProfileProvinces';
+import { updateStudentProfileAddressDraft } from './utils/studentProfileProvinces';
+import useStudentProfileLocations from './hooks/useStudentProfileLocations';
+import useStudentProfileAcademicHistory from './hooks/useStudentProfileAcademicHistory';
 import TeacherSubjectSelect from './components/TeacherSubjectSelect';
+import TeacherClassPicker from './components/TeacherClassPicker';
+import TeacherIdentity from './components/TeacherIdentity';
+import TeacherQuizManager from './components/TeacherQuizManager';
+import TeacherEssayReview from './components/TeacherEssayReview';
+import { requestEssayWork } from './services/essayWork';
+import { buildEssayGradingPrompt, essayReviewNumberText } from './utils/essayGrading';
+import TeacherQuizWorkspace, { TeacherQuizPublishPanel } from './components/TeacherQuizWorkspace';
+import LoginSubmitButton from './components/LoginSubmitButton';
+import { sortTeachingSubjects, teacherClassLabel } from './utils/teacherPresentation';
 import { listDriveFiles } from './services/driveClient';
-import { sanitizeHtml, formatSafeAiText } from './utils/safeHtml';
+import { sanitizeHtml } from './utils/safeHtml';
+import { normalizeMathDelimiters, normalizeMathHtml, formatMathPlainText, formatQuizAiText, splitQuizHtml, composeQuizHtml, quizHtmlToPromptText, QUIZ_ANSWER_MATH_INSTRUCTION } from './utils/quizContent';
+import QuickQuizPreview from './components/QuickQuizPreview';
+import { prepareTeacherQuizDraft, selfQuizDraftToHtml } from './utils/teacherQuizDraft';
+import QuizAnswerEditor from './components/QuizAnswerEditor';
+import QuizComposerToolbar from './components/QuizComposerToolbar';
+import { lessonReviewPrompt } from './utils/lessonReview';
+import { prepareAiLessonReview } from './utils/aiLessonReview';
+import { lessonReviewBatchPayload } from './utils/lessonReviewBatch';
+import { generateVerifiedLessonReview } from './services/verifiedLessonReview';
+import { QUIZ_FORMULA_PROMPT, aiCompletionIssue, renderedQuizMathIssue, quizQualityIssues } from './utils/quizQuality';
+import AiQuestionResult, { AiQuestionSaveBar } from './components/AiQuestionResult';
+import LessonReviewChips from './components/LessonReviewChips';
+import LessonReviewOptions from './components/LessonReviewOptions';
+import { clearLessonReview } from './services/lessonReview';
+import { createLessonReviewBatchService } from './services/lessonReviewBatch';
+import LessonReviewCreateButton from './components/LessonReviewCreateButton';
+import AdminCheckWorkspace from './components/AdminCheckWorkspace';
+import TeacherLearningMaterialTracker from './components/TeacherLearningMaterialTracker';
+import { buildLearningMaterialRows } from './utils/learningMaterialStats';
+import HomeNewsCard from './components/HomeNewsCard';
+import HomeUpdateTicker from './components/HomeUpdateTicker';
+import useLearningUpdates from './hooks/useLearningUpdates';
+import { buildLearningTicker, learningUpdateDestination } from './utils/learningUpdates';
+import useLearningUpdateScroll from './hooks/useLearningUpdateScroll';
+import useLessonLayout from './hooks/useLessonLayout';
+import { normalizeLessonLayoutMode } from './utils/lessonLayout';
+import { insertLessonPaste } from './utils/lessonPaste';
+import useLessonEditorView from './hooks/useLessonEditorView';
+import TeacherLessonPreview from './components/TeacherLessonPreview';
+import LessonAnswerVisibilityControl from './components/LessonAnswerVisibilityControl';
+import { lessonAnswerState, setLessonAnswersVisible, studentLessonHtml } from './utils/lessonAnswers';
+import LessonToolbar from './components/LessonToolbar';
+import LessonNormalizeDialog from './components/LessonNormalizeDialog';
+import useLessonNormalization from './hooks/useLessonNormalization';
+import useLessonRemoval from './hooks/useLessonRemoval';
+import { lessonUsesMath } from './utils/lessonSubject';
+import { observeReviewAnswerLayout } from './utils/reviewAnswerLayout';
+import { createNewsPreview } from './utils/newsPreview';
+import { saveLegacyQuizContent } from './services/learningUpdates';
 import { normalizeNumericScore } from './utils/scoreValues';
 import { draftPatch } from './utils/documentDraft';
-import { REGISTRATION_WEB_APP_URL } from './config/registration';
 import React, { lazy, Suspense, useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import PasswordWorkspace from './components/PasswordWorkspace';
 import LearningSubjectPanel from './components/LearningSubjectPanel';
@@ -47,9 +106,9 @@ import {
   Image as ImageIcon, Save, Loader2, CheckCircle2, Folder, X, 
   ExternalLink, Copy, Download, Library, Bell, Settings, Newspaper, 
   Calendar, Clock, Sparkles, UploadCloud, RefreshCw, ListChecks, Maximize, 
-  Minimize, ArrowUpAZ, ArrowDownAZ, Bold, Italic, Underline, Palette, 
-  AlignLeft, AlignCenter, AlignRight, AlignJustify, Camera, ArrowUp,
-  ArrowDown, ChevronDown, ChevronUp, Pin, Briefcase, Pencil, Eye, EyeOff, BarChart3,
+  Minimize, ArrowUpAZ, ArrowDownAZ, Bold, Italic, Palette,
+  Camera, ArrowUp,
+  ArrowDown, ChevronDown, ChevronUp, Pin, Briefcase, Pencil, Eye, EyeOff,
   MoreVertical, Mail
 } from 'lucide-react';
 import { collection, onSnapshot, addDoc, deleteDoc, doc, setDoc, updateDoc, getDoc, getDocs, getDocsFromServer, query, where, deleteField, increment } from 'firebase/firestore';
@@ -57,10 +116,12 @@ import { signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'fi
 import { auth, db, appId } from './config/firebase';
 const TeacherAccountManager = lazy(() => import('./components/TeacherAccountManager'));
 const TextbookFoldersPanel = lazy(() => import('./components/TextbookFoldersPanel'));
+const LessonPdfImportDialog = lazy(() => import('./components/LessonPdfImportDialog'));
+const LessonReviewBatchDialog = lazy(() => import('./components/LessonReviewBatchDialog'));
 const TeacherQuickScorePanel = lazy(() => import('./components/TeacherQuickScorePanel'));
 import { 
   GRADES, SUBJECTS, TOTAL_LESSONS, SCHOOL_YEARS, 
-  GOOGLE_API_KEY, GEMINI_MODELS, DEFAULT_GEMINI_MODEL, 
+  GOOGLE_API_KEY,
   TEXTBOOK_FOLDERS, MASTER_DRIVE_FOLDER_ID, IMAGE_DRIVE_FOLDER_ID, 
   STUDENT_SUBMISSION_FOLDER_ID, TEACHER_PLAN_FOLDER_ID, QUIZ_DRIVE_FOLDER_ID,
   BACKGROUND_URL, IS_LOCAL_PREVIEW, 
@@ -68,7 +129,7 @@ import {
   formatTextbookName, getSubjectShortName, getSubjectRank, 
   isYouTubeUrl, getEmbedUrl, getYouTubeWatchUrl, 
   getDefaultLinkTitle, extractDriveFileId, getDriveDisplayName, 
-  getDriveBaseName, cleanDriveTitle, normalizeServiceErrorMessage, postAppsScript,
+  getDriveBaseName, cleanDriveTitle, postAppsScript,
   STAFF_SERVER_SESSION_STORAGE_KEY
 } from './utils/helpers';
 
@@ -82,8 +143,6 @@ import {
   isQuickQuizResultPassing,
   inferMultipleChoiceTotalPoints,
   makeEmptySelfQuizQuestion,
-  normalizeQuizText,
-  normalizeSelfQuizDraft,
   parseSelfQuizFromHtml,
   rebalanceSelfQuizPoints,
   stripHtmlToText
@@ -96,6 +155,7 @@ import {
   writeStoredAdminSession
 } from './utils/adminSession';
 import { compareSchoolRosterStudents, createDefaultSchoolClassesByGrade, DEFAULT_SCHOOL_CODE, getSchoolClassesForCampus, getSchoolClassesForYear, getStudentEntryGrade, getStudentSchoolCode, normalizeSchoolCode, normalizeSchoolYearKey, SCHOOL_OPTIONS } from './utils/schoolClasses';
+import { historicalRosterForYear } from './utils/historicalStudents';
 import { belongsToEducationLevel, educationGrades, educationRoute, parseEducationRoute } from './utils/educationLevels';
 import { PRIMARY_SUBJECTS, primarySubjectsForGrade } from './utils/primaryAcademic';
 import { contentBelongsToCampus, teacherHasContentScope } from './utils/teacherAccess';
@@ -113,8 +173,6 @@ const ADMISSION_DOCUMENTS = [
 ];
 const ADMISSION_SCHOOLS = SCHOOL_OPTIONS.filter(school => school.code !== 'UNKNOWN');
 const VIETNAM_TIME_OFFSET_MS = 7 * 60 * 60 * 1000;
-const OVERLINE_TOKEN_START = '\uE000OVERLINE:';
-const OVERLINE_TOKEN_END = '\uE001';
 
 const parseVietnamDateTimeLocal = (value = '') => {
   if (!value) return null;
@@ -133,65 +191,6 @@ const formatVietnamDateTimeLocal = (value) => {
   const ms = parseVietnamDateTimeLocal(value);
   if (!ms) return '';
   return new Date(ms + VIETNAM_TIME_OFFSET_MS).toISOString().slice(0, 16);
-};
-
-const renderOverlineTokens = (html = '') => String(html || '')
-  .replace(/\uE000OVERLINE:([^\uE001]+)\uE001/g, (_, text) => (
-    `<span style="text-decoration:overline;text-decoration-thickness:1px;text-decoration-skip-ink:none;">${text}</span>`
-  ));
-
-const humanizeLatexText = (value = '') => {
-  const convert = (raw = '') => String(raw || '')
-    .replace(/\\\\/g, '\\')
-    .replace(/\\mathbb\{N\}/g, 'ℕ')
-    .replace(/\\mathbb\{Z\}/g, 'ℤ')
-    .replace(/\\mathbb\{Q\}/g, 'ℚ')
-    .replace(/\\mathbb\{R\}/g, 'ℝ')
-    .replace(/\\notin\b/g, '∉')
-    .replace(/\\in\b/g, '∈')
-    .replace(/\\leq?\b/g, '≤')
-    .replace(/\\geq?\b/g, '≥')
-    .replace(/\\neq?\b/g, '≠')
-    .replace(/\\times\b/g, '×')
-    .replace(/\\cdot\b/g, '·')
-    .replace(/\\mid\b/g, '|')
-    .replace(/\\cup\b/g, '∪')
-    .replace(/\\cap\b/g, '∩')
-    .replace(/\\emptyset\b/g, '∅')
-    .replace(/\\varnothing\b/g, '∅')
-    .replace(/\\overline\{([^{}]+)\}/g, (_, text) => `${OVERLINE_TOKEN_START}${text}${OVERLINE_TOKEN_END}`)
-    .replace(/\\dots\b/g, '…')
-    .replace(/\\ldots\b/g, '…')
-    .replace(/\\cdots\b/g, '⋯')
-    .replace(/\\ast\b/g, '*')
-    .replace(/\\text\{([^{}]*)\}/g, '$1')
-    .replace(/\\left/g, '')
-    .replace(/\\right/g, '')
-    .replace(/\\,/g, ' ')
-    .replace(/\\;/g, ';')
-    .replace(/\\:/g, ':')
-    .replace(/\\\{/g, '{')
-    .replace(/\\\}/g, '}')
-    .replace(/\\\(/g, '')
-    .replace(/\\\)/g, '')
-    .replace(/\\\[/g, '')
-    .replace(/\\\]/g, '')
-    .replace(/\\([A-Za-z]+)/g, '$1');
-
-  return convert(value)
-    .replace(/\\\(([^\s\S]*?)\\\)/g, (_, math) => convert(math))
-    .replace(/\\\[([\s\S]*?)\\\]/g, (_, math) => convert(math));
-};
-
-const humanizeHtmlString = (html = '') => {
-  if (typeof document === 'undefined') return humanizeLatexText(html);
-  const wrapper = document.createElement('div');
-  wrapper.innerHTML = sanitizeHtml(html);
-  const walker = document.createTreeWalker(wrapper, NodeFilter.SHOW_TEXT);
-  const textNodes = [];
-  while (walker.nextNode()) textNodes.push(walker.currentNode);
-  textNodes.forEach(node => { node.nodeValue = humanizeLatexText(node.nodeValue); });
-  return renderOverlineTokens(wrapper.innerHTML);
 };
 
 const formatDateToDMY = (dateStr) => {
@@ -230,11 +229,13 @@ const PrimaryAcademicWorkspace = lazy(() => import('./components/PrimaryAcademic
 const AdminSettingsWorkspace = lazy(() => import('./components/AdminSettingsWorkspace'));
 const AdminDataSafetyWorkspace = lazy(() => import('./components/AdminDataSafetyWorkspace'));
 const ClassOpsManager = lazy(() => import('./components/ClassOpsManager'));
+const StudentLeaveRequestsButton = lazy(() => import('./components/StudentLeaveRequestsButton'));
 const SimpleScheduleTable = lazy(() => import('./components/SimpleScheduleTable'));
 const AdmissionWorkspace = lazy(() => import('./components/AdmissionWorkspace'));
 const AdmissionFormModal = lazy(() => import('./components/AdmissionFormModal'));
 const NewsViewerModal = lazy(() => import('./components/NewsViewerModal'));
 const AdminMailboxPanel = lazy(() => import('./components/AdminMailboxPanel'));
+const StudentConversationsDialog = lazy(() => import('./components/StudentConversationsDialog'));
 
 
 class WorkspaceErrorBoundary extends React.Component {
@@ -260,7 +261,7 @@ class WorkspaceErrorBoundary extends React.Component {
   render() {
     if (!this.state.error) return this.props.children;
     return (
-      <div className="fixed inset-x-0 top-[114px] sm:top-[84px] bottom-0 z-[160] bg-white p-6 flex items-center justify-center">
+      <div className="fixed inset-x-0 top-[76px] sm:top-[84px] bottom-0 z-[160] bg-white p-6 flex items-center justify-center">
         <div className="max-w-xl rounded-2xl border border-rose-200 bg-rose-50 p-5 shadow-lg">
           <div className="text-lg font-black text-rose-800">{this.props.title || 'Màn hình đang lỗi'}</div>
           <div className="mt-2 text-sm font-bold text-rose-700">
@@ -280,7 +281,6 @@ class WorkspaceErrorBoundary extends React.Component {
   }
 }
 
-const ADDRESS_DIRECTORY_CACHE_KEY = 'khl-profile-address-directory-v3';
 const getCurrentTimestamp = () => Date.now();
 const NEWS_TEXT_COLORS = [
   { label: 'Đen', value: '#0f172a' },
@@ -406,7 +406,6 @@ const getStudentDisplayName = (fullName = '', compact = false) => {
   return before ? `${before} ${last}` : last;
 };
 
-const uniqueTextItems = (items = []) => [...new Set(items.map(item => String(item || '').trim()).filter(Boolean))];
 const cleanDocId = (value) => String(value || 'default').replace(/[^\w-]+/g, '_');
 const getGradeFromClassName = (className = '') => {
   const match = String(className || '').trim().match(/(?:^|\D)(1[0-2]|[1-9])(?:\D|$)/);
@@ -593,7 +592,6 @@ const getRandomQuickScore = (subjectKey = '', absenceRatio = 0.5, scoreIndex = 0
   return capCoreAcademicRandomScore(makeScore(isCoreAcademic ? [6, 7] : [8, 9]), subjectKey, scoreIndex);
 };
 
-const loadRegistrationJsonp = params => requestJsonp(REGISTRATION_WEB_APP_URL, params, { timeoutMs: 9000 });
 
 const syncRegistrationCurrentSchoolYear = async (sourceSchoolYear, targetSchoolYear, job) => {
   const result = await postAppsScript({ action: 'registrationAdminAction', registrationAction: 'syncCurrentSchoolYear',
@@ -635,7 +633,7 @@ function App() {
   const [modalMode, setModalMode] = useState('teacher');
   const [passwordInput, setPasswordInput] = useState('');
   const [teacherUsername, setTeacherUsername] = useState('');
-  const [teacherProfile, setTeacherProfile] = useState(null);
+  const [signedInTeacherProfile, setTeacherProfile] = useState(null);
   const loginSequenceRef = useRef(0);
   const activeLoginRequestRef = useRef(null);
   const loginAbortRef = useRef(null);
@@ -673,12 +671,15 @@ function App() {
   const [thdTeachingAssignments, setThdTeachingAssignments] = useState({});
   const [isAdminTextbookExpanded, setIsAdminTextbookExpanded] = useState(false);
   const [showStudentDatabase, setShowStudentDatabase] = useState(false);
+  const [studentLearningDataNeeded, setStudentLearningDataNeeded] = useState(false);
   const [studentDatabaseInitialTab, setStudentDatabaseInitialTab] = useState('current');
   const [studentDatabaseOpenKey, setStudentDatabaseOpenKey] = useState(0);
+  const [conversationProfileRequest, setConversationProfileRequest] = useState(null);
   const [showClassOps, setShowClassOps] = useState(false);
   const [showScheduleWorkspace, setShowScheduleWorkspace] = useState(false);
   const [showAttendanceWorkspace, setShowAttendanceWorkspace] = useState(false);
   const [showLearningResultsWorkspace, setShowLearningResultsWorkspace] = useState(false);
+  const [showTeacherScores, setShowTeacherScores] = useState(false);
   const [scorebookGrade, setScorebookGrade] = useState(null);
   const [scorebookInitialMode, setScorebookInitialMode] = useState('scorebook');
   const [quickScoreGrade, setQuickScoreGrade] = useState(String(GRADES?.[0] || '6'));
@@ -737,6 +738,8 @@ function App() {
   const [studentMailboxMessages, setStudentMailboxMessages] = useState([]);
   const [mailboxAutoReadIds, setMailboxAutoReadIds] = useState([]);
   const [showStudentMailbox, setShowStudentMailbox] = useState(false);
+  const [showConversations, setShowConversations] = useState(false);
+  const [conversationReplyTo, setConversationReplyTo] = useState(null);
   const [selectedStudentMailboxMessage, setSelectedStudentMailboxMessage] = useState(null);
   const [isLoadingStudentMailbox, setIsLoadingStudentMailbox] = useState(false);
   const [isSendingStudentMailbox, setIsSendingStudentMailbox] = useState(false);
@@ -761,12 +764,14 @@ function App() {
   const [selectedGrade, setSelectedGrade] = useState(null);
   const [selectedSubject, setSelectedSubject] = useState(null);
   const [selectedLesson, setSelectedLesson] = useState(null);
-  const [isTextbookExpanded, setIsTextbookExpanded] = useState(window.innerWidth >= 640); 
+  const [isTextbookExpanded, setIsTextbookExpanded] = useState(false);
   const [textbookFiles, setTextbookFiles] = useState([]);
   const [isLoadingTextbooks, setIsLoadingTextbooks] = useState(false);
   const [allMaterials, setAllMaterials] = useState([]);
   const [allNotes, setAllNotes] = useState([]);
   const [showBulkUpload, setShowBulkUpload] = useState(false);
+  const [showLessonPdfImport, setShowLessonPdfImport] = useState(false);
+  const lessonPdfScopeRef = useRef(null);
   const [showCommonLibraryWorkspace, setShowCommonLibraryWorkspace] = useState(false);
   const [uploadTab, setUploadTab] = useState('manual');
   const [manualFiles, setManualFiles] = useState([]);
@@ -778,6 +783,10 @@ function App() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [uploadProgress, setUploadProgress] = useState({ current: 0, total: 0 });
   const [noteHtml, setNoteHtml] = useState('');
+  const [noteLayoutState, setNoteLayoutState] = useState(null);
+  const [noteDeliverySource, setNoteDeliverySource] = useState(null);
+  const [noteReadError, setNoteReadError] = useState('');
+  const [noteReadAttempt, setNoteReadAttempt] = useState(0);
   const [isLoadingNote, setIsLoadingNote] = useState(false);
   const [isSavingNote, setIsSavingNote] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
@@ -790,14 +799,14 @@ function App() {
   const [isLoadingQuiz, setIsLoadingQuiz] = useState(false);
   const [showQuizEditor, setShowQuizEditor] = useState(false);
   const [showStudentQuizPanel, setShowStudentQuizPanel] = useState(true);
+  const [learningUpdateTarget, setLearningUpdateTarget] = useState(null);
+  const pendingLearningUpdateRef = useRef(null);
   const [showQuizComposeWorkspace, setShowQuizComposeWorkspace] = useState(false);
   const [showQuizWorkWorkspace, setShowQuizWorkWorkspace] = useState(false);
   const [showQuizArchive, setShowQuizArchive] = useState(false);
   const [quizPublishNow, setQuizPublishNow] = useState(false);
   const [quizPublishAt, setQuizPublishAt] = useState('');
-  const [showQuizPublishModal, setShowQuizPublishModal] = useState(false);
   const [quizPublishModalAt, setQuizPublishModalAt] = useState('');
-  const [pendingQuizContent, setPendingQuizContent] = useState('');
   const [pendingQuizDeliveryMode, setPendingQuizDeliveryMode] = useState('manual');
   const [pendingQuizScoreTarget, setPendingQuizScoreTarget] = useState(null);
   const [quizScoreTarget, setQuizScoreTarget] = useState(null);
@@ -820,6 +829,7 @@ function App() {
   const [handwrittenViewerIndex, setHandwrittenViewerIndex] = useState(0);
   const [gradingSubmissionId, setGradingSubmissionId] = useState('');
   const [submissionGradeDrafts, setSubmissionGradeDrafts] = useState({});
+  const [reviewPendingId, setReviewPendingId] = useState('');
   const [allStudents, setAllStudents] = useState([]);
   const [studentProfileRequestCount, setStudentProfileRequestCount] = useState(0);
   const [studentProfileRequests, setStudentProfileRequests] = useState([]);
@@ -832,10 +842,6 @@ function App() {
   const [studentProfileImageAppendModes, setStudentProfileImageAppendModes] = useState({});
   const [studentProfileDocumentOverrides, setStudentProfileDocumentOverrides] = useState({});
   const [isSubmittingProfileRequest, setIsSubmittingProfileRequest] = useState(false);
-  const [addressDirectory, setAddressDirectory] = useState({ provinces: [], birthProvinces: [], communes: {} });
-  const [studentProfileProvinceDirectoryStatus, setStudentProfileProvinceDirectoryStatus] = useState('ready');
-  const [studentProfileProvinceDirectoryRetry, setStudentProfileProvinceDirectoryRetry] = useState(0);
-  const retryStudentProfileProvinceDirectory = useCallback(() => setStudentProfileProvinceDirectoryRetry(value => value + 1), []);
   const [showStudentAccessModal, setShowStudentAccessModal] = useState(false);
   const [studentAccessCode, setStudentAccessCode] = useState('');
   const [studentForgotMode, setStudentForgotMode] = useState(false);
@@ -860,18 +866,26 @@ function App() {
   if (!quizRequestScopeRef.current) quizRequestScopeRef.current = createAsyncScope();
   const [quizFiles, setQuizFiles] = useState([]);
   const [quizAttachments, setQuizAttachments] = useState([]);
-  const [showQuizToolbar, setShowQuizToolbar] = useState(false);
-  const [isPreviousQuizLoaded, setIsPreviousQuizLoaded] = useState(false);
+  const [quizAnswerExpanded, setQuizAnswerExpanded] = useState(false);
+  const [quizArchiveYear, setQuizArchiveYear] = useState('all');
   const autoSaveTimeoutRef = useRef(null);
   const pendingNoteSaveRef = useRef(null);
   const noteDraftsRef = useRef(new Map());
   const noteBaseContentRef = useRef(new Map());
+  const noteBaseLayoutRef = useRef(new Map());
+  const noteSavingRequestsRef = useRef(new Set());
+  const saveTrackedLessonDraft = useCallback(async draft => {
+    const entry = { draft, promise: saveLessonDraft(draft) };
+    noteSavingRequestsRef.current.add(entry);
+    try { await entry.promise; return draft; }
+    finally { noteSavingRequestsRef.current.delete(entry); }
+  }, []);
   const driveRequestRef = useRef(0);
   const notificationTimeoutRef = useRef(null);
   const studentQuizNameRef = useRef(null);
   const studentSubmitNameRef = useRef(null);
   const studentSubmitSectionRef = useRef(null);
-  const autoGradingIdsRef = useRef(new Set());
+
   const submissionFilePickerActiveRef = useRef(false);
   const autoSelfQuizSubmitKeyRef = useRef('');
   const autoEssayLockKeyRef = useRef('');
@@ -886,31 +900,35 @@ function App() {
   const studentContentRef = useRef(null);
   const studentQuizContentRef = useRef(null);
   const studentWorkReviewRef = useRef(null);
-  const quickQuizPreviewRef = useRef(null);
   const quickMaterialContentRef = useRef(null);
   const aiResponseContentRef = useRef(null);
   const [isEditorExpanded, setIsEditorExpanded] = useState(false);
   const [showQuickQuizPreview, setShowQuickQuizPreview] = useState(false);
-  const [showMobileToolbar, setShowMobileToolbar] = useState(false);
   const [viewingMaterial, setViewingMaterial] = useState(null);
   const [driveFiles, setDriveFiles] = useState([]);
   const [driveSort, setDriveSort] = useState({ key: 'name', direction: 'asc' });
   const [isLoadingDrive, setIsLoadingDrive] = useState(false);
   const [driveError, setDriveError] = useState('');
   const [showAiModal, setShowAiModal] = useState(false);
+  const [showLessonReviewBatch, setShowLessonReviewBatch] = useState(false);
+  const [aiPurpose, setAiPurpose] = useState('quick');
   const [aiContextContent, setAiContextContent] = useState('');
-  const [aiPrompt, setAiPrompt] = useState('Hãy tạo 40 câu hỏi trắc nghiệm nhanh có 4 đáp án A, B, C, D dựa trên nội dung bài học. Chỉ tạo trắc nghiệm, không tạo tự luận. Kèm đáp án A/B/C/D rõ từng câu để hệ thống tự chấm. Hệ thống sẽ rút 10 câu bất kỳ cho học sinh làm.');
+  const [aiPrompt, setAiPrompt] = useState(lessonReviewPrompt());
+  const [aiQuestionTemplate, setAiQuestionTemplate] = useState('auto');
+  const [aiEssayCount, setAiEssayCount] = useState(0);
+  const [removingReviewIds, setRemovingReviewIds] = useState([]);
+  const removingReviewRef = useRef(new Set());
   const [aiResponse, setAiResponse] = useState('');
+  const [aiReviewStatus, setAiReviewStatus] = useState('');
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [isGeneratingQuizAnswer, setIsGeneratingQuizAnswer] = useState(false);
   const [aiError, setAiError] = useState('');
-  const [selectedGeminiModel, setSelectedGeminiModel] = useState(() => {
-    const saved = localStorage.getItem('khohoclieu-gemini-model');
-    return GEMINI_MODELS.some(model => model.id === saved) ? saved : DEFAULT_GEMINI_MODEL;
-  });
+  const [aiSaveError, setAiSaveError] = useState('');
+  const aiSaveRequestRef = useRef(null);
   const [aiSelectedLessons, setAiSelectedLessons] = useState([]);
   const [aiToolTab, setAiToolTab] = useState('quick');
   const [showAiLessonPicker, setShowAiLessonPicker] = useState(false);
+  const aiGenerationRef = useRef(0);
   const [studentName, setStudentName] = useState('');
   const [submissionFile, setSubmissionFile] = useState(null);
   const [submissionPreviewUrl, setSubmissionPreviewUrl] = useState('');
@@ -933,15 +951,35 @@ function App() {
   const adminEducationLevel = adminModule === 'primary' ? 'primary' : 'thcs';
   const adminGrades = educationGrades(adminEducationLevel);
   const adminSubjects = useMemo(() => adminEducationLevel === 'primary' ? PRIMARY_SUBJECTS.map(subject => subject.label) : SUBJECTS, [adminEducationLevel]);
+  const resetTeachingWorkspace = useCallback(() => {
+    studentRequestScopeRef.current.invalidate(); quizRequestScopeRef.current.invalidate();
+    setSelectedGrade(null); setSelectedSubject(null); setSelectedLesson(null); setViewingMaterial(null);
+    setTeacherTab('giang_day'); setIsTextbookExpanded(false); setSelectedImage(null);
+    setShowCommonLibraryWorkspace(false); setShowAdminSettingsWorkspace(false); setShowStudentDatabase(false);
+    setShowScheduleWorkspace(false); setShowAttendanceWorkspace(false); setShowLearningResultsWorkspace(false);
+    setQuickScoreLockedContext(null); setScorebookGrade(null); setShowAdminCheckWorkspace(false);
+    setShowPasswordWorkspace(false); setShowDataSafetyWorkspace(false); setShowAdmissionWorkspace(false);
+    setShowQuizEditor(false); setShowQuizComposeWorkspace(false); setShowQuizWorkWorkspace(false);
+    setShowQuizResults(false); setShowHandwrittenSubmissions(false); setShowStudentWorkReview(false);
+    setShowQuickQuizPreview(false); setShowLessonPdfImport(false); setShowLessonReviewBatch(false);
+    setShowAiModal(false); setShowInlineLink(false); setShowBulkUpload(false); setShowClassOps(false);
+    setShowAiLessonPicker(false); setShowQuizArchive(false); setShowSelfQuizBuilder(false);
+    setConfirmModal({ show: false, message: '', onConfirm: null });
+    setPlanFile(null); setPlanStatus(''); setPlanSubject('');
+  }, []);
+  const adminTeaching = useAdminTeaching({ isAdmin, accessScope: adminAccessScope, sessionToken: adminSessionToken,
+    uid: user?.uid, scoped: SCOPED_AUTH_ENABLED, identity: scopedIdentity, setRole, setLoginRole, resetWorkspace: resetTeachingWorkspace });
+  const teacherProfile = adminTeaching.profile || signedInTeacherProfile;
+  const { allowed: canOpenAdminTeaching, open: openAdminTeaching } = adminTeaching;
   useEffect(() => {
     setAdminCheckGrade('all');
     setAdminCheckSubject('all');
-    if (isAdmin && ['primary', 'thcs'].includes(adminModule)) {
+    if (isAdmin && !adminTeaching.active && ['primary', 'thcs'].includes(adminModule)) {
       setSelectedGrade(previous => adminGrades.includes(String(previous)) ? previous : adminGrades[0]);
       setSelectedSubject(previous => adminSubjects.includes(previous) ? previous : null);
       setSelectedLesson(null);
     }
-  }, [adminEducationLevel, adminGrades, adminModule, adminSubjects, isAdmin]);
+  }, [adminEducationLevel, adminGrades, adminModule, adminSubjects, isAdmin, adminTeaching.active]);
   const ActiveScorebookWorkspace = adminEducationLevel === 'primary' ? PrimaryAcademicWorkspace : ScorebookWorkspace;
   const educationStudents = useMemo(() => allStudents.filter(student => belongsToEducationLevel(student, adminEducationLevel)), [allStudents, adminEducationLevel]);
   const configuredSchoolClasses = useMemo(
@@ -1003,7 +1041,7 @@ function App() {
       ? (normalizeSchoolCode(getStudentSchoolCode(activeStudentProfile || currentStudent || {})) || DEFAULT_SCHOOL_CODE)
       : DEFAULT_SCHOOL_CODE;
   const isContentForCurrentCampus = useCallback((item = {}) => {
-    if (isAdmin) return true;
+    if (isAdmin && !adminTeaching.active) return true;
     if (!contentBelongsToCampus(item, currentContentSchoolCode)) return false;
     const isTeacherView = role === 'teacher' || (role === 'student' && loginRole === 'teacher');
     return !isTeacherView || teacherHasContentScope(teacherProfile, {
@@ -1011,7 +1049,7 @@ function App() {
       grade: item.grade,
       subject: item.subject
     });
-  }, [isAdmin, currentContentSchoolCode, role, loginRole, teacherProfile]);
+  }, [isAdmin, adminTeaching.active, currentContentSchoolCode, role, loginRole, teacherProfile]);
   const teacherCanUseScope = useCallback((grade, subject) => {
     const isTeacherView = role === 'teacher' || (role === 'student' && loginRole === 'teacher');
     return !isTeacherView || teacherHasContentScope(teacherProfile, {
@@ -1022,14 +1060,29 @@ function App() {
   }, [role, loginRole, teacherProfile, currentContentSchoolCode]);
   const currentTeacherHasScope = teacherCanUseScope(selectedGrade, selectedSubject);
   const studentNavigationGrade = getGradeFromClassName(activeStudentProfile?.className || currentStudent?.className || activeStudentProfile?.grade || currentStudent?.grade || '');
-  const navigationGrades = useMemo(() => role === 'teacher' ? (teacherProfile?.grades || []) : isAdmin ? adminGrades
-    : Number(studentNavigationGrade) >= 1 && Number(studentNavigationGrade) <= 5 ? educationGrades('primary') : GRADES, [role, teacherProfile, isAdmin, adminGrades, studentNavigationGrade]);
-  const navigationSubjects = useMemo(() => role === 'teacher' ? (teacherProfile?.subjects || []) : Number(selectedGrade) >= 1 && Number(selectedGrade) <= 5
-    ? primarySubjectsForGrade(selectedGrade).map(subject => subject.label) : SUBJECTS, [role, teacherProfile, selectedGrade]);
+  const navigationGrades = useMemo(() => role === 'teacher' || adminTeaching.active ? (teacherProfile?.grades || []) : isAdmin ? adminGrades
+    : Number(studentNavigationGrade) >= 1 && Number(studentNavigationGrade) <= 5 ? educationGrades('primary') : GRADES, [role, teacherProfile, isAdmin, adminGrades, studentNavigationGrade, adminTeaching.active]);
+  const navigationSubjects = useMemo(() => role === 'teacher' || adminTeaching.active ? sortTeachingSubjects(teacherProfile?.subjectsByGrade?.[selectedGrade] || teacherProfile?.subjects) : Number(selectedGrade) >= 1 && Number(selectedGrade) <= 5
+    ? primarySubjectsForGrade(selectedGrade).map(subject => subject.label) : SUBJECTS, [role, teacherProfile, selectedGrade, adminTeaching.active]);
   const noteSchoolCode = role === 'student' || role === 'teacher' ? currentContentSchoolCode : DEFAULT_SCHOOL_CODE;
   const noteCampusPrefix = noteSchoolCode === 'NAN' ? '' : `${noteSchoolCode}_`;
+  const lessonPdfContext = { authorId: user?.uid || '', schoolCode: noteSchoolCode, schoolYear: activeSchoolYear, grade: selectedGrade, subject: selectedSubject };
+  const lessonPdfScopeKey = `${role}/${lessonPdfContext.authorId}/${activeSchoolYear}/${noteSchoolCode}/${selectedGrade}/${selectedSubject}`;
+  lessonPdfScopeRef.current = { key: lessonPdfScopeKey, allowed: role === 'teacher' && currentTeacherHasScope && canWriteCurrentSchoolYear };
   const quizCampusPrefix = noteSchoolCode === 'NAN' ? '' : `${noteSchoolCode}_`;
   const noteId = currentTeacherHasScope && selectedGrade && selectedSubject && selectedLesson ? `${noteCampusPrefix}g${selectedGrade}_${selectedSubject.replace(/\s/g, '')}_l${selectedLesson}` : null;
+  const lessonDelivery = useLessonDelivery({ noteId, enabled: role === 'teacher' && currentTeacherHasScope,
+    sourceState: noteDeliverySource?.noteId === noteId ? noteDeliverySource.state : null });
+  const lessonMathEnabled = lessonUsesMath(selectedSubject);
+  const lessonEditorView = useLessonEditorView(`${role}/${activeSchoolYear}/${noteId}`, noteHtml, contentEditableRef);
+  const lessonAnswers = useMemo(() => lessonAnswerState(noteHtml), [noteHtml]);
+  const studentNoteHtml = useMemo(() => studentLessonHtml(noteHtml), [noteHtml]);
+  const lessonLayout = useLessonLayout(noteHtml, {
+    contextKey: `${role}/${teacherProfile?.teacherId || teacherProfile?.id || user?.uid || ''}/${noteId}`,
+    savedMode: noteLayoutState?.noteId === noteId ? noteLayoutState.mode : 'auto',
+    onChange: role === 'teacher' ? mode => handleLessonLayoutChange(mode) : undefined
+  });
+  lessonLayout.disabled = !noteId || isLoadingNote || noteLayoutState?.noteId !== noteId || (role === 'teacher' && !canWriteCurrentSchoolYear);
   const quizId = currentTeacherHasScope && selectedGrade && selectedSubject && selectedLesson && activeSchoolYear ? `${activeSchoolYear}_${quizCampusPrefix}g${selectedGrade}_${selectedSubject.replace(/\s/g, '')}_l${selectedLesson}` : null;
   useTeacherNavigation({ role, profile: teacherProfile, grades: navigationGrades, subjects: navigationSubjects,
     grade: selectedGrade, subject: selectedSubject, setGrade: setSelectedGrade, setSubject: setSelectedSubject, setLesson: setSelectedLesson });
@@ -1088,20 +1141,20 @@ function App() {
       return {};
     });
   }, [showStudentProfileModal, activeStudentProfile, activeStudentPendingProfileChanges, studentProfileEditableFields]);
-  const studentProfileProvinceOptions = useMemo(() => buildStudentProfileProvinceOptions(addressDirectory), [addressDirectory]);
-  const getStudentProfileWardOptions = useCallback((province = '', currentValue = '', household = false) => {
-    const sheetOptions = addressDirectory.communes[studentProfileProvinceLabel(province)] || [];
-    const studentOptions = allStudents
-      .filter(student => !province || studentProfileProvinceLabel(student.province) === studentProfileProvinceLabel(province) || studentProfileProvinceLabel(student.householdProvince) === studentProfileProvinceLabel(province))
-      .flatMap(student => household ? [student.householdWard, student.ward] : [student.ward, student.householdWard]);
-    return uniqueTextItems([...sheetOptions, ...studentOptions, currentValue])
-      .sort((a, b) => a.localeCompare(b, 'vi', { sensitivity: 'base' }));
-  }, [addressDirectory.communes, allStudents]);
-  const currentWardOptions = useMemo(() => getStudentProfileWardOptions(studentProfileDraft.province, studentProfileDraft.ward, false), [getStudentProfileWardOptions, studentProfileDraft.province, studentProfileDraft.ward]);
-  const householdWardOptions = useMemo(() => getStudentProfileWardOptions(studentProfileDraft.householdProvince, studentProfileDraft.householdWard, true), [getStudentProfileWardOptions, studentProfileDraft.householdProvince, studentProfileDraft.householdWard]);
+  const studentProfileLocations = useStudentProfileLocations(showStudentProfileModal, studentProfileDraft);
+  const studentProfileAcademicHistory = useStudentProfileAcademicHistory(showStudentProfileModal && role === 'student', activeStudentProfile, allStudents, currentSchoolYear);
+  const conversationIdentityKey = `${user?.uid || ''}:${role}:${activeStudentProfile?.id || ''}:${adminAccessScope}`;
+  const conversationInbox = useStudentConversations({ enabled: Boolean(user && (role === 'student' && activeStudentProfile?.accessCode
+    || isAdmin && role === 'admin' && adminAccessScope === 'full')), role, accessCode: activeStudentProfile?.accessCode, identityKey: conversationIdentityKey });
+  const openConversations = useCallback((message = null) => {
+    setConversationReplyTo(message ? { id: message.id, title: message.title } : null);
+    setShowStudentMailbox(false);
+    setShowConversations(true);
+  }, []);
+  const studentProfileProvinceOptions = studentProfileLocations.provinceOptions;
   const activeStudentGrade = useMemo(() => {
-    return String(activeStudentProfile?.className || '').match(/[1-9]\d*/)?.[0] || '';
-  }, [activeStudentProfile]);
+    return getGradeFromClassName(activeStudentProfile?.className || currentStudent?.className || activeStudentProfile?.grade || currentStudent?.grade || '');
+  }, [activeStudentProfile, currentStudent]);
   const activeStudentIdentityKey = useMemo(() => {
     const code = String(activeStudentProfile?.accessCode || currentStudent?.accessCode || '').trim().toUpperCase();
     if (code) return `code-${code}`;
@@ -1114,6 +1167,11 @@ function App() {
   studentRequestScopeRef.current.setScope(studentRequestScopeKey);
   const quizContextRef = useRef(quizRequestScopeKey);
   quizContextRef.current = quizRequestScopeKey;
+  useEffect(() => {
+    aiGenerationRef.current += 1;
+    setShowAiModal(false); setAiResponse(''); setAiError(''); setIsAiLoading(false);
+    setAiSaveError(''); aiSaveRequestRef.current = null;
+  }, [quizRequestScopeKey]);
   quizRequestScopeRef.current.setScope(quizRequestScopeKey);
   useEffect(() => {
     setIsSubmittingSelfQuiz(false);
@@ -1284,26 +1342,14 @@ function App() {
     return response;
   }, [activeSchoolYear, adminSessionToken]);
   const sendGeneratedStudentMailboxMessages = useCallback(async (messages = []) => {
-    const validMessages = (Array.isArray(messages) ? messages : []).filter(message => message?.student && message?.title && message?.body);
-    if (!validMessages.length) throw new Error('Chưa có học sinh hoặc nội dung thư để gửi.');
-    let sentCount = 0;
-    const failedNames = [];
-    const failedMessages = [];
-    for (const message of validMessages) {
-      try {
-        await sendGeneratedStudentMailboxMessage(message);
-        sentCount += 1;
-      } catch {
-        failedNames.push(message.student?.fullName || message.student?.accessCode || 'Học sinh');
-        failedMessages.push(message);
-      }
-    }
+    const result = await sendStudentMailboxBatch(messages, sendGeneratedStudentMailboxMessage);
+    const { sentCount, failedNames } = result;
     if (failedNames.length) {
-      showNotification(`Đã gửi ${sentCount}/${validMessages.length} thư. Chưa gửi được: ${failedNames.slice(0, 5).join(', ')}${failedNames.length > 5 ? '...' : ''}`, 'error');
+      showNotification(`Đã gửi ${sentCount}/${sentCount + failedNames.length} thư. ${studentMailboxFailureSummary(result.failureReasons)}`, 'error');
     } else {
       showNotification(`Đã gửi thư cho ${sentCount} học sinh.`);
     }
-    return { sentCount, failedNames, failedMessages };
+    return result;
   }, [sendGeneratedStudentMailboxMessage, showNotification]);
   const deleteStudentMailboxMessages = useCallback(() => {
     const fromTime = mailboxDeleteFrom ? new Date(`${mailboxDeleteFrom}T00:00:00`).getTime() : 0;
@@ -1366,80 +1412,12 @@ function App() {
     }
   }, [activeStudentProfile, currentStudent, fetchStudentMailbox]);
 
-  const loadStudentProfileCommunes = useCallback(async (province) => {
-    const provinceName = studentProfileProvinceLabel(province);
-    if (!provinceName || !addressDirectory.provinces.length || addressDirectory.communes[provinceName]) return;
-    try {
-      const data = await loadRegistrationJsonp({ action: 'communes', province: studentProfileProvinceDirectoryKey(province, addressDirectory.provinces) });
-      const items = uniqueTextItems(data.items || data.communes || []);
-      setAddressDirectory(prev => ({
-        ...prev,
-        communes: {
-          ...prev.communes,
-          [provinceName]: items
-        }
-      }));
-    } catch {
-      setAddressDirectory(prev => ({
-        ...prev,
-        communes: {
-          ...prev.communes,
-          [provinceName]: []
-        }
-      }));
-    }
-  }, [addressDirectory.communes, addressDirectory.provinces]);
-
   const handleStudentProfileFieldChange = useCallback((key, value) => {
     const nextValue = isStudentResultRatingField(key)
       ? normalizeStudentResultRating(value)
       : (key === 'fullName' ? String(value || '').toLocaleUpperCase('vi-VN') : value);
     setStudentProfileDraft(prev => updateStudentProfileAddressDraft(prev, key, nextValue));
   }, []);
-
-  useEffect(() => {
-    if (!showStudentProfileModal) return;
-    try {
-      const cached = JSON.parse(localStorage.getItem(ADDRESS_DIRECTORY_CACHE_KEY) || 'null');
-      if (cached?.provinces?.length && cached.birthProvinces?.length && Date.now() - cached.fetchedAt < 86400000) {
-        setAddressDirectory(previous => ({ ...cached, communes: { ...cached.communes, ...previous.communes } }));
-        setStudentProfileProvinceDirectoryStatus('ready');
-        return;
-      }
-    } catch {
-      localStorage.removeItem(ADDRESS_DIRECTORY_CACHE_KEY);
-    }
-    let active = true;
-    setStudentProfileProvinceDirectoryStatus('loading');
-    const loadDirectory = async () => {
-      try {
-        const data = await loadRegistrationJsonp({ action: 'locationBootstrap' });
-        if (data.success === false || !data.provinces?.length || !data.birthProvinces?.length) throw new Error('Danh mục chưa đầy đủ.');
-        return data;
-      } catch {
-        const [address, birth] = await Promise.all([
-          loadRegistrationJsonp({ action: 'addressDirectory' }),
-          loadRegistrationJsonp({ action: 'birthPlaceDirectory' })
-        ]);
-        if (address.success === false || birth.success === false || !address.provinces?.length || !birth.provinces?.length) throw new Error('Chưa tải được danh mục tỉnh/thành.');
-        return { provinces: address.provinces, birthProvinces: birth.provinces, communes: address.communes || {} };
-      }
-    };
-    loadDirectory().then(data => {
-      if (!active) return;
-      const nextDirectory = { provinces: uniqueTextItems(data.provinces), birthProvinces: uniqueTextItems(data.birthProvinces), communes: data.communes || {}, fetchedAt: Date.now() };
-      setAddressDirectory(previous => ({ ...nextDirectory, communes: { ...nextDirectory.communes, ...previous.communes } }));
-      setStudentProfileProvinceDirectoryStatus('ready');
-      try { localStorage.setItem(ADDRESS_DIRECTORY_CACHE_KEY, JSON.stringify(nextDirectory)); } catch { /* The current directory remains usable when storage is full. */ }
-    }).catch(() => { if (active) setStudentProfileProvinceDirectoryStatus('error'); });
-    return () => { active = false; };
-  }, [showStudentProfileModal, studentProfileProvinceDirectoryRetry]);
-
-  useEffect(() => {
-    if (!showStudentProfileModal) return;
-    loadStudentProfileCommunes(studentProfileDraft.province);
-    loadStudentProfileCommunes(studentProfileDraft.householdProvince);
-  }, [showStudentProfileModal, studentProfileDraft.province, studentProfileDraft.householdProvince, loadStudentProfileCommunes]);
 
   const normalizeStudentAccessSuffix = (value = '') => String(value || '').toUpperCase().replace(/\s/g, '').replace(/^HS/, '').replace(/\D/g, '');
   const getStudentAccessLoginCode = (value = studentAccessCode) => {
@@ -1457,7 +1435,7 @@ function App() {
     if (typeof window !== 'undefined' && window.location.hash.toLowerCase().startsWith('#/admin')) {
       window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
     }
-    const grade = String(student.className || '').match(/[1-9]\d*/)?.[0];
+    const grade = getGradeFromClassName(student.className || student.grade || '');
     if (grade) setSelectedGrade(grade);
     setCurrentStudent(student?.id ? student : null);
     if (student.fullName) {
@@ -1470,9 +1448,19 @@ function App() {
     setStudentAccessCode('');
     setStudentForgotMode(false);
     setStudentFoundCode('');
+    const pendingUpdate = pendingLearningUpdateRef.current;
+    pendingLearningUpdateRef.current = null;
+    if (pendingUpdate) {
+      const destination = learningUpdateDestination(pendingUpdate, { grade, schoolCode: getStudentSchoolCode(student) });
+      if (destination) {
+        setSelectedGrade(destination.grade); setSelectedSubject(destination.subject); setSelectedLesson(destination.lesson);
+        setShowStudentQuizPanel(true); setLearningUpdateTarget(destination);
+      } else { setSelectedSubject(null); setSelectedLesson(null); setLearningUpdateTarget(null); }
+    }
     showNotification(student.fullName ? `Chào ${student.fullName}!` : 'Đã vào giao diện học sinh.');
   };
   const cancelLogin = () => {
+    pendingLearningUpdateRef.current = null;
     loginSequenceRef.current += 1;
     loginAbortRef.current?.abort();
     loginAbortRef.current = null;
@@ -1624,7 +1612,7 @@ function App() {
 
   const submitStudentProfileRequest = async () => {
     const { submitStudentProfileChange } = await import('./services/studentProfileRequests');
-    return submitStudentProfileChange({ activeStudentProfile, isSubmittingProfileRequest, activeStudentIsReadOnly, showNotification, activeStudentReadOnlyReason, studentRequestScopeRef, setIsSubmittingProfileRequest, STUDENT_PROFILE_IMAGE_FIELDS, studentProfileImages, studentProfileDocumentOverrides, activeStudentPendingProfileChanges, studentProfileImageAppendModes, studentProfileEditableFields, studentProfileProvinceOptions, normalizeStudentResultRating, studentProfileDraft, activeStudentPendingProfileRequests, currentSchoolYear, setShowStudentProfileModal, IMAGE_DRIVE_FOLDER_ID });
+    return submitStudentProfileChange({ activeStudentProfile, isSubmittingProfileRequest, activeStudentIsReadOnly, showNotification, activeStudentReadOnlyReason, studentRequestScopeRef, setIsSubmittingProfileRequest, STUDENT_PROFILE_IMAGE_FIELDS, studentProfileImages, studentProfileDocumentOverrides, activeStudentPendingProfileChanges, studentProfileImageAppendModes, studentProfileEditableFields, studentProfileProvinceOptions, studentProfileLocationLookup: studentProfileLocations.lookup, normalizeStudentResultRating, studentProfileDraft, activeStudentPendingProfileRequests, currentSchoolYear, setShowStudentProfileModal, IMAGE_DRIVE_FOLDER_ID });
   };
 
   const escapeHtml = (value = '') => String(value).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
@@ -1696,12 +1684,18 @@ function App() {
     setPlanStatus('');
     setIsUploadingPlan(false);
     setShowStudentWorkReview(false);
+    setShowQuizEditor(false);
+    setShowQuizComposeWorkspace(false);
+    setShowQuizWorkWorkspace(false);
     setIsSubmittingProfileRequest(false);
     setIsOpeningStudentProfile(false);
     setIsSubmittingSelfQuiz(false);
     setIsSubmittingQuickMaterial(false);
     setShowStudentProfileModal(false);
     setShowStudentMailbox(false);
+    setShowConversations(false);
+    setConversationReplyTo(null);
+    setConversationProfileRequest(null);
     setStudentMailboxMessages([]);
     setSelectedStudentMailboxMessage(null);
     setIsLoadingStudentMailbox(false);
@@ -1820,13 +1814,16 @@ function App() {
   }, [user, showNotification]);
 
   useSessionLease(user, scopedIdentity, clearLoginIdentity, showNotification);
-  useWorkspaceCollections({ user, scoped: SCOPED_AUTH_ENABLED, identity: scopedIdentity, role, isAdmin, student: currentStudent,
-    grade: selectedGrade, subject: selectedSubject, schoolYear: currentSchoolYear, includeHistory: showStudentDatabase || Boolean(scorebookGrade) },
+  const learningUpdates = useLearningUpdates({ user, role, isAdmin, notes: allNotes, quizzes: allQuizzes, materials: allMaterials });
+  const workspaceData = useWorkspaceCollections({ user, scoped: SCOPED_AUTH_ENABLED, identity: scopedIdentity, role, isAdmin, student: currentStudent,
+    grade: selectedGrade, subject: selectedSubject, schoolYear: activeSchoolYear, schoolCode: currentContentSchoolCode,
+    fullContent: isAdmin && (showAdminCheckWorkspace || showStudentDatabase && studentLearningDataNeeded), includeHistory: showStudentDatabase || Boolean(scorebookGrade) },
     { materials: setAllMaterials, notes: setAllNotes, quizzes: setAllQuizzes, quizResults: setAllQuizResults,
       quickResults: setAllQuickQuizResults, progress: setAllLessonProgress, handwritten: setAllHandwrittenSubmissions,
       students: setAllStudents, admissions: setAdmissionApplications, attendance: setAttendanceDocs, profileRequests: setStudentProfileRequests },
-    { quiz: showQuizComposeWorkspace || showQuizWorkWorkspace || showStudentWorkReview, learning: showLearningResultsWorkspace,
-      review: showAdminCheckWorkspace || showStudentDatabase, attendance: showAttendanceWorkspace, scorebook: Boolean(scorebookGrade) }, showNotification);
+    { content: showAdminCheckWorkspace || showStudentDatabase && studentLearningDataNeeded || Boolean(selectedGrade && selectedSubject && !showStudentDatabase && !scorebookGrade),
+      quiz: showQuizComposeWorkspace || showQuizWorkWorkspace || showStudentWorkReview, learning: showLearningResultsWorkspace,
+      review: showAdminCheckWorkspace || showStudentDatabase && studentLearningDataNeeded, attendance: showAttendanceWorkspace, scorebook: Boolean(scorebookGrade) }, showNotification);
 
   useEffect(() => { setStudentProfileRequestCount(studentProfileRequests.filter(item => (item.status || 'pending') === 'pending'
     && belongsToEducationLevel(allStudents.find(student => student.id === item.studentId) || item, adminEducationLevel)).length); }, [studentProfileRequests, allStudents, adminEducationLevel]);
@@ -1914,7 +1911,7 @@ function App() {
   ), [activeSchoolYear, quickScoreSchoolCode]);
 
   const getScorebookStudentsForGrade = useCallback((grade, schoolCode = quickScoreSchoolCode) => {
-    return [...(Array.isArray(allStudents) ? allStudents : [])]
+    return historicalRosterForYear(Array.isArray(allStudents) ? allStudents : [], activeSchoolYear)
       .filter(student => (student.status || 'active') !== 'dropped')
       .filter(student => getStudentSchoolCode(student) === schoolCode)
       .filter(student => String(getGradeFromClassName(student.className || student.grade || '')) === String(grade))
@@ -1939,8 +1936,8 @@ function App() {
   const quickScoreStudents = useMemo(() => getScorebookStudentsForGrade(quickScoreGrade), [getScorebookStudentsForGrade, quickScoreGrade]);
 
   useEffect(() => {
-    if (!isAdmin && ['teacher', 'student'].includes(role)) setQuickScoreSchoolCode(currentContentSchoolCode);
-  }, [isAdmin, role, currentContentSchoolCode]);
+    if ((!isAdmin || adminTeaching.active) && ['teacher', 'student'].includes(role)) setQuickScoreSchoolCode(currentContentSchoolCode);
+  }, [isAdmin, role, currentContentSchoolCode, adminTeaching.active]);
 
   const toggleQuickPriorityStudent = useCallback((studentKey) => {
     if (!studentKey) return;
@@ -2286,6 +2283,7 @@ function App() {
   );
 
   const openQuickScoreWorkspace = useCallback(({ grade, subjectName, subjectKey, locked = false } = {}) => {
+    setShowTeacherScores(false);
     const nextGrade = String(grade || quickScoreGrade || GRADES?.[0] || '6');
     if (educationGrades('primary').includes(nextGrade)) {
       setShowLearningResultsWorkspace(false);
@@ -2324,6 +2322,21 @@ function App() {
     setStudentDatabaseOpenKey(prev => prev + 1);
     setShowStudentDatabase(true);
   }, []);
+  const openConversationStudentProfile = useCallback(thread => {
+    if (!isAdmin || role !== 'admin' || adminAccessScope !== 'full') return;
+    const profile = resolveConversationStudent(thread, allStudents);
+    if (!profile?.id) {
+      showNotification('Chưa tìm được hồ sơ đúng mã học sinh. Tải lại danh sách để kiểm tra.', 'error');
+      return;
+    }
+    setAdminModule(belongsToEducationLevel(profile, 'primary') ? 'primary' : 'thcs');
+    if (!showStudentDatabase) {
+      setStudentDatabaseInitialTab('current');
+      setStudentDatabaseOpenKey(value => value + 1);
+    }
+    setShowStudentDatabase(true);
+    setConversationProfileRequest({ key: globalThis.crypto.randomUUID(), studentId: profile.id, accessCode: profile.accessCode, schoolCode: profile.schoolCode || '' });
+  }, [isAdmin, role, adminAccessScope, allStudents, showNotification, showStudentDatabase]);
 
   const openAdminPlaceholder = useCallback((label) => {
     showNotification(`${label} sáº½ Ä‘Æ°á»£c thiáº¿t káº¿ á»Ÿ bÆ°á»›c sau.`);
@@ -2456,6 +2469,8 @@ function App() {
       },
       '/utilities/textbooks': () => setIsAdminTextbookExpanded(true),
       '/utilities/check': () => setShowAdminCheckWorkspace(true),
+      '/academic/learning-materials': () => setShowAdminCheckWorkspace(true),
+      '/academic/teacher-support': () => openAdminTeaching(),
       '/utilities/passwords': () => setShowPasswordWorkspace(true),
       '/utilities/data-safety': () => setShowDataSafetyWorkspace(true),
       '/utilities/count-stats': () => openStudentDatabaseTab('countStats')
@@ -2463,7 +2478,7 @@ function App() {
     if (!routeAction) return false;
     runAdminMenuAction(routeAction);
     return true;
-  }, [adminAccessScope, adminModule, openAdminQuickScore, openAdminSettingsPanel, openScorebookWorkspace, openStudentDatabaseTab, runAdminMenuAction]);
+  }, [adminAccessScope, adminModule, openAdminQuickScore, openAdminSettingsPanel, openScorebookWorkspace, openStudentDatabaseTab, runAdminMenuAction, openAdminTeaching]);
 
   const openAdminRouteRef = useRef(openAdminRoute);
   useEffect(() => {
@@ -2631,6 +2646,8 @@ function App() {
         icon: BookOpen,
         children: [
           { key: 'score', label: 'Nhập điểm', href: getAdminRouteHref(isPrimary ? '/primary/input/score' : '/thcs/input/score'), action: () => openAdminQuickScore(isPrimary ? 'primary' : 'thcs') },
+          { key: 'admin-check', label: 'Theo dõi học liệu', href: getAdminRouteHref('/academic/learning-materials'), action: () => setShowAdminCheckWorkspace(true) },
+          ...(canOpenAdminTeaching ? [{ key: 'teacher-support', label: 'Hỗ trợ giáo viên', href: getAdminRouteHref('/academic/teacher-support'), action: () => openAdminTeaching() }] : []),
           { key: 'attendance', label: 'Nhập điểm danh', href: getAdminRouteHref(isPrimary ? '/primary/input/attendance' : '/thcs/input/attendance'), action: () => setShowAttendanceWorkspace(true) },
           { key: 'learning-progress', label: 'Tiến độ học', href: getAdminRouteHref('/students/journey'), action: () => openStudentDatabaseTab('journey') },
           { key: 'scorebook', label: 'Sổ điểm', href: getAdminRouteHref('/scorebook'), action: () => openScorebookWorkspace('scorebook', isPrimary ? '1' : '6') },
@@ -2644,14 +2661,14 @@ function App() {
         icon: ListChecks,
         children: [
           { key: 'textbook-drive', label: 'Kho sách giáo khoa', href: getAdminRouteHref('/utilities/textbooks'), action: () => setIsAdminTextbookExpanded(true) },
-          { key: 'admin-check', label: 'Kiểm tra dữ liệu', href: getAdminRouteHref('/utilities/check'), action: () => setShowAdminCheckWorkspace(true) },
           { key: 'data-safety', label: 'An toàn dữ liệu', href: getAdminRouteHref('/utilities/data-safety'), action: () => setShowDataSafetyWorkspace(true) },
+          { key: 'student-messages', label: 'Tin nhắn học sinh', icon: Mail, action: () => openConversations(), badge: conversationInbox.unreadCount ? String(conversationInbox.unreadCount) : '' },
           { key: 'count-stats', label: 'TK số lượng', href: getAdminRouteHref('/utilities/count-stats'), action: () => openStudentDatabaseTab('countStats') },
           { key: 'study-stats', label: 'TK học tập', action: () => showNotification('TK học tập sẽ được thiết kế ở bước sau.') }
         ]
       }
     ];
-  }, [adminAccessScope, adminModule, currentAdmissionApplications.length, getAdminRouteHref, openAdminQuickScore, openAdminSettingsPanel, openNoticeHome, openScorebookWorkspace, openStudentDatabaseTab, showNotification, studentProfileRequestCount, pendingStudentActionCount, registrationBadge, registrationBadgeTitle]);
+  }, [adminAccessScope, adminModule, currentAdmissionApplications.length, getAdminRouteHref, openAdminQuickScore, openAdminSettingsPanel, openNoticeHome, openScorebookWorkspace, openStudentDatabaseTab, showNotification, studentProfileRequestCount, pendingStudentActionCount, registrationBadge, registrationBadgeTitle, openConversations, conversationInbox.unreadCount, canOpenAdminTeaching, openAdminTeaching]);
 
   const { saveQuickScoreValue, fillMissingQuickScores, clearVisibleQuickScores } = useQuickScoreActions({
     user, canWrite: canWriteCurrentSchoolYear, schoolYear: activeSchoolYear || '', grade: quickScoreGrade,
@@ -2662,38 +2679,52 @@ function App() {
   });
 
   useEffect(() => {
-    if (!user || !noteId) { setNoteHtml(''); setIsLoadingNote(false); setAutoSaveStatus(''); return; }
-    setIsLoadingNote(true); setAutoSaveStatus('');
-    const unsubNote = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'lesson_notes', noteId), (docSnap) => {
-      const content = docSnap.exists() ? (docSnap.data().content || '') : '';
+    if (!user || !noteId) { setNoteHtml(''); setNoteLayoutState(null); setNoteDeliverySource(null); setIsLoadingNote(false); setAutoSaveStatus(''); return; }
+    setIsLoadingNote(true); setAutoSaveStatus(''); setNoteReadError('');
+    if (role === 'student') setNoteHtml('');
+    let active = true;
+    let controller;
+    let unsubNote = () => {};
+    const applyLesson = data => {
+      if (!active) return;
+      setNoteDeliverySource({ noteId, state: data.deliverySync || null });
+      const content = data.content || '', mode = normalizeLessonLayoutMode(data.layoutMode);
       const draftKey = `${teacherProfile?.teacherId || teacherProfile?.id || user.uid}/${noteId}`;
       noteBaseContentRef.current.set(noteId, content);
-      setNoteHtml(noteDraftsRef.current.get(draftKey)?.content ?? content); setIsLoadingNote(false);
-    }, () => { setIsLoadingNote(false); setNoteHtml('<p style="color: #f59e0b; font-weight: bold;">Đường truyền mạng yếu, hệ thống đang làm việc ở chế độ ngoại tuyến...</p>'); });
-    return () => unsubNote();
-  }, [user, noteId, teacherProfile?.teacherId, teacherProfile?.id]);
+      noteBaseLayoutRef.current.set(noteId, mode);
+      const draft = noteDraftsRef.current.get(draftKey);
+      setNoteHtml(draft?.content ?? content);
+      setNoteLayoutState({ noteId, mode: draft?.layoutMode ?? mode }); setIsLoadingNote(false);
+    };
+    const startFirestore = () => {
+      if (!active) return;
+      unsubNote = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'lesson_notes', noteId), docSnap => {
+        applyLesson(docSnap.exists() ? docSnap.data() : {});
+      }, () => { if (active) { setIsLoadingNote(false); setNoteHtml('<p style="color: #f59e0b; font-weight: bold;">Đường truyền mạng yếu, hệ thống đang làm việc ở chế độ ngoại tuyến...</p>'); } });
+    };
+    if (role === 'student' && SUPABASE_LESSONS_ENABLED) {
+      controller = new AbortController();
+      readSupabaseStudentLesson(noteId, { signal: controller.signal, schoolYear: activeSchoolYear, schoolCode: currentContentSchoolCode, grade: selectedGrade }).then(data => {
+        if (!active) return;
+        applyLesson(data || {});
+      }).catch(error => { if (active && error.name !== 'AbortError') {
+        setIsLoadingNote(false); setNoteHtml(''); setNoteReadError('Chưa tải được bài học. Kiểm tra mạng rồi bấm Tải lại bài.');
+      } });
+    } else startFirestore();
+    return () => { active = false; controller?.abort(); unsubNote(); };
+  }, [user, role, noteId, teacherProfile?.teacherId, teacherProfile?.id, noteReadAttempt, activeSchoolYear, currentContentSchoolCode, selectedGrade]);
 
-  const splitQuizContent = useCallback((html = '') => {
-    if (typeof document === 'undefined') return { question: String(html || ''), answer: '' };
-    const wrapper = document.createElement('div');
-    wrapper.innerHTML = sanitizeHtml(html);
-    const answerBlocks = Array.from(wrapper.querySelectorAll('.teacher-only'));
-    const answer = answerBlocks.map(node => node.innerHTML).join('<p><br></p>');
-    answerBlocks.forEach(node => node.remove());
-    return { question: wrapper.innerHTML, answer };
-  }, []);
+  const splitQuizContent = useCallback((html = '') => splitQuizHtml(html), []);
 
   const composeQuizContent = useCallback((questionHtml = quizQuestionHtml, answerHtml = quizAnswerHtml) => {
-    const question = String(questionHtml || '').trim();
-    const answer = String(answerHtml || '').trim();
-    return `${question}${answer ? `<div class="teacher-only">${answer}</div>` : ''}`;
+    return composeQuizHtml(questionHtml, answerHtml);
   }, [quizQuestionHtml, quizAnswerHtml]);
 
   const syncQuizPartsFromContent = useCallback((content = '') => {
     const parts = splitQuizContent(content);
     const cleanedParts = {
-      question: sanitizeHtml(humanizeHtmlString(parts.question)),
-      answer: sanitizeHtml(humanizeHtmlString(parts.answer))
+      question: normalizeMathHtml(parts.question),
+      answer: normalizeMathHtml(parts.answer)
     };
     setQuizQuestionHtml(cleanedParts.question);
     setQuizAnswerHtml(cleanedParts.answer);
@@ -2708,6 +2739,9 @@ function App() {
   ), [composeQuizContent, quizQuestionHtml, quizAnswerHtml]);
 
   const refreshQuizHtmlFromEditors = useCallback(() => {
+    if (isLoadingQuiz || (quizEditorRef.current && quizEditorRef.current.getAttribute('data-loaded-id') !== quizId)) {
+      return composeQuizContent(quizQuestionHtml, quizAnswerHtml);
+    }
     const questionHtml = quizEditorRef.current?.innerHTML ?? quizQuestionHtml;
     const answerHtml = quizAnswerEditorRef.current?.innerHTML ?? quizAnswerHtml;
     const content = composeQuizContent(questionHtml, answerHtml);
@@ -2715,7 +2749,7 @@ function App() {
     setQuizAnswerHtml(answerHtml);
     setQuizHtml(content);
     return content;
-  }, [composeQuizContent, quizQuestionHtml, quizAnswerHtml]);
+  }, [composeQuizContent, quizQuestionHtml, quizAnswerHtml, isLoadingQuiz, quizId]);
 
   useEffect(() => {
     if (!user || !quizId) {
@@ -2734,6 +2768,8 @@ function App() {
       return;
     }
     setIsLoadingQuiz(true);
+    setShowSelfQuizBuilder(false);
+    setSelfQuizDraft(getDefaultSelfQuizDraft());
     if (SERVER_QUIZ_ENABLED) {
       const controller = new AbortController();
       let revision = 0;
@@ -2815,7 +2851,7 @@ function App() {
     return () => unsubQuiz();
   }, [user, quizId, role, studentSelfQuizAttemptSeed, extractQuizAttachments, syncQuizPartsFromContent, showNotification]);
 
-  const activeSelfQuiz = useMemo(() => (quizDeliveryMode === 'auto' && quizData?.questions?.length ? SERVER_QUIZ_ENABLED && role === 'student' ? quizData : { ...rebalanceSelfQuizPoints(quizData, quizHtml || quizQuestionHtml), shuffleQuestions: true, shuffleOptions: true } : null), [quizData, quizDeliveryMode, quizHtml, quizQuestionHtml, role]);
+  const activeSelfQuiz = useMemo(() => (quizDeliveryMode === 'auto' && quizData?.questions?.length ? SERVER_QUIZ_ENABLED && role === 'student' ? quizData : rebalanceSelfQuizPoints(quizData, quizHtml || quizQuestionHtml) : null), [quizData, quizDeliveryMode, quizHtml, quizQuestionHtml, role]);
   const activeSelfQuizPassingPercent = activeSelfQuiz?.requirePassingScore ? quizPassingPercent(activeSelfQuiz.passingPercent) : 0;
   const activeSelfQuizQuestionCount = activeSelfQuiz?.questions?.length || 0;
   const studentAnsweredSelfQuizCount = useMemo(() => activeSelfQuiz?.questions?.filter(q => studentQuizAnswers[q.id]).length || 0, [activeSelfQuiz, studentQuizAnswers]);
@@ -2824,27 +2860,26 @@ function App() {
 
   useEffect(() => {
     if (role !== 'teacher' || !contentEditableRef.current || !noteId) return;
-    if (isLoadingNote) { contentEditableRef.current.innerHTML = '<p style="color: #94a3b8; font-style: italic; animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;">Đang tải dữ liệu bài học...</p>'; contentEditableRef.current.removeAttribute('data-loaded-id'); return; }
+    if (isLoadingNote || noteLayoutState?.noteId !== noteId) { contentEditableRef.current.innerHTML = '<p style="color: #94a3b8; font-style: italic; animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;">Đang tải dữ liệu bài học...</p>'; contentEditableRef.current.removeAttribute('data-loaded-id'); return; }
     const currentHtml = contentEditableRef.current.innerHTML || '';
     const shouldRefreshEditor =
       contentEditableRef.current.getAttribute('data-loaded-id') !== noteId ||
       (!currentHtml.trim() && String(noteHtml || '').trim()) ||
       currentHtml.includes('Đang tải dữ liệu bài học');
     if (shouldRefreshEditor) {
-      contentEditableRef.current.innerHTML = sanitizeHtml(humanizeHtmlString(noteHtml || ''));
+      contentEditableRef.current.innerHTML = lessonMathEnabled ? normalizeMathHtml(noteHtml || '') : sanitizeHtml(noteHtml || '');
       contentEditableRef.current.setAttribute('data-loaded-id', noteId);
     }
-  }, [role, noteHtml, noteId, isLoadingNote]);
+  }, [role, noteHtml, noteId, isLoadingNote, noteLayoutState?.noteId, lessonMathEnabled]);
 
   useEffect(() => {
-    if (role !== 'teacher' || !quizEditorRef.current || !quizId || !showQuizComposeWorkspace) return;
+    if (role !== 'teacher' || !quizEditorRef.current || !quizId || !(showQuizEditor || showQuizComposeWorkspace || showQuizWorkWorkspace)) return;
     if (isLoadingQuiz) { quizEditorRef.current.innerHTML = '<p style="color: #94a3b8; font-style: italic;">Đang tải bài kiểm tra...</p>'; quizEditorRef.current.removeAttribute('data-loaded-id'); return; }
     if (quizEditorRef.current.getAttribute('data-loaded-id') !== quizId) { syncQuizPartsFromContent(quizHtml || ''); quizEditorRef.current.setAttribute('data-loaded-id', quizId); setQuizAttachments(extractQuizAttachments(quizHtml || '')); }
-  }, [role, quizHtml, quizId, isLoadingQuiz, showQuizComposeWorkspace, extractQuizAttachments, syncQuizPartsFromContent]);
+  }, [role, quizHtml, quizId, isLoadingQuiz, showQuizEditor, showQuizComposeWorkspace, showQuizWorkWorkspace, extractQuizAttachments, syncQuizPartsFromContent]);
 
-  useEffect(() => { if (role !== 'teacher') typesetMath(studentContentRef.current); }, [noteHtml, role, selectedGrade, selectedSubject, selectedLesson]);
+  useEffect(() => { if (role !== 'teacher' && lessonMathEnabled) typesetMath(studentContentRef.current); }, [noteHtml, role, selectedGrade, selectedSubject, selectedLesson, lessonMathEnabled]);
   useEffect(() => { if (role !== 'teacher') typesetMath(studentQuizContentRef.current); }, [quizHtml, quizData, studentQuizAnswers, studentQuizResult, role, selectedGrade, selectedSubject, selectedLesson]);
-  useEffect(() => { if (role === 'teacher' && showQuickQuizPreview) typesetMath(quickQuizPreviewRef.current); }, [quizHtml, quizData, role, showQuickQuizPreview, selectedGrade, selectedSubject, selectedLesson]);
   useEffect(() => { if (role === 'teacher' && showHandwrittenSubmissions) typesetMath(essayPromptRef.current); }, [studentEssayText, role, showHandwrittenSubmissions]);
   useEffect(() => {
     setStudentQuizAnswers({});
@@ -2929,7 +2964,7 @@ function App() {
     if (newRole === 'teacher') {
       requestAnimationFrame(() => {
         if (contentEditableRef.current && noteId) {
-          contentEditableRef.current.innerHTML = sanitizeHtml(humanizeHtmlString(noteHtml || ''));
+          contentEditableRef.current.innerHTML = lessonMathEnabled ? normalizeMathHtml(noteHtml || '') : sanitizeHtml(noteHtml || '');
           contentEditableRef.current.setAttribute('data-loaded-id', noteId);
         }
       });
@@ -3676,19 +3711,21 @@ function App() {
     }
   };
 
+  const shouldLoadTextbooks = role !== 'teacher' || isTextbookExpanded;
   useEffect(() => {
     let active = true;
     const controller = new AbortController();
     const folderId = textbookFolders[selectedGrade];
     setTextbookFiles([]);
-    if (!folderId) return undefined;
+    setIsLoadingTextbooks(false);
+    if (!folderId || !shouldLoadTextbooks) return undefined;
     setIsLoadingTextbooks(true);
     listDriveFiles({ folderId, apiKey: GOOGLE_API_KEY, signal: controller.signal })
       .then(files => { if (active) setTextbookFiles(files); })
       .catch(error => { if (active && error.name !== 'AbortError') setTextbookFiles([]); })
       .finally(() => { if (active) setIsLoadingTextbooks(false); });
     return () => { active = false; controller.abort(); };
-  }, [selectedGrade, textbookFolders]);
+  }, [selectedGrade, textbookFolders, shouldLoadTextbooks]);
 
   useEffect(() => { driveRequestRef.current += 1; return () => { driveRequestRef.current += 1; }; }, [role, selectedGrade, selectedSubject, currentContentSchoolCode]);
 
@@ -3742,6 +3779,7 @@ function App() {
     const controller = new AbortController();
     loginAbortRef.current = controller;
     setIsLoggingIn(true);
+    setErrorMsg('');
     try {
     if (modalMode === 'admin') {
       try {
@@ -3800,6 +3838,7 @@ function App() {
         window.sessionStorage.setItem(STAFF_SERVER_SESSION_STORAGE_KEY, response.staffSessionToken);
         window.sessionStorage.setItem(TEACHER_PROFILE_STORAGE_KEY, JSON.stringify(response.teacherProfile));
         setTeacherProfile(response.teacherProfile);
+        setIsTextbookExpanded(false);
         setSelectedGrade(String(response.teacherProfile.grades?.[0] || ''));
         setSelectedSubject(null);
         setSelectedLesson(null);
@@ -3831,6 +3870,7 @@ function App() {
 
   const openStudentLogin = async () => {
     if (!await handleLogout()) return;
+    pendingLearningUpdateRef.current = null;
     if (isStudentCodeEnabled || SCOPED_AUTH_ENABLED) {
       setShowStudentAccessModal(true); setStudentForgotMode(false); setStudentFoundCode('');
     } else { setRole('student'); setLoginRole('student'); }
@@ -3982,13 +4022,17 @@ function App() {
     };
   }, [noteId, role]);
 
-  const handleEditorInput = () => {
-    if (role !== 'teacher' || !noteId || !contentEditableRef.current) return;
+  const handleEditorInput = (layoutMode = lessonLayout.mode) => {
+    if (role !== 'teacher' || lessonRemoval.isBlocked(noteId) || !canWriteCurrentSchoolYear || !noteId || !contentEditableRef.current || isLoadingNote || contentEditableRef.current.getAttribute('data-loaded-id') !== noteId) return;
+    // React passes an input event here; only the layout selector passes a mode.
+    const mode = typeof layoutMode === 'string' ? normalizeLessonLayoutMode(layoutMode) : lessonLayout.mode;
     const draftKey = `${teacherProfile?.teacherId || teacherProfile?.id || user?.uid}/${noteId}`;
     const draft = { content: sanitizeHtml(contentEditableRef.current.innerHTML), noteId, authorId: user?.uid,
       draftKey, baseContent: noteDraftsRef.current.get(draftKey)?.baseContent ?? noteBaseContentRef.current.get(noteId),
+      layoutMode: mode, baseLayoutMode: noteDraftsRef.current.get(draftKey)?.baseLayoutMode ?? noteBaseLayoutRef.current.get(noteId),
       schoolCode: currentContentSchoolCode, schoolYear: activeSchoolYear, grade: String(selectedGrade), subject: String(selectedSubject), lesson: String(selectedLesson) };
     noteDraftsRef.current.set(draftKey, draft);
+    setNoteLayoutState({ noteId, mode });
     setNoteHtml(draft.content); setAutoSaveStatus('Đang chờ lưu...');
     if (autoSaveTimeoutRef.current) clearTimeout(autoSaveTimeoutRef.current);
     const save = () => handleAutoSave(draft);
@@ -4000,53 +4044,90 @@ function App() {
     }, 2000);
   };
 
+  const handleLessonLayoutChange = mode => {
+    if (role !== 'teacher' || isLoadingNote || !canWriteCurrentSchoolYear || noteLayoutState?.noteId !== noteId) return;
+    handleEditorInput(mode);
+  };
+
   const handleAutoSave = async (draft) => {
-    if (!draft?.noteId || !draft.authorId) return;
-    setAutoSaveStatus('Đang lưu...');
+    if (!draft?.noteId || !draft.authorId || lessonRemoval.isBlocked(draft.noteId)) return;
+    if (contentEditableRef.current?.getAttribute('data-loaded-id') === draft.noteId) setAutoSaveStatus('Đang lưu...');
     try {
-      await saveLessonDraft(draft);
+      await saveTrackedLessonDraft(draft);
       noteBaseContentRef.current.set(draft.noteId, draft.content);
+      noteBaseLayoutRef.current.set(draft.noteId, draft.layoutMode);
       const latest = noteDraftsRef.current.get(draft.draftKey);
-      if (latest?.content === draft.content) noteDraftsRef.current.delete(draft.draftKey);
-      else if (latest) latest.baseContent = draft.content;
+      if (latest?.content === draft.content && latest?.layoutMode === draft.layoutMode) noteDraftsRef.current.delete(draft.draftKey);
+      else if (latest) { latest.baseContent = draft.content; latest.baseLayoutMode = draft.layoutMode; }
       if (contentEditableRef.current?.getAttribute('data-loaded-id') === draft.noteId) setAutoSaveStatus('☁️ Đã lưu tự động');
     } catch (error) { if (contentEditableRef.current?.getAttribute('data-loaded-id') === draft.noteId) setAutoSaveStatus(error.message || 'Lỗi lưu tự động; bản nháp được giữ'); }
   };
 
   const handleSaveNote = async () => {
-    if (!contentEditableRef.current || !noteId || !user) return;
+    if (role !== 'teacher' || lessonRemoval.isBlocked(noteId) || !canWriteCurrentSchoolYear || !contentEditableRef.current || !noteId || !user || isLoadingNote || noteLayoutState?.noteId !== noteId || contentEditableRef.current.getAttribute('data-loaded-id') !== noteId) return;
     if (!teacherCanUseScope(selectedGrade, selectedSubject)) { showNotification('Tài khoản chưa được phân công khối/môn này.', 'error'); return; }
     if (autoSaveTimeoutRef.current) clearTimeout(autoSaveTimeoutRef.current);
     autoSaveTimeoutRef.current = null; pendingNoteSaveRef.current = null;
     const draftKey = `${teacherProfile?.teacherId || teacherProfile?.id || user.uid}/${noteId}`;
     const draft = { noteId, draftKey, baseContent: noteDraftsRef.current.get(draftKey)?.baseContent ?? noteBaseContentRef.current.get(noteId),
+      layoutMode: lessonLayout.mode, baseLayoutMode: noteDraftsRef.current.get(draftKey)?.baseLayoutMode ?? noteBaseLayoutRef.current.get(noteId),
       content: sanitizeHtml(contentEditableRef.current.innerHTML), authorId: user.uid, schoolCode: currentContentSchoolCode,
       schoolYear: activeSchoolYear, grade: String(selectedGrade), subject: String(selectedSubject), lesson: String(selectedLesson) };
     noteDraftsRef.current.set(draftKey, draft); setIsSavingNote(true);
     try {
-      await saveLessonDraft(draft);
+      await saveTrackedLessonDraft(draft);
       noteBaseContentRef.current.set(noteId, draft.content);
+      noteBaseLayoutRef.current.set(noteId, draft.layoutMode);
       const latest = noteDraftsRef.current.get(draftKey);
-      if (latest?.content === draft.content) noteDraftsRef.current.delete(draftKey);
-      else if (latest) latest.baseContent = draft.content;
-      setNoteHtml(latest?.content ?? draft.content);
-      setSaveSuccess(true); setAutoSaveStatus(''); setTimeout(() => setSaveSuccess(false), 3000);
+      if (latest?.content === draft.content && latest?.layoutMode === draft.layoutMode) noteDraftsRef.current.delete(draftKey);
+      else if (latest) { latest.baseContent = draft.content; latest.baseLayoutMode = draft.layoutMode; }
+      if (contentEditableRef.current?.getAttribute('data-loaded-id') === noteId) {
+        setNoteHtml(latest?.content ?? draft.content);
+        setNoteLayoutState({ noteId, mode: latest?.layoutMode ?? draft.layoutMode });
+        setSaveSuccess(true); setAutoSaveStatus(''); setTimeout(() => setSaveSuccess(false), 3000);
+      }
       showNotification('Đã lưu bài học thành công!');
     } catch (error) { showNotification(`Lỗi lưu bài học: ${error.message}`, 'error'); }
     finally { setIsSavingNote(false); }
   };
 
+  const lessonRemovalOwnerKey = `${user?.uid || ''}/${isAdmin ? 'admin' : signedInTeacherProfile?.teacherId || signedInTeacherProfile?.id || signedInTeacherProfile?.username || 'guest'}`;
+  const lessonRemovalContextKey = `${lessonRemovalOwnerKey}/${role}/${activeSchoolYear}/${noteSchoolCode}/${noteId}`;
+  const lessonRemoval = useLessonRemoval({ contextKey: lessonRemovalContextKey, ownerKey: lessonRemovalOwnerKey,
+    allowed: role === 'teacher' && currentTeacherHasScope && canWriteCurrentSchoolYear && !isLoadingNote && !isSavingNote && !!noteId && noteLayoutState?.noteId === noteId,
+    getDraft: () => ({ noteId, draftKey: `${teacherProfile?.teacherId || teacherProfile?.id || user?.uid}/${noteId}`,
+      content: sanitizeHtml(contentEditableRef.current?.innerHTML ?? noteHtml), baseContent: noteBaseContentRef.current.get(noteId),
+      layoutMode: lessonLayout.mode, baseLayoutMode: noteBaseLayoutRef.current.get(noteId), authorId: user?.uid,
+      schoolYear: activeSchoolYear, schoolCode: noteSchoolCode, grade: String(selectedGrade), subject: selectedSubject, lesson: String(selectedLesson) }),
+    cancelScheduledSave: () => { clearTimeout(autoSaveTimeoutRef.current); autoSaveTimeoutRef.current = null; pendingNoteSaveRef.current = null; },
+    waitForSaves: async id => {
+      const entries = [...noteSavingRequestsRef.current].filter(entry => entry.draft.noteId === id);
+      const results = await Promise.allSettled(entries.map(async entry => { await entry.promise; return entry.draft; }));
+      return results.filter(result => result.status === 'fulfilled').at(-1)?.value;
+    },
+    saveDraft: saveLessonDraft,
+    onSaved: (draft, { restore, current }) => {
+      noteDraftsRef.current.delete(draft.draftKey); noteBaseContentRef.current.set(draft.noteId, draft.content); noteBaseLayoutRef.current.set(draft.noteId, draft.layoutMode);
+      if (!current) return;
+      if (contentEditableRef.current?.getAttribute('data-loaded-id') === draft.noteId) contentEditableRef.current.innerHTML = draft.content;
+      setNoteHtml(draft.content); setNoteLayoutState({ noteId: draft.noteId, mode: draft.layoutMode }); setSelectedImage(null); setAutoSaveStatus('');
+      lessonNormalizer.close();
+      showNotification(restore ? 'Đã khôi phục nội dung bài học.' : 'Đã xóa nội dung bài học. Có thể bấm Hoàn tác xóa để khôi phục.');
+    },
+    onError: error => showNotification(`Chưa thực hiện được: ${error.message}`, 'error')
+  });
+  const requestDeleteLesson = () => {
+    if (lessonRemoval.busy || isSavingNote || !canWriteCurrentSchoolYear || !noteHtml.trim() || !currentTeacherHasScope) return;
+    setConfirmModal({ show: true, message: `Xóa nội dung bài học ${selectedSubject} · ${teacherClassLabel(teacherProfile, selectedGrade)} · ${getWeekDisplayName(selectedLesson)}?\nTài liệu đính kèm và bài kiểm tra được giữ lại. Có thể hoàn tác trong phiên làm việc này.`,
+      onConfirm: () => { void lessonRemoval.remove(lessonRemovalContextKey); } });
+  };
+
   const handleQuizEditorInput = () => { if (quizEditorRef.current) refreshQuizHtmlFromEditors(); };
   const handleQuizAnswerInput = () => { if (quizAnswerEditorRef.current) refreshQuizHtmlFromEditors(); };
 
-  const hasScoringGuide = (html = '') => {
-    const text = removeAccents(stripHtmlToText(html)).toLowerCase();
-    return /(\d+(?:[,.]\d+)?)\s*diem/.test(text) && /(bieu diem|thang diem|diem tung y|moi cau|moi y|tong diem|rubric)/.test(text);
-  };
-
   const buildQuizAnswerPrompt = (questionHtml = '', answerHtml = '') => {
-    const questionText = stripHtmlToText(questionHtml);
-    const answerText = stripHtmlToText(answerHtml);
+    const questionText = quizHtmlToPromptText(questionHtml);
+    const answerText = quizHtmlToPromptText(answerHtml);
     return `Ban la giao vien ${selectedSubject} lop ${selectedGrade}. Hay tao PHAN DAP AN VA BIEU DIEM cho de kiem tra sau.
 
 YEU CAU BAT BUOC:
@@ -4057,7 +4138,8 @@ YEU CAU BAT BUOC:
 - Neu toan bo de la tu luan: tu chia 10 diem theo cau va theo tung y, ghi ro moi y bao nhieu diem.
 - Moi cau/ moi y phai co diem ro rang de AI cham bai ve sau.
 - Dung dinh dang ngan gon, ro rang, co tieu de "DAP AN - BIEU DIEM".
-${getFormulaFormatInstruction()}
+- Không bọc thẻ teacher-only; hệ thống tự tách đáp án khỏi đề dành cho học sinh.
+${getFormulaFormatInstruction({ answerOnly: true })}
 
 DE KIEM TRA:
 ${questionText || '(Chua co noi dung de)'}
@@ -4066,24 +4148,11 @@ DAP AN GIAO VIEN DA CO NEU CO:
 ${answerText || '(Chua co dap an, hay tu tao dap an dung va bieu diem)'}`;
   };
 
-  const normalizeMathDelimiters = (value = '') => String(value)
-    .replace(/\$\$([\s\S]*?)\$\$/g, (_, math) => `\\[${math.trim()}\\]`)
-    .replace(/(^|[^\\])\$([^\n$]+?)\$/g, (_, prefix, math) => `${prefix}\\(${math.trim()}\\)`);
-
-  const textToPasteHtml = (text = '') => {
-    const normalized = humanizeLatexText(normalizeMathDelimiters(text.replace(/\r\n/g, '\n')));
-    const escaped = renderOverlineTokens(escapeHtml(normalized)
-      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-      .replace(/^###\s+(.+)$/gm, '<strong>$1</strong>')
-      .replace(/^##\s+(.+)$/gm, '<strong>$1</strong>')
-      .replace(/^#\s+(.+)$/gm, '<strong>$1</strong>'));
-    return escaped.split('\n').map(line => line.trim() ? `<div>${line}</div>` : '<div><br></div>').join('');
-  };
+  const textToPasteHtml = (text = '') => formatMathPlainText(text);
 
   const formatEssayPromptHtml = (text = '') => {
     const normalized = normalizeMathDelimiters(String(text || '')
       .replace(/\r\n/g, '\n')
-      .replace(/\\\\/g, '\\')
       .trim());
     if (!normalized) return '';
     return normalized.split('\n').map(rawLine => {
@@ -4107,14 +4176,7 @@ ${answerText || '(Chua co dap an, hay tu tao dap an dung va bieu diem)'}`;
   };
 
   const normalizePastedHtml = (html = '') => {
-    const wrapper = document.createElement('div');
-    wrapper.innerHTML = sanitizeHtml(html);
-    wrapper.querySelectorAll('script, style, meta, link').forEach(node => node.remove());
-    const walker = document.createTreeWalker(wrapper, NodeFilter.SHOW_TEXT);
-    const textNodes = [];
-    while (walker.nextNode()) textNodes.push(walker.currentNode);
-    textNodes.forEach(node => { node.nodeValue = humanizeLatexText(normalizeMathDelimiters(node.nodeValue)); });
-    return renderOverlineTokens(wrapper.innerHTML);
+    return normalizeMathHtml(html);
   };
 
   const insertSmartPaste = (e, target = 'lesson') => {
@@ -4124,7 +4186,8 @@ ${answerText || '(Chua co dap an, hay tu tao dap an dung va bieu diem)'}`;
     if (!html && !text) return false;
     e.preventDefault();
     const cleanHtml = html ? normalizePastedHtml(html) : textToPasteHtml(text);
-    document.execCommand('insertHTML', false, cleanHtml);
+    if (target === 'lesson' && contentEditableRef.current) insertLessonPaste(contentEditableRef.current, cleanHtml);
+    else document.execCommand('insertHTML', false, cleanHtml);
     if (target === 'quiz') handleQuizEditorInput();
     else handleEditorInput();
     return true;
@@ -4230,7 +4293,7 @@ ${answerText || '(Chua co dap an, hay tu tao dap an dung va bieu diem)'}`;
         savedServerQuiz = await requestServerQuiz(!savedContent && extraFields.quizData === null ? 'clear' : 'publish', { quizId, quiz: { quizData, deliveryMode: quizDeliveryMode, scoreTarget: quizScoreTarget, ...quizPayload },
           expectedVersion: base?.serverVersion ?? null, expectedLegacyUpdatedAt: base?.updatedAt ?? null });
         serverQuizDocumentsRef.current.set(quizId, savedServerQuiz.quiz || { serverVersion: null, updatedAt: null });
-      } else await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'lesson_quizzes', quizId), quizPayload, { merge: true });
+      } else await saveLegacyQuizContent(quizId, quizPayload);
       if (!quizRequestScopeRef.current.isCurrent(request)) return { ok: true };
       setQuizHtml(savedContent);
       setQuizTitle((extraFields.title ?? quizTitle).trim() || `${selectedSubject} ${selectedGrade} - ${getWeekDisplayName(selectedLesson)}`);
@@ -4242,7 +4305,7 @@ ${answerText || '(Chua co dap an, hay tu tao dap an dung va bieu diem)'}`;
       setQuizSaveSuccess(true);
       const savedContext = quizContextRef.current;
       setTimeout(() => { if (quizContextRef.current === savedContext) setQuizSaveSuccess(false); }, 3000);
-      showNotification('Đã lưu bài kiểm tra thành công!');
+      showNotification(`${savedContent ? 'Đã lưu đề' : 'Đã xóa nội dung đề'} ${selectedSubject} · Khối ${selectedGrade} · ${getWeekDisplayName(selectedLesson)} · ${activeSchoolYear}.`);
       if (String(savedContent || '').trim()) {
         const quizDoc = await uploadQuizDocSnapshot(savedContent, publishNowValue, publishAtMs);
         if (!quizRequestScopeRef.current.isCurrent(request)) return { ok: true };
@@ -4261,64 +4324,67 @@ ${answerText || '(Chua co dap an, hay tu tao dap an dung va bieu diem)'}`;
     } catch (e) { if (quizRequestScopeRef.current.isCurrent(request)) showNotification('Lỗi lưu bài kiểm tra: ' + e.message, 'error'); return { ok: false }; } finally { if (quizRequestScopeRef.current.finish(request)) setIsSavingQuiz(false); }
   };
 
-  const openQuizPublishModal = async (savedContent) => {
-    setPendingQuizContent(savedContent);
-    setPendingQuizDeliveryMode(quizData?.questions?.length ? quizDeliveryMode : 'manual');
+  const prepareQuizPublish = async () => {
+    const contextKey = quizContextRef.current;
+    setPendingQuizDeliveryMode(selfQuizDraft.questions.length ? quizDeliveryMode : 'manual');
     const currentTargetFits = quizScoreTarget
       && quizScoreSubject
       && String(quizScoreTarget.subjectKey || '') === String(quizScoreSubject.key)
       && String(quizScoreTarget.semester || '') === String(quizScoreSemester);
     setPendingQuizScoreTarget(currentTargetFits ? quizScoreTarget : null);
     setScoreTargetEdits({});
+    setQuizPublishModalAt(quizPublishAt || formatVietnamDateTimeLocal(Date.now()));
     if (selectedGrade) {
       try {
         const snap = await getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'scorebooks', getScorebookDocIdForGrade(selectedGrade)));
+        if (quizContextRef.current !== contextKey) return;
         const data = snap.exists() ? (snap.data() || {}) : {};
         setScoreTargetEdits(data.edits && typeof data.edits === 'object' ? data.edits : {});
       } catch {
-        setScoreTargetEdits({});
+        if (quizContextRef.current === contextKey) setScoreTargetEdits({});
       }
     }
-    setQuizPublishModalAt(quizPublishAt || formatVietnamDateTimeLocal(Date.now()));
-    setShowQuizPublishModal(true);
   };
 
-  const handleSaveQuiz = async () => {
-    if (!quizEditorRef.current || !quizId || !user) return;
+  const handleSaveQuiz = async ({ publishNow = quizPublishNow, publishAt = quizPublishAt, deliveryMode = quizDeliveryMode, scoreTarget = quizScoreTarget } = {}) => {
+    if (!quizId || !user || isLoadingQuiz || isSavingQuiz) return { ok: false };
+    const contextKey = quizContextRef.current;
     let savedContent = getCurrentQuizContent();
-    if (!String(savedContent || '').trim()) {
+    const synthesized = !String(stripHtmlToText(savedContent) || '').trim() && selfQuizDraft.questions.length > 0;
+    if (synthesized) savedContent = selfQuizDraftToHtml(selfQuizDraft);
+    if (!String(stripHtmlToText(savedContent) || '').trim()) {
       showNotification('Chưa có nội dung bài kiểm tra để lưu.', 'error');
-      return;
+      return { ok: false };
     }
-    const answerContent = quizAnswerEditorRef.current?.innerHTML ?? quizAnswerHtml;
-    if (String(stripHtmlToText(answerContent) || '').trim() && !hasScoringGuide(answerContent)) {
-      const useAiRubric = window.confirm('Phần đáp án chưa thấy biểu điểm rõ từng câu/từng ý. Bấm OK để AI tự chia điểm, hoặc Hủy nếu thầy cô muốn tự cho điểm.');
-      if (useAiRubric) {
-        const generatedContent = await handleGenerateQuizAnswer({ silent: true });
-        if (!generatedContent) return;
-        savedContent = generatedContent;
-      }
+    const prepared = prepareTeacherQuizDraft(selfQuizDraft, savedContent);
+    if (prepared.error) { showNotification(prepared.error, 'error'); return { ok: false, message: prepared.error }; }
+    if (deliveryMode === 'auto' && !prepared.quizData) {
+      showNotification('Thêm câu hỏi và đáp án ở phần Trắc nghiệm tự chấm trước khi phát trực tuyến.', 'error');
+      return { ok: false };
     }
-    await persistQuiz(savedContent, quizPublishNow, quizPublishAt, { title: quizTitle });
+    const result = await persistQuiz(savedContent, publishNow, publishAt, { title: quizTitle, quizData: prepared.quizData, deliveryMode, scoreTarget });
+    if (result?.ok && quizContextRef.current === contextKey) {
+      setQuizData(prepared.quizData);
+      if (prepared.quizData) setSelfQuizDraft(prepared.quizData);
+      if (synthesized) syncQuizPartsFromContent(savedContent);
+    }
+    return result;
   };
 
-  const confirmQuizPublishNow = async () => {
-    setShowQuizPublishModal(false);
-    await persistQuiz(pendingQuizContent, true, '', { deliveryMode: pendingQuizDeliveryMode, scoreTarget: pendingQuizScoreTarget || null });
-  };
+  const confirmQuizPublishNow = () => handleSaveQuiz({ publishNow: true, publishAt: '', deliveryMode: pendingQuizDeliveryMode, scoreTarget: pendingQuizScoreTarget || null });
 
   const confirmQuizSchedule = async () => {
-    if (!quizPublishModalAt) { showNotification('Vui lòng chọn ngày giờ hẹn phát đề.', 'error'); return; }
-    if (!parseVietnamDateTimeLocal(quizPublishModalAt)) { showNotification('Ngày giờ hẹn chưa hợp lệ.', 'error'); return; }
-    setShowQuizPublishModal(false);
-    await persistQuiz(pendingQuizContent, false, quizPublishModalAt, { deliveryMode: pendingQuizDeliveryMode, scoreTarget: pendingQuizScoreTarget || null });
+    const scheduledAt = parseVietnamDateTimeLocal(quizPublishModalAt);
+    if (!scheduledAt || scheduledAt <= Date.now()) { showNotification('Chọn thời gian phát đề trong tương lai (giờ Việt Nam).', 'error'); return; }
+    await handleSaveQuiz({ publishNow: false, publishAt: quizPublishModalAt, deliveryMode: pendingQuizDeliveryMode, scoreTarget: pendingQuizScoreTarget || null });
   };
 
   const handleClearQuiz = async () => {
-    if (!window.confirm('Xóa hết nội dung bài kiểm tra tuần này?')) return;
+    if (isLoadingQuiz || isSavingQuiz) return;
+    if (!window.confirm(`Xóa đề và đáp án môn ${selectedSubject} · Khối ${selectedGrade} (${teacherClassLabel(teacherProfile, selectedGrade)}) · ${getWeekDisplayName(selectedLesson)} · ${activeSchoolYear}? Đề sẽ ngừng phát và hủy lịch đã hẹn.`)) return;
     const contextKey = quizContextRef.current;
     if (quizId && user) {
-      const saved = await persistQuiz('', false, '', { quizData: null, scoreTarget: null });
+      const saved = await persistQuiz('', false, '', { title: '', quizData: null, scoreTarget: null, deliveryMode: 'manual' });
       if (!saved?.ok || quizContextRef.current !== contextKey) return;
     }
     if (quizEditorRef.current) {
@@ -4333,11 +4399,12 @@ ${answerText || '(Chua co dap an, hay tu tao dap an dung va bieu diem)'}`;
     setQuizAttachments([]);
     setQuizPublishNow(false);
     setQuizPublishAt('');
-    setIsPreviousQuizLoaded(false);
     setQuizData(null);
     setQuizDeliveryMode('manual');
     setQuizScoreTarget(null);
     setSelfQuizDraft(getDefaultSelfQuizDraft());
+    setShowSelfQuizBuilder(false);
+    setQuizDocStatus({ state: '', message: '', url: '' });
   };
 
   const handleToggleQuizPublish = async () => {
@@ -4355,13 +4422,13 @@ ${answerText || '(Chua co dap an, hay tu tao dap an dung va bieu diem)'}`;
       showNotification('Chưa có nội dung bài kiểm tra để bật cho học sinh.', 'error');
       return;
     }
-    openQuizPublishModal(savedContent);
+    selectTeacherQuizWorkspaceTab('publish');
   };
 
   const openQuickQuizPreview = () => {
     if (quizEditorRef.current || quizAnswerEditorRef.current) refreshQuizHtmlFromEditors();
     const content = getCurrentQuizContent();
-    if (!String(stripHtmlToText(content) || '').trim()) {
+    if (!String(stripHtmlToText(content) || '').trim() && !selfQuizDraft.questions.length) {
       showNotification('Chưa có đề kiểm tra để xem nhanh.', 'error');
       return;
     }
@@ -4370,17 +4437,7 @@ ${answerText || '(Chua co dap an, hay tu tao dap an dung va bieu diem)'}`;
 
   const handleLoadPreviousQuiz = async () => {
     if (!previousQuizId) return;
-    if (isPreviousQuizLoaded) {
-      setIsPreviousQuizLoaded(false);
-      setQuizHtml('');
-      setQuizQuestionHtml('');
-      setQuizAnswerHtml('');
-      setQuizAttachments([]);
-      if (quizEditorRef.current) quizEditorRef.current.innerHTML = '';
-      if (quizAnswerEditorRef.current) quizAnswerEditorRef.current.innerHTML = '';
-      showNotification('Đã bỏ nội dung đề năm trước.');
-      return;
-    }
+    if (String(stripHtmlToText(getCurrentQuizContent()) || '').trim() && !window.confirm('Thay nội dung đang soạn bằng đề năm trước?')) return;
     const contextKey = quizContextRef.current;
     try {
       const previous = SERVER_QUIZ_ENABLED ? await requestServerQuiz('read', { quizId: previousQuizId }) : null;
@@ -4392,7 +4449,10 @@ ${answerText || '(Chua co dap an, hay tu tao dap an dung va bieu diem)'}`;
       setQuizHtml(content);
       syncQuizPartsFromContent(content);
       setQuizAttachments(extractQuizAttachments(content));
-      setIsPreviousQuizLoaded(true);
+      const previousData = prevSnap.data().quizData || null;
+      setQuizData(previousData); setSelfQuizDraft(previousData || getDefaultSelfQuizDraft());
+      setQuizDeliveryMode(previousData?.questions?.length ? 'auto' : 'manual');
+      setShowQuizArchive(false);
       showNotification(`Đã lấy đề năm ${previousSchoolYear}.`);
     } catch { if (quizContextRef.current === contextKey) showNotification('Không lấy được đề năm trước.', 'error'); }
   };
@@ -4414,8 +4474,12 @@ ${answerText || '(Chua co dap an, hay tu tao dap an dung va bieu diem)'}`;
         if (quizContextRef.current !== contextKey) return;
       }
     const content = quiz.content || '';
+    if (String(stripHtmlToText(getCurrentQuizContent()) || '').trim() && !window.confirm('Thay nội dung đang soạn bằng đề từ kho?')) return;
     setQuizHtml(content);
     syncQuizPartsFromContent(content);
+    const archiveData = quiz.quizData || null;
+    setQuizData(archiveData); setSelfQuizDraft(archiveData || getDefaultSelfQuizDraft());
+    setQuizDeliveryMode(archiveData?.questions?.length ? 'auto' : 'manual');
     setQuizAttachments(extractQuizAttachments(content));
     setQuizTitle(quiz.title || `${quiz.subject || selectedSubject} ${quiz.grade || selectedGrade} - ${getWeekDisplayName(quiz.lesson || selectedLesson)}`);
     setShowQuizArchive(false);
@@ -4462,7 +4526,7 @@ ${answerText || '(Chua co dap an, hay tu tao dap an dung va bieu diem)'}`;
     setQuizAttachments(prev => prev.filter(item => item.id !== attachmentId));
   };
 
-  const handleEditorImageClick = (e, owner = 'lesson') => { if (e.target.tagName === 'IMG') { setSelectedImage(e.target); setSelectedImageOwner(owner); const rect = e.target.getBoundingClientRect(); const containerRect = e.currentTarget.parentElement.getBoundingClientRect(); setImagePopupPos({ x: rect.left - containerRect.left + (rect.width / 2), y: rect.top - containerRect.top - 40 }); } else { setSelectedImage(null); } };
+  const handleEditorImageClick = (e, owner = 'lesson') => { if (e.target.tagName === 'IMG') { setSelectedImage(e.target); setSelectedImageOwner(owner); const rect = e.target.getBoundingClientRect(); const container = e.currentTarget.closest('.lesson-layout-scroll')?.parentElement || e.currentTarget.parentElement, containerRect = container.getBoundingClientRect(); setImagePopupPos({ x: rect.left - containerRect.left + container.scrollLeft + (rect.width / 2), y: rect.top - containerRect.top + container.scrollTop - 40 }); } else { setSelectedImage(null); } };
 
   const handleDeleteSelectedImage = async (e) => { e.preventDefault(); if (!selectedImage) return; const imgSrc = selectedImage.src; selectedImage.remove(); setSelectedImage(null); showNotification("?? x?a ?nh kh?i khung so?n th?o"); const driveIdMatch = imgSrc.match(/id=([^&]+)/); if (driveIdMatch && driveIdMatch[1]) { try { await postAppsScript({ action: 'rename', fileId: driveIdMatch[1], schoolCode: currentContentSchoolCode, grade: String(selectedGrade), subject: String(selectedSubject) }); } catch { /* intentionally ignored */ } } selectedImageOwner === 'quiz' ? handleQuizEditorInput() : handleEditorInput(); };
 
@@ -4656,8 +4720,12 @@ YEU CAU:
     });
   }, [driveFiles, driveSort, getPinnedLessonsForDriveFile]);
 
-  const isFormulaSubject = useCallback(() => { const normalized = removeAccents(selectedSubject || ''); return normalized.includes('toan') || normalized.includes('khoa hoc tu nhien') || normalized.includes('khtn'); }, [selectedSubject]);
-  const getFormulaFormatInstruction = useCallback(() => { if (!isFormulaSubject()) return ''; return `\n\nYEU CAU RIENG CHO TOAN/KHTN CO CONG THUC:\n- Chi tao MOT BAN DUY NHAT de dan vao web cho hoc sinh xem, tuyet doi khong chia thanh PHAN 1/PHAN 2.\n- Khong viet cac tieu de: PHAN 1 - BAN GIAO VIEN DE HINH DUNG, PHAN 2 - BAN DAN VAO WEB CHO HOC SINH.\n- Cong thuc phai trinh bay bang LaTeX de web hien thi dep: cong thuc trong dong dat trong \\( ... \\), cong thuc rieng dong dat trong \\[ ... \\].\n- Van tao day du dap an/goi y cham o cuoi de, nhung phai boc toan bo dap an trong <div class="teacher-only">...</div> de hoc sinh khong thay.`; }, [isFormulaSubject]);
+  const isFormulaSubject = useCallback(() => /toan|vat ly|hoa|sinh|khoa hoc tu nhien|khtn/.test(removeAccents(selectedSubject || '').toLowerCase()), [selectedSubject]);
+  const getFormulaFormatInstruction = useCallback(({ answerOnly = false } = {}) => {
+    if (!isFormulaSubject()) return '';
+    if (answerOnly) return `${QUIZ_ANSWER_MATH_INSTRUCTION}\n- Tự giải lại từng câu, đối chiếu đáp án, điều kiện xác định, đơn vị và cân bằng phản ứng nếu có. Không đoán dữ kiện bị thiếu.`;
+    return `\n\n${QUIZ_FORMULA_PROMPT}\n- Chỉ tạo một bản đề duy nhất. Đáp án và hướng dẫn chấm đặt ở cuối trong <div class="teacher-only">...</div>.`;
+  }, [isFormulaSubject]);
 
   const extractAiText = (data) => {
     if (!data) return '';
@@ -4676,102 +4744,169 @@ YEU CAU:
     return 'AI không trả về nội dung văn bản.';
   };
 
-  const rememberWorkingGeminiModel = (modelId) => {
-    if (!modelId || modelId === selectedGeminiModel) return;
-    setSelectedGeminiModel(modelId);
-    try { localStorage.setItem('khohoclieu-gemini-model', modelId); } catch { /* The AI result remains usable when browser storage is full. */ }
-  };
+  const runWithGeminiModelFallback = requestForModel => requestWithGeminiFallback(requestForModel);
 
-  const runWithGeminiModelFallback = requestForModel => requestWithGeminiFallback(requestForModel, {
-    preferredModel: selectedGeminiModel, onWorkingModel: rememberWorkingGeminiModel
-  });
-
-  const generateWithGeminiFallback = async (payload) => {
+  const generateWithGeminiFallback = async (payload, context = {}) => {
     const { data, modelId } = await runWithGeminiModelFallback(async (modelId) => {
       const data = await postAppsScript({
         action: 'gemini',
         modelId,
-        grade: String(selectedGrade || ''),
-        subject: String(selectedSubject || ''),
-        lesson: String(selectedLesson || ''),
-        schoolYear: String(activeSchoolYear || currentSchoolYear || ''),
+        grade: String(context.grade ?? selectedGrade ?? ''),
+        subject: String(context.subject ?? selectedSubject ?? ''),
+        lesson: String(context.lesson ?? selectedLesson ?? ''),
+        schoolYear: String(context.schoolYear ?? activeSchoolYear ?? currentSchoolYear ?? ''),
+        schoolCode: context.schoolCode || currentContentSchoolCode,
         contents: payload.contents,
         systemInstruction: payload.systemInstruction,
         generationConfig: payload.generationConfig
-      });
+      }, { signal: context.signal });
       if (!extractAiText(data)) throw new Error(getAiEmptyReason(data));
       return data;
     });
     return { data, modelId: data.model || modelId, source: 'apps-script' };
   };
 
-  const handleGenerateAI = async () => {
-    setIsAiLoading(true); setAiError(''); setAiResponse('');
+  const handleToggleLessonEditor = () => {
+    if (lessonEditorView.showEditor) {
+      const source = contentEditableRef.current?.innerHTML;
+      if (source !== undefined && source !== (lessonMathEnabled ? normalizeMathHtml(noteHtml) : sanitizeHtml(noteHtml))) handleEditorInput();
+      setSelectedImage(null);
+      lessonEditorView.preview();
+    } else lessonEditorView.edit();
+  };
+
+  const assertLessonPdfScope = () => {
+    if (!lessonPdfScopeRef.current?.allowed || lessonPdfScopeRef.current.key !== lessonPdfScopeKey) throw new Error('Khối, môn hoặc phiên đăng nhập đã thay đổi. Đóng hộp nhập PDF và mở lại tại bài cần nhập.');
+  };
+  const lessonPdfService = createLessonPdfImportService({
+    context: lessonPdfContext, assertScope: assertLessonPdfScope,
+    hasDraft: id => noteDraftsRef.current.has(`${teacherProfile?.teacherId || teacherProfile?.id || user?.uid}/${id}`),
+    readNote: async id => (await getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'lesson_notes', id))).data(),
+    saveDraft: saveLessonDraft,
+    onSaved: draft => { noteBaseContentRef.current.set(draft.noteId, draft.content); noteBaseLayoutRef.current.set(draft.noteId, draft.layoutMode); }
+  });
+  const requestLessonPdfAI = async (payload, signal) => {
+    assertLessonPdfScope();
+    const { data } = await generateWithGeminiFallback(payload, { ...lessonPdfContext, lesson: '', signal });
+    assertLessonPdfScope();
+    const candidates = data?.candidates || data?.result?.candidates || [];
+    if (candidates.some(candidate => candidate.finishReason && candidate.finishReason !== 'STOP')) throw new Error('Gemini chưa hoàn tất dữ liệu PDF. Chưa lưu; hãy giảm khoảng trang hoặc thử lại tuần này.');
+    return extractAiText(data);
+  };
+  const assertLessonReviewBatchScope = () => {
+    if (!lessonPdfScopeRef.current?.allowed || lessonPdfScopeRef.current.key !== lessonPdfScopeKey) throw new Error('Khối, môn, năm học hoặc phiên đăng nhập đã thay đổi. Mở lại tạo ôn tập hàng loạt.');
+  };
+  const lessonReviewBatchService = createLessonReviewBatchService({ context: lessonPdfContext, assertScope: assertLessonReviewBatchScope,
+    hasDraft: id => noteDraftsRef.current.has(`${teacherProfile?.teacherId || teacherProfile?.id || user?.uid}/${id}`),
+    serverEnabled: SERVER_QUIZ_ENABLED, scoped: SCOPED_AUTH_ENABLED, request: requestServerQuiz });
+  const requestLessonReviewBatchAI = async (payload, week, signal) => {
+    assertLessonReviewBatchScope();
+    const { data } = await generateWithGeminiFallback(payload, { ...lessonPdfContext, lesson: String(week), signal });
+    assertLessonReviewBatchScope();
+    const issue = aiCompletionIssue(data);
+    if (issue) throw new Error(issue);
+    return extractAiText(data);
+  };
+
+  const handleLessonAnswersChange = visible => {
+    if (role !== 'teacher' || isLoadingNote || !canWriteCurrentSchoolYear || contentEditableRef.current?.getAttribute('data-loaded-id') !== noteId) return;
+    contentEditableRef.current.innerHTML = setLessonAnswersVisible(contentEditableRef.current.innerHTML, visible);
+    setSelectedImage(null);
+    handleEditorInput();
+  };
+
+  const lessonNormalizer = useLessonNormalization({
+    contextKey: `${activeSchoolYear}/${currentContentSchoolCode}/${noteId}/${role}/${teacherProfile?.teacherId || teacherProfile?.id || ''}/${user?.uid || ''}`, subject: selectedSubject, grade: selectedGrade,
+    ownerKey: `${currentContentSchoolCode}/${teacherProfile?.teacherId || teacherProfile?.id || user?.uid || ''}`,
+    getSource: () => role === 'teacher' && contentEditableRef.current?.getAttribute('data-loaded-id') === noteId ? contentEditableRef.current.innerHTML : '',
+    applyHtml: html => {
+      if (role !== 'teacher' || isLoadingNote || !canWriteCurrentSchoolYear || contentEditableRef.current?.getAttribute('data-loaded-id') !== noteId) return false;
+      contentEditableRef.current.innerHTML = html; setSelectedImage(null); handleEditorInput(); return true;
+    },
+    requestAI: async (payload, { signal } = {}) => {
+      const { data } = await generateWithGeminiFallback(payload, { signal });
+      const issue = aiCompletionIssue(data);
+      if (issue) throw new Error(issue);
+      return extractAiText(data);
+    }
+  });
+
+  const handleGenerateAI = async ({ repair = false } = {}) => {
+    if (isAiLoading || isSavingQuiz) return;
+    const generation = ++aiGenerationRef.current;
+    setIsAiLoading(true); setAiError(''); setAiSaveError(''); setAiReviewStatus('');
+    if (!repair) setAiResponse('');
     if (IS_LOCAL_PREVIEW) { const sample = 'BAI KIEM TRA NHANH\n\nCau 1. Day la noi dung mau...\n<div class="teacher-only">Dap an mau: Cau 1: A.</div>'; setAiResponse(sample); setAiPrompt(sample); setIsAiLoading(false); return; }
     const htmlContent = contentEditableRef.current ? contentEditableRef.current.innerHTML : '';
     const imgRegex = /<img[^>]+src="data:(image\/[^;]+);base64,([^"]+)"[^>]*>/g; let match; const imageParts = [];
     while ((match = imgRegex.exec(htmlContent)) !== null) { imageParts.push({ inlineData: { mimeType: match[1], data: match[2] } }); }
+    if (aiPurpose === 'quick' && !aiContextContent.trim() && !imageParts.length) {
+      setAiError(`Chưa có nội dung bài học ${selectedSubject} · Khối ${selectedGrade} · ${getWeekDisplayName(selectedLesson)}. Thầy cô thêm bài học hoặc dán nguồn trong phần nâng cao.`);
+      setIsAiLoading(false); return;
+    }
     const formulaInstruction = getFormulaFormatInstruction();
-    const sys = `Ban la AI ra de giao duc Viet Nam chuyen nghiep. NGUYEN TAC BAT BUOC:\n1. Tuyet doi khong co cau chao hoi.\n2. Chi tao MOT BAN DE DUY NHAT de dan vao web, khong tao ban giao vien rieng va ban hoc sinh rieng.\n3. Khong viet cac tieu de PHAN 1, PHAN 2, BAN GIAO VIEN, BAN DAN VAO WEB.\n4. Luon tao dap an/goi y cham va BIEU DIEM ro tung cau, tung y o cuoi de; boc toan bo phan nay trong <div class="teacher-only">...</div> de hoc sinh khong thay.\n5. Tong diem la 10. Toan trac nghiem: chia deu 10 diem cho so cau. Vua trac nghiem vua tu luan: trac nghiem 5 diem chia deu, tu luan 5 diem chia deu theo cau/y. Toan tu luan: tu chia 10 diem theo cau/y.\n6. Neu la Toan/KHTN, cong thuc phai dung LaTeX de hien thi dep tren web.${formulaInstruction}`;
+    const sys = `Ban la AI ra de giao duc Viet Nam chuyen nghiep. NGUYEN TAC BAT BUOC:\n1. Tuyet doi khong co cau chao hoi.\n2. Chi tao MOT BAN DE DUY NHAT de dan vao web, khong tao ban giao vien rieng va ban hoc sinh rieng.\n3. Khong viet cac tieu de PHAN 1, PHAN 2, BAN GIAO VIEN, BAN DAN VAO WEB.\n4. Luon tao dap an/goi y cham va BIEU DIEM ro tung cau, tung y o cuoi de; boc toan bo phan nay trong <div class="teacher-only">...</div> de hoc sinh khong thay.\n5. ${aiPurpose === 'quick' ? 'Phan trac nghiem chia deu 10 diem. Tu luan neu duoc yeu cau la tu luyen, khong tinh diem tu cham; goi y giai nam trong teacher-only.' : 'Tong diem la 10. Toan trac nghiem: chia deu 10 diem cho so cau. Vua trac nghiem vua tu luan: trac nghiem 5 diem chia deu, tu luan 5 diem chia deu theo cau/y. Toan tu luan: tu chia 10 diem theo cau/y.'}\n6. Neu la Toan/KHTN, cong thuc phai dung LaTeX de hien thi dep tren web.${formulaInstruction}`;
     let promptText = `Mon ${selectedSubject} lop ${selectedGrade}. Noi dung nguon:\n${aiContextContent || 'Chuan kien thuc'}\n\nYeu cau cua giao vien:\n${aiPrompt}`;
-    promptText += '\n\nBAT BUOC CHO HOI DAP NHANH:\n- Uu tien tao 40 cau trac nghiem de he thong rut ngau nhien 10 cau cho hoc sinh lam; neu giao vien yeu cau so khac thi van phai co toi thieu 10 cau.\n- Moi cau co 4 dap an A, B, C, D.\n- Khong tao cau tu luan, khong tao bai tap viet loi giai.\n- Dat dap an dung o cuoi trong <div class="teacher-only">...</div>, ghi ro: Cau 1: A, Cau 2: B...\n- Neu co cong thuc Toan/KHTN, dung LaTeX mot dau gach cheo: \\( ... \\) hoac \\[ ... \\], khong viet thanh \\\\( ... \\\\).';
+    if (aiPurpose === 'quick') promptText += `\n\nYêu cầu bắt buộc cho câu hỏi ôn tập:\n${lessonReviewPrompt(aiQuestionTemplate, aiEssayCount)}`;
     if (imageParts.length > 0) promptText += '\n\nVui long doc hieu cac hinh anh duoc dinh kem de trich xuat noi dung.';
     const payload = {
       contents: [{ parts: [{ text: promptText }, ...imageParts] }],
       systemInstruction: { parts: [{ text: sys }] },
-      generationConfig: { maxOutputTokens: 8192, temperature: 0.7 }
+      generationConfig: { maxOutputTokens: 8192, temperature: 0.3 }
     };
     try {
+      if (aiPurpose === 'quick') {
+        const structuredPayload = lessonReviewBatchPayload(window, { week: selectedLesson, html: htmlContent },
+          { grade: selectedGrade, subject: selectedSubject }, aiQuestionTemplate, aiEssayCount,
+          { sourceText: aiContextContent, imageParts, maxAutoQuestions: 20, teacherRequest: aiPrompt });
+        const checked = await generateVerifiedLessonReview({ windowObject: window, payload: structuredPayload,
+          count: aiQuestionTemplate, essayCount: aiEssayCount, initialResponse: repair ? aiResponse : '',
+          onProgress: message => { if (aiGenerationRef.current === generation) setAiReviewStatus(message); },
+          requestAI: async request => {
+            if (aiGenerationRef.current !== generation) throw new Error('Yêu cầu đã đóng hoặc bài học đã thay đổi.');
+            const { data } = await generateWithGeminiFallback(request);
+            if (aiGenerationRef.current !== generation) throw new Error('Yêu cầu đã đóng hoặc bài học đã thay đổi.');
+            const issue = aiCompletionIssue(data);
+            if (issue) throw new Error(issue);
+            return extractAiText(data);
+          } });
+        if (aiGenerationRef.current !== generation) return;
+        setAiResponse(checked.response);
+        setAiReviewStatus(`AI đã giải lại và đối chiếu ${checked.result.quizData.questions.length} câu.${checked.changes.length ? ` Đã sửa đáp án câu ${checked.changes.join(', ')} theo lời giải đối chiếu.` : ''}`);
+        return;
+      }
       const { data } = await generateWithGeminiFallback(payload);
+      if (aiGenerationRef.current !== generation) return;
+      const completionIssue = aiCompletionIssue(data);
+      if (completionIssue) { setAiError(completionIssue); return; }
       const txt = extractAiText(data);
-      if (txt && String(txt).trim()) { setAiResponse(String(txt)); setAiPrompt(String(txt)); } else setAiError('L\u1ed7i: ' + getAiEmptyReason(data));
-    } catch (e) { setAiError('L\u1ed7i k\u1ebft n\u1ed1i: ' + e.message); } finally { setIsAiLoading(false); }
+      if (txt && String(txt).trim()) { setAiResponse(String(txt)); } else setAiError('L\u1ed7i: ' + getAiEmptyReason(data));
+    } catch (e) { if (aiGenerationRef.current === generation) { setAiError(e.message); setAiReviewStatus(''); } } finally { if (aiGenerationRef.current === generation) setIsAiLoading(false); }
   };
 
-  const formatAiText = (text) => formatSafeAiText(text);
+  const formatAiText = (text) => aiPurpose === 'quick' ? prepareAiLessonReview(text, aiQuestionTemplate, aiEssayCount).content : formatQuizAiText(text);
 
   const appendAiToQuickQuiz = async () => {
-    if (!aiResponse || !user || !selectedGrade || !selectedSubject || !selectedLesson) return;
-    if (!canWriteCurrentSchoolYear) {
-      showNotification(`Năm học ${activeSchoolYear} đang khóa nhập liệu. Admin mở khóa mới lưu/phát bài được.`, 'error');
-      return;
-    }
-    const savedContent = formatAiText(aiResponse);
-    const parsed = parseSelfQuizFromHtml(savedContent);
-    if (parsed.questions.length < 10) {
-      showNotification(`AI mới tách được ${parsed.questions.length}/10 câu trắc nghiệm. Thầy cô bấm tạo lại hoặc yêu cầu AI đủ 10 câu A/B/C/D.`, 'error');
-      return;
-    }
-    const selectedQuestions = [...parsed.questions]
-      .sort(() => Math.random() - 0.5)
-      .slice(0, 10);
-    const quickQuiz = normalizeSelfQuizDraft({
-      ...parsed,
-      questions: selectedQuestions,
-      questionBank: parsed.questions,
-      questionCountPerAttempt: 10,
-      shuffleQuestions: true,
-      shuffleOptions: true,
-      showScoreAfterSubmit: true,
-      allowRetake: true,
-      requirePassingScore: true,
-      passingPercent: 80
-    });
-    const missingAnswers = quickQuiz.questions
-      .map((question, index) => ({ question, index }))
-      .filter(({ question }) => !question.correctOptionId || !question.options.find(option => option.id === question.correctOptionId)?.text)
-      .map(({ index }) => index + 1);
-    if (missingAnswers.length) {
-      showNotification(`Câu ${missingAnswers.join(', ')} chưa có đáp án đúng A/B/C/D. Thầy cô bấm tạo lại để AI ghi rõ đáp án.`, 'error');
-      return;
-    }
-    const title = `Hỏi đáp nhanh - ${selectedSubject} ${selectedGrade} - ${getWeekDisplayName(selectedLesson)}`;
-    if (!teacherCanUseScope(selectedGrade, selectedSubject)) {
-      showNotification('Tài khoản chưa được phân công khối/môn này.', 'error');
-      return;
-    }
-    setIsSavingQuiz(true);
+    const contextKey = quizContextRef.current;
+    if (aiSaveRequestRef.current?.contextKey === contextKey) return;
+    const fail = message => {
+      if (quizContextRef.current === contextKey) { setAiSaveError(message); showNotification(message, 'error'); }
+      return { ok: false };
+    };
+    if (isSavingQuiz) return fail('Đang có thao tác lưu khác. Thầy cô chờ hoàn tất rồi thử lại.');
+    const mathError = renderedQuizMathIssue(aiResponseContentRef.current);
+    if (mathError) return fail(mathError);
+    if (!aiResponse?.trim()) return fail('Chưa có kết quả AI để lưu. Thầy cô tạo câu hỏi hoặc dán kết quả vào ô chỉnh sửa.');
+    if (!user || !selectedGrade || !selectedSubject || !selectedLesson) return fail('Phiên hoặc bài học chưa sẵn sàng. Nội dung vẫn được giữ để thử lại.');
+    const request = { contextKey };
+    aiSaveRequestRef.current = request; setIsSavingQuiz(true); setAiSaveError('');
     try {
+      if (!canWriteCurrentSchoolYear) return fail(`Năm học ${activeSchoolYear} đang khóa nhập liệu. Admin mở khóa mới lưu/phát bài được.`);
+      if (!teacherCanUseScope(selectedGrade, selectedSubject)) return fail('Tài khoản chưa được phân công khối/môn này.');
+      const prepared = prepareAiLessonReview(aiResponse, aiQuestionTemplate, aiEssayCount);
+      if (prepared.error) return fail(prepared.error);
+      const savedContent = prepared.content, quickQuiz = prepared.quizData;
+      const title = `Ôn tập ${selectedSubject} ${selectedGrade} - ${getWeekDisplayName(selectedLesson)} · ${quickQuiz.questions.length} câu trắc nghiệm${aiEssayCount ? ` + ${aiEssayCount} câu tự luận` : ''}`;
       const materialPayload = {
         quizData: quickQuiz,
         sourceContent: savedContent,
@@ -4792,39 +4927,28 @@ YEU CAU:
         : await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'materials'), materialPayload);
       if (SERVER_QUIZ_ENABLED) await requestServerQuiz('publish', { kind: 'material', quizId: materialRef.id, expectedVersion: null,
         quiz: { ...materialPayload, deliveryMode: 'auto', isPublished: true, publishAt: null, content: savedContent } });
+      if (quizContextRef.current !== contextKey) return;
       setShowAiModal(false);
       setAiResponse('');
       setViewingMaterial({ id: materialRef.id, ...materialPayload });
-      showNotification('Đã chèn hỏi đáp nhanh vào nội dung bài học. Học sinh bấm nút Kiểm tra kiến thức nhanh để làm 10 câu.');
+      showNotification(`Đã lưu ôn tập ${selectedSubject} · Khối ${selectedGrade} · ${getWeekDisplayName(selectedLesson)}: ${quickQuiz.questions.length} câu trắc nghiệm${aiEssayCount ? ` và ${aiEssayCount} câu tự luận` : ''}.`);
+      return { ok: true };
     } catch (error) {
-      showNotification('Chưa lưu được hỏi đáp nhanh: ' + (error?.message || String(error)), 'error');
+      return fail('Chưa lưu được câu hỏi ôn tập: ' + (error?.message || String(error)));
     } finally {
-      setIsSavingQuiz(false);
+      if (aiSaveRequestRef.current === request) { aiSaveRequestRef.current = null; if (quizContextRef.current === contextKey) setIsSavingQuiz(false); }
     }
   };
 
   const appendAiToQuiz = () => {
-    const content = aiResponse ? formatAiText(aiResponse) : `<p>${aiPrompt.replace(/\n/g, '<br/>')}</p>`;
-    const parts = splitQuizContent(content);
-    setShowQuizEditor(true);
-    setQuizTeacherTab('compose');
-    setShowAiModal(false);
-    setTimeout(async () => {
-      if (quizEditorRef.current) {
-        const nextQuestion = `${quizEditorRef.current.innerHTML.trim() ? `${quizEditorRef.current.innerHTML}<p><br/></p>` : ''}${parts.question}<p><br/></p>`;
-        const nextAnswer = `${quizAnswerEditorRef.current?.innerHTML?.trim() ? `${quizAnswerEditorRef.current.innerHTML}<p><br/></p>` : ''}${parts.answer}`;
-        quizEditorRef.current.innerHTML = sanitizeHtml(nextQuestion);
-        if (quizAnswerEditorRef.current) quizAnswerEditorRef.current.innerHTML = sanitizeHtml(nextAnswer);
-        const savedContent = composeQuizContent(nextQuestion, nextAnswer);
-        setQuizQuestionHtml(nextQuestion);
-        setQuizAnswerHtml(nextAnswer);
-        setQuizHtml(savedContent);
-        if (quizId && user) {
-          await persistQuiz(savedContent, quizPublishNow, quizPublishAt);
-        }
-      }
-    }, 0);
-    showNotification('Đã chuyển vào bài kiểm tra và tự lưu.');
+    if (!aiResponse) return;
+    if (String(stripHtmlToText(getCurrentQuizContent()) || '').trim() && !window.confirm('Dùng đề AI thay cho nội dung đang soạn?')) return;
+    const content = formatAiText(aiResponse);
+    setShowQuizEditor(true); setShowQuizComposeWorkspace(true); setShowQuizWorkWorkspace(false);
+    setQuizTeacherTab('compose'); setShowAiModal(false);
+    syncQuizPartsFromContent(content); setQuizHtml(content); setQuizAttachments(extractQuizAttachments(content));
+    setQuizData(null); setSelfQuizDraft(getDefaultSelfQuizDraft()); setShowSelfQuizBuilder(false); setQuizDeliveryMode('manual');
+    showNotification('Đã đưa vào đề. Kiểm tra nội dung và đáp án rồi bấm Lưu đề.');
   };
 
   const handleGenerateQuizAnswer = async ({ silent = false } = {}) => {
@@ -4850,7 +4974,7 @@ YEU CAU:
       const { data } = await generateWithGeminiFallback(payload);
       const txt = extractAiText(data);
       if (!txt || !String(txt).trim()) throw new Error(getAiEmptyReason(data));
-      const answerContent = formatAiText(txt);
+      const answerContent = formatQuizAiText(txt, { answerOnly: true });
       if (quizAnswerEditorRef.current) quizAnswerEditorRef.current.innerHTML = sanitizeHtml(answerContent);
       setQuizAnswerHtml(answerContent);
       const nextContent = composeQuizContent(questionHtml, answerContent);
@@ -4865,10 +4989,20 @@ YEU CAU:
     }
   };
 
-  const handleOpenAiModal = () => {
-    if (!contentEditableRef.current) return; const text = contentEditableRef.current.innerText || ''; const html = contentEditableRef.current.innerHTML || ''; const imgCount = (html.match(/<img/g) || []).length;
-    let contextText = text; if (imgCount > 0 && contextText.trim() === '') { contextText = `[Hệ thống đã nhận diện ${imgCount} hình ảnh. Thầy cô có thể dán/gõ thêm nội dung văn bản vào đây nếu muốn...]`; }
-    setAiContextContent(contextText); setAiSelectedLessons([Number(selectedLesson || 1)]); setAiToolTab('quick'); setShowAiLessonPicker(false); setShowAiModal(true); setAiResponse('');
+  const handleOpenAiModal = (purpose = 'quick') => {
+    setAiSaveError('');
+    if (isLoadingNote) { showNotification(`Đang tải bài học ${selectedSubject} · Khối ${selectedGrade} · ${getWeekDisplayName(selectedLesson)}. Thầy cô chờ tải xong rồi mở lại.`, 'error'); return; }
+    aiGenerationRef.current += 1; setIsAiLoading(false);
+    const nextPurpose = purpose === 'exam' ? 'exam' : 'quick';
+    const text = contentEditableRef.current?.innerText || getLessonOfficialText(selectedLesson) || '';
+    setAiPurpose(nextPurpose); setAiContextContent(text);
+    setAiQuestionTemplate(nextPurpose === 'exam' ? '10' : 'auto');
+    setAiEssayCount(0);
+    setAiPrompt(nextPurpose === 'exam'
+      ? 'Hãy tạo 10 câu trắc nghiệm A, B, C, D dựa trên bài học, kèm đáp án và biểu điểm, tổng 10 điểm.'
+      : lessonReviewPrompt());
+    setAiSelectedLessons([Number(selectedLesson || 1)]); setAiToolTab('quick'); setShowAiLessonPicker(false);
+    setShowAiModal(true); setAiResponse(''); setAiError('');
   };
 
   const handleAiPromptTemplateSelect = (templateText) => {
@@ -4905,6 +5039,12 @@ QUY TAC BAT BUOC:
 
 Giáo viên có thể sửa prompt này trước khi bấm tạo câu hỏi.`;
     setAiPrompt(professionalPrompt);
+  };
+
+  const changeLessonReviewOptions = (count, essayCount) => {
+    setAiSaveError('');
+    setAiQuestionTemplate(count); setAiEssayCount(essayCount); setAiResponse(''); setAiError('');
+    setAiPrompt(lessonReviewPrompt(count, essayCount));
   };
 
   const handleCreateSelfQuizDraft = ({ forceOpen = false } = {}) => {
@@ -4952,77 +5092,6 @@ Giáo viên có thể sửa prompt này trước khi bấm tạo câu hỏi.`;
   const removeSelfQuizQuestion = (questionId) => {
     setSelfQuizDraft(prev => ({ ...prev, questions: prev.questions.filter(q => q.id !== questionId) }));
   };
-  const handleSaveSelfQuiz = async () => {
-    if (!teacherCanUseScope(selectedGrade, selectedSubject)) {
-      const message = 'Tài khoản chưa được phân công khối/môn này.';
-      showNotification(message, 'error');
-      return { ok: false, message };
-    }
-    if (!quizId || !user) {
-      const message = 'Chưa thể lưu đề tự chấm. Thầy cô kiểm tra lại đăng nhập, khối, môn và tuần.';
-      showNotification(message, 'error');
-      return { ok: false, message };
-    }
-    if (!canWriteCurrentSchoolYear) {
-      const message = 'Năm học đang khóa nhập liệu. Chưa lưu đề.';
-      showNotification(message, 'error'); return { ok: false, message };
-    }
-    const savedContent = getCurrentQuizContent();
-    const normalized = rebalanceSelfQuizPoints(normalizeSelfQuizDraft(selfQuizDraft), savedContent);
-    if (!normalized.questions.length) {
-      const message = 'Đề tự chấm cần ít nhất 1 câu hỏi hợp lệ.';
-      showNotification(message, 'error');
-      return { ok: false, message };
-    }
-    if (normalized.questions.some(q => !q.correctOptionId || !q.options.find(opt => opt.id === q.correctOptionId)?.text)) {
-      const missing = normalized.questions
-        .map((q, index) => ({ q, index }))
-        .filter(({ q }) => !q.correctOptionId || !q.options.find(opt => opt.id === q.correctOptionId)?.text)
-        .map(({ index }) => index + 1)
-        .join(', ');
-      const message = `Câu ${missing} chưa chọn đáp án đúng A/B/C/D.`;
-      showNotification(message, 'error');
-      return { ok: false, message };
-    }
-    const request = quizRequestScopeRef.current.begin('save-quiz');
-    if (!request) return { ok: false, message: 'Đang lưu đề. Thầy cô chờ hoàn tất.' };
-    setIsSavingQuiz(true);
-    try {
-    const quizPayload = {
-      content: savedContent,
-      quizData: normalized,
-      updatedAt: Date.now(),
-      authorId: user.uid,
-      schoolYear: activeSchoolYear,
-      schoolCode: currentContentSchoolCode,
-      grade: String(selectedGrade),
-      subject: String(selectedSubject),
-      lesson: String(selectedLesson)
-    };
-      if (SERVER_QUIZ_ENABLED) {
-        const base = serverQuizDocumentsRef.current.get(quizId);
-        if (!base) throw new Error('Chờ tải đề từ máy chủ trước khi lưu.');
-        const saved = await requestServerQuiz('publish', { quizId, quiz: { ...quizPayload, deliveryMode: 'auto', isPublished: quizPublishNow,
-          publishAt: parseVietnamDateTimeLocal(quizPublishAt), title: quizTitle, scoreTarget: quizScoreTarget },
-          expectedVersion: base?.serverVersion ?? null, expectedLegacyUpdatedAt: base?.updatedAt ?? null });
-        serverQuizDocumentsRef.current.set(quizId, saved.quiz);
-      } else await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'lesson_quizzes', quizId), quizPayload, { merge: true });
-      if (!quizRequestScopeRef.current.isCurrent(request)) return { ok: false, message: 'Đã lưu đề, nhưng màn hình đã chuyển.' };
-      if (SERVER_QUIZ_ENABLED) setQuizDeliveryMode('auto');
-      setQuizHtml(savedContent);
-      setQuizData(normalized);
-      setSelfQuizDraft(normalized);
-      const message = 'Đã lưu đề trắc nghiệm tự chấm.';
-      showNotification(message);
-      return { ok: true, message };
-    } catch (error) {
-      console.error('Save self quiz failed:', error);
-      const message = `Chưa lưu được đề tự chấm: ${error?.message || 'lỗi không xác định'}`;
-      if (quizRequestScopeRef.current.isCurrent(request)) showNotification(message, 'error');
-      return { ok: false, message };
-    } finally { if (quizRequestScopeRef.current.finish(request)) setIsSavingQuiz(false); }
-  };
-
   const getLessonOfficialText = useCallback((lesson) => {
     if (String(lesson) === String(selectedLesson) && contentEditableRef.current) { return (contentEditableRef.current.innerText || '').trim(); }
     const found = allNotes.find(n => isContentForCurrentCampus(n) && String(n.grade) === String(selectedGrade) && String(n.subject) === String(selectedSubject) && String(n.lesson) === String(lesson)); return stripHtmlToText(found?.content || '');
@@ -5099,52 +5168,6 @@ ${lessonBlocks}`;
   const handleOpenChatGptPrompt = () => copyPromptAndOpen('ChatGPT', 'https://chatgpt.com/');
   const handleCopyGeminiProPrompt = () => copyPromptAndOpen('Gemini', 'https://gemini.google.com/app');
 
-  const buildEssayPointGuide = (essayText = '') => {
-    const lines = normalizeQuizText(essayText).split('\n').map(line => line.trim()).filter(Boolean);
-    const sections = [];
-    let current = null;
-    const readPoint = (line = '') => {
-      const folded = removeAccents(String(line || '').toLowerCase());
-      const match = folded.match(/(\d+(?:[,.]\d+)?)\s*diem/);
-      const value = match ? Number(String(match[1]).replace(',', '.')) : 0;
-      return Number.isFinite(value) ? value : 0;
-    };
-    const readSection = (line = '') => {
-      const folded = removeAccents(String(line || '').toLowerCase());
-      const match = folded.match(/^(?:bai|cau)\s*(\d{1,2})\b/);
-      const points = readPoint(line);
-      if (!match || points <= 0) return null;
-      return { label: `Bai ${Number(match[1])}`, points, parts: [] };
-    };
-    const commit = () => {
-      if (!current) return;
-      const partCount = current.parts.length || 1;
-      const pointPerPart = Math.round((current.points / partCount) * 100) / 100;
-      sections.push({
-        ...current,
-        pointPerPart,
-        partCount
-      });
-    };
-    lines.forEach(line => {
-      const section = readSection(line);
-      if (section) {
-        commit();
-        current = section;
-        return;
-      }
-      if (current && /^[a-z]\)/i.test(removeAccents(line))) current.parts.push(line);
-    });
-    commit();
-    if (!sections.length) return 'Chua tach duoc thang diem tu dong. Neu thay de co "Bai 1 (3 diem)" thi chia diem theo so y a/b/c trong bai do.';
-    return sections.map(section => {
-      const parts = section.parts.length
-        ? section.parts.map((part, index) => `${String.fromCharCode(97 + index)}) ${section.pointPerPart} diem`).join('; ')
-        : `ca bai ${section.points} diem`;
-      return `${section.label}: ${section.points} diem, ${section.partCount} y => ${parts}.`;
-    }).join('\n');
-  };
-
   const formatVietnamPointScore = (value) => {
     const rounded = Math.round((Number(value) || 0) * 100) / 100;
     const text = Number.isInteger(rounded) ? String(rounded) : String(rounded).replace(/\.?0+$/, '');
@@ -5182,48 +5205,6 @@ ${lessonBlocks}`;
   }, [getSelfQuizCorrectCount, getSelfQuizPointPerQuestion]);
 
   const getSelfQuizAnswerPoint = (answer = {}, result = null) => answer.isCorrect ? getSelfQuizPointPerQuestion(result) : 0;
-
-  const buildHandwrittenGradingPrompt = (submission = {}, selfQuizResult = null) => [
-    `ĐÂY LÀ TÁC VỤ CHẤM BÀI HỌC SINH, KHÔNG PHẢI TÁC VỤ TẠO ĐỀ. KHÔNG TẠO ĐỀ MỚI.`,
-    `Hãy chấm bài viết tay của học sinh theo ĐÁP ÁN VÀ THANG ĐIỂM CÓ SẴN của giáo viên.`,
-    `Ngữ cảnh: Năm học ${submission.schoolYear || currentSchoolYear}, Khối ${submission.grade || selectedGrade}, môn ${submission.subject || selectedSubject}, bài/tuần ${submission.lesson || selectedLesson}.`,
-    `Họ tên học sinh: ${submission.studentName || 'không rõ'}.`,
-    selfQuizResult
-      ? `TRẮC NGHIỆM ĐÃ LƯU: điểm trắc nghiệm của học sinh là ${formatVietnamPointScore(getSelfQuizScorePoint(selfQuizResult))}/${formatVietnamPointScore(getSelfQuizTotalPoint())} điểm. Học sinh đúng ${getSelfQuizCorrectCount(selfQuizResult)}/${getSelfQuizQuestionCount(selfQuizResult)} câu, nhưng khi thống kê điểm phải ghi theo dạng điểm ${formatVietnamPointScore(getSelfQuizScorePoint(selfQuizResult))}/${formatVietnamPointScore(getSelfQuizTotalPoint())}, không được ghi ${getSelfQuizCorrectCount(selfQuizResult)}/${getSelfQuizQuestionCount(selfQuizResult)} như điểm. Phần này học sinh ĐÃ LÀM trên web, không được báo là chưa làm trắc nghiệm.`
-      : `CHƯA TÌM THẤY ĐIỂM TRẮC NGHIỆM LƯU TRÊN WEB cho học sinh này. Nếu bài có phần trắc nghiệm trên web, hãy ghi cần giáo viên kiểm tra lại, không tự kết luận học sinh chưa làm.`,
-    `Nội dung đề, đáp án và thang điểm của giáo viên:`,
-    stripHtmlToText(quizHtml || '').slice(0, 6000) || '(Không có nội dung đề trong hệ thống.)',
-    `THANG ĐIỂM TỰ LUẬN TỰ ĐỘNG RÚT RA TỪ ĐỀ:`,
-    buildEssayPointGuide(studentEssayText),
-    `NGUYÊN TẮC CHẤM BẮT BUỘC:`,
-    `1. Phải tìm phần đáp án/gợi ý chấm/thang điểm trong nội dung giáo viên đã soạn. Đây là chuẩn để chấm.`,
-    `2. Không tự tạo đáp án mới nếu đề đã có đáp án.`,
-    `3. Nếu không thấy đáp án/thang điểm rõ ràng, hãy ghi "Cần giáo viên chấm lại: chưa thấy đáp án/thang điểm" và không tự cho điểm.`,
-    `4. Nếu học sinh làm cách khác nhưng đúng ý theo đáp án/thang điểm, có thể cho điểm phù hợp và ghi rõ lý do.`,
-    `5. Nếu chữ viết/ảnh mờ không đọc được, ghi rõ cần giáo viên xem lại.`,
-    `6. Nếu đã có điểm trắc nghiệm đã lưu, chỉ chấm phần tự luận/viết tay trong file, sau đó cộng với điểm trắc nghiệm quy đổi để ra điểm tổng.`,
-    `7. Khi đề ghi "Bài/Câu X (n điểm)" và có các ý a), b), c), hãy chia đều n điểm cho các ý trong bài/câu đó. Ví dụ Bài 1 (3 điểm) có 3 ý thì mỗi ý 1 điểm; Bài 2 (3 điểm) có 2 ý thì mỗi ý 1,5 điểm.`,
-    `Yêu cầu trả lời bằng tiếng Việt có dấu, ngắn gọn, để giáo viên duyệt lại.`,
-    `Định dạng bắt buộc:`,
-    selfQuizResult
-      ? `Điểm trắc nghiệm đã có: ${formatVietnamPointScore(getSelfQuizScorePoint(selfQuizResult))}/${formatVietnamPointScore(getSelfQuizTotalPoint())}`
-      : `Điểm trắc nghiệm đã có: chưa tìm thấy`,
-    `Điểm tự luận/viết tay đề xuất: x/y`,
-    `Điểm tổng đề xuất: x/10`,
-    `Nhận xét: ...`,
-    `Câu đúng/chưa đúng: ...`,
-    `Nếu ảnh/file mờ quá, không đọc được, hãy ghi rõ "Cần giáo viên chấm lại" và không tự suy đoán điểm.`
-  ].join('\n\n');
-
-  const extractAiScore = (text = '') => {
-    const normalized = String(text || '').replace(',', '.');
-    const folded = normalized.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').replace(/Đ/g, 'D').toLowerCase();
-    const match = folded.match(/diem\s*tu\s*luan(?:\/viet\s*tay)?(?:\s*de\s*xuat)?\s*[:-]?\s*([0-9]+(?:\.[0-9]+)?)\s*\/\s*([0-9]+(?:\.[0-9]+)?)/i)
-      || folded.match(/(?:diem(?:\s*de\s*xuat)?|score)\s*[:-]?\s*([0-9]+(?:\.[0-9]+)?)\s*\/\s*([0-9]+(?:\.[0-9]+)?)/i)
-      || folded.match(/([0-9]+(?:\.[0-9]+)?)\s*\/\s*10\b/);
-    if (!match) return { score: '', maxScore: '10' };
-    return { score: match[1] || '', maxScore: match[2] || '10' };
-  };
 
   const normalizeNameKey = (name = '') => removeAccents(String(name || '').toLowerCase()).replace(/[^a-z0-9]/g, '');
 
@@ -5277,128 +5258,78 @@ ${lessonBlocks}`;
       });
   }, [quizScoreTarget, allQuizzes, selectedGrade, selectedSubject, selectedLesson, activeSchoolYear, isContentForCurrentCampus]);
 
-  const findSelfQuizResultForSubmission = (submission = {}) => {
-    const candidates = currentQuizResults
-      .filter(result => {
-        if (String(result.quizId || '') !== String(submission.quizId || quizId || '')) return false;
-        return recordBelongsToStudent(result, { accessCode: submission.studentAccessCode, id: submission.studentId });
-      })
-      .sort((a, b) => (b.submittedAt || 0) - (a.submittedAt || 0));
-    return candidates[0] || null;
-  };
-
   const runAiGradingForSubmission = async (submissionOrId, options = {}) => {
-    const submission = typeof submissionOrId === 'string'
-      ? allHandwrittenSubmissions.find(item => item.id === submissionOrId)
-      : submissionOrId;
-    if (!submission?.id || !submission.fileId) {
-      if (!options.silent) showNotification('Bài nộp này chưa có file để AI chấm.', 'error');
-      return;
-    }
-    if (!isContentForCurrentCampus(submission) || !teacherCanUseScope(submission.grade, submission.subject)) {
-      if (!options.silent) showNotification('Tài khoản không có quyền chấm bài này.', 'error');
-      return;
-    }
-    const request = quizRequestScopeRef.current.begin('ai-grading');
-    if (!request) return;
-    const context = { schoolYear: submission.schoolYear || activeSchoolYear, schoolCode: normalizeSchoolCode(submission.schoolCode) || DEFAULT_SCHOOL_CODE,
-      grade: submission.grade || selectedGrade, subject: submission.subject || selectedSubject, lesson: submission.lesson || selectedLesson };
-    let runId;
+    const submission = typeof submissionOrId === 'string' ? allHandwrittenSubmissions.find(item => item.id === submissionOrId) : submissionOrId;
+    if (!submission?.id || !submission.fileId || !canWriteCurrentSchoolYear || !isContentForCurrentCampus(submission) || !teacherCanUseScope(submission.grade, submission.subject)) return;
     setGradingSubmissionId(submission.id);
     try {
-      runId = await updateAiGrading({ id: submission.id, fileId: submission.fileId, context,
-        patch: { aiStatus: 'grading', aiStartedAt: Date.now() } });
-      const selfQuizResult = findSelfQuizResultForSubmission(submission);
-      const gradingPrompt = buildHandwrittenGradingPrompt(submission, selfQuizResult);
-      const { data: res, modelId: gradingModelId } = await runWithGeminiModelFallback(async (modelId) => {
-        const gradingPayload = {
-          fileId: submission.fileId,
-          model: modelId,
-          grade: String(submission.grade || selectedGrade || ''),
-          subject: String(submission.subject || selectedSubject || ''),
-          lesson: String(submission.lesson || selectedLesson || ''),
-          schoolYear: String(submission.schoolYear || activeSchoolYear || currentSchoolYear || ''),
-          schoolCode: normalizeSchoolCode(submission.schoolCode) || DEFAULT_SCHOOL_CODE,
-          prompt: gradingPrompt
-        };
-        try {
-          return await postAppsScript({ action: 'gradeStudentWork', ...gradingPayload });
-        } catch (actionError) {
-          const message = actionError.message || String(actionError);
-        if (!/gradeStudentWork|khong dung action|không đúng action|thiếu base64|thieu base64/i.test(message)) throw actionError;
-          return await postAppsScript({ action: 'askAI', mode: 'gradeStudentWork', ...gradingPayload });
-        }
-      });
-      const aiText = res.result || res.text || '';
-      const parsed = extractAiScore(aiText);
-      await updateAiGrading({ id: submission.id, fileId: submission.fileId, context, runId, patch: {
-        aiStatus: 'graded', status: 'ai_graded', aiScore: parsed.score, aiMaxScore: parsed.maxScore,
-        aiComment: aiText, aiModel: res.model || gradingModelId, aiGradedAt: Date.now()
-      } });
-      if (!options.silent && quizRequestScopeRef.current.isCurrent(request)) showNotification('AI đã chấm nháp, giáo viên xem lại rồi lưu điểm.');
-    } catch (error) {
-      const cleanMessage = normalizeServiceErrorMessage(error.message || String(error));
-      if (runId) await updateAiGrading({ id: submission.id, fileId: submission.fileId, context, runId,
-        patch: { aiStatus: 'error', aiError: cleanMessage, aiFailedAt: Date.now() } }).catch(() => undefined);
-      if (!options.silent && quizRequestScopeRef.current.isCurrent(request)) showNotification('AI chua cham duoc: ' + cleanMessage, 'error');
-    } finally {
-      if (quizRequestScopeRef.current.finish(request)) setGradingSubmissionId('');
-    }
+      const result = await requestEssayWork('queue', { id: submission.id, retry: options.retry !== false });
+      if (!options.silent) showNotification(result.status === 'done' ? 'Bài đã được giáo viên duyệt.' : result.message || 'Đã xếp hàng chấm AI. Thầy cô có thể đóng trang; kết quả sẽ cập nhật sau.', result.status === 'error' ? 'error' : 'success');
+    } catch (error) { if (!options.silent) showNotification(error.message, 'error'); }
+    finally { setGradingSubmissionId(''); }
   };
-
-  const runAiGradingForSubmissionRef = useRef(runAiGradingForSubmission);
-  runAiGradingForSubmissionRef.current = runAiGradingForSubmission;
-
+  const openEssayExternalAi = async (submission, assignment, provider) => {
+    const matchingCurrent = String(submission.grade) === String(selectedGrade) && submission.subject === selectedSubject && String(submission.lesson) === String(selectedLesson);
+    const prompt = buildEssayGradingPrompt({ submission, assignmentText: quizHtmlToPromptText(assignment?.content || (matchingCurrent ? quizHtml : '')) });
+    window.open(provider === 'chatgpt' ? 'https://chatgpt.com/' : 'https://gemini.google.com/app', '_blank', 'noopener,noreferrer');
+    const copied = await copyTextSafely(prompt);
+    showNotification(copied ? 'Đã sao chép yêu cầu chấm. Dán vào AI, đính kèm tệp bài làm; sau đó dán kết quả về ô nhận xét để duyệt.' : 'Trình duyệt chưa cho sao chép. Hãy gửi kèm đề và bài làm cho AI vừa mở.', copied ? 'success' : 'error');
+  };
   const handleGradeNextSubmission = async () => {
-    const next = [...currentHandwrittenSubmissions]
-      .filter(item => !['graded', 'grading'].includes(item.aiStatus) && item.fileId)
-      .sort((a, b) => (a.submittedAt || 0) - (b.submittedAt || 0))[0];
-    if (!next) {
-      showNotification('Không còn bài đang chờ AI trong bài này.');
-      return;
-    }
-    await runAiGradingForSubmission(next);
+    const next = [...currentHandwrittenSubmissions].filter(item => item.status !== 'teacher_reviewed' && !['graded','grading'].includes(item.aiStatus) && !(item.aiStatus === 'queued' && item.aiAutoRequestedAt) && item.fileId).sort((a,b) => (a.submittedAt||0)-(b.submittedAt||0))[0];
+    if (next) await runAiGradingForSubmission(next); else showNotification('Không còn bài đang chờ AI trong tuần này.');
   };
 
   const updateSubmissionGradeDraft = (id, key, value) => {
     setSubmissionGradeDrafts(prev => ({ ...prev, [id]: { ...(prev[id] || {}), [key]: value } }));
   };
 
-  const saveTeacherGradeForSubmission = async (submission) => {
+  const saveTeacherGradeForSubmission = async (submission, { send = false } = {}) => {
     if (!submission?.id || !user || !canWriteCurrentSchoolYear) return;
     const request = quizRequestScopeRef.current.begin('review-' + submission.id);
     if (!request) return;
+    setReviewPendingId(submission.id);
     const draft = submissionGradeDrafts[submission.id] || {};
     const review = {
-      teacherScore: String(draft.teacherScore ?? submission.teacherScore ?? submission.aiScore ?? '').trim(),
-      teacherMaxScore: String(draft.teacherMaxScore ?? submission.teacherMaxScore ?? submission.aiMaxScore ?? '10').trim(),
-      teacherComment: String(draft.teacherComment ?? submission.teacherComment ?? '').trim()
+      teacherScore: essayReviewNumberText(draft.teacherScore ?? submission.teacherScore ?? submission.aiScore),
+      teacherMaxScore: essayReviewNumberText(draft.teacherMaxScore ?? submission.teacherMaxScore ?? submission.aiMaxScore ?? '10'),
+      teacherComment: String(draft.teacherComment ?? submission.teacherComment ?? submission.aiComment ?? '').slice(0, 10000).trim()
     };
     const { id, ...expected } = submission;
     const schoolCode = normalizeSchoolCode(submission.schoolCode || currentContentSchoolCode) || DEFAULT_SCHOOL_CODE;
     const grade = String(submission.grade || selectedGrade);
-    const target = submission.scoreTarget || quizScoreTarget;
+    const target = submission.scoreTarget || allQuizzes.find(q => q.id === submission.quizId && q.schoolCode === schoolCode && String(q.lesson) === String(submission.lesson) && q.subject === submission.subject)?.scoreTarget;
     const student = getScorebookStudentsForGrade(grade, schoolCode).find(item => recordBelongsToStudent(submission, item));
     const scorebook = target?.semester && target.pageIndex !== undefined && target.scoreIndex !== undefined && student ? {
       documentId: getScorebookDocIdForGrade(grade, schoolCode),
       metadata: { grade, schoolCode, schoolYear: activeSchoolYear, sourceFile: SCOREBOOK_SOURCE_FILE, authorId: user.uid },
       key: studentEditKey('custom:' + target.semester + 'Score:' + target.pageIndex + ':r0:s' + target.scoreIndex, student)
     } : null;
+    let reviewSaved = false;
     try {
-      const result = await reviewHandwrittenSubmission({ id, expected, review, scorebook, context: {
+      const unchanged = submission.status === 'teacher_reviewed' && Object.entries(review).every(([key, value]) => value === (key === 'teacherComment' ? String(submission[key] ?? '').trim() : essayReviewNumberText(submission[key])));
+      const result = unchanged ? { status: submission.scoreSync?.status || 'noTarget' } : await reviewHandwrittenSubmission({ id, expected, review, scorebook, context: {
         grade, schoolCode, schoolYear: activeSchoolYear, subject: submission.subject || selectedSubject,
         lesson: submission.lesson || selectedLesson, authorId: user.uid
       } });
       if (!quizRequestScopeRef.current.isCurrent(request)) return;
+      reviewSaved = true;
+      if (send) {
+        const saved = (await getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'handwritten_submissions', id))).data();
+        if (!quizRequestScopeRef.current.isCurrent(request)) return;
+        await requestEssayWork('send', { id, reviewedAt: saved.reviewedAt });
+        showNotification('Đã gửi bài chấm vào hộp thư học sinh.');
+        return;
+      }
       showNotification(result.status === 'written' ? 'Đã lưu bài chấm và điểm vào sổ.'
         : result.status === 'noTarget' ? 'Đã lưu bài chấm.' : 'Đã lưu bài chấm. Điểm sửa tay hoặc điểm cũ trong sổ được giữ để đối chiếu.');
     } catch (error) {
-      if (quizRequestScopeRef.current.isCurrent(request)) showNotification('Chưa lưu được điểm: ' + error.message, 'error');
-    } finally { quizRequestScopeRef.current.finish(request); }
+      if (quizRequestScopeRef.current.isCurrent(request)) showNotification((send && reviewSaved ? 'Bài chấm đã lưu; chưa xác nhận gửi hộp thư. Có thể bấm gửi lại, hệ thống chống gửi trùng: ' : 'Chưa lưu được điểm: ') + error.message, 'error');
+    } finally { quizRequestScopeRef.current.finish(request); setReviewPendingId(''); }
   };
 
   const hasHandwrittenScore = (submission = {}) => {
-    const score = submission.teacherScore ?? submission.aiScore;
+    const score = submission.status === 'teacher_reviewed' ? submission.teacherScore : null;
     return score !== undefined && score !== null && String(score).trim() !== '';
   };
 
@@ -5570,10 +5501,10 @@ ${lessonBlocks}`;
         ? await requestPrivateApi('data', 'submitEssay', { submission: submissionPayload, requestId: globalThis.crypto.randomUUID() }, { signal: request.signal })
         : await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'handwritten_submissions'), submissionPayload);
       if (!quizRequestScopeRef.current.isCurrent(request)) return;
-      setSubmissionStatus('Đã gửi bài. Chờ giáo viên chấm bài.');
+      setSubmissionStatus('Đã gửi bài. AI sẽ nhận xét nháp; giáo viên duyệt rồi gửi kết quả vào hộp thư.');
       setSubmissionFile(null);
       setStudentName(activeStudentProfile?.fullName || '');
-      if (!SCOPED_AUTH_ENABLED || role !== 'student') void runAiGradingForSubmission({ ...submissionPayload, id: submissionRef.id }, { silent: true });
+      void requestEssayWork('queue', { id: submissionRef.id, uploadReceipt: res.uploadReceipt }).catch(error => { if (quizRequestScopeRef.current.isCurrent(request)) setSubmissionStatus('Bài đã lưu. Chưa xếp chấm AI được: ' + error.message); });
     } else {
       setSubmissionStatus(res.message || 'Chưa tải được bài làm.');
     }
@@ -5638,7 +5569,24 @@ ${lessonBlocks}`;
   };
 
   const handleDeleteMaterial = async (id) => { if (role !== 'teacher') return; setConfirmModal({ show: true, message: 'Gỡ tài liệu này khỏi bài học?', onConfirm: async () => { const material = allMaterials.find(item => item.id === id); if (!material || !isContentForCurrentCampus(material) || !teacherCanUseScope(material.grade, material.subject)) { showNotification('Tài khoản không có quyền gỡ tài liệu này.', 'error'); return; } await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'materials', id)); showNotification("Đã gỡ tài liệu"); } }); };
-  const resetNavigationWithClean = () => { setSelectedGrade(null); setSelectedSubject(null); setSelectedLesson(null); setViewingMaterial(null); setShowCommonLibraryWorkspace(false); setTeacherTab('giang_day'); setPlanSubject(''); setIsTextbookExpanded(window.innerWidth >= 640); };
+  const handleDeleteLessonReview = async material => {
+    if (role !== 'teacher' || removingReviewRef.current.has(material.id)) return;
+    if (!canWriteCurrentSchoolYear || !isContentForCurrentCampus(material) || !teacherCanUseScope(material.grade, material.subject)) {
+      showNotification('Chưa có quyền xóa bộ ôn tập trong phạm vi hoặc năm học này.', 'error'); return;
+    }
+    const contextKey = quizContextRef.current;
+    removingReviewRef.current.add(material.id); setRemovingReviewIds([...removingReviewRef.current]);
+    try {
+      await clearLessonReview(material, { serverEnabled: SERVER_QUIZ_ENABLED, request: requestServerQuiz,
+        clearLegacy: id => deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'materials', id)) });
+      setAllMaterials(previous => previous.filter(item => item.id !== material.id));
+      setViewingMaterial(previous => previous?.id === material.id ? null : previous);
+      if (quizContextRef.current === contextKey) showNotification(`Đã xóa ôn tập ${material.subject} · Khối ${material.grade} · ${getWeekDisplayName(material.lesson)}.`);
+    } catch (error) {
+      if (quizContextRef.current === contextKey) showNotification('Chưa xóa được bộ ôn tập: ' + (error?.message || String(error)), 'error');
+    } finally { removingReviewRef.current.delete(material.id); setRemovingReviewIds([...removingReviewRef.current]); }
+  };
+  const resetNavigationWithClean = () => { setSelectedGrade(null); setSelectedSubject(null); setSelectedLesson(null); setViewingMaterial(null); setShowCommonLibraryWorkspace(false); setTeacherTab('giang_day'); setPlanSubject(''); setIsTextbookExpanded(role !== 'teacher' && window.innerWidth >= 640); };
   const selectLearningSubject = subject => {
     setSelectedSubject(subject);
     setSelectedLesson(null);
@@ -5653,6 +5601,7 @@ ${lessonBlocks}`;
     if (isSubmittingQuickMaterial) return;
     if (role === 'student' && (activeStudentIsReadOnly || !canWriteCurrentSchoolYear || !studentCanAccessCurrentGradeQuiz)) { setQuickMaterialWarning('Em chưa có quyền nộp bài ở năm học hoặc khối này.'); return; }
     if (!viewingQuickQuizData || !currentQuickMaterialAttemptData || !viewingMaterial?.id || !user) return;
+    if (quizQualityIssues(viewingQuickQuizData).length) { setQuickMaterialWarning('Bộ câu hỏi có công thức hoặc phương án bị lỗi. Báo giáo viên kiểm tra lại trước khi nộp.'); return; }
     const submitStudentName = (activeStudentProfile?.fullName || currentStudent?.fullName || studentQuizName || '').trim();
     if (!submitStudentName) {
       setQuickMaterialWarning('Em nhập họ tên rồi nộp bài nhé.');
@@ -5733,7 +5682,7 @@ ${lessonBlocks}`;
       && String(m.lesson) === String(selectedLesson));
   }, [allMaterials, selectedGrade, selectedSubject, selectedLesson, isContentForCurrentCampus, currentTeacherHasScope]);
   const sortedCurrentMaterials = useMemo(() => [...currentMaterialsFiltered].sort((a, b) => (a.title || '').localeCompare(b.title || '', 'vi')), [currentMaterialsFiltered]);
-  const currentQuickQuizMaterials = useMemo(() => sortedCurrentMaterials.filter(m => m.type === 'quick_quiz'), [sortedCurrentMaterials]);
+  const currentQuickQuizMaterials = useMemo(() => sortedCurrentMaterials.filter(m => m.type === 'quick_quiz' && !m.cleared && m.hasContent !== false), [sortedCurrentMaterials]);
   const sortedCurrentStudyMaterials = useMemo(() => sortedCurrentMaterials.filter(m => m.type !== 'quick_quiz'), [sortedCurrentMaterials]);
   const quickServer = useQuickQuizSession(viewingMaterial, role, user, showNotification);
   useEffect(() => { if (quickServer.response?.result) setQuickMaterialResult(quickServer.response.result); }, [quickServer.response]);
@@ -5748,6 +5697,7 @@ ${lessonBlocks}`;
       shuffleOptions: true
     };
   }, [viewingMaterial?.type, viewingMaterial?.quizData, quickServer.response, role]);
+  const viewingQuickQuizIssues = useMemo(() => viewingQuickQuizData ? quizQualityIssues(viewingQuickQuizData) : [], [viewingQuickQuizData]);
   const viewingQuickQuizQuestions = useMemo(() => SERVER_QUIZ_ENABLED && role === 'student'
     ? (viewingQuickQuizData?.questions || []).map(question => ({ ...question, displayOptions: question.options })) : buildSelfQuizQuestionsForStudent(
     viewingQuickQuizData ? { ...viewingQuickQuizData, attemptSeed: quickMaterialAttemptSeed } : null
@@ -5756,7 +5706,13 @@ ${lessonBlocks}`;
     ...viewingQuickQuizData,
     questions: viewingQuickQuizQuestions.map((question) => { const nextQuestion = { ...question }; delete nextQuestion.displayOptions; return nextQuestion; })
   } : null, [viewingQuickQuizData, viewingQuickQuizQuestions]);
-  useEffect(() => { if (viewingMaterial?.type === 'quick_quiz') typesetMath(quickMaterialContentRef.current); }, [viewingMaterial?.id, viewingMaterial?.type, viewingQuickQuizQuestions, quickMaterialAnswers, quickMaterialResult, role]);
+  useEffect(() => {
+    if (viewingMaterial?.type !== 'quick_quiz') return;
+    const root = quickMaterialContentRef.current;
+    const stopLayout = observeReviewAnswerLayout(root);
+    typesetMath(root);
+    return stopLayout;
+  }, [viewingMaterial?.id, viewingMaterial?.type, viewingQuickQuizQuestions, quickMaterialAnswers, quickMaterialResult, role]);
   useEffect(() => {
     if (viewingMaterial?.type !== 'quick_quiz') return;
     setQuickMaterialAnswers({});
@@ -5903,10 +5859,8 @@ ${lessonBlocks}`;
   const studentWorkReviewScore = useMemo(() => {
     const quizScore = getSelfQuizScorePoint(studentReviewQuizResult);
     const hasQuizScore = !!studentReviewQuizResult && studentReviewQuizResult.score !== undefined;
-    const essayScore = Number((studentSavedHandwrittenSubmission?.teacherScore ?? studentSavedHandwrittenSubmission?.aiScore) || 0);
-    const hasEssayScore = (studentSavedHandwrittenSubmission?.teacherScore ?? studentSavedHandwrittenSubmission?.aiScore) !== undefined
-      && (studentSavedHandwrittenSubmission?.teacherScore ?? studentSavedHandwrittenSubmission?.aiScore) !== null
-      && String(studentSavedHandwrittenSubmission?.teacherScore ?? studentSavedHandwrittenSubmission?.aiScore).trim() !== '';
+    const essayScore = Number(studentSavedHandwrittenSubmission?.status === 'teacher_reviewed' ? studentSavedHandwrittenSubmission.teacherScore || 0 : 0);
+    const hasEssayScore = studentSavedHandwrittenSubmission?.status === 'teacher_reviewed' && studentSavedHandwrittenSubmission.teacherScore != null && String(studentSavedHandwrittenSubmission.teacherScore).trim() !== '';
     return {
       quizScore,
       hasQuizScore,
@@ -5973,64 +5927,43 @@ ${lessonBlocks}`;
     });
   }, [currentHandwrittenSubmissions.length]);
 
-  useEffect(() => {
-    if (!user || role !== 'teacher' || gradingSubmissionId) return;
-    const next = [...currentHandwrittenSubmissions]
-      .filter(item => item.fileId && !['graded', 'grading', 'error'].includes(item.aiStatus) && !autoGradingIdsRef.current.has(item.id))
-      .sort((a, b) => (a.submittedAt || 0) - (b.submittedAt || 0))[0];
-    if (!next) return;
-    autoGradingIdsRef.current.add(next.id);
-    runAiGradingForSubmissionRef.current(next, { silent: true }).finally(() => {
-      autoGradingIdsRef.current.delete(next.id);
-    });
-  }, [user, role, currentHandwrittenSubmissions, gradingSubmissionId]);
-
   const openSelfQuizTeacherTab = () => {
-    setShowQuizWorkWorkspace(true);
-    setQuizTeacherTab('work');
-    setShowQuizResults(false);
-    setShowHandwrittenSubmissions(false);
+    refreshQuizHtmlFromEditors();
+    setShowQuizEditor(true); setShowQuizComposeWorkspace(true); setShowQuizWorkWorkspace(false);
+    setQuizTeacherTab('compose'); setShowQuizResults(false); setShowHandwrittenSubmissions(false);
+    setQuizDeliveryMode('auto');
     handleCreateSelfQuizDraft({ forceOpen: true });
   };
 
-  const openAutoWorkTeacherTab = () => {
-    setShowQuizWorkWorkspace(true);
-    setQuizTeacherTab('work');
-    setShowQuizResults(false);
-    setShowSelfQuizBuilder(false);
-    setShowHandwrittenSubmissions(false);
-  };
-
-  const openHandwrittenTeacherTab = () => {
-    setShowQuizWorkWorkspace(true);
-    setQuizTeacherTab('work');
-    setShowHandwrittenSubmissions(true);
-    setShowSelfQuizBuilder(false);
-    setShowQuizResults(false);
-  };
-
   const openHandwrittenSubmissionByKey = (studentKey) => {
-    const key = String(studentKey || '').trim();
-    if (key) {
-      const index = currentHandwrittenSubmissions.findIndex(submission => {
-        return studentWorkKey(submission) === key;
-      });
-      if (index >= 0) setHandwrittenViewerIndex(index);
-    }
-    setShowQuizWorkWorkspace(true);
-    setShowHandwrittenSubmissions(true);
-    setQuizTeacherTab('work');
-    setShowSelfQuizBuilder(false);
-    setShowQuizResults(false);
+    const index = currentHandwrittenSubmissions.findIndex(submission => studentWorkKey(submission) === String(studentKey || '').trim());
+    if (index >= 0) setHandwrittenViewerIndex(index);
+    setShowQuizComposeWorkspace(false); setShowQuizWorkWorkspace(true); setQuizTeacherTab('scores');
+    setShowQuizResults(true); setShowHandwrittenSubmissions(true);
   };
 
   const openScoreTeacherTab = () => {
-    setShowQuizWorkWorkspace(true);
-    setQuizTeacherTab('work');
-    setShowQuizResults(true);
-    setShowSelfQuizBuilder(false);
-    setShowHandwrittenSubmissions(pendingHandwrittenSubmissionCount > 0);
+    refreshQuizHtmlFromEditors();
+    setShowQuizComposeWorkspace(false); setShowQuizWorkWorkspace(true); setQuizTeacherTab('scores');
+    setShowQuizResults(true); setShowHandwrittenSubmissions(false);
   };
+
+  const selectTeacherQuizWorkspaceTab = (tab) => {
+    refreshQuizHtmlFromEditors();
+    setShowQuizEditor(true);
+    setShowQuizComposeWorkspace(tab === 'compose');
+    setShowQuizWorkWorkspace(tab !== 'compose');
+    setQuizTeacherTab(tab === 'work' ? 'scores' : tab);
+    setShowQuizResults(tab === 'scores' || tab === 'work');
+    setShowHandwrittenSubmissions(false);
+    if (tab === 'publish') void prepareQuizPublish();
+  };
+  const closeTeacherQuizWorkspace = () => {
+    refreshQuizHtmlFromEditors();
+    setShowQuizEditor(false); setShowQuizComposeWorkspace(false); setShowQuizWorkWorkspace(false);
+    setShowHandwrittenSubmissions(false);
+  };
+  const teacherQuizWorkspaceTab = showQuizComposeWorkspace ? 'compose' : quizTeacherTab === 'publish' ? 'publish' : 'scores';
 
   const confirmQuizReset = (quizAttempts, essayAttempts, label) => {
     if (!user || !canWriteCurrentSchoolYear || (!isAdmin && role !== 'teacher')) return;
@@ -6307,80 +6240,10 @@ ${lessonBlocks}`;
     });
     return completed;
   }, [role, allQuizResults, allHandwrittenSubmissions, currentSchoolYear, selectedGrade, selectedSubject, isCurrentStudentRecord]);
-  const adminCheckUploadRows = useMemo(() => {
-    const yearMatches = (item = {}) => !item.schoolYear || String(item.schoolYear) === String(activeSchoolYear || '');
-    const filterContext = (item = {}) => (
-      belongsToEducationLevel(item, adminEducationLevel) &&
-      (adminCheckGrade === 'all' || String(item.grade || '') === String(adminCheckGrade)) &&
-      (adminCheckSubject === 'all' || String(item.subject || '') === String(adminCheckSubject))
-    );
-    const ensureRow = (map, grade, subject) => {
-      const key = `${grade}__${subject}`;
-      if (!map.has(key)) {
-        map.set(key, {
-          key,
-          grade: String(grade || ''),
-          subject: String(subject || ''),
-          materialCount: 0,
-          noteCount: 0,
-          quizCount: 0,
-          lessons: new Set(),
-          latestAt: 0
-        });
-      }
-      return map.get(key);
-    };
-    const rows = new Map();
-    allMaterials
-      .filter(item => item.type !== 'quick_quiz')
-      .filter(yearMatches)
-      .filter(filterContext)
-      .forEach(item => {
-        if (!item.grade || !item.subject) return;
-        const row = ensureRow(rows, item.grade, item.subject);
-        row.materialCount += 1;
-        if (item.lesson) row.lessons.add(String(item.lesson));
-        row.latestAt = Math.max(row.latestAt, Number(item.createdAt || item.updatedAt || 0));
-      });
-    allNotes
-      .filter(yearMatches)
-      .filter(filterContext)
-      .forEach(item => {
-        if (!item.grade || !item.subject) return;
-        const row = ensureRow(rows, item.grade, item.subject);
-        row.noteCount += 1;
-        if (item.lesson) row.lessons.add(String(item.lesson));
-        row.latestAt = Math.max(row.latestAt, Number(item.updatedAt || item.createdAt || 0));
-      });
-    allQuizzes
-      .filter(item => String(item.schoolYear || activeSchoolYear || '') === String(activeSchoolYear || ''))
-      .filter(filterContext)
-      .filter(isQuizVisibleForStudents)
-      .forEach(item => {
-        if (!item.grade || !item.subject) return;
-        const row = ensureRow(rows, item.grade, item.subject);
-        row.quizCount += 1;
-        if (item.lesson) row.lessons.add(String(item.lesson));
-        row.latestAt = Math.max(row.latestAt, Number(item.updatedAt || item.createdAt || item.publishAt || 0));
-      });
-    return [...rows.values()]
-      .map(row => {
-        const lessonList = [...row.lessons].sort((a, b) => Number(a) - Number(b));
-        const visibleLessons = lessonList.slice(0, 8).map(lesson => getWeekDisplayName(lesson));
-        return {
-          ...row,
-          lessonCount: lessonList.length,
-          lessonsText: lessonList.length
-            ? `${visibleLessons.join(', ')}${lessonList.length > visibleLessons.length ? ` +${lessonList.length - visibleLessons.length}` : ''}`
-            : 'Chưa gắn bài/tuần'
-        };
-      })
-      .sort((a, b) => {
-        const gradeCompare = String(a.grade).localeCompare(String(b.grade), 'vi', { numeric: true });
-        if (gradeCompare) return gradeCompare;
-        return String(a.subject).localeCompare(String(b.subject), 'vi', { sensitivity: 'base' });
-      });
-  }, [allMaterials, allNotes, allQuizzes, activeSchoolYear, adminCheckGrade, adminCheckSubject, isQuizVisibleForStudents, adminEducationLevel]);
+  const adminCheckUploadRows = useMemo(() => buildLearningMaterialRows({
+    materials: allMaterials, notes: allNotes, quizzes: allQuizzes, schoolYear: activeSchoolYear,
+    grades: adminGrades, grade: adminCheckGrade, subject: adminCheckSubject, isQuizVisible: isQuizVisibleForStudents
+  }), [allMaterials, allNotes, allQuizzes, activeSchoolYear, adminGrades, adminCheckGrade, adminCheckSubject, isQuizVisibleForStudents]);
   const adminCheckUploadTotals = useMemo(() => (
     adminCheckUploadRows.reduce((total, row) => ({
       groups: total.groups + 1,
@@ -6540,12 +6403,12 @@ ${lessonBlocks}`;
     ));
   }, [newsList, isAdmin, role, activeStudentProfile, currentStudent]);
   const pinnedNewsFeed = useMemo(() => displayNewsList.filter(n => n.isPinned).sort((a, b) => getNewsCreatedTime(b) - getNewsCreatedTime(a)).map(n => ({ ...n, isAuto: false, timestamp: n.createdAt })), [displayNewsList]);
-  const combinedFeedSorted = useMemo(() => {
-    const materialItems = [...allMaterials].filter(m => isContentForCurrentCampus(m) && m.type !== 'quick_quiz').sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).slice(0, 4).map(m => ({ id: `m_${m.id}`, isAuto: true, iconType: 'material', targetGrade: m.grade, targetSubject: m.subject, targetLesson: m.lesson, title: `TÀI LIỆU MỚI: ${m.subject} ${m.grade} - ${getWeekDisplayName(m.lesson)}`, content: `<p>Vừa cập nhật: <b>${m.title}</b></p>`, timestamp: m.createdAt }));
-    const noteItems = [...allNotes].filter(n => isContentForCurrentCampus(n) && n.grade).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)).slice(0, 4).map(n => ({ id: `n_${n.id}`, isAuto: true, iconType: 'note', targetGrade: n.grade, targetSubject: n.subject, targetLesson: n.lesson, title: `GV đã up bài học: ${n.subject} ${n.grade} - ${getWeekDisplayName(n.lesson)}`, content: '<p>Nội dung bài học vừa được cập nhật.</p>', timestamp: n.updatedAt }));
-    const quizItems = [...allQuizzes].filter(q => isContentForCurrentCampus(q) && q.grade && String(q.schoolYear || currentSchoolYear) === String(currentSchoolYear) && isQuizVisibleForStudents(q) && (role !== 'student' || !activeStudentGrade || String(q.grade) === String(activeStudentGrade))).sort((a, b) => (b.updatedAt || b.publishAt || 0) - (a.updatedAt || a.publishAt || 0)).slice(0, 4).map(q => ({ id: `q_${q.id}`, isAuto: true, iconType: 'quiz', targetGrade: q.grade, targetSubject: q.subject, targetLesson: q.lesson, title: `GV đã up bài kiểm tra: ${q.subject} ${q.grade} - ${getWeekDisplayName(q.lesson)}`, content: '<p>Bài kiểm tra đã sẵn sàng.</p>', timestamp: q.updatedAt || q.publishAt }));
-    return [...materialItems, ...noteItems, ...quizItems].sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0)).slice(0, 4);
-  }, [allMaterials, allNotes, allQuizzes, currentSchoolYear, isQuizVisibleForStudents, role, activeStudentGrade, isContentForCurrentCampus]);
+  const combinedFeedSorted = useMemo(() => buildLearningTicker({
+    records: learningUpdates.items, notes: allNotes, quizzes: allQuizzes, materials: allMaterials,
+    schoolYear: currentSchoolYear, schoolCode: currentContentSchoolCode,
+    student: role === 'student' && loginRole !== 'teacher',
+    grade: role === 'student' && loginRole !== 'teacher' ? activeStudentGrade : '', now: nowMs, weekLabel: getWeekDisplayName
+  }), [learningUpdates.items, allNotes, allQuizzes, allMaterials, currentSchoolYear, currentContentSchoolCode, role, loginRole, activeStudentGrade, nowMs]);
   const studentMailboxAutoMessages = useMemo(() => {
     if (role !== 'student' || !activeStudentGrade) return [];
     const materialItems = allMaterials
@@ -6624,7 +6487,7 @@ ${lessonBlocks}`;
       ...studentMailboxAutoMessages
     ].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
   ), [studentMailboxMessages, studentMailboxAutoMessages]);
-  const studentMailboxUnreadCount = useMemo(() => studentMailboxItems.filter(item => !item.isRead).length, [studentMailboxItems]);
+  const studentMailboxUnreadCount = useMemo(() => studentMailboxItems.filter(item => !item.isRead).length + conversationInbox.unreadCount, [studentMailboxItems, conversationInbox.unreadCount]);
   const openStudentMailboxMessage = useCallback((message) => {
     if (!message) return;
     setSelectedStudentMailboxMessage(message);
@@ -6663,21 +6526,6 @@ ${lessonBlocks}`;
       `;
     }).join('\n');
   }, [homepageSliderNews.length]);
-  const mobileHomepageNewsSlideKeyframes = useMemo(() => {
-    const count = Math.max(1, mobileHomepageNews.length);
-    if (count <= 1) return '';
-    const frame = 100 / count;
-    return Array.from({ length: count }, (_, index) => {
-      const start = index * frame;
-      const holdEnd = Math.min(100, start + frame * 0.72);
-      const offset = -(index * frame);
-      const nextOffset = -(((index + 1) % count) * frame);
-      return `
-        ${start.toFixed(2)}%, ${holdEnd.toFixed(2)}% { transform: translateX(${offset}%); }
-        ${Math.min(100, start + frame).toFixed(2)}% { transform: translateX(${index === count - 1 ? 0 : nextOffset}%); }
-      `;
-    }).join('\n');
-  }, [mobileHomepageNews.length]);
   const extractNewsDriveFileId = useCallback((html = '') => {
     const content = String(html || '');
     const fileIdMatch = content.match(/<img[^>]+data-drive-file-id=["']([^"']+)["']/i);
@@ -6710,26 +6558,12 @@ ${lessonBlocks}`;
     }
     return value;
   }, []);
-  const getNewsPlainText = useCallback((html = '') => (
-    String(html || '')
-      .replace(/<img[^>]*>/gi, ' ')
-      .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-      .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-      .replace(/<[^>]+>/g, ' ')
-      .replace(/&nbsp;/g, ' ')
-      .replace(/&amp;/g, '&')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      .replace(/\s+/g, ' ')
-      .trim()
-  ), []);
+  const getNewsPlainText = useCallback((html = '') => createNewsPreview(window, html).summary, []);
   const openHomepageFeedItem = useCallback((item) => {
     if (!item) return;
     if (item.isAuto) {
-      setSelectedGrade(item.targetGrade);
-      setSelectedSubject(item.targetSubject);
-      setSelectedLesson(item.targetLesson);
       if (role !== 'student' || !activeStudentProfile?.accessCode) {
+        pendingLearningUpdateRef.current = item;
         setStudentAccessCode('');
         setStudentForgotMode(false);
         setStudentFoundCode('');
@@ -6737,17 +6571,22 @@ ${lessonBlocks}`;
         showNotification('Học sinh đăng nhập mã HS để xem bài được giao.');
         return;
       }
-      if (item.targetGrade && activeStudentGrade && String(item.targetGrade) !== String(activeStudentGrade)) {
-        showNotification(`Bài này dành cho khối ${item.targetGrade}, không phải khối của em.`, 'error');
+      const destination = learningUpdateDestination(item, { grade: activeStudentGrade, schoolCode: currentContentSchoolCode });
+      if (!destination) {
+        showNotification('Em chỉ mở được cập nhật thuộc khối và cơ sở đang học.', 'error');
         return;
       }
+      setSelectedGrade(destination.grade); setSelectedSubject(destination.subject); setSelectedLesson(destination.lesson);
+      setViewingMaterial(null); setShowStudentQuizPanel(true); setLearningUpdateTarget(destination);
       setRole('student');
       setLoginRole('student');
-      window.scrollTo({ top: 0, behavior: 'smooth' });
       return;
     }
     setViewingNews(item);
-  }, [activeStudentGrade, activeStudentProfile?.accessCode, role, showNotification]);
+  }, [activeStudentGrade, activeStudentProfile?.accessCode, currentContentSchoolCode, role, showNotification]);
+  useLearningUpdateScroll({ target: learningUpdateTarget, grade: selectedGrade, subject: selectedSubject, lesson: selectedLesson,
+    studentGrade: activeStudentGrade, enabled: role === 'student',
+    loadingNote: isLoadingNote, loadingQuiz: isLoadingQuiz, materials: allMaterials, setViewingMaterial, finish: setLearningUpdateTarget });
 
   const renderNewsAdminActions = (n) => {
     const movableNewsList = newsList.filter(item => !item.isPinned);
@@ -6854,6 +6693,7 @@ ${lessonBlocks}`;
     (showLearningResultsWorkspace && quickScoreLockedContext) ||
     showQuizComposeWorkspace ||
     showQuizWorkWorkspace ||
+    (role === 'teacher' && showQuizEditor) ||
     showCommonLibraryWorkspace ||
     !!scorebookGrade ||
     showAdminSettingsWorkspace ||
@@ -6864,22 +6704,33 @@ ${lessonBlocks}`;
   );
 
   const MainBackground = () => null;
+  const conversationDialog = showConversations && (role === 'student' || isAdmin && role === 'admin' && adminAccessScope === 'full') ? (
+    <Suspense fallback={<div className="fixed inset-0 z-[230] grid place-items-center bg-slate-950/50"><div className="rounded-xl bg-white p-4">Đang mở tin nhắn...</div></div>}>
+      <StudentConversationsDialog key={conversationIdentityKey} role={role} student={activeStudentProfile} identityKey={conversationIdentityKey}
+        inbox={conversationInbox} students={allStudents} replyTo={conversationReplyTo} onClose={() => setShowConversations(false)}
+        onOpenStudentProfile={role === 'admin' ? openConversationStudentProfile : undefined}
+        onBackMailbox={role === 'student' ? () => { setShowConversations(false); setShowStudentMailbox(true); } : undefined} />
+    </Suspense>
+  ) : null;
 
   // --- KẾT THÚC PHẦN 1 - CHUYỂN SANG PHẦN 2 BÊN DƯỚI ---
   // --- UI GIAO DIỆN CHÍNH ---
   // --- UI GIAO DIỆN CHÍNH ---
-  if (!role || role === 'admin') {
-    return (
-      <div className="min-h-screen flex flex-col relative font-sans" style={pageBackgroundStyle}><MainBackground />
-        
-        {toast.show && (
+  const notificationToast = toast.show && (
           <div className="fixed top-0 left-0 right-0 z-[1200] pointer-events-none flex justify-center">
             <div role={toast.type === 'error' ? 'alert' : 'status'} aria-live={toast.type === 'error' ? 'assertive' : 'polite'} className={`mt-3 mx-4 px-5 py-2.5 rounded-2xl shadow-2xl flex items-center gap-3 border border-white/20 backdrop-blur-md animate-in slide-in-from-top-4 duration-500 overflow-hidden max-w-lg w-full ${toast.type === 'success' ? 'bg-emerald-500/95 text-white' : 'bg-rose-500/95 text-white'}`}>
               {toast.type === 'success' ? <CheckCircle2 className="w-4 h-4 sm:w-5 sm:h-5 flex-shrink-0" /> : <X className="w-4 h-4 sm:w-5 sm:h-5 flex-shrink-0" />}
               <span className="text-[11px] sm:text-xs font-bold leading-relaxed whitespace-normal">{toast.message}</span>
             </div>
           </div>
-        )}
+        );
+
+  if (!role || role === 'admin') {
+    return (
+      <div className="min-h-screen flex flex-col relative font-sans" style={pageBackgroundStyle}><MainBackground />
+        {conversationDialog}
+
+        {notificationToast}
 
         {confirmModal.show && (
           <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-[100] animate-in fade-in duration-200">
@@ -6910,32 +6761,20 @@ ${lessonBlocks}`;
           </div>}
 
           {isAdmin && (
-            <div className="fixed left-0 right-0 top-0 z-[210] w-full max-w-none border-b border-slate-200 bg-white shadow-lg">
-              <div className="min-h-[40px] bg-gradient-to-r from-blue-800 via-indigo-700 to-violet-700 text-white flex flex-wrap items-center gap-1.5 px-2 sm:px-3 py-1">
-                <div className="flex min-w-0 flex-1 items-center gap-1.5 sm:flex-none sm:gap-2">
-                  <div className="h-8 w-8 rounded-md bg-white text-blue-700 flex items-center justify-center font-black">N</div>
+            <div className="admin-header fixed left-0 right-0 top-0 z-[210] w-full max-w-none border-b border-slate-200 bg-white shadow-lg">
+              <div className="admin-header-top min-h-[40px] bg-gradient-to-r from-blue-800 via-indigo-700 to-violet-700 text-white flex items-center gap-1.5 px-2 sm:px-3 py-1">
+                <div className="admin-header-brand flex min-w-0 items-center gap-1.5 sm:gap-2" title="TTHTCĐ Trung Mỹ Tây">
+                  <div className="admin-header-logo h-8 w-8 shrink-0 rounded-md bg-white text-blue-700 flex items-center justify-center font-black">N</div>
                   <div className="min-w-0 leading-tight">
                     <div className="truncate text-[10px] font-semibold uppercase text-white/90 sm:text-[11px] sm:tracking-wider">TTHTCĐ Trung Mỹ Tây</div>
                   </div>
                 </div>
-                <div className="ml-auto flex shrink-0 items-center gap-1 sm:hidden">
-                  <button type="button" onClick={() => moveAdminSchoolYear(-1)} disabled={schoolYearOptions.findIndex(year => String(year) === String(adminSelectedSchoolYear)) <= 0} className="flex h-7 w-7 items-center justify-center rounded-md border border-white/20 bg-white/10 disabled:opacity-35" title="Lùi năm">
-                    <ChevronLeft className="h-3.5 w-3.5" />
-                  </button>
-                  <select value={adminSelectedSchoolYear} onChange={(event) => { adminSchoolYearTouchedRef.current = true; setAdminSchoolYear(event.target.value); }} className="h-7 max-w-[100px] rounded-md border border-white/20 bg-white/15 px-1 text-[10px] font-bold text-yellow-100 outline-none">
-                    {schoolYearOptions.map(year => <option key={year} value={year} className="text-slate-900">{year}</option>)}
-                  </select>
-                  <button type="button" onClick={() => moveAdminSchoolYear(1)} disabled={schoolYearOptions.findIndex(year => String(year) === String(adminSelectedSchoolYear)) >= schoolYearOptions.length - 1} className="flex h-7 w-7 items-center justify-center rounded-md border border-white/20 bg-white/10 disabled:opacity-35" title="Tiến năm">
-                    <ChevronRight className="h-3.5 w-3.5" />
-                  </button>
-                  <button onClick={handleExitAdmin} className="flex h-7 w-7 items-center justify-center rounded-md bg-rose-500 text-white hover:bg-rose-600" title="Thoát quản trị" aria-label="Thoát quản trị">
-                    <X className="h-4 w-4" />
-                  </button>
-                </div>
-                <div className="relative order-last w-full sm:order-none sm:w-[330px]">
+                <div className="admin-header-module relative min-w-0">
                   <Home className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-emerald-600" />
                   <select
                     value={adminModule}
+                    aria-label="Mục quản lý"
+                    title={visibleAdminModules.find(item => item.key === adminModule)?.label}
                     onChange={(event) => {
                       const nextModule = event.target.value;
                         runAdminMenuAction(() => {
@@ -6957,20 +6796,22 @@ ${lessonBlocks}`;
                     {visibleAdminModules.map(item => <option key={item.key} value={item.key}>{item.label}</option>)}
                   </select>
                 </div>
-                <div className="hidden md:block text-sm font-semibold uppercase text-white">{adminModule === 'thd' ? 'THCS Trần Hưng Đạo' : 'THCS Nguyễn An Ninh'}</div>
-                <div className="ml-auto hidden items-center gap-1.5 text-xs font-semibold sm:flex">
-                  <span className="hidden sm:inline text-white/80">Năm admin</span>
+                <div className="admin-header-school min-w-0 truncate text-sm font-semibold uppercase text-white" title={adminModule === 'thd' ? 'THCS Trần Hưng Đạo' : 'THCS Nguyễn An Ninh'}>{adminModule === 'thd' ? 'THCS Trần Hưng Đạo' : 'THCS Nguyễn An Ninh'}</div>
+                {adminTeaching.allowed && <button type="button" onClick={() => adminTeaching.open()} className="admin-teaching-entry"><GraduationCap className="h-4 w-4" /><span>Hỗ trợ giáo viên</span></button>}
+                <div className="admin-header-year ml-auto flex shrink-0 items-center gap-1.5 text-xs font-semibold" data-different-year={isAdminViewingDifferentYear}>
+                  <span className="admin-header-year-label text-white/80">Năm admin</span>
                   <button type="button" onClick={() => moveAdminSchoolYear(-1)} disabled={schoolYearOptions.findIndex(year => String(year) === String(adminSelectedSchoolYear)) <= 0} className="h-8 w-8 rounded-md border border-white/20 bg-white/10 text-white hover:bg-white/20 disabled:opacity-35" title="Lui nam admin dang xem">
                     <ChevronLeft className="mx-auto h-4 w-4" />
                   </button>
                   <select
                     value={adminSelectedSchoolYear}
+                    aria-label="Năm admin"
                     onChange={(event) => {
                       adminSchoolYearTouchedRef.current = true;
                       setAdminSchoolYear(event.target.value);
                     }}
                     className="h-8 rounded-md border border-white/20 bg-white/15 px-2 text-xs font-semibold text-yellow-100 outline-none"
-                    title="Chỉ đổi năm admin đang xem/sửa, không đổi năm học hệ thống"
+                    title={`Năm admin: ${adminSelectedSchoolYear}. Năm học hệ thống: ${currentSchoolYear}. Chỉ đổi năm đang xem/sửa.`}
                   >
                     {schoolYearOptions.map(year => <option key={year} value={year} className="text-slate-900">{year}</option>)}
                   </select>
@@ -6978,21 +6819,21 @@ ${lessonBlocks}`;
                     <ChevronRight className="mx-auto h-4 w-4" />
                   </button>
                   {isAdminViewingDifferentYear && (
-                    <span className="hidden md:inline-flex h-8 items-center rounded-md border border-amber-200 bg-amber-100 px-3 text-[11px] font-black uppercase text-amber-900 shadow-sm">
+                    <span className="admin-header-year-warning h-8 items-center rounded-md border border-amber-200 bg-amber-100 px-3 text-[11px] font-black uppercase text-amber-900 shadow-sm">
                       Đang xem {adminSelectedSchoolYear}, hệ thống {currentSchoolYear}
                     </span>
                   )}
-                  <button onClick={handleExitAdmin} className="h-8 rounded-md bg-rose-500 px-3 text-white hover:bg-rose-600">Thoát</button>
+                  <button onClick={handleExitAdmin} className="admin-header-exit h-8 rounded-md bg-rose-500 px-3 text-white hover:bg-rose-600" aria-label="Thoát quản trị" title="Thoát quản trị"><span>Thoát</span><X className="h-4 w-4" /></button>
                 </div>
               </div>
-              <div data-admin-menu-bar className="flex flex-nowrap items-center gap-1 overflow-x-auto overflow-y-visible bg-white px-2 py-1 sm:flex-wrap sm:gap-1.5 sm:overflow-visible sm:px-3 sm:py-1.5">
+              <div data-admin-menu-bar className="admin-navigation flex flex-nowrap items-center gap-1 overflow-x-auto overflow-y-visible bg-white px-2 py-1 sm:gap-1.5 sm:overflow-visible sm:px-3 sm:py-1.5">
                 {adminMenuItems.map(item => {
                   const ItemIcon = item.icon || FileText;
                   if (item.children?.length) {
                     return (
                       <details
                         key={item.key}
-                        className={`relative shrink-0 ${item.alignRight ? 'order-last sm:ml-auto' : ''}`}
+                        className={`relative shrink-0 ${item.alignRight ? 'admin-menu-account order-last sm:ml-auto' : ''}`}
                         onToggle={(event) => {
                           if (!event.currentTarget.open) return;
                           const menuBar = event.currentTarget.closest('[data-admin-menu-bar]');
@@ -7003,11 +6844,11 @@ ${lessonBlocks}`;
                       >
                         <summary className="list-none h-7 cursor-pointer rounded-md border border-blue-100 bg-white px-2 text-[11px] font-semibold text-slate-800 hover:border-blue-300 hover:bg-blue-50 inline-flex items-center gap-1 sm:h-8 sm:px-2.5 sm:text-xs sm:gap-1.5">
                           <ItemIcon className="h-4 w-4 text-blue-600" />
-                          {item.label}
+                          <span className="admin-menu-label">{item.label}</span>
                           {item.badge && <span title={item.badgeTitle} aria-label={item.badgeTitle} className="rounded-full bg-rose-100 px-1.5 py-0.5 text-[9px] text-rose-600">{item.badge}</span>}
                           <ChevronDown className="h-3.5 w-3.5 text-slate-500" />
                         </summary>
-                        <div className="fixed left-3 right-3 top-[114px] z-[300] grid grid-cols-2 gap-1 rounded-lg border border-slate-200 bg-white p-1.5 shadow-xl sm:absolute sm:left-0 sm:right-auto sm:top-full sm:block sm:w-44">
+                        <div className="fixed left-3 right-3 top-[76px] z-[300] grid grid-cols-2 gap-1 rounded-lg border border-slate-200 bg-white p-1.5 shadow-xl sm:absolute sm:left-0 sm:right-auto sm:top-full sm:block sm:w-44">
                           {item.children.map(child => {
                             const childClassName = "flex w-full items-center justify-between gap-2 rounded-md px-3 py-2 text-left text-xs font-semibold text-slate-700 no-underline hover:bg-blue-50 hover:text-blue-700";
                             const childContent = (
@@ -7072,10 +6913,10 @@ ${lessonBlocks}`;
             </div>
           )}
 
-          {isAdmin && <div className="h-[114px] w-full shrink-0 sm:h-[84px]" />}
+          {isAdmin && <div className="h-[76px] w-full shrink-0 sm:h-[84px]" />}
 
           {isAdmin && adminModule === 'notice' && (
-            <div className="fixed inset-x-0 top-[114px] sm:top-[84px] bottom-0 z-[85] overflow-y-auto bg-slate-100/95 p-3 sm:p-5 backdrop-blur-md">
+            <div className="fixed inset-x-0 top-[76px] sm:top-[84px] bottom-0 z-[85] overflow-y-auto bg-slate-100/95 p-3 sm:p-5 backdrop-blur-md">
               <div className="mx-auto max-w-6xl space-y-4">
                 <div className="rounded-2xl border border-blue-100 bg-white p-4 shadow-sm">
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -7110,6 +6951,8 @@ ${lessonBlocks}`;
                 {showMailboxPanel && (
                   <Suspense fallback={<div className="rounded-2xl border border-emerald-100 bg-white p-4 text-sm font-bold text-emerald-700">Đang mở hộp thư...</div>}>
                     <AdminMailboxPanel
+                      onOpenConversations={() => openConversations()}
+                      conversationUnreadCount={conversationInbox.unreadCount}
                       driveUrl={STUDENT_MAILBOX_DRIVE_URL}
                       schoolYear={activeSchoolYear}
                       students={mailboxStudents}
@@ -7241,7 +7084,7 @@ ${lessonBlocks}`;
           )}
 
           {isAdmin && isAdminTextbookExpanded && (
-            <div className="fixed inset-x-0 top-[114px] sm:top-[84px] bottom-0 z-[90] overflow-y-auto bg-slate-100/95 p-2 sm:p-4 backdrop-blur-md">
+            <div className="fixed inset-x-0 top-[76px] sm:top-[84px] bottom-0 z-[90] overflow-y-auto bg-slate-100/95 p-2 sm:p-4 backdrop-blur-md">
               <div className="mx-auto max-w-5xl rounded-3xl border border-emerald-100 bg-white p-4 sm:p-6 shadow-xl">
                 <div className="mb-4 flex items-center justify-between gap-3">
                   <div>
@@ -7268,7 +7111,7 @@ ${lessonBlocks}`;
 
 
           {isAdmin && showAdminSettingsWorkspace && (
-            <Suspense fallback={<div className="fixed inset-x-0 top-[114px] sm:top-[84px] bottom-0 z-[120] bg-white flex items-center justify-center text-sm font-black text-blue-700">Đang mở cài đặt...</div>}>
+            <Suspense fallback={<div className="fixed inset-x-0 top-[76px] sm:top-[84px] bottom-0 z-[120] bg-white flex items-center justify-center text-sm font-black text-blue-700">Đang mở cài đặt...</div>}>
               <AdminSettingsWorkspace
                 key={adminSettingsInitialPanel}
                 educationLevel={adminEducationLevel}
@@ -7304,7 +7147,7 @@ ${lessonBlocks}`;
           )}
 
           {isAdmin && showStudentDatabase && (
-            <div className="fixed inset-x-0 top-[114px] sm:top-[84px] bottom-0 z-[80] bg-slate-100/95 backdrop-blur-md overflow-hidden p-2 sm:p-3">
+            <div className="fixed inset-x-0 top-[76px] sm:top-[84px] bottom-0 z-[80] bg-slate-100/95 backdrop-blur-md overflow-hidden p-2 sm:p-3">
               <div className="w-full h-full min-h-0 max-w-none mx-auto">
                 <Suspense fallback={<div className="rounded-3xl border border-indigo-100 bg-indigo-50 p-4 text-xs font-black text-indigo-700">Đang mở database học sinh...</div>}>
                   <HocSinhManager
@@ -7316,14 +7159,23 @@ ${lessonBlocks}`;
                     systemSchoolYear={currentSchoolYear}
                     initialTab={studentDatabaseInitialTab}
                     initialTabKey={studentDatabaseOpenKey}
+                    profileOpenRequest={conversationProfileRequest}
+                    profileOverlayZIndex={showConversations ? 240 : 90}
+                    onProfileRequestClose={() => setConversationProfileRequest(null)}
                     user={user}
                     pendingRegistrationSnapshot={pendingRegistrationNotice.snapshot}
+                    profileRequestsSnapshot={studentProfileRequests}
                     onPendingRegistrationsLoaded={pendingRegistrationNotice.replaceRegistrations}
                     onRegistrationsResolved={pendingRegistrationNotice.removeRegistrations}
                     showNotification={showNotification}
                     onSendTestResults={sendStudentTestResults}
                     onSendMailboxMessages={sendGeneratedStudentMailboxMessages}
+                    onOpenMailboxHistory={() => setShowDataSafetyWorkspace({ tab: 'mail' })}
+                    onOpenConversations={() => openConversations()}
+                    conversationUnreadCount={conversationInbox.unreadCount}
                     learningProgressRows={adminCheckLearningRows}
+                    learningDataReady={workspaceData.learningReady}
+                    onLearningDataNeeded={setStudentLearningDataNeeded}
                     onBeforeDangerousAction={createSafetyBackup}
                     onStartSchoolYearPromotion={startSchoolYearPromotion}
                     schoolYearPromotionState={schoolYearPromotionState}
@@ -7338,10 +7190,10 @@ ${lessonBlocks}`;
             </div>
           )}
           {isAdmin && showLearningResultsWorkspace && (
-            <WorkspaceErrorBoundary title="Kết quả học tập" onClose={() => setShowLearningResultsWorkspace(false)}><Suspense fallback={<div className="fixed inset-x-0 top-[114px] sm:top-[84px] bottom-0 z-[120] bg-white flex items-center justify-center font-bold text-violet-700">Đang mở kết quả học tập...</div>}><LearningResultsWorkspace grades={adminGrades} view={{ QUICK_SCORE_SUBJECTS, activeQuickScoreRowKey, activeSchoolYear, allQuickSubjectsVisible, canWriteCurrentSchoolYear, clearVisibleQuickScores, fillMissingQuickScores, formatScoreDisplayValue, getQuickAcademicResult, getQuickScoreColumnWidth, getQuickScoreInputValue, getQuickScoreKey, getQuickScoreStudentKey, getQuickScoreTextClass, getQuickSemesterScoreResult, getQuickSemesterTermAverage, handleQuickScoreInputKeyDown, isAdmin, isSendingQuickScoreMail, openScorebookWorkspace, parseScoreNumber, quickInputDrafts, quickQuizScoreKeySet, quickScoreGrade, quickScoreLockedContext, quickScoreMailSemester, quickScoreMailStudentIds, quickScoreSchoolCode, quickScoreStudents, quickScorebookDocId, quickScorebookEdits, quickScorebookLoaded, quickScorebookSavingKey, quickSelectedSemesters, quickSelectedSubjects, quickSubjectColSpanBySubject, quickVisibleScoreColumnsBySubject, quickVisibleSemesters, quickVisibleSubjects, saveQuickScoreValue, sendQuickScoreReportToStudent, setActiveQuickScoreRowKey, setQuickInputDrafts, setQuickScoreGrade, setQuickScoreLockedContext, setQuickScoreMailSemester, setQuickScoreMailStudentIds, setQuickScoreSchoolCode, setQuickScoreSources, setQuickScorebookEdits, setQuickVisibleSemesters, setQuickVisibleSubjects, setShowLearningResultsWorkspace, showNotification, toggleAllQuickScoreMailStudents, toggleQuickScoreMailStudent, user }} /></Suspense></WorkspaceErrorBoundary>
+            <WorkspaceErrorBoundary title="Kết quả học tập" onClose={() => setShowLearningResultsWorkspace(false)}><Suspense fallback={<div className="fixed inset-x-0 top-[76px] sm:top-[84px] bottom-0 z-[120] bg-white flex items-center justify-center font-bold text-violet-700">Đang mở kết quả học tập...</div>}><LearningResultsWorkspace grades={adminGrades} view={{ QUICK_SCORE_SUBJECTS, activeQuickScoreRowKey, activeSchoolYear, allQuickSubjectsVisible, canWriteCurrentSchoolYear, clearVisibleQuickScores, fillMissingQuickScores, formatScoreDisplayValue, getQuickAcademicResult, getQuickScoreColumnWidth, getQuickScoreInputValue, getQuickScoreKey, getQuickScoreStudentKey, getQuickScoreTextClass, getQuickSemesterScoreResult, getQuickSemesterTermAverage, handleQuickScoreInputKeyDown, isAdmin, isSendingQuickScoreMail, openScorebookWorkspace, parseScoreNumber, quickInputDrafts, quickQuizScoreKeySet, quickScoreGrade, quickScoreLockedContext, quickScoreMailSemester, quickScoreMailStudentIds, quickScoreSchoolCode, quickScoreStudents, quickScorebookDocId, quickScorebookEdits, quickScorebookLoaded, quickScorebookSavingKey, quickSelectedSemesters, quickSelectedSubjects, quickSubjectColSpanBySubject, quickVisibleScoreColumnsBySubject, quickVisibleSemesters, quickVisibleSubjects, saveQuickScoreValue, sendQuickScoreReportToStudent, setActiveQuickScoreRowKey, setQuickInputDrafts, setQuickScoreGrade, setQuickScoreLockedContext, setQuickScoreMailSemester, setQuickScoreMailStudentIds, setQuickScoreSchoolCode, setQuickScoreSources, setQuickScorebookEdits, setQuickVisibleSemesters, setQuickVisibleSubjects, setShowLearningResultsWorkspace, showNotification, toggleAllQuickScoreMailStudents, toggleQuickScoreMailStudent, user }} /></Suspense></WorkspaceErrorBoundary>
           )}
           {isAdmin && scorebookGrade && (
-            <Suspense fallback={<div className="fixed inset-x-0 top-[114px] sm:top-[84px] bottom-0 z-[140] bg-white flex items-center justify-center text-sm font-black text-violet-700">Đang mở sổ điểm...</div>}>
+            <Suspense fallback={<div className="fixed inset-x-0 top-[76px] sm:top-[84px] bottom-0 z-[140] bg-white flex items-center justify-center text-sm font-black text-violet-700">Đang mở sổ điểm...</div>}>
               <WorkspaceErrorBoundary
                 resetKey={`${scorebookInitialMode}-${scorebookGrade}-${activeSchoolYear}`}
                 title={scorebookInitialMode === 'transcript' ? 'Màn Học bạ đang lỗi' : 'Màn Sổ điểm đang lỗi'}
@@ -7377,329 +7229,24 @@ ${lessonBlocks}`;
               </WorkspaceErrorBoundary>
             </Suspense>
           )}
-          {isAdmin && showAdminCheckWorkspace && (
-            <div className="fixed inset-x-0 top-[114px] sm:top-[84px] bottom-0 z-[120] bg-slate-100/95 backdrop-blur-md overflow-y-auto p-2 sm:p-3">
-              <div className="w-full max-w-none mx-auto space-y-3">
-                <div className="sticky top-0 z-10 rounded-xl border border-slate-200 bg-white/95 p-1.5 shadow-md backdrop-blur">
-                  <div className="flex gap-1.5">
-                    <div className="grid flex-1 grid-cols-3 gap-1.5">
-                    <button type="button" onClick={() => setAdminCheckView('uploads')} className={`min-h-[52px] rounded-xl border px-2 py-1 text-left transition-all ${adminCheckView === 'uploads' ? 'border-amber-300 bg-amber-50 ring-1 ring-amber-200' : 'border-slate-200 bg-white hover:border-amber-200 hover:bg-amber-50/40'}`}>
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="flex items-center gap-2 min-w-0">
-                          <div className="w-7 h-7 rounded-lg bg-amber-100 text-amber-700 flex items-center justify-center">
-                            <UploadCloud className="w-4 h-4" />
-                          </div>
-                          <div className="font-black text-amber-950 uppercase text-xs truncate">Up bài</div>
-                        </div>
-                        <div className="rounded-lg bg-white/80 border border-amber-100 px-2 py-0.5 text-right">
-                          <div className="text-sm font-black text-amber-800">{adminCheckUploadTotals.groups}</div>
-                          <div className="text-[8px] font-black uppercase text-amber-700">khối/môn</div>
-                        </div>
-                      </div>
-                    </button>
-                    <button type="button" onClick={() => setAdminCheckView('missing')} className={`min-h-[52px] rounded-xl border px-2 py-1 text-left transition-all ${adminCheckView === 'missing' ? 'border-rose-300 bg-rose-50 ring-1 ring-rose-200' : 'border-slate-200 bg-white hover:border-rose-200 hover:bg-rose-50/40'}`}>
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="flex items-center gap-2 min-w-0">
-                          <div className="w-7 h-7 rounded-lg bg-rose-100 text-rose-700 flex items-center justify-center">
-                            <ListChecks className="w-4 h-4" />
-                          </div>
-                          <div className="font-black text-rose-950 uppercase text-xs truncate">Bài kiểm tra</div>
-                        </div>
-                        <div className="rounded-lg bg-white/80 border border-rose-100 px-2 py-0.5 text-right">
-                          <div className="text-sm font-black text-rose-700">{adminCheckMissingTotals.missingCount}</div>
-                          <div className="text-[8px] font-black uppercase text-rose-700">còn thiếu</div>
-                        </div>
-                      </div>
-                    </button>
-                    <button type="button" onClick={() => setAdminCheckView('learning')} className={`min-h-[52px] rounded-xl border px-2 py-1 text-left transition-all ${adminCheckView === 'learning' ? 'border-emerald-300 bg-emerald-50 ring-1 ring-emerald-200' : 'border-slate-200 bg-white hover:border-emerald-200 hover:bg-emerald-50/40'}`}>
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="flex items-center gap-2 min-w-0">
-                          <div className="w-7 h-7 rounded-lg bg-emerald-100 text-emerald-700 flex items-center justify-center">
-                            <BarChart3 className="w-4 h-4" />
-                          </div>
-                          <div className="font-black text-emerald-950 uppercase text-xs truncate">% học</div>
-                        </div>
-                        <div className="rounded-lg bg-white/80 border border-emerald-100 px-2 py-0.5 text-right">
-                          <div className="text-sm font-black text-emerald-800">{adminCheckLearningTotals.averagePercent}%</div>
-                          <div className="text-[8px] font-black uppercase text-emerald-700">trung bình</div>
-                        </div>
-                      </div>
-                    </button>
-                    </div>
-                    <button type="button" onClick={() => setShowAdminCheckWorkspace(false)} title="Đóng" className="shrink-0 w-10 rounded-xl bg-rose-600 text-white shadow-sm flex items-center justify-center hover:bg-rose-700">
-                      <X className="w-5 h-5" />
-                    </button>
-                  </div>
-                  <div className="mt-1.5 flex items-center justify-between gap-2">
-                    <div className="text-[10px] font-black uppercase text-slate-500 px-1">{activeSchoolYear}</div>
-                    <div className="flex flex-wrap justify-end gap-1.5">
-                      <div className="flex flex-wrap gap-1 rounded-lg border border-slate-200 bg-slate-50 p-0.5">
-                        {['all', ...adminGrades].map(gradeValue => (
-                          <button
-                            key={`admin-check-grade-button-${gradeValue}`}
-                            type="button"
-                            onClick={() => setAdminCheckGrade(gradeValue)}
-                            className={`h-7 rounded-md px-2.5 text-[10px] font-black uppercase ${adminCheckGrade === gradeValue ? 'bg-amber-600 text-white shadow-sm' : 'bg-white text-slate-600 hover:bg-amber-50'}`}
-                          >
-                            {gradeValue === 'all' ? 'Tất cả' : `Khối ${gradeValue}`}
-                          </button>
-                        ))}
-                      </div>
-                      <select value={adminCheckSubject} onChange={(event) => setAdminCheckSubject(event.target.value)} className="h-8 min-w-[150px] rounded-lg border border-slate-200 bg-white px-2 text-[11px] font-black text-slate-700 outline-none focus:border-amber-400">
-                        <option value="all">Tất cả môn</option>
-                        {adminSubjects.map(subject => <option key={`admin-check-subject-${subject}`} value={subject}>{subject}</option>)}
-                      </select>
-                    </div>
-                  </div>
-                </div>
-                <div className="grid grid-cols-1 gap-3">
-                  <div className={`${adminCheckView === 'uploads' ? '' : 'hidden'} rounded-2xl border border-amber-100 bg-white p-3 shadow-sm`}>
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <div className="w-9 h-9 rounded-xl bg-amber-100 text-amber-700 flex items-center justify-center">
-                          <UploadCloud className="w-6 h-6" />
-                        </div>
-                        <div className="min-w-0">
-                          <div className="font-black text-amber-950 text-base uppercase">Thống kê up bài</div>
-                          <div className="text-xs font-bold text-slate-500 truncate">Tài liệu, bài học, đề kiểm tra đã phát</div>
-                        </div>
-                      </div>
-                      <div className="grid shrink-0 grid-cols-4 gap-1.5">
-                        <div className="rounded-xl bg-amber-50 border border-amber-100 px-2 py-1 text-center">
-                          <div className="text-sm font-black text-amber-800">{adminCheckUploadTotals.groups}</div>
-                          <div className="text-[8px] font-black uppercase text-amber-700">khối/môn</div>
-                        </div>
-                        <div className="rounded-xl bg-slate-50 border border-slate-100 px-2 py-1 text-center">
-                          <div className="text-sm font-black text-slate-900">{adminCheckUploadTotals.materialCount}</div>
-                          <div className="text-[8px] font-black uppercase text-slate-500">tài liệu</div>
-                        </div>
-                        <div className="rounded-xl bg-slate-50 border border-slate-100 px-2 py-1 text-center">
-                          <div className="text-sm font-black text-slate-900">{adminCheckUploadTotals.noteCount}</div>
-                          <div className="text-[8px] font-black uppercase text-slate-500">bài học</div>
-                        </div>
-                        <div className="rounded-xl bg-slate-50 border border-slate-100 px-2 py-1 text-center">
-                          <div className="text-sm font-black text-slate-900">{adminCheckUploadTotals.quizCount}</div>
-                          <div className="text-[8px] font-black uppercase text-slate-500">đề</div>
-                        </div>
-                      </div>
-                    </div>
-                    <div className="mt-2 overflow-x-auto rounded-xl border border-slate-200">
-                      <table className="min-w-full text-sm">
-                        <thead className="bg-amber-50 text-[11px] uppercase text-amber-900">
-                          <tr>
-                            <th className="px-3 py-2 text-left font-black">Khối</th>
-                            <th className="px-3 py-2 text-left font-black">Môn</th>
-                            <th className="px-3 py-2 text-center font-black">TL</th>
-                            <th className="px-3 py-2 text-center font-black">Bài</th>
-                            <th className="px-3 py-2 text-center font-black">KT</th>
-                            <th className="px-3 py-2 text-left font-black">Tuần/bài đã có</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100">
-                          {adminCheckUploadRows.length === 0 ? (
-                            <tr><td colSpan={6} className="px-3 py-6 text-center text-sm font-bold text-slate-400">Chưa có dữ liệu up bài theo bộ lọc này.</td></tr>
-                          ) : adminCheckUploadRows.map(row => (
-                            <tr key={row.key} className="hover:bg-amber-50/40">
-                              <td className="px-3 py-2 font-black text-slate-800">Khối {row.grade}</td>
-                              <td className="px-3 py-2 font-black text-slate-800">{row.subject}</td>
-                              <td className="px-3 py-2 text-center font-black text-amber-700">{row.materialCount}</td>
-                              <td className="px-3 py-2 text-center font-black text-blue-700">{row.noteCount}</td>
-                              <td className="px-3 py-2 text-center font-black text-rose-700">{row.quizCount}</td>
-                              <td className="px-3 py-2 text-xs font-bold text-slate-600">{row.lessonsText}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                  <div className={`${adminCheckView === 'missing' ? '' : 'hidden'} rounded-2xl border border-rose-100 bg-white p-3 shadow-sm`}>
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <div className="w-9 h-9 rounded-xl bg-rose-100 text-rose-700 flex items-center justify-center">
-                          <ListChecks className="w-6 h-6" />
-                        </div>
-                        <div className="min-w-0">
-                          <div className="font-semibold text-rose-950 text-base uppercase">Bài kiểm tra</div>
-                          <div className="text-xs font-medium text-slate-500 truncate">Theo dõi tình trạng làm bài của học sinh</div>
-                        </div>
-                      </div>
-                      <div className="grid shrink-0 grid-cols-4 gap-1.5">
-                        <div className="rounded-xl bg-rose-50 border border-rose-100 px-2 py-1 text-center">
-                          <div className="text-sm font-black text-rose-700">{adminCheckMissingTotals.missingCount}</div>
-                          <div className="text-[8px] font-black uppercase text-rose-700">còn thiếu</div>
-                        </div>
-                        <div className="rounded-xl bg-slate-50 border border-slate-100 px-2 py-1 text-center">
-                          <div className="text-sm font-black text-slate-900">{adminCheckMissingTotals.quizCount}</div>
-                          <div className="text-[8px] font-black uppercase text-slate-500">đề</div>
-                        </div>
-                        <div className="rounded-xl bg-slate-50 border border-slate-100 px-2 py-1 text-center">
-                          <div className="text-sm font-black text-slate-900">{adminCheckMissingTotals.submittedCount}</div>
-                          <div className="text-[8px] font-black uppercase text-slate-500">đã nộp</div>
-                        </div>
-                        <div className="rounded-xl bg-slate-50 border border-slate-100 px-2 py-1 text-center">
-                          <div className="text-sm font-black text-slate-900">{adminCheckMissingTotals.expectedCount}</div>
-                          <div className="text-[8px] font-black uppercase text-slate-500">cần nộp</div>
-                        </div>
-                      </div>
-                    </div>
-                    <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
-                      <div className="flex flex-wrap gap-1 rounded-full border border-slate-200 bg-slate-50 p-0.5 shadow-inner">
-                        {[
-                          { key: 'all', label: 'Tất cả', count: adminCheckMissingMatrix.rows.length },
-                          { key: 'missing', label: 'Còn thiếu', count: adminCheckMissingMatrix.rows.filter(row => row.missingCount > 0).length },
-                          { key: 'done', label: 'Đã đủ', count: adminCheckMissingMatrix.rows.filter(row => row.expectedCount > 0 && row.missingCount === 0).length }
-                        ].map(option => (
-                          <button
-                            key={`admin-check-submission-filter-${option.key}`}
-                            type="button"
-                            onClick={() => setAdminCheckSubmissionFilter(option.key)}
-                            className={`h-7 rounded-full px-3 text-[10px] font-semibold uppercase transition-all ${adminCheckSubmissionFilter === option.key ? 'bg-slate-900 text-white shadow-sm' : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-100'}`}
-                          >
-                            {option.label} <span className={adminCheckSubmissionFilter === option.key ? 'text-white/75' : 'text-slate-400'}>{option.count}</span>
-                          </button>
-                        ))}
-                      </div>
-                      <div className="text-[11px] font-bold text-slate-500">
-                        {adminCheckMissingMatrix.visibleRows.length}/{adminCheckMissingMatrix.rows.length} học sinh • {adminCheckMissingMatrix.columns.length} bài kiểm tra
-                      </div>
-                    </div>
-                    <div className="mt-2 overflow-auto rounded-xl border border-slate-200 max-h-[590px]">
-                      {adminCheckMissingMatrix.columns.length === 0 ? (
-                        <div className="p-5 text-center text-sm font-bold text-slate-400">Chưa có bài kiểm tra đã phát theo bộ lọc này.</div>
-                      ) : (
-                        <table className="min-w-full text-sm">
-                          <thead className="sticky top-0 z-10 bg-rose-50/70 text-[11px] uppercase text-rose-900">
-                            <tr>
-                              <th className="sticky left-0 z-20 min-w-[230px] border-r border-rose-100 bg-rose-50 px-3 py-2 text-left font-semibold">Học sinh</th>
-                              {adminCheckMissingMatrix.columns.map(column => (
-                                <th key={`quiz-col-${column.id}`} className="min-w-[86px] border-r border-rose-100 px-2 py-2 text-center font-semibold" title={column.title}>
-                                  <div>{column.label}</div>
-                                  <div className="mt-0.5 text-[9px] text-rose-700/70">{column.subject}</div>
-                                </th>
-                              ))}
-                              <th className="min-w-[90px] px-2 py-2 text-center font-semibold">Tổng</th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-slate-100">
-                            {adminCheckMissingMatrix.visibleRows.length === 0 ? (
-                              <tr><td colSpan={adminCheckMissingMatrix.columns.length + 2} className="px-3 py-5 text-center text-sm font-bold text-slate-400">Không có học sinh theo bộ lọc này.</td></tr>
-                            ) : adminCheckMissingMatrix.visibleRows.map(row => {
-                              const gradeValue = getGradeFromClassName(row.student.className || row.student.grade || '') || '';
-                              const className = String(row.student.className || '').trim();
-                              const showClassName = className && className !== String(gradeValue);
-                              return (
-                                <tr key={`quiz-row-${row.key}`} className={row.missingCount ? 'bg-rose-50/30' : 'bg-emerald-50/25'}>
-                                  <td className="sticky left-0 z-10 border-r border-slate-100 bg-white px-3 py-2 font-medium text-slate-800">
-                                    <div>{row.student.fullName || row.student.studentName || 'Học sinh'}</div>
-                                    <div className="text-[10px] font-bold text-slate-400">Khối {gradeValue || '?'}{showClassName ? ` • ${className}` : ''}</div>
-                                  </td>
-                                  {row.cells.map(cell => (
-                                    <td key={`quiz-cell-${row.key}-${cell.columnId}`} className="border-r border-slate-100 px-2 py-1.5 text-center">
-                                      {!cell.applicable ? <span className="text-slate-300">—</span> : cell.submitted ? (
-                                        <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200" title="Đã làm">
-                                          <CheckCircle2 className="h-3.5 w-3.5" />
-                                        </span>
-                                      ) : (
-                                        <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-rose-50 text-rose-600 ring-1 ring-rose-200" title="Chưa làm">
-                                          <X className="h-3.5 w-3.5" />
-                                        </span>
-                                      )}
-                                    </td>
-                                  ))}
-                                  <td className="px-2 py-2 text-center">
-                                    <span className={`inline-flex rounded-full px-2.5 py-0.5 text-[10px] font-semibold ${row.missingCount ? 'bg-rose-100 text-rose-700 ring-1 ring-rose-200' : 'bg-emerald-100 text-emerald-700 ring-1 ring-emerald-200'}`}>
-                                      {row.submittedCount}/{row.expectedCount}
-                                    </span>
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                      )}
-                    </div>
-                  </div>
-                </div>
-                <div className={`${adminCheckView === 'learning' ? '' : 'hidden'} rounded-2xl border border-emerald-100 bg-white p-3 shadow-sm`}>
-                  <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-2">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <div className="w-9 h-9 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center">
-                        <BarChart3 className="w-6 h-6" />
-                      </div>
-                      <div className="min-w-0">
-                        <div className="font-semibold text-emerald-950 text-base uppercase">% học của học sinh</div>
-                        <div className="text-xs font-medium text-slate-500 truncate">Mở bài đủ thời gian và qua hỏi đáp nhanh</div>
-                      </div>
-                    </div>
-                    <div className="grid grid-cols-3 gap-1.5 shrink-0 w-full lg:w-auto">
-                      <div className="rounded-xl bg-emerald-50 border border-emerald-100 px-3 py-1.5 text-center">
-                        <div className="text-base font-semibold text-emerald-800">{adminCheckLearningTotals.averagePercent}%</div>
-                        <div className="text-[9px] font-semibold uppercase text-emerald-700">trung bình</div>
-                      </div>
-                      <div className="rounded-xl bg-slate-50 border border-slate-100 px-3 py-1.5 text-center">
-                        <div className="text-base font-semibold text-slate-900">{adminCheckLearningTotals.targetStudentCount}</div>
-                        <div className="text-[9px] font-semibold uppercase text-slate-500">có học liệu</div>
-                      </div>
-                      <div className="rounded-xl bg-rose-50 border border-rose-100 px-3 py-1.5 text-center">
-                        <div className="text-base font-semibold text-rose-700">{adminCheckLearningTotals.lowCount}</div>
-                        <div className="text-[9px] font-semibold uppercase text-rose-700">dưới 50%</div>
-                      </div>
-                    </div>
-                  </div>
-                  <div className="mt-2 overflow-x-auto rounded-xl border border-slate-200">
-                    <table className="min-w-full text-sm">
-                      <thead className="bg-emerald-50/70 text-[11px] uppercase text-emerald-900">
-                        <tr>
-                          <th className="px-3 py-2 text-left font-semibold">Khối</th>
-                          <th className="px-3 py-2 text-left font-semibold">Học sinh</th>
-                          <th className="px-3 py-2 text-center font-semibold">% học</th>
-                          <th className="px-3 py-2 text-center font-semibold">Bài đã mở</th>
-                          <th className="px-3 py-2 text-center font-semibold">Hỏi đáp</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100">
-                        {adminCheckLearningRows.length === 0 ? (
-                          <tr><td colSpan={5} className="px-3 py-6 text-center text-sm font-bold text-slate-400">Chưa có danh sách học sinh theo bộ lọc này.</td></tr>
-                        ) : adminCheckLearningRows.map(row => {
-                          const className = String(row.student.className || '').trim();
-                          const showClassName = className && className !== String(row.grade);
-                          return (
-                            <tr key={row.key} className={row.targetCount === 0 ? 'bg-slate-50/45 text-slate-400' : 'hover:bg-slate-50'}>
-                              <td className="px-3 py-2 font-medium">Khối {row.grade}</td>
-                              <td className="px-3 py-2 font-medium text-slate-800">
-                                {row.student.fullName || row.student.studentName || 'Học sinh'}{showClassName ? ` - ${className}` : ''}
-                              </td>
-                              <td className="px-3 py-2 text-center">
-                                <span className={`inline-flex min-w-14 justify-center rounded-full px-3 py-1 text-xs font-semibold ${row.targetCount === 0 ? 'bg-slate-100 text-slate-500' : row.percent < 50 ? 'bg-rose-100 text-rose-700 ring-1 ring-rose-200' : row.percent < 80 ? 'bg-amber-100 text-amber-800 ring-1 ring-amber-200' : 'bg-emerald-100 text-emerald-700 ring-1 ring-emerald-200'}`}>
-                                  {row.targetCount ? `${row.percent}%` : '-'}
-                                </span>
-                              </td>
-                              <td className="px-3 py-2 text-center font-medium text-slate-700">{row.theoryDoneCount}/{row.targetCount}</td>
-                              <td className="px-3 py-2 text-center font-medium text-slate-700">{row.quickTargetCount ? `${row.quickDoneCount}/${row.quickTargetCount}` : '-'}</td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-          {isAdmin && showDataSafetyWorkspace && (
-            <Suspense fallback={<div className="fixed inset-0 z-[140] flex items-center justify-center bg-white text-sm font-black text-blue-700">Đang mở An toàn dữ liệu...</div>}>
+          {isAdmin && showAdminCheckWorkspace && <AdminCheckWorkspace view={{ activeSchoolYear, adminCheckGrade, adminCheckSubject, adminCheckView, adminCheckSubmissionFilter, adminGrades, adminSubjects, adminCheckUploadTotals, adminCheckUploadRows, adminCheckMissingTotals, adminCheckMissingMatrix, adminCheckLearningTotals, adminCheckLearningRows, getGradeFromClassName, setAdminCheckGrade, setAdminCheckSubject, setAdminCheckView, setAdminCheckSubmissionFilter }} onClose={() => setShowAdminCheckWorkspace(false)} />}
+          {isAdmin && showDataSafetyWorkspace && createPortal(
+            <Suspense fallback={<div className="fixed inset-0 z-[1300] flex items-center justify-center bg-white text-sm font-black text-blue-700">Đang mở An toàn dữ liệu...</div>}>
               <AdminDataSafetyWorkspace
+                key={showDataSafetyWorkspace.tab || 'backup'}
                 snapshot={systemSnapshot}
+                initialTab={showDataSafetyWorkspace.tab || 'backup'}
+                schoolYear={showDataSafetyWorkspace.tab === 'mail' ? activeSchoolYear : ''}
                 students={allStudents}
                 onRestore={restoreSystemSnapshot}
                 captureSnapshot={buildSystemSnapshot}
                 onClose={() => setShowDataSafetyWorkspace(false)}
                 showNotification={showNotification}
               />
-            </Suspense>
+            </Suspense>, document.body
           )}
           {isAdmin && showAdmissionWorkspace && (
-            <Suspense fallback={<div className="fixed inset-x-0 top-[114px] sm:top-[84px] bottom-0 z-[120] flex items-center justify-center bg-white text-sm font-black text-sky-700">Đang mở hồ sơ tuyển sinh...</div>}>
+            <Suspense fallback={<div className="fixed inset-x-0 top-[76px] sm:top-[84px] bottom-0 z-[120] flex items-center justify-center bg-white text-sm font-black text-sky-700">Đang mở hồ sơ tuyển sinh...</div>}>
               <AdmissionWorkspace
                 applications={currentAdmissionApplications}
                 schoolYear={activeSchoolYear}
@@ -7779,112 +7326,28 @@ ${lessonBlocks}`;
           )}
           {!(isAdmin && (adminAccessScope === 'thd' || adminModule === 'thd' || adminModule === 'notice' || showAdmissionWorkspace)) && (
             <div className={`home-panels-wrap ${isAdmin ? 'admin-home-panels-wrap max-w-none' : 'max-w-6xl'} w-full mb-3 sm:mb-4 flex flex-col min-h-0`}>
+              <div className="home-learning-updates"><HomeUpdateTicker items={combinedFeedSorted} onOpen={openHomepageFeedItem} error={learningUpdates.error} /></div>
               <div className="home-mobile-dashboard lg:hidden min-h-0 overflow-hidden rounded-2xl border border-white/45 bg-white/55 shadow-lg backdrop-blur-md">
-                <div className="home-mobile-updates flex h-7 shrink-0 items-center overflow-hidden border-b border-emerald-100 bg-white/75">
-                  <div className="flex h-full shrink-0 items-center gap-1 bg-emerald-600 px-2 text-[8px] font-black uppercase text-white">
-                    <BookOpen className="h-3 w-3" /> Mới cập nhật
-                  </div>
-                  {combinedFeedSorted.length > 0 ? (
-                    <marquee scrollamount="3" className="min-w-0 flex-1 text-[8px] font-bold text-slate-600">
-                      {combinedFeedSorted.map((item, index) => (
-                        <button key={`mobile-update-${item.id}`} type="button" onClick={() => openHomepageFeedItem(item)} className={`mx-2 whitespace-nowrap ${item.iconType === 'quiz' ? 'text-rose-600 hover:text-rose-700' : item.isAuto ? 'text-emerald-700 hover:text-emerald-800' : 'text-slate-600 hover:text-blue-700'}`}>
-                          {item.title}{index < combinedFeedSorted.length - 1 ? '  |  ' : ''}
-                        </button>
-                      ))}
-                    </marquee>
-                  ) : <div className="px-2 text-[8px] font-bold text-slate-400">Đang cập nhật...</div>}
-                </div>
-
                 <div className="flex items-center justify-between border-b border-white/70 px-3 py-2">
                   <h3 className="flex items-center gap-1.5 text-[11px] font-black uppercase text-blue-900">
                     <Newspaper className="h-4 w-4 text-blue-600" /> Tin tức - sự kiện
                   </h3>
-                  <span className="text-[9px] font-bold text-slate-400">6 tin mới nhất</span>
+                  <span className="text-[10px] font-bold text-slate-500">{mobileHomepageNews.length} tin mới nhất</span>
                 </div>
 
-                {mobileHomepageNews.length > 0 ? (() => {
-                  return (
-                    <div className="home-mobile-news-split grid min-h-0 flex-1 grid-cols-[minmax(0,2fr)_minmax(0,1fr)] overflow-hidden">
-                      <div className="min-w-0 overflow-hidden border-r border-blue-100 bg-white/45">
-                        {mobileHomepageNews.length > 1 && (
-                          <style>{`
-                            @keyframes mobileHomepageNewsSlide {
-                              ${mobileHomepageNewsSlideKeyframes}
-                            }
-                            .mobile-homepage-news-slider-track {
-                              animation: mobileHomepageNewsSlide ${Math.max(24, mobileHomepageNews.length * 7)}s ease-in-out infinite;
-                            }
-                          `}</style>
-                        )}
-                        <div
-                          className={`${mobileHomepageNews.length > 1 ? 'mobile-homepage-news-slider-track' : ''} flex h-full`}
-                          style={{ width: `${mobileHomepageNews.length * 100}%` }}
-                        >
-                          {mobileHomepageNews.map((mobileFeatured) => {
-                            const mobileFeaturedImage = getSharpNewsImageSrc(extractNewsImageSrc(mobileFeatured.content));
-                            const mobileFeaturedFallbackImage = getNewsImageFallbackSrc(mobileFeatured.content);
-                            const mobileFeaturedFileId = extractNewsDriveFileId(mobileFeatured.content);
-                            return (
-                              <button
-                                key={`mobile-featured-${mobileFeatured.id}`}
-                                type="button"
-                                onClick={() => setViewingNews(mobileFeatured)}
-                                className="h-full min-w-0 p-2 text-left"
-                                style={{ width: `${100 / mobileHomepageNews.length}%` }}
-                              >
-                                <div className="home-mobile-featured-media overflow-hidden rounded-lg border border-blue-100 bg-white/70">
-                                  {mobileFeaturedImage ? (
-                                    <img
-                                      src={mobileFeaturedImage}
-                                      alt={mobileFeatured.title}
-                                      data-news-image-attempt="0"
-                                      onError={(event) => {
-                                        const attempt = Number(event.currentTarget.dataset.newsImageAttempt || '0');
-                                        if (mobileFeaturedFileId && attempt === 0) {
-                                          event.currentTarget.dataset.newsImageAttempt = '1';
-                                          event.currentTarget.src = `https://lh3.googleusercontent.com/d/${mobileFeaturedFileId}=w1000`;
-                                          return;
-                                        }
-                                        if (mobileFeaturedFallbackImage && attempt < 2 && event.currentTarget.src !== mobileFeaturedFallbackImage) {
-                                          event.currentTarget.dataset.newsImageAttempt = '2';
-                                          event.currentTarget.src = mobileFeaturedFallbackImage;
-                                          return;
-                                        }
-                                        handleRichContentImageError(event);
-                                      }}
-                                      className="h-full w-full object-contain"
-                                    />
-                                  ) : (
-                                    <div className="flex h-full items-center justify-center bg-blue-50/70"><Newspaper className="h-8 w-8 text-blue-300" /></div>
-                                  )}
-                                </div>
-                                <div className="mt-2 flex items-center gap-1 text-[8px] font-black uppercase text-amber-600">
-                                  {mobileFeatured.isPinned ? <><Pin className="h-3 w-3" fill="currentColor" /> Tin ghim</> : mobileFeatured.isHot ? <><Sparkles className="h-3 w-3" /> Tin nóng</> : 'Tin mới'}
-                                </div>
-                                <h4 className={`mt-1 line-clamp-4 text-[11px] font-black leading-snug ${mobileFeatured.isHot ? 'text-rose-700' : 'text-blue-900'}`}>{mobileFeatured.title}</h4>
-                                <div className="mt-1.5 text-[8px] font-bold text-slate-400">{new Date(mobileFeatured.createdAt).toLocaleDateString('vi-VN')}</div>
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </div>
-
-                      <div className="home-mobile-news-list min-h-0 min-w-0 divide-y divide-blue-100/80 overflow-y-auto overflow-x-hidden bg-white/35">
-                        {mobileHomepageNews.map((newsItem) => (
-                          <button key={`mobile-news-${newsItem.id}`} type="button" onClick={() => setViewingNews(newsItem)} className="flex w-full min-w-0 items-start gap-1 overflow-hidden px-1.5 py-2 text-left hover:bg-white/70">
-                            <CheckCircle2 className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${newsItem.isHot ? 'text-rose-600' : newsItem.isPinned ? 'text-amber-600' : 'text-sky-600'}`} />
-                            <div className="min-w-0 flex-1 overflow-hidden">
-                              <h4 className={`whitespace-normal break-words text-[9px] font-black leading-snug [overflow-wrap:anywhere] ${newsItem.isHot ? 'text-rose-700' : 'text-blue-800'}`}>{newsItem.title}</h4>
-                              <div className="mt-0.5 text-[8px] font-bold text-slate-400">{new Date(newsItem.createdAt).toLocaleDateString('vi-VN')}</div>
-                            </div>
-                          </button>
-                        ))}
-                      </div>
+                {mobileHomepageNews.length > 0 ? (
+                  <div className="home-mobile-news-split">
+                    <HomeNewsCard key={mobileHomepageNews[0].id} news={mobileHomepageNews[0]} compact
+                      image={getSharpNewsImageSrc(extractNewsImageSrc(mobileHomepageNews[0].content))}
+                      fallback={getNewsImageFallbackSrc(mobileHomepageNews[0].content)} fileId={extractNewsDriveFileId(mobileHomepageNews[0].content)} onOpen={setViewingNews} />
+                    <div className="home-mobile-news-list">
+                      {mobileHomepageNews.slice(1).map(newsItem => <button key={newsItem.id} type="button" onClick={() => setViewingNews(newsItem)}>
+                        <h4>{newsItem.title}</h4><p>{getNewsPlainText(newsItem.content).slice(0, 180)}</p>
+                        <span>{new Date(newsItem.createdAt).toLocaleDateString('vi-VN')}</span>
+                      </button>)}
                     </div>
-                  );
-                })() : (
-                  <div className="flex flex-1 items-center justify-center text-xs font-bold text-slate-400">Đang cập nhật tin tức...</div>
-                )}
+                  </div>
+                ) : <p className="p-4 text-sm text-slate-500">Đang cập nhật tin tức...</p>}
               </div>
 
               <div className="hidden">
@@ -8051,23 +7514,6 @@ ${lessonBlocks}`;
               </div>
 
               <div className={`home-desktop-panels hidden lg:block w-full ${isAdmin ? 'max-w-[1320px]' : 'max-w-[920px]'} mx-auto`}>
-                {combinedFeedSorted.length > 0 && (
-                  <div className="mb-2 h-8 rounded-full border border-white/[0.55] bg-white/60 backdrop-blur-md shadow-sm overflow-hidden flex items-center">
-                    <div className="h-full px-3 bg-emerald-600 text-white text-[10px] font-semibold uppercase tracking-wide flex items-center gap-1.5 shrink-0">
-                      <BookOpen className="w-3.5 h-3.5" />
-                      Mới cập nhật
-                    </div>
-                    <marquee direction="left" scrollamount="4" className="text-[12px] font-medium text-slate-700" onMouseOver={(e) => e.currentTarget.stop()} onMouseOut={(e) => e.currentTarget.start()}>
-                      {combinedFeedSorted.map((item, index) => (
-                        <button key={item.id} type="button" onClick={() => openHomepageFeedItem(item)} className={`mx-4 ${item.iconType === 'quiz' ? 'text-rose-600 hover:text-rose-700' : item.isAuto ? 'text-emerald-700 hover:text-emerald-800' : 'hover:text-blue-700'}`}>
-                          {index > 0 && <span className="mr-4 text-slate-300">|</span>}
-                          {item.title}
-                        </button>
-                      ))}
-                    </marquee>
-                  </div>
-                )}
-
                 <div className="home-news-shell rounded-[1.5rem] overflow-hidden bg-white/[0.62] backdrop-blur-md border border-white/55 shadow-lg">
                   <div className="bg-rose-700 px-4 py-2.5 text-white flex items-center justify-between gap-3">
                     <div className="flex items-center gap-2.5">
@@ -8080,6 +7526,7 @@ ${lessonBlocks}`;
                       </button>
                     )}
                   </div>
+
 
                   {isAdmin && showAddNews ? (
                     <div className="p-4 flex flex-col gap-3 animate-in fade-in duration-300">
@@ -8124,55 +7571,12 @@ ${lessonBlocks}`;
                             )}
                             <div className="relative h-full overflow-hidden">
                               <div className={`${homepageSliderNews.length > 1 ? 'homepage-news-slider-track' : ''} flex h-full`} style={{ width: `${homepageSliderNews.length * 100}%` }}>
-                                {homepageSliderNews.map((newsItem) => {
-                                  const newsImage = getSharpNewsImageSrc(extractNewsImageSrc(newsItem.content));
-                                  const newsFallbackImage = getNewsImageFallbackSrc(newsItem.content);
-                                  const newsFileId = extractNewsDriveFileId(newsItem.content);
-                                  const newsSummary = getNewsPlainText(newsItem.content);
-                                  return (
-                                    <button key={`homepage-slide-news-${newsItem.id}`} type="button" onClick={() => setViewingNews(newsItem)} className="flex h-full flex-col px-0.5 text-left group" style={{ width: `${100 / homepageSliderNews.length}%` }}>
-                                      <div className={`${isAdmin ? 'admin-home-news-media' : 'home-news-media'} rounded-xl bg-white/55 overflow-hidden border border-white/70 shadow-sm flex items-center justify-center`}>
-                                        {newsImage ? (
-                                          <img
-                                            src={newsImage}
-                                            alt={newsItem.title}
-                                            onError={(event) => {
-                                              const attempt = Number(event.currentTarget.dataset.newsImageAttempt || '0');
-                                              if (newsFileId && attempt === 0) {
-                                                event.currentTarget.dataset.newsImageAttempt = '1';
-                                                event.currentTarget.src = `https://lh3.googleusercontent.com/d/${newsFileId}=w1600`;
-                                                return;
-                                              }
-                                              if (newsFallbackImage && event.currentTarget.src !== newsFallbackImage) {
-                                                event.currentTarget.dataset.newsImageAttempt = '2';
-                                                event.currentTarget.src = newsFallbackImage;
-                                                return;
-                                              }
-                                              handleRichContentImageError(event);
-                                            }}
-                                            className="h-full w-full object-contain object-center transition-transform duration-500"
-                                          />
-                                        ) : (
-                                          <div className="h-full w-full bg-gradient-to-br from-blue-50 via-white to-sky-100 p-8 flex items-center justify-center">
-                                            <div className="max-w-md rounded-2xl border border-blue-100 bg-white/80 p-6 text-center shadow-sm">
-                                              <Newspaper className="mx-auto mb-3 h-10 w-10 text-blue-300" />
-                                              <div className="mb-2 text-[11px] font-semibold uppercase tracking-widest text-blue-500">Bản tin</div>
-                                              <h4 className="text-xl font-semibold leading-snug text-blue-800 line-clamp-3">{newsItem.title}</h4>
-                                              {newsSummary && <p className="mt-3 text-sm leading-relaxed text-slate-500 line-clamp-3">{newsSummary}</p>}
-                                            </div>
-                                          </div>
-                                        )}
-                                      </div>
-                                      <h4 className={`mt-3 text-lg xl:text-xl leading-snug font-semibold line-clamp-2 group-hover:underline ${newsItem.isHot ? 'text-rose-700' : 'text-blue-800'}`}>{newsItem.title}</h4>
-                                      <div className="mt-2 flex flex-wrap items-center gap-3 text-[12px] font-medium text-slate-500">
-                                        {newsItem.isPinned && <span className="inline-flex items-center gap-1 text-amber-600"><Pin className="w-3.5 h-3.5" fill="currentColor" /> Tin ghim</span>}
-                                        {newsItem.isHot && <span className="inline-flex items-center gap-1 text-rose-600"><Sparkles className="w-3.5 h-3.5" fill="currentColor" /> Tin nóng</span>}
-                                        <span className="inline-flex items-center gap-1 text-emerald-700"><Calendar className="w-3.5 h-3.5" /> {new Date(newsItem.createdAt).toLocaleDateString('vi-VN')}</span>
-                                      </div>
-                                      {newsSummary && <p className="mt-2 text-sm leading-relaxed text-slate-600 line-clamp-2">{newsSummary}</p>}
-                                    </button>
-                                  );
-                                })}
+                                {homepageSliderNews.map(newsItem => (
+                                  <div key={newsItem.id} className="min-w-0 px-0.5" style={{ width: (100 / homepageSliderNews.length) + '%' }}>
+                                    <HomeNewsCard news={newsItem} image={getSharpNewsImageSrc(extractNewsImageSrc(newsItem.content))}
+                                      fallback={getNewsImageFallbackSrc(newsItem.content)} fileId={extractNewsDriveFileId(newsItem.content)} onOpen={setViewingNews} />
+                                  </div>
+                                ))}
                               </div>
                             </div>
                           </>
@@ -8262,34 +7666,20 @@ ${lessonBlocks}`;
             </div>
           )}
 
-          <div className="home-role-actions w-full max-w-md mx-auto px-2 relative z-20 shrink-0 pb-1 sm:pb-2 mt-3 sm:mt-7">
+          <div className="home-role-actions w-full max-w-5xl mx-auto px-2 relative z-20 shrink-0 pb-1 sm:pb-2 mt-3 sm:mt-7">
             {!isAdmin && (
               <div className="flex flex-col gap-1.5 sm:gap-3">
-                  <div className="grid grid-cols-[1.15fr_1.15fr_0.65fr_0.8fr] gap-1.5 sm:hidden">
-                    <button onClick={openStudentLogin} className="min-w-0 flex h-9 items-center justify-center gap-1 bg-blue-600 px-1 text-white rounded-xl font-black shadow-lg transition-all active:scale-95 sm:h-auto sm:flex-1 sm:gap-2 sm:py-3 sm:px-2 sm:rounded-2xl">
-                       <User className="w-4 h-4 sm:w-5 sm:h-5" />
-                       <span className="min-w-0 text-[9px] sm:text-sm uppercase tracking-normal sm:tracking-wider whitespace-nowrap"><span className="sm:hidden">Học sinh</span><span className="hidden sm:inline">Tôi là Học sinh</span></span>
+                  <div role="group" aria-label="Chọn tài khoản đăng nhập" className="grid grid-cols-4 gap-1.5 sm:gap-3">
+                    <button onClick={openStudentLogin} className="min-w-0 flex h-10 items-center justify-center gap-0.5 bg-violet-700 hover:bg-violet-800 ring-2 ring-white/80 px-1 text-white rounded-xl text-[9px] font-black uppercase whitespace-nowrap shadow-lg transition-all active:scale-95 sm:h-12 sm:gap-2 sm:px-2 sm:text-xs sm:rounded-2xl lg:h-14 lg:text-sm">
+                       <User className="w-3.5 h-3.5 shrink-0 sm:w-4 sm:h-4 lg:w-5 lg:h-5" />
+                       <span className="lg:hidden">Học sinh</span><span className="hidden lg:inline">Tôi là Học sinh</span>
                     </button>
-                    <button onClick={openTeacherLogin} className="min-w-0 flex h-9 items-center justify-center gap-1 bg-emerald-50 px-1 text-emerald-700 border border-emerald-200 rounded-xl font-black shadow-md transition-all active:scale-95 sm:h-auto sm:flex-1 sm:gap-2 sm:py-3 sm:px-2 sm:rounded-2xl">
-                       <GraduationCap className="w-4 h-4 sm:w-5 sm:h-5" />
-                       <span className="min-w-0 text-[9px] sm:text-sm uppercase tracking-normal sm:tracking-wider whitespace-nowrap"><span className="sm:hidden">Giáo viên</span><span className="hidden sm:inline">Tôi là Giáo viên</span></span>
+                    <button onClick={openTeacherLogin} className="min-w-0 flex h-10 items-center justify-center gap-0.5 bg-emerald-50 px-1 text-emerald-700 border border-emerald-200 rounded-xl text-[9px] font-black uppercase whitespace-nowrap shadow-md transition-all active:scale-95 sm:h-12 sm:gap-2 sm:px-2 sm:text-xs sm:rounded-2xl lg:h-14 lg:text-sm">
+                       <GraduationCap className="w-3.5 h-3.5 shrink-0 sm:w-4 sm:h-4 lg:w-5 lg:h-5" />
+                       <span className="lg:hidden">Giáo viên</span><span className="hidden lg:inline">Tôi là Giáo viên</span>
                     </button>
-                    <button onClick={() => { setModalMode('thdAdmin'); setPasswordInput(''); setErrorMsg(''); setShowPasswordModal(true); }} className="flex h-9 min-w-0 items-center justify-center gap-0.5 rounded-xl border border-sky-200/70 bg-white/55 px-1 text-[8px] font-black uppercase text-sky-600 backdrop-blur-sm transition-all hover:bg-white hover:text-sky-700 sm:h-auto sm:gap-1.5 sm:px-4 sm:py-2 sm:text-[10px] sm:rounded-full"><Briefcase className="w-3.5 h-3.5" /><span className="sm:hidden">THĐ</span><span className="hidden sm:inline">Trần Hưng Đạo</span></button>
-                    <button onClick={() => { setModalMode('admin'); setPasswordInput(''); setErrorMsg(''); setShowPasswordModal(true); }} className="flex h-9 min-w-0 items-center justify-center gap-0.5 rounded-xl border border-slate-200/60 bg-white/40 px-1 text-[8px] font-black uppercase text-slate-500 backdrop-blur-sm transition-all hover:bg-white hover:text-slate-600 sm:h-auto sm:gap-1.5 sm:px-4 sm:py-2 sm:text-[10px] sm:rounded-full"><Settings className="w-3.5 h-3.5" /><span className="sm:hidden">Admin</span><span className="hidden sm:inline">Quản trị</span></button>
-                  </div>
-                  <div className="hidden flex-col gap-3 sm:flex">
-                    <div className="flex flex-row justify-center gap-4">
-                      <button onClick={openStudentLogin} className="min-w-0 flex-1 flex items-center justify-center gap-2 bg-blue-600 text-white py-3 px-2 rounded-2xl font-black shadow-lg transition-all active:scale-95">
-                        <User className="w-5 h-5" /><span className="min-w-0 text-sm uppercase tracking-wider whitespace-nowrap">Tôi là Học sinh</span>
-                      </button>
-                      <button onClick={openTeacherLogin} className="min-w-0 flex-1 flex items-center justify-center gap-2 bg-emerald-50 text-emerald-700 border border-emerald-200 py-3 px-2 rounded-2xl font-black shadow-md transition-all active:scale-95">
-                        <GraduationCap className="w-5 h-5" /><span className="min-w-0 text-sm uppercase tracking-wider whitespace-nowrap">Tôi là Giáo viên</span>
-                      </button>
-                    </div>
-                    <div className="flex flex-wrap justify-center gap-2">
-                      <button onClick={() => { setModalMode('thdAdmin'); setPasswordInput(''); setErrorMsg(''); setShowPasswordModal(true); }} className="flex items-center gap-1.5 text-[10px] font-black uppercase text-sky-600 bg-white/55 px-4 py-2 rounded-full border border-sky-200/70 hover:bg-white hover:text-sky-700 transition-all backdrop-blur-sm"><Briefcase className="w-3.5 h-3.5" /> Trần Hưng Đạo</button>
-                      <button onClick={() => { setModalMode('admin'); setPasswordInput(''); setErrorMsg(''); setShowPasswordModal(true); }} className="flex items-center gap-1.5 text-[10px] font-black uppercase text-slate-400 bg-white/40 px-4 py-2 rounded-full border border-slate-200/60 hover:bg-white hover:text-slate-600 transition-all backdrop-blur-sm"><Settings className="w-3.5 h-3.5" /> Quản trị</button>
-                    </div>
+                    <button onClick={() => { setModalMode('thdAdmin'); setPasswordInput(''); setErrorMsg(''); setShowPasswordModal(true); }} className="min-w-0 flex h-10 items-center justify-center gap-0.5 rounded-xl border border-sky-200/70 bg-white/55 px-1 text-[9px] font-black uppercase whitespace-nowrap text-sky-600 backdrop-blur-sm transition-all hover:bg-white hover:text-sky-700 sm:h-12 sm:gap-2 sm:px-2 sm:text-xs sm:rounded-2xl lg:h-14 lg:text-sm"><Briefcase className="w-3.5 h-3.5 shrink-0 sm:w-4 sm:h-4 lg:w-5 lg:h-5" /><span className="sm:hidden">THĐ</span><span className="hidden sm:inline">Trần Hưng Đạo</span></button>
+                    <button onClick={() => { setModalMode('admin'); setPasswordInput(''); setErrorMsg(''); setShowPasswordModal(true); }} className="min-w-0 flex h-10 items-center justify-center gap-0.5 rounded-xl border border-slate-200/60 bg-white/40 px-1 text-[9px] font-black uppercase whitespace-nowrap text-slate-500 backdrop-blur-sm transition-all hover:bg-white hover:text-slate-600 sm:h-12 sm:gap-2 sm:px-2 sm:text-xs sm:rounded-2xl lg:h-14 lg:text-sm"><Settings className="w-3.5 h-3.5 shrink-0 sm:w-4 sm:h-4 lg:w-5 lg:h-5" /><span className="sm:hidden">Admin</span><span className="hidden sm:inline">Quản trị</span></button>
                   </div>
                   <div className="home-contact-line text-center text-[10px] font-bold text-blue-950/75 sm:hidden">Liên hệ: 0354.66.7174 (Thầy Khoa)</div>
               </div>
@@ -8297,7 +7687,7 @@ ${lessonBlocks}`;
           </div>
         </div>
         
-        {showPasswordModal && <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-in fade-in duration-300"><div className="bg-white rounded-[2.5rem] shadow-2xl max-w-sm w-full p-7 sm:p-10 border border-white/20"><div className="flex items-center space-x-3 mb-6"><div className="bg-slate-100 p-3.5 rounded-full"><Lock className="w-6 h-6 text-slate-800" /></div><h3 className="text-xl sm:text-2xl font-black text-slate-800">{modalMode === 'admin' ? 'Hệ thống Quản trị' : (modalMode === 'thdAdmin' ? 'Trần Hưng Đạo' : 'Đăng nhập Giáo viên')}</h3></div>{modalMode === 'teacher' && <input type="text" aria-label="Tên đăng nhập giáo viên" placeholder="Tên đăng nhập giáo viên" autoComplete="username" className="w-full border-2 border-slate-200 rounded-2xl p-4 focus:outline-none focus:border-emerald-500 focus:ring-4 focus:ring-emerald-50 mb-3 text-base font-bold" value={teacherUsername} onChange={(e) => setTeacherUsername(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleLogin()} />}<input type="password" autoComplete={modalMode === 'teacher' ? 'current-password' : 'current-password'} aria-label="Mật khẩu" placeholder="Nhập mật khẩu..." className="w-full border-2 border-slate-200 rounded-2xl p-4 focus:outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-50 mb-4 text-base font-black tracking-widest text-center" value={passwordInput} onChange={(e) => setPasswordInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleLogin()} />{errorMsg && <p role="alert" className="text-rose-500 text-sm mb-5 font-black text-center">{errorMsg}</p>}<div className="flex space-x-3"><button onClick={cancelLogin} className="flex-1 py-3.5 bg-slate-100 text-slate-700 rounded-2xl font-bold hover:bg-slate-200 transition-colors">Hủy bỏ</button><button onClick={handleLogin} disabled={isLoggingIn} className="flex-1 py-3.5 bg-blue-600 text-white rounded-2xl font-black shadow-lg hover:bg-blue-700 transition-all">Đăng nhập</button></div></div></div>}
+        {showPasswordModal && <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-in fade-in duration-300"><div className="bg-white rounded-[2.5rem] shadow-2xl max-w-sm w-full p-7 sm:p-10 border border-white/20"><div className="flex items-center space-x-3 mb-6"><div className="bg-slate-100 p-3.5 rounded-full"><Lock className="w-6 h-6 text-slate-800" /></div><h3 className="text-xl sm:text-2xl font-black text-slate-800">{modalMode === 'admin' ? 'Hệ thống Quản trị' : (modalMode === 'thdAdmin' ? 'Trần Hưng Đạo' : 'Đăng nhập Giáo viên')}</h3></div>{modalMode === 'teacher' && <input type="text" aria-label="Tên đăng nhập giáo viên" placeholder="Tên đăng nhập giáo viên" autoComplete="username" disabled={isLoggingIn} className="w-full border-2 border-slate-200 rounded-2xl p-4 focus:outline-none focus:border-emerald-500 focus:ring-4 focus:ring-emerald-50 mb-3 text-base font-bold" value={teacherUsername} onChange={(e) => setTeacherUsername(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleLogin()} />}<input type="password" autoComplete={modalMode === 'teacher' ? 'current-password' : 'current-password'} aria-label="Mật khẩu" disabled={isLoggingIn} placeholder="Nhập mật khẩu..." className="w-full border-2 border-slate-200 rounded-2xl p-4 focus:outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-50 mb-4 text-base font-black tracking-widest text-center" value={passwordInput} onChange={(e) => setPasswordInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleLogin()} />{errorMsg && <p role="alert" className="text-rose-500 text-sm mb-5 font-black text-center">{errorMsg}</p>}<div className="flex space-x-3"><button onClick={cancelLogin} className="flex-1 py-3.5 bg-slate-100 text-slate-700 rounded-2xl font-bold hover:bg-slate-200 transition-colors">Hủy bỏ</button><LoginSubmitButton onClick={handleLogin} pending={isLoggingIn} /></div></div></div>}
         {showStudentAccessModal && (
           <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-in fade-in duration-300">
             <div className="bg-white rounded-[2rem] shadow-2xl max-w-md w-full p-5 sm:p-7 border border-white/20">
@@ -8374,8 +7764,60 @@ ${lessonBlocks}`;
     );
   }
 
+  const teacherQuizToolsProps = {
+    currentQuizResults, handwrittenSubmissions: currentHandwrittenSubmissions, students: allStudents,
+    selectedGrade, currentSchoolYear: activeSchoolYear, selfQuizDraft, setSelfQuizDraft,
+    onOpenHandwrittenSubmission: openHandwrittenSubmissionByKey,
+    onResetQuizAttempts: resetQuizAttemptsForCurrentLesson, onResetStudentAttempt: resetQuizAttemptsForStudent,
+    onAddQuestion: addSelfQuizQuestion, onUpdateQuestion: updateSelfQuizQuestion,
+    onUpdateOption: updateSelfQuizOption, onRemoveQuestion: removeSelfQuizQuestion
+  };
+
+
+  const teacherQuickScorePanel = showLearningResultsWorkspace && quickScoreLockedContext && <Suspense fallback={<p className="p-4 text-blue-700">Đang mở bảng điểm...</p>}><TeacherQuickScorePanel scope={{ popup: showTeacherScores, classLabel: teacherClassLabel(teacherProfile, quickScoreGrade), quickScoreGrade, quickScoreLockedContext, selectedSubject, canWriteCurrentSchoolYear, activeSchoolYear, user }} selection={{ quickVisibleSemesters, setQuickVisibleSemesters, quickSelectedSubjects, quickSelectedSemesters, quickSubjectColSpanBySubject }} draft={{ quickScorebookSavingKey, quickScorebookDocId, quickScorebookEdits, setQuickScorebookEdits, quickInputDrafts, setQuickInputDrafts, quickScorebookLoaded }} actions={{ setShowLearningResultsWorkspace: value => { setShowLearningResultsWorkspace(value); if (!value) setShowTeacherScores(false); }, setQuickScoreLockedContext, showNotification, setActiveQuickScoreRowKey, toggleQuickPriorityStudent, handleQuickScoreInputKeyDown, saveQuickScoreValue }} table={{ quickScoreStudents, getQuickScoreColumnWidth, getQuickScoreStudentKey, quickPriorityStudentIds, activeQuickScoreRowKey, quickVisibleScoreColumnsBySubject, getQuickScoreKey, getQuickScoreInputValue, getQuickSemesterTermAverage, getQuickSemesterScoreResult, formatScoreDisplayValue, getQuickScoreTextClass, quickQuizScoreKeySet, parseScoreNumber, getQuickAcademicResult }} /></Suspense>;
+  const compactTeacherLesson = Boolean(loginRole === 'teacher' && selectedLesson && !adminTeaching.active && !hideMainHeaderForWorkspace);
+  const learningNavigation = (
+    <div className={`student-learning-navigation flex flex-nowrap items-center text-[clamp(9px,2.35vw,11px)] sm:text-xs font-black text-slate-400 ${selectedLesson && role === 'teacher' ? 'mb-2' : 'mb-2 sm:mb-8'} bg-white/80 backdrop-blur-md px-2.5 sm:px-6 py-2 sm:py-4 rounded-xl sm:rounded-2xl shadow-sm border border-white/60 uppercase tracking-wide sm:tracking-widest shrink-0 overflow-hidden`}>
+            <button onClick={resetNavigationWithClean} aria-label="Trang chủ" className="hover:text-blue-600 flex items-center transition-colors whitespace-nowrap flex-shrink-0" title="Trang chủ"><Home className="w-3.5 h-3.5 sm:w-4 sm:h-4 mr-0 sm:mr-2" /> <span className="hidden sm:inline">{'Trang ch\u1ee7'}</span></button>
+            {selectedGrade && <><ChevronRight className="w-3 h-3 sm:w-4 sm:h-4 mx-0.5 sm:mx-2 opacity-30 flex-shrink-0" /><div className="teacher-class-navigation relative flex-shrink-0" data-class-short={teacherClassLabel(teacherProfile, selectedGrade).replace(/^Lớp\s+/, '')}><select aria-label="Khối lớp" value={selectedGrade} onChange={(e) => { setSelectedGrade(e.target.value); setIsTextbookExpanded(role !== 'teacher'); }} className="appearance-none bg-emerald-50 text-emerald-700 border border-emerald-100 pl-1.5 pr-5 sm:pl-2 sm:pr-7 py-0.5 rounded-md sm:rounded-lg whitespace-nowrap font-black focus:outline-none focus:ring-2 focus:ring-emerald-100 cursor-pointer">{navigationGrades.map(g => <option key={g} value={g}>{role === 'teacher' ? teacherClassLabel(teacherProfile, g) : 'Khối ' + g}</option>)}</select><ChevronDown className="pointer-events-none absolute right-1 sm:right-2 top-1/2 -translate-y-1/2 w-3 h-3 opacity-60" /></div></>}
+            {selectedSubject && <><ChevronRight className="w-3 h-3 sm:w-4 sm:h-4 mx-0.5 sm:mx-2 opacity-30 flex-shrink-0" />{role === 'teacher'
+              ? <TeacherSubjectSelect subjects={navigationSubjects} value={selectedSubject} onChange={selectLearningSubject} />
+              : <button onClick={() => setSelectedLesson(null)} aria-label={`Danh sách tuần môn ${selectedSubject}`} title={selectedSubject} className="student-subject-return bg-sky-50 text-sky-700 border border-sky-100 px-1.5 sm:px-2 py-0.5 rounded-md sm:rounded-lg whitespace-nowrap truncate min-w-0 max-w-[82px] sm:max-w-none">{selectedSubject}</button>}</>}
+            {role === 'student' && activeStudentProfile?.isClassLeader && !selectedLesson && (
+              <button type="button" onClick={() => setShowClassOps(true)} className="ml-auto sm:ml-3 bg-emerald-600 text-white px-2.5 sm:px-3 py-1.5 rounded-lg sm:rounded-xl whitespace-nowrap flex items-center gap-1.5 shadow-sm">
+                <ListChecks className="w-3.5 h-3.5" /> <span>Điểm danh</span>
+              </button>
+            )}
+            {selectedLesson && <>
+              <ChevronRight className="w-3 h-3 sm:w-4 sm:h-4 mx-0.5 sm:mx-2 opacity-30 flex-shrink-0" />
+              <div className="learning-week-navigation ml-auto flex items-center gap-0.5 sm:gap-1.5 bg-blue-50/90 border border-blue-100 rounded-lg sm:rounded-xl p-0.5 sm:p-1 shadow-sm flex-shrink-0">
+                <button type="button" onClick={() => setSelectedLesson(String(Math.max(1, Number(selectedLesson || 1) - 1)))} disabled={Number(selectedLesson) <= 1} aria-label="Tuần trước" className="w-7 h-7 sm:w-9 sm:h-9 rounded-md sm:rounded-lg bg-white text-blue-700 flex items-center justify-center shadow-sm disabled:opacity-40 active:scale-95"><ChevronLeft className="w-3.5 h-3.5 sm:w-4 sm:h-4" /></button>
+                <select aria-label="Tuần học" value={selectedLesson} onChange={(e) => setSelectedLesson(e.target.value)} className={`h-7 sm:h-9 bg-white border-0 ${getWeekData(selectedLesson).isExam ? getWeekData(selectedLesson).text : 'text-blue-900'} font-black text-[clamp(10px,2.5vw,11px)] sm:text-sm px-1 sm:px-3 rounded-md sm:rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-200 cursor-pointer text-center w-[clamp(74px,20vw,92px)] sm:w-[120px] shadow-sm`}>
+                  {Array.from({ length: TOTAL_LESSONS }, (_, i) => i + 1).map(l => {
+                    const lData = getWeekData(l);
+                    return <option key={l} value={String(l)}>{(quizLessonSet.has(String(l)) ? '* ' : '') + (lData.isExam ? lData.main : 'Tuần ' + l)}</option>
+                  })}
+                </select>
+                <button type="button" onClick={() => setSelectedLesson(String(Math.min(TOTAL_LESSONS, Number(selectedLesson || 1) + 1)))} disabled={Number(selectedLesson) >= TOTAL_LESSONS} aria-label="Tuần sau" className="w-7 h-7 sm:w-9 sm:h-9 rounded-md sm:rounded-lg bg-white text-blue-700 flex items-center justify-center shadow-sm disabled:opacity-40 active:scale-95"><ChevronRight className="w-3.5 h-3.5 sm:w-4 sm:h-4" /></button>
+              </div>
+              {role === 'student' && <div className="student-reading-actions">
+                {activeStudentProfile?.isClassLeader && <button type="button" onClick={() => setShowClassOps(true)}><ListChecks size={15} />Điểm danh</button>}
+                {(studentCurrentQuizVisible || studentScheduledQuizPending) && <button type="button" disabled={!studentCurrentQuizVisible} onClick={() => { setShowStudentQuizPanel(true); requestAnimationFrame(() => document.getElementById('quiz-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' })); }}>{studentCurrentQuizVisible ? <Bell size={15} /> : <Clock size={15} />}{studentCurrentQuizVisible ? 'Có bài kiểm tra' : `Mở sau ${scheduledQuizCountdownText}`}</button>}
+                <details className="student-reading-options">
+                  <summary>Tùy chọn</summary>
+                  <LessonToolbar teacher={false} layout={lessonLayout}>
+                    {SUPABASE_LESSONS_ENABLED && <button type="button" disabled={isLoadingNote} onClick={() => setNoteReadAttempt(value => value + 1)}>{isLoadingNote ? 'Đang tải bài…' : 'Tải lại bài'}</button>}
+                  </LessonToolbar>
+                </details>
+              </div>}
+            </>}
+        </div>
+  );
+
   return (
-    <div className={`min-h-screen flex flex-col text-slate-800 font-sans relative ${role === 'student' ? `student-portal${selectedLesson ? ' student-reading' : ''}` : role === 'teacher' ? 'teacher-portal' : ''}`} style={focusBackgroundStyle}><MainBackground />
+    <div className={`min-h-screen flex flex-col text-slate-800 font-sans relative ${compactTeacherLesson ? 'teacher-lesson-focus ' : ''}${selectedLesson ? 'lesson-reading ' : ''}${role === 'student' ? `student-portal${selectedLesson ? ' student-reading' : ''}` : role === 'teacher' ? 'teacher-portal' : ''}`} style={focusBackgroundStyle}><MainBackground />
+      {notificationToast}
+      {role === 'teacher' && showTeacherScores && teacherQuickScorePanel && createPortal(<div className="teacher-score-popup" role="dialog" aria-modal="true" aria-label="Điểm số" onKeyDown={event => { if (event.key === 'Escape') { setShowTeacherScores(false); setShowLearningResultsWorkspace(false); setQuickScoreLockedContext(null); } }}>{teacherQuickScorePanel}</div>, document.body)}
       {role === 'teacher' && educationGrades('primary').includes(String(scorebookGrade)) && <WorkspaceErrorBoundary title="Sổ điểm tiểu học" onClose={() => setScorebookGrade(null)}>
         <Suspense fallback={<div className="fixed inset-0 z-[140] bg-white p-8">Đang mở sổ điểm tiểu học…</div>}>
           <PrimaryAcademicWorkspace grade={scorebookGrade} allowedGrades={(teacherProfile?.grades || []).filter(grade => educationGrades('primary').includes(String(grade)))}
@@ -8394,13 +7836,7 @@ ${lessonBlocks}`;
         .news-content-display p { margin-bottom: 8px; }
         .ai-response-content p { margin-bottom: 8px; line-height: 1.6; }
         .ai-response-content strong { color: #1e3a8a; }
-        .student-content mjx-container, .teacher-content mjx-container, .ai-response-content mjx-container { font-size: 112% !important; overflow-x: auto; overflow-y: hidden; max-width: 100%; }
-        .student-content mjx-container[display="true"], .teacher-content mjx-container[display="true"], .ai-response-content mjx-container[display="true"] { padding: 0.75rem 0; }
-        .student-content mjx-container[jax="CHTML"] { line-height: 1.25; }
-        .student-content .teacher-only { display: none !important; }
         .student-content .ai-suggestion-title { display: none !important; }
-        .rich-editor .teacher-only, .teacher-content .teacher-only { display: block; background-color: #fff1f2; padding: 25px 15px 15px 15px; border-radius: 8px; border: 2px dashed #f43f5e; margin-top: 20px; position: relative; }
-        .rich-editor .teacher-only::before, .teacher-content .teacher-only::before { content: "CHỈ GIÁO VIÊN THẤY (ĐÁP ÁN BỊ ẨN VỚI HỌC SINH)"; position: absolute; top: -12px; left: 15px; background: #f43f5e; color: white; padding: 4px 12px; border-radius: 12px; font-size: 11px; font-weight: 900; }
       `}</style>
 
       {showClassOps && role === 'student' && activeStudentProfile?.isClassLeader && (
@@ -8422,45 +7858,33 @@ ${lessonBlocks}`;
       )}
 
       {showStudentProfileModal && activeStudentProfile?.id && (
-        <WorkspaceErrorBoundary title="Hồ sơ học sinh" onClose={() => setShowStudentProfileModal(false)}><Suspense fallback={<div className="fixed inset-0 z-[115] bg-white flex items-center justify-center font-bold text-blue-700">Đang mở hồ sơ học sinh...</div>}><StudentProfileModal view={{ studentHistoryRecords: allStudents, studentAttendance: attendanceDocs, STUDENT_PROFILE_IMAGE_FIELDS, activeStudentIsReadOnly, activeStudentPendingProfileChanges, activeStudentPendingProfileFieldKeys, activeStudentPendingProfileFieldLabels, activeStudentPendingProfileRequests, activeStudentProfile, activeStudentReadOnlyReason, applyStudentProfileImageFiles, currentSchoolYear, currentWardOptions, studentProfileProvinceOptions, studentProfileProvinceDirectoryStatus, retryStudentProfileProvinceDirectory, getStudentProfileEmbedUrl, getStudentProfileImageUrl, handleStudentProfileFieldChange, handleStudentProfileImageChange, householdWardOptions, isSubmittingProfileRequest, removeStudentProfileExistingDocumentPage, removeStudentProfileSelectedImage, setShowStudentProfileModal, studentProfileDocumentOverrides, studentProfileDraft, studentProfileEditableFields, studentProfileImageAppendModes, studentProfileImagePreviews, studentProfileImages, submitStudentProfileRequest }} /></Suspense></WorkspaceErrorBoundary>
+        <WorkspaceErrorBoundary title="Hồ sơ học sinh" onClose={() => setShowStudentProfileModal(false)}><Suspense fallback={<div className="fixed inset-0 z-[115] bg-white flex items-center justify-center font-bold text-blue-700">Đang mở hồ sơ học sinh...</div>}><StudentProfileModal view={{ studentProfileAcademicHistory, studentHistoryRecords: allStudents, studentAttendance: attendanceDocs, STUDENT_PROFILE_IMAGE_FIELDS, activeStudentIsReadOnly, activeStudentPendingProfileChanges, activeStudentPendingProfileFieldKeys, activeStudentPendingProfileFieldLabels, activeStudentPendingProfileRequests, activeStudentProfile, activeStudentReadOnlyReason, applyStudentProfileImageFiles, currentSchoolYear, studentProfileAddressFields: studentProfileLocations.fields, studentProfileProvinceDirectoryStatus: studentProfileLocations.status, retryStudentProfileProvinceDirectory: studentProfileLocations.retry, getStudentProfileEmbedUrl, getStudentProfileImageUrl, handleStudentProfileFieldChange, handleStudentProfileImageChange, isSubmittingProfileRequest, removeStudentProfileExistingDocumentPage, removeStudentProfileSelectedImage, setShowStudentProfileModal, studentProfileDocumentOverrides, studentProfileDraft, studentProfileEditableFields, studentProfileImageAppendModes, studentProfileImagePreviews, studentProfileImages, submitStudentProfileRequest }} /></Suspense></WorkspaceErrorBoundary>
           )}
 
-          {role === 'teacher' && showQuizComposeWorkspace && (
-            <div className="fixed inset-0 z-[80] bg-slate-100 overflow-y-auto p-2 sm:p-3">
-              <div className="w-full max-w-none mx-auto space-y-3 sm:space-y-4">
-                <div className="sticky top-0 z-10 rounded-3xl border border-emerald-100 bg-white/95 px-3 sm:px-5 py-3 sm:py-4 shadow-lg backdrop-blur flex flex-col lg:flex-row lg:items-center justify-between gap-3">
-                  <div className="flex items-center gap-3 min-w-0">
-                    <button type="button" onClick={() => { refreshQuizHtmlFromEditors(); setShowQuizComposeWorkspace(false); }} className="h-11 px-3 sm:px-4 rounded-2xl bg-slate-100 text-slate-700 border border-slate-200 text-xs font-black uppercase flex items-center gap-2 hover:bg-slate-200">
-                      <ChevronLeft className="w-4 h-4" /> Quay lại
-                    </button>
-                    <div className="min-w-0">
-                      <h3 className="font-black text-emerald-900 text-base sm:text-xl uppercase tracking-tight flex items-center gap-2"><Pencil className="w-5 h-5" /> Bảng soạn đề</h3>
-                      <div className="text-[10px] sm:text-xs font-bold text-emerald-700/70 truncate">Soạn đề, đáp án và biểu điểm trong một trang riêng rộng rãi</div>
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-1 sm:flex sm:flex-wrap items-center gap-2">
-                    <button type="button" onClick={() => setShowQuizToolbar(prev => !prev)} className="h-10 px-3 bg-slate-100 text-slate-700 rounded-xl font-black text-[10px] sm:text-xs uppercase border border-slate-200">{showQuizToolbar ? '\u1ea8n c\u00f4ng c\u1ee5' : 'C\u00f4ng c\u1ee5'}</button>
-                  </div>
-                </div>
-
-                <div className="rounded-3xl border border-emerald-100 bg-white shadow-xl p-3 sm:p-5 space-y-3 sm:space-y-4">
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                    <button type="button" onClick={() => setShowQuizArchive(prev => !prev)} className={(showQuizArchive ? 'bg-amber-600 text-white border-amber-600' : 'bg-amber-50 text-amber-700 border-amber-200') + ' h-11 px-3 rounded-xl font-black text-[10px] sm:text-xs uppercase border shadow-sm flex items-center justify-center gap-2 text-center leading-tight'}><Copy className="w-3.5 h-3.5" /><span>Kho đề</span></button>
-                    <button type="button" onClick={handleOpenAiModal} className="h-11 bg-indigo-600 text-white px-3 rounded-xl text-[10px] sm:text-xs font-black shadow-md flex items-center justify-center gap-2 uppercase text-center leading-tight"><Sparkles className="w-3.5 h-3.5" /> <span>Tạo đề tự động</span></button>
-                    <button type="button" onClick={handleClearQuiz} disabled={isSavingQuiz} className="h-11 bg-white text-slate-600 border border-slate-200 px-3 rounded-xl text-[10px] sm:text-xs font-black shadow-sm flex items-center justify-center gap-2 uppercase text-center leading-tight hover:bg-rose-50 hover:text-rose-600 hover:border-rose-100 disabled:opacity-50"><Trash2 className="w-3.5 h-3.5" /> <span>Xóa hết</span></button>
+          {role === 'teacher' && (showQuizEditor || showQuizComposeWorkspace || showQuizWorkWorkspace) && (
+            <TeacherQuizWorkspace activeTab={teacherQuizWorkspaceTab} onTabChange={selectTeacherQuizWorkspaceTab} onClose={closeTeacherQuizWorkspace} loading={isLoadingQuiz}
+              classLabel={teacherClassLabel(teacherProfile, selectedGrade)}
+              context={selectedSubject + ' · ' + getWeekDisplayName(selectedLesson) + ' · ' + activeSchoolYear}
+              scoreCount={quizScoreCount} pendingCount={pendingHandwrittenSubmissionCount}
+              compose={<>                <div className="rounded-3xl border border-emerald-100 bg-white shadow-xl p-3 sm:p-5 space-y-3 sm:space-y-4">
+                  <div className="quiz-compose-actions">
+                    <button type="button" onClick={() => quizEditorRef.current?.focus()}>Dán / nhập đề</button>
+                    <button type="button" aria-expanded={showQuizArchive} onClick={() => setShowQuizArchive(prev => !prev)}><Copy className="h-4 w-4" /> Chọn từ kho đề</button>
+                    <button type="button" disabled={isLoadingQuiz || isSavingQuiz} onClick={handleClearQuiz} className="quiz-clear-content"><Trash2 className="h-4 w-4" /> Xóa nội dung đề</button>
+                    <button type="button" onClick={() => handleOpenAiModal('exam')}><Sparkles className="h-4 w-4" /> Tạo bằng AI</button>
                   </div>
 
                   {showQuizArchive && (
                     <div className="rounded-2xl border border-amber-100 bg-amber-50/60 p-3 sm:p-4 space-y-2">
                       <div className="flex items-center justify-between gap-2">
                         <div className="font-black text-amber-900 text-xs uppercase">Kho đề đã lưu</div>
-                        {previousQuizId && <button type="button" onClick={handleLoadPreviousQuiz} className="px-3 py-2 rounded-xl bg-white text-amber-700 border border-amber-200 text-[10px] font-black uppercase">Lấy đề năm trước</button>}
+                        <label className="text-xs">Năm học <select aria-label="Năm học trong kho đề" value={quizArchiveYear} onChange={event => setQuizArchiveYear(event.target.value)} className="ml-2 rounded border p-2"><option value="all">Tất cả</option>{[...new Set([activeSchoolYear, previousSchoolYear, ...savedQuizArchive.map(item => item.schoolYear)].filter(Boolean))].map(year => <option key={year}>{year}</option>)}</select></label>
                       </div>
-                      {savedQuizArchive.length === 0 ? (
-                        <div className="rounded-xl border border-dashed border-amber-200 bg-white p-4 text-center text-xs font-bold text-slate-500">Chưa có đề nào trong kho cho khối/môn/năm học này.</div>
+                      {savedQuizArchive.filter(item => quizArchiveYear === 'all' || String(item.schoolYear || activeSchoolYear) === quizArchiveYear).length === 0 ? (
+                        <div className="rounded-xl border border-dashed border-amber-200 bg-white p-4 text-center text-xs font-bold text-slate-500">Chưa có đề theo năm học đã chọn.</div>
                       ) : (
                         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2 max-h-56 overflow-y-auto pr-1">
-                          {savedQuizArchive.map(item => (
+                          {savedQuizArchive.filter(item => quizArchiveYear === 'all' || String(item.schoolYear || activeSchoolYear) === quizArchiveYear).map(item => (
                             <button key={item.id} type="button" onClick={() => loadQuizFromArchive(item)} className="rounded-xl border border-amber-100 bg-white px-3 py-2 text-left hover:border-amber-300 hover:bg-amber-50 transition-colors">
                               <div className="font-black text-slate-800 text-xs uppercase truncate">{item.title || `${item.subject} ${item.grade} - ${getWeekDisplayName(item.lesson)}`}</div>
                               <div className="mt-1 text-[10px] font-bold text-slate-500">{item.schoolYear || currentSchoolYear} • {getWeekDisplayName(item.lesson)} • {item.updatedAt ? new Date(item.updatedAt).toLocaleDateString('vi-VN') : 'Chưa rõ ngày'}</div>
@@ -8468,36 +7892,44 @@ ${lessonBlocks}`;
                           ))}
                         </div>
                       )}
+                      {previousQuizId && (quizArchiveYear === 'all' || quizArchiveYear === previousSchoolYear) && !savedQuizArchive.some(item => item.id === previousQuizId) && <button type="button" onClick={handleLoadPreviousQuiz} className="rounded-lg border bg-white px-3 py-2 text-sm">Mở đề tuần này · {previousSchoolYear}</button>}
                     </div>
                   )}
 
-                  {showQuizToolbar && <div className="flex flex-wrap items-center gap-1.5 bg-slate-50 p-1.5 rounded-2xl shadow-sm border border-slate-200"><button onMouseDown={e => {e.preventDefault(); document.execCommand('bold')}} className="p-2 hover:bg-white rounded-xl text-slate-700"><Bold className="w-4 h-4" /></button><button onMouseDown={e => {e.preventDefault(); document.execCommand('italic')}} className="p-2 hover:bg-white rounded-xl text-slate-700"><Italic className="w-4 h-4" /></button><button onMouseDown={e => {e.preventDefault(); document.execCommand('underline')}} className="p-2 hover:bg-white rounded-xl text-slate-700"><Underline className="w-4 h-4" /></button><button onMouseDown={e => {e.preventDefault(); document.execCommand('justifyLeft')}} className="p-2 hover:bg-white rounded-xl text-slate-700"><AlignLeft className="w-4 h-4" /></button><button onMouseDown={e => {e.preventDefault(); document.execCommand('justifyCenter')}} className="p-2 hover:bg-white rounded-xl text-slate-700"><AlignCenter className="w-4 h-4" /></button><button onMouseDown={e => {e.preventDefault(); document.execCommand('justifyRight')}} className="p-2 hover:bg-white rounded-xl text-slate-700"><AlignRight className="w-4 h-4" /></button><button onMouseDown={e => {e.preventDefault(); document.execCommand('foreColor', false, '#dc2626')}} className="w-4 h-4 rounded-full bg-red-600 border border-red-700"></button><button onMouseDown={e => {e.preventDefault(); document.execCommand('foreColor', false, '#2563eb')}} className="w-4 h-4 rounded-full bg-blue-600 border border-blue-700"></button><button onMouseDown={e => {e.preventDefault(); document.execCommand('foreColor', false, '#16a34a')}} className="w-4 h-4 rounded-full bg-green-600 border border-green-700"></button><label className="ml-auto flex items-center gap-1.5 px-3 py-2 bg-emerald-50 text-emerald-700 rounded-xl font-black text-[10px] uppercase cursor-pointer"><ImageIcon className="w-4 h-4" /> {'Ch\u00e8n \u1ea3nh'}<input type="file" accept="image/*" onChange={handleQuizImageUpload} className="hidden" /></label></div>}
+                  <QuizComposerToolbar editorRef={quizEditorRef} onInput={handleQuizEditorInput} onImageUpload={handleQuizImageUpload} />
 
                   <div>
                     <div>
                       <div className="mb-2 text-[10px] sm:text-xs font-black uppercase text-emerald-700">Dán / soạn đề</div>
-                      <div ref={quizEditorRef} contentEditable={true} onInput={handleQuizEditorInput} onPaste={handleQuizPaste} onClick={(e) => handleEditorImageClick(e, 'quiz')} data-placeholder={'Dán hoặc soạn đề tại đây...'} className="quiz-editor quiz-editor-viewport rich-editor p-4 sm:p-7 text-base sm:text-lg leading-relaxed focus:outline-none overflow-y-auto border border-emerald-100 rounded-2xl bg-white shadow-inner" />
+                      <div ref={quizEditorRef} contentEditable={!isLoadingQuiz} onInput={handleQuizEditorInput} onPaste={handleQuizPaste} onClick={(e) => handleEditorImageClick(e, 'quiz')} data-placeholder={'Dán hoặc soạn đề tại đây...'} className="quiz-editor quiz-editor-viewport rich-editor p-4 sm:p-7 text-base sm:text-lg leading-relaxed focus:outline-none overflow-y-auto border border-emerald-100 rounded-2xl bg-white shadow-inner" />
                     </div>
                   </div>
 
-                  <div>
-                    <div className="mb-2 flex items-center justify-between gap-2">
-                      <span className="text-[10px] sm:text-xs font-black uppercase text-rose-700">Đáp án và biểu điểm</span>
-                      <button type="button" onClick={() => handleGenerateQuizAnswer()} disabled={isGeneratingQuizAnswer} className="px-3 py-2 rounded-xl bg-indigo-50 text-indigo-700 border border-indigo-100 text-[10px] font-black uppercase flex items-center gap-1.5 disabled:opacity-50">
-                        {isGeneratingQuizAnswer ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />} Tạo đáp án bằng AI
-                      </button>
-                    </div>
-                    <div ref={quizAnswerEditorRef} contentEditable={true} onInput={handleQuizAnswerInput} onPaste={handleQuizAnswerPaste} data-placeholder={'Dán đáp án ở đây. Nếu chưa có, bấm Tạo đáp án bằng AI...'} className="quiz-editor rich-editor teacher-content min-h-[220px] p-4 sm:p-7 text-base sm:text-lg leading-relaxed focus:outline-none overflow-y-auto border border-rose-100 rounded-2xl bg-white shadow-inner" />
-                  </div>
+                  <details className="quiz-advanced" open={quizAnswerExpanded} onToggle={event => setQuizAnswerExpanded(event.currentTarget.open)}><summary>Đáp án và biểu điểm · Chỉ giáo viên xem</summary>
+                    <QuizAnswerEditor key={quizId || 'draft'} html={quizAnswerHtml} editorRef={quizAnswerEditorRef} active={teacherQuizWorkspaceTab === 'compose' && quizAnswerExpanded}
+                      onInput={handleQuizAnswerInput} onPaste={handleQuizAnswerPaste} onGenerate={handleGenerateQuizAnswer} generating={isGeneratingQuizAnswer} />
+                  </details>
 
-                  <div className="flex items-start justify-between gap-3">
+                  <section className="quiz-auto-section">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div><h4>Trắc nghiệm tự chấm</h4><p className="text-xs text-slate-500">Chuẩn bị câu hỏi và đáp án để học sinh làm trực tuyến.</p></div>
+                      <button type="button" disabled={isLoadingQuiz || isSavingQuiz} onClick={showSelfQuizBuilder ? () => setShowSelfQuizBuilder(false) : openSelfQuizTeacherTab} className="rounded-lg border px-3 py-2 text-sm">{showSelfQuizBuilder ? 'Thu gọn' : quizData?.questions?.length ? 'Kiểm tra câu hỏi' : 'Thiết lập tự chấm'}</button>
+                    </div>
+                    <Suspense fallback={<div className="rounded-2xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-xs font-black text-emerald-700">Đang mở công cụ trắc nghiệm...</div>}>
+                      <SelfQuizTeacherTools {...teacherQuizToolsProps} showSelfQuizBuilder={showSelfQuizBuilder} showQuizResults={false} />
+                    </Suspense>
+                  </section>
+
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                     <div className="min-w-0 flex-1">
                       <input value={quizTitle} onChange={(e) => setQuizTitle(e.target.value)} placeholder="Tên đề để lưu vào kho..." className="mb-2 w-full max-w-xl rounded-xl border border-emerald-100 bg-white px-3 py-2 text-xs sm:text-sm font-bold text-slate-800 focus:outline-none focus:border-emerald-400" />
                       <label className="relative inline-flex px-3 py-2 text-left font-black text-[10px] sm:text-xs text-blue-700 cursor-pointer bg-blue-50 border border-blue-100 rounded-xl">{isSubmitting ? '\u0110ang up file...' : '+ \u0110\u00ednh k\u00e8m'}<input type="file" multiple onChange={(e) => { const files = Array.from(e.target.files || []); handleQuizFileUpload(e, files); e.target.value = null; }} className="absolute inset-0 opacity-0 cursor-pointer" /></label>
                       {quizAttachments.length > 0 && <div className="mt-2 flex flex-col gap-1.5">{quizAttachments.map(file => (<div key={file.id} className="flex items-center justify-between gap-2 rounded-xl border border-blue-100 bg-white px-3 py-2 shadow-sm max-w-full"><button type="button" onClick={() => window.open(file.url || file.previewUrl, '_blank', 'noopener,noreferrer')} className="min-w-0 flex items-center gap-2 text-left text-[10px] sm:text-xs font-bold text-blue-800"><FileText className="w-3.5 h-3.5 flex-shrink-0 text-blue-500" /><span className="truncate">{file.title}</span></button><button type="button" onClick={() => handleRemoveQuizAttachment(file.id)} className="text-rose-500 hover:bg-rose-50 rounded-lg p-1 flex-shrink-0"><X className="w-3.5 h-3.5" /></button></div>))}</div>}
                     </div>
-                    <div className="flex flex-col sm:flex-row items-end sm:items-center gap-2 flex-shrink-0">
-                      <button onClick={handleSaveQuiz} disabled={isSavingQuiz} className="bg-emerald-600 text-white px-4 py-2.5 rounded-xl text-[10px] sm:text-xs font-black flex items-center gap-2 shadow-md hover:bg-emerald-700 disabled:opacity-50">{isSavingQuiz ? <Loader2 className="w-4 h-4 animate-spin" /> : (quizSaveSuccess ? <CheckCircle2 className="w-4 h-4" /> : <Save className="w-4 h-4" />)} {isSavingQuiz ? 'Đang lưu...' : 'Lưu bài'}</button>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button type="button" onClick={openQuickQuizPreview} disabled={isLoadingQuiz || isSavingQuiz} className="rounded-lg border px-3 py-2 text-sm">Xem trước</button>
+                      <button type="button" onClick={() => selectTeacherQuizWorkspaceTab('publish')} disabled={isLoadingQuiz || isSavingQuiz} className="rounded-lg border border-blue-200 px-3 py-2 text-sm text-blue-700">Phát đề</button>
+                      <button onClick={handleSaveQuiz} disabled={isSavingQuiz || isLoadingQuiz} className="bg-emerald-600 text-white px-4 py-2.5 rounded-xl text-[10px] sm:text-xs font-black flex items-center gap-2 shadow-md hover:bg-emerald-700 disabled:opacity-50">{isSavingQuiz ? <Loader2 className="w-4 h-4 animate-spin" /> : (quizSaveSuccess ? <CheckCircle2 className="w-4 h-4" /> : <Save className="w-4 h-4" />)} {isSavingQuiz ? 'Đang lưu...' : quizPublishNow || quizPublishAt ? 'Lưu thay đổi' : 'Lưu đề'}</button>
                     </div>
                   </div>
                   {SERVER_QUIZ_ENABLED && quizId && <button className="rounded bg-blue-100 px-3 py-2 text-sm text-blue-800" onClick={async () => { try { const result = await requestServerQuiz('studentDocument', {quizId}); setQuizDocStatus({ state: 'success', message: 'Bản học sinh đã bỏ đáp án', url: result.url }); } catch (error) { showNotification(error.message, 'error'); } }}>Tạo bản tài liệu học sinh</button>}
@@ -8507,9 +7939,167 @@ ${lessonBlocks}`;
                       {quizDocStatus.url && <a href={quizDocStatus.url} target="_blank" rel="noopener noreferrer" className="bg-white px-3 py-1.5 rounded-lg border border-emerald-200 text-emerald-700 whitespace-nowrap">Mở Doc</a>}
                     </div>
                   )}
+                </div></>}
+              work={<><div className="quiz-results-panel">
+                    <Suspense fallback={<div className="rounded-2xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-xs font-black text-emerald-700">Đang mở công cụ trắc nghiệm...</div>}>
+                      <SelfQuizTeacherTools {...teacherQuizToolsProps} showSelfQuizBuilder={false} showQuizResults={showQuizResults} />
+                    </Suspense>
+                    {showHandwrittenSubmissions && (
+                    <div className="rounded-2xl border border-sky-100 bg-sky-50/60 overflow-hidden">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-3 sm:px-4 py-3 border-b border-sky-100">
+                        <h4 className="text-left font-semibold text-sky-900 text-sm flex items-center gap-2">
+                          <UploadCloud className="w-4 h-4" /> Chấm bài tự luận ({currentHandwrittenSubmissions.length})
+                        </h4>
+                        <div className="flex flex-wrap gap-2">
+
+                          <button type="button" onClick={handleGradeNextSubmission} disabled={gradingSubmissionId || currentHandwrittenSubmissions.length === 0} className="px-3 py-2 rounded-xl bg-indigo-600 text-white text-[10px] sm:text-xs font-black uppercase shadow-sm flex items-center gap-1.5 disabled:opacity-50">
+                            {gradingSubmissionId ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />} Gợi ý chấm bài tiếp theo
+                          </button>
+                          <button type="button" onClick={() => setShowHandwrittenSubmissions(false)} className="px-3 py-2 rounded-xl bg-rose-50 text-rose-600 border border-rose-100 text-[10px] sm:text-xs font-black uppercase flex items-center gap-1.5 hover:bg-rose-600 hover:text-white transition-colors">
+                            <X className="w-3.5 h-3.5" /> Đóng
+                          </button>
+                        </div>
+                      </div>
+                      {showHandwrittenSubmissions && (
+                        <div className="p-3 sm:p-4 space-y-3 bg-white/70">
+                          {studentEssayText && (
+                            <div className="rounded-2xl border border-amber-100 bg-amber-50 p-3 sm:p-4">
+                              <div className="mb-2 text-[10px] font-black uppercase text-amber-700">Đề tự luận</div>
+                              <div
+                                ref={essayPromptRef}
+                                className="rounded-xl border border-amber-100 bg-white p-3 sm:p-4 text-xs sm:text-sm font-bold text-slate-800 leading-relaxed student-content"
+                                dangerouslySetInnerHTML={{ __html: sanitizeHtml(formatEssayPromptHtml(studentEssayText)) }}
+                              />
+                            </div>
+                          )}
+                          {currentHandwrittenSubmissions.length > 0 && (
+                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 rounded-xl border border-sky-100 bg-sky-50 px-3 py-2">
+                              <div className="text-[10px] sm:text-xs font-black text-sky-800 uppercase">
+                                Bài {handwrittenViewerIndex + 1}/{currentHandwrittenSubmissions.length}
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <button type="button" onClick={() => setHandwrittenViewerIndex(prev => Math.max(prev - 1, 0))} disabled={handwrittenViewerIndex <= 0} className="px-3 py-2 rounded-xl bg-white text-sky-700 border border-sky-100 text-[10px] font-black uppercase disabled:opacity-40 flex items-center gap-1">
+                                  <ChevronLeft className="w-3.5 h-3.5" /> Trước
+                                </button>
+                                <button type="button" onClick={() => setHandwrittenViewerIndex(prev => Math.min(prev + 1, currentHandwrittenSubmissions.length - 1))} disabled={handwrittenViewerIndex >= currentHandwrittenSubmissions.length - 1} className="px-3 py-2 rounded-xl bg-white text-sky-700 border border-sky-100 text-[10px] font-black uppercase disabled:opacity-40 flex items-center gap-1">
+                                  Sau <ChevronRight className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                          {currentHandwrittenSubmissions.length === 0 ? (
+                            <div className="rounded-xl border border-dashed border-sky-200 bg-white p-5 text-center text-slate-400 text-xs sm:text-sm font-bold">
+                              Chưa có bài viết tay nào được nộp cho bài này.
+                            </div>
+                          ) : [selectedHandwrittenSubmission].filter(Boolean).map(submission => {
+                            const draft = submissionGradeDrafts[submission.id] || {};
+                            const isGradingThis = gradingSubmissionId === submission.id || submission.aiStatus === 'grading';
+                            return (
+                              <div key={submission.id} className="rounded-2xl border border-slate-200 bg-white p-3 sm:p-4 shadow-sm">
+                                <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-3">
+                                  <div className="min-w-0">
+                                    <div className="font-black text-slate-900 text-sm sm:text-base truncate">{submission.studentName || 'Học sinh'} <span className="text-[11px] text-slate-400">{submission.studentAccessCode ? `- ${submission.studentAccessCode}` : ''}</span></div>
+                                    <div className="text-[10px] sm:text-xs font-bold text-slate-500 mt-0.5">
+                                      {submission.submittedAt ? new Date(submission.submittedAt).toLocaleString('vi-VN') : ''} • {submission.fileName || 'Bài nộp'}
+                                    </div>
+                                    <div className={`inline-flex mt-2 px-2.5 py-1 rounded-full text-[10px] font-black uppercase border ${submission.status === 'left_page' ? 'bg-rose-50 text-rose-700 border-rose-100' : submission.status === 'teacher_reviewed' ? 'bg-emerald-50 text-emerald-700 border-emerald-100' : submission.aiStatus === 'graded' ? 'bg-blue-50 text-blue-700 border-blue-100' : submission.aiStatus === 'error' ? 'bg-rose-50 text-rose-700 border-rose-100' : 'bg-amber-50 text-amber-700 border-amber-100'}`}>
+                                      {submission.status === 'left_page' ? 'HS đã thoát ra ngoài' : submission.status === 'teacher_reviewed' ? 'GV đã duyệt' : submission.aiStatus === 'graded' ? 'AI đã chấm nháp' : submission.aiStatus === 'error' ? 'AI lỗi' : isGradingThis ? 'Đang chấm AI' : 'Chờ AI'}
+                                    </div>
+                                  </div>
+                                  <div className="flex flex-wrap gap-2">
+                                    {submission.fileUrl && <a href={submission.fileUrl} target="_blank" rel="noopener noreferrer" className="px-3 py-2 rounded-xl bg-slate-50 text-slate-700 border border-slate-200 text-[10px] sm:text-xs font-black uppercase flex items-center gap-1.5"><ExternalLink className="w-3.5 h-3.5" /> Mở bài</a>}
+                                    <button type="button" onClick={() => runAiGradingForSubmission(submission)} disabled={isGradingThis || !submission.fileId} className="px-3 py-2 rounded-xl bg-indigo-50 text-indigo-700 border border-indigo-100 text-[10px] sm:text-xs font-black uppercase flex items-center gap-1.5 disabled:opacity-50">
+                                      {isGradingThis ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />} Gợi ý chấm bằng AI
+                                    </button>
+                                  </div>
+                                </div>
+                                {submission.fileUrl && (
+                                  <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 overflow-hidden">
+                                    <iframe src={getEmbedUrl(submission.fileUrl)} title={`Bài của ${submission.studentName || 'học sinh'}`} className="w-full h-[320px] sm:h-[520px] bg-white border-0" allowFullScreen />
+                                  </div>
+                                )}
+                                {submission.aiComment && (
+                                  <div className="mt-3 rounded-xl border border-blue-100 bg-blue-50 p-3">
+                                    <div className="text-[10px] font-black uppercase text-blue-600 mb-1">Nhận xét AI</div>
+                                    <div className="text-xs sm:text-sm font-bold text-slate-700 whitespace-pre-wrap max-h-40 overflow-y-auto">{submission.aiComment}</div>
+                                  </div>
+                                )}
+                                {submission.aiError && submission.aiStatus === 'error' && (
+                                  <div className="mt-3 rounded-xl border border-rose-100 bg-rose-50 p-3 text-xs font-black text-rose-700">{submission.aiError}</div>
+                                )}
+                                <TeacherEssayReview submission={submission} draft={draft} busy={reviewPendingId === submission.id || gradingSubmissionId === submission.id} canWrite={canWriteCurrentSchoolYear} onChange={(key,value) => updateSubmissionGradeDraft(submission.id,key,value)} onSave={() => saveTeacherGradeForSubmission(submission)} onSend={() => saveTeacherGradeForSubmission(submission, { send:true })} onAi={() => runAiGradingForSubmission(submission)} onExternalAi={provider => openEssayExternalAi(submission, allQuizzes.find(q => q.id === submission.quizId), provider)} />
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                    )}
+                        </div></>}
+              publish={<TeacherQuizPublishPanel published={currentQuizVisibleForStudents} publishAt={quizPublishAt} hasContent={(!isLoadingQuiz && (quizHasQuickContent || selfQuizDraft.questions.length > 0))} saving={isSavingQuiz || isLoadingQuiz} hideLabel={quizPublishAction.label}
+                onPreview={openQuickQuizPreview} onHide={handleToggleQuizPublish}>
+                <p className="text-sm text-slate-600">{pendingQuizDeliveryMode === 'auto' ? 'Học sinh làm trắc nghiệm trực tuyến.' : 'Học sinh xem đề và nộp bài tự luận.'} {pendingQuizScoreTarget ? 'Ghi điểm vào ' + pendingQuizScoreTarget.label + '.' : 'Không tự ghi vào sổ điểm.'}</p>
+<details className="quiz-advanced"><summary>Tùy chọn phát đề</summary>              {selfQuizDraft?.questions?.length > 0 && (
+                <div className="bg-emerald-50 border border-emerald-100 rounded-2xl p-3">
+                  <div className="text-[10px] font-black text-emerald-700 uppercase mb-2">Cách làm bài</div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button type="button" onClick={() => setPendingQuizDeliveryMode('auto')} className={`py-2 rounded-xl text-[10px] font-black uppercase border ${pendingQuizDeliveryMode === 'auto' ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-emerald-700 border-emerald-100'}`}>Làm trắc nghiệm trực tuyến</button>
+                    <button type="button" onClick={() => setPendingQuizDeliveryMode('manual')} className={`py-2 rounded-xl text-[10px] font-black uppercase border ${pendingQuizDeliveryMode === 'manual' ? 'bg-slate-700 text-white border-slate-700' : 'bg-white text-slate-700 border-slate-200'}`}>Xem đề / Nộp bài tự luận</button>
+                  </div>
                 </div>
+              )}
+              <div className="bg-blue-50 border border-blue-100 rounded-2xl p-3">
+                <div className="flex items-center justify-between gap-3 mb-2">
+                  <div className="text-[10px] font-black text-blue-800 uppercase">Ghi điểm vào cột nào?</div>
+                  {quizScoreSubject && <div className="text-[10px] font-black text-blue-500">{quizScoreSubject.label} · {quizScoreSemester === 'hki' ? 'HK1' : 'HK2'}</div>}
+                </div>
+                {!quizScoreSubject ? (
+                  <div className="text-xs font-bold text-slate-500 bg-white rounded-xl p-3 border border-blue-100">Môn này chưa có bảng điểm nhanh nên chưa tự ghi điểm.</div>
+                ) : (
+                  <>
+                    <div className="grid grid-cols-4 gap-2">
+                      <button type="button" onClick={() => setPendingQuizScoreTarget(null)} className={`py-2 rounded-xl text-[10px] font-black uppercase border ${!pendingQuizScoreTarget ? 'bg-slate-700 text-white border-slate-700' : 'bg-white text-slate-600 border-slate-200'}`}>Không ghi</button>
+                      {quizScoreTargetOptions.map(option => {
+                        const active = pendingQuizScoreTarget
+                          && String(pendingQuizScoreTarget.semester) === String(quizScoreSemester)
+                          && Number(pendingQuizScoreTarget.pageIndex) === Number(quizScoreSubject.pageIndex)
+                          && Number(pendingQuizScoreTarget.scoreIndex) === Number(option.scoreIndex);
+                        return (
+                          <button
+                            key={`score-target-${option.label}`}
+                            type="button"
+                            disabled={option.used}
+                            onClick={() => setPendingQuizScoreTarget({
+                              grade: String(selectedGrade || ''),
+                              schoolYear: currentSchoolYear || '',
+                              semester: quizScoreSemester,
+                              semesterLabel: quizScoreSemester === 'hki' ? 'HK1' : 'HK2',
+                              subjectKey: quizScoreSubject.key,
+                              subjectLabel: quizScoreSubject.label,
+                              pageIndex: quizScoreSubject.pageIndex,
+                              scoreIndex: option.scoreIndex,
+                              label: option.label
+                            })}
+                            className={`py-2 rounded-xl text-[10px] font-black uppercase border transition-all ${active ? 'bg-blue-600 text-white border-blue-600 shadow-sm' : option.used ? 'bg-slate-100 text-slate-300 border-slate-200 cursor-not-allowed' : 'bg-white text-blue-700 border-blue-100 hover:bg-blue-600 hover:text-white'}`}
+                          >
+                            {option.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <div className="mt-2 text-[10px] font-bold text-blue-500">Cột mờ là cột đã có điểm trong bảng điểm của khối này.</div>
+                  </>
+                )}
               </div>
-            </div>
+            </details>
+              <button onClick={confirmQuizPublishNow} className="w-full py-3 bg-emerald-600 text-white rounded-2xl font-black shadow-lg">Phát đề ngay</button>
+              <div className="bg-slate-50 border border-slate-200 rounded-2xl p-3">
+                <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Hẹn ngày giờ (giờ Việt Nam)</label>
+                <input type="datetime-local" value={quizPublishModalAt} onChange={(e) => setQuizPublishModalAt(e.target.value)} className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 font-bold text-slate-700 outline-none" />
+                <button onClick={confirmQuizSchedule} className="mt-3 w-full py-2.5 bg-blue-600 text-white rounded-xl font-black text-xs">Lưu và hẹn phát</button>
+              </div>
+              </TeacherQuizPublishPanel>}
+            />
           )}
 
       {confirmModal.show && (
@@ -8526,13 +8116,19 @@ ${lessonBlocks}`;
       )}
 
       {!hideMainHeaderForWorkspace && <header className="student-portal-header bg-white/80 backdrop-blur-md border-b sticky top-0 z-40 shadow-sm">
-        <div className="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
-          <div className="flex items-center space-x-3 cursor-pointer group flex-shrink-0" onClick={resetNavigationWithClean}>
+        <div className={`learning-header-row max-w-6xl mx-auto px-4 h-16 flex items-center justify-between${adminTeaching.active ? ' has-admin-teaching' : ''}`}>
+        {adminTeaching.active ? <AdminTeachingToolbar schoolCode={currentContentSchoolCode} schoolYear={activeSchoolYear} schoolYears={schoolYearOptions}
+          locked={!canWriteCurrentSchoolYear} onSchoolChange={campus => { if (campus !== currentContentSchoolCode) adminTeaching.open(campus); }}
+          onYearChange={year => { if (year === activeSchoolYear) return; resetTeachingWorkspace(); adminSchoolYearTouchedRef.current = true; setAdminSchoolYear(year); }}
+          onClose={() => { adminTeaching.close(); window.history.replaceState(null, '', window.location.pathname + window.location.search); }} />
+          : loginRole === 'teacher' ? <div className="teacher-header-identity"><TeacherIdentity profile={teacherProfile} /></div> : <div className="flex items-center space-x-3 cursor-pointer group flex-shrink-0" onClick={resetNavigationWithClean}>
             <div className="bg-blue-600 p-2 rounded-xl shadow-md group-hover:bg-blue-700 transition-colors"><Library className="w-5 h-5 text-white" /></div>
             <div className="hidden sm:block leading-tight"><span className="font-black text-lg block tracking-tighter">{SCHOOL_OPTIONS.find(school => school.code === currentContentSchoolCode)?.name || 'Kho Học Liệu Số'}</span><span className="text-[10px] text-blue-600 font-black uppercase tracking-widest">Kho Học Liệu Số</span></div>
-          </div>
+          </div>}
           
-          <div className="student-header-news flex flex-1 ml-3 sm:ml-6 mr-3 sm:mr-6 items-center overflow-hidden bg-slate-50/80 rounded-full px-3 py-1.5 border border-slate-200/60 shadow-inner">
+          {role !== 'teacher' && loginRole !== 'teacher' && (
+          <div className={`student-header-news ${role === 'student' && loginRole !== 'teacher' ? 'has-learning-updates' : ''} flex flex-1 ml-3 sm:ml-6 mr-3 sm:mr-6 items-center overflow-hidden bg-slate-50/80 rounded-full px-3 py-1.5 border border-slate-200/60 shadow-inner`}>
+             {role === 'student' && loginRole !== 'teacher' ? <HomeUpdateTicker items={combinedFeedSorted} onOpen={openHomepageFeedItem} grade={activeStudentGrade} error={learningUpdates.error} /> : <>
              <Sparkles className="w-3.5 h-3.5 text-blue-500 mr-2 flex-shrink-0 animate-pulse" />
              <marquee direction="left" scrollamount="4" className="text-[10px] sm:text-[11px] font-black uppercase tracking-[0.2em] w-full pt-0.5 whitespace-nowrap flex items-center h-full">
                {loginRole === 'teacher' ? (
@@ -8550,20 +8146,52 @@ ${lessonBlocks}`;
                     : 'HỆ THỐNG ĐANG HOẠT ĐỘNG ỔN ĐỊNH...'}
                </span>
              </marquee>
+             </>}
           </div>
+          )}
 
-          <div className="student-header-actions flex items-center gap-2 sm:gap-5 flex-shrink-0">
+          {compactTeacherLesson && learningNavigation}
+          <TeacherHeaderActions onHome={resetNavigationWithClean} compact={compactTeacherLesson} teacherName={teacherProfile?.fullName || teacherProfile?.username || 'Giáo viên'} primaryActions={<>{role === 'teacher' && <TeacherQuizManager key={`quizzes-${teacherProfile?.teacherId || teacherProfile?.id || 'teacher'}/${activeSchoolYear}`}
+              currentContext={{ grade: selectedGrade, subject: selectedSubject, lesson: selectedLesson }}
+              renderEssayReview={(submission, _student, assignment) => <TeacherEssayReview submission={submission} draft={submissionGradeDrafts[submission.id]} busy={reviewPendingId === submission.id || gradingSubmissionId === submission.id} canWrite={canWriteCurrentSchoolYear} onChange={(key, value) => updateSubmissionGradeDraft(submission.id, key, value)} onSave={() => saveTeacherGradeForSubmission(submission)} onSend={() => saveTeacherGradeForSubmission(submission, { send: true })} onAi={() => runAiGradingForSubmission(submission)} onExternalAi={provider => openEssayExternalAi(submission, assignment, provider)} />}
+              profile={teacherProfile} subscriptionScope={{ user: { uid: user?.uid }, scoped: SCOPED_AUTH_ENABLED, identity: scopedIdentity, isAdmin: adminTeaching.active }} schoolYear={activeSchoolYear} isQuizVisible={isQuizVisibleForStudents}
+              onOpenQuiz={(quiz, action) => {
+                if (!teacherCanUseScope(quiz.grade, quiz.subject) || !contentBelongsToCampus(quiz, currentContentSchoolCode)) return false;
+                setSelectedGrade(String(quiz.grade)); setSelectedSubject(quiz.subject); setSelectedLesson(String(quiz.lesson));
+                setTeacherTab('giang_day'); setViewingMaterial(null); setShowCommonLibraryWorkspace(false);
+                if (action === 'compose') { setQuizTeacherTab('compose'); setShowQuizResults(false); setShowQuizWorkWorkspace(false); setShowQuizComposeWorkspace(true); }
+                else { setShowQuizComposeWorkspace(false); openScoreTeacherTab(); setShowHandwrittenSubmissions(false); }
+                return true;
+              }} />}
+            {role === 'teacher' && <button type="button" className="teacher-scores-trigger" title="Điểm số của lớp và môn đang chọn" disabled={!selectedGrade || !selectedSubject}
+              onClick={() => {
+                if (!teacherCanUseScope(selectedGrade, selectedSubject)) return;
+                if (Number(selectedGrade) >= 6 && !getQuickSubjectKeyFromName(selectedSubject)) { showNotification('Môn này chưa có bảng cột điểm trong phần Nhập điểm.', 'error'); return; }
+                setQuickScoreSchoolCode(currentContentSchoolCode);
+                openQuickScoreWorkspace({ grade: selectedGrade, subjectName: selectedSubject, locked: true });
+                if (Number(selectedGrade) >= 6) setShowTeacherScores(true);
+              }}><FileText className="h-4 w-4" /><span>Điểm số</span></button>}
+            {role === 'teacher' && <TeacherLearningMaterialTracker key={`${teacherProfile?.teacherId || teacherProfile?.id || 'teacher'}/${activeSchoolYear}`}
+              profile={teacherProfile} subscriptionScope={{ user: { uid: user?.uid }, scoped: SCOPED_AUTH_ENABLED, identity: scopedIdentity, isAdmin: adminTeaching.active }}
+              schoolCode={currentContentSchoolCode} schoolYear={activeSchoolYear} isQuizVisible={isQuizVisibleForStudents}
+              onOpenLesson={(row, lesson) => {
+                if (!teacherCanUseScope(row.grade, row.subject) || row.schoolCode !== currentContentSchoolCode) return;
+                setSelectedGrade(row.grade); setSelectedSubject(row.subject); setSelectedLesson(String(lesson));
+                setTeacherTab('giang_day'); setViewingMaterial(null); setShowCommonLibraryWorkspace(false);
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }} />}</>}>
             {loginRole === 'teacher' ? (
-              <button onClick={handleToggleRole} className={`flex items-center space-x-1 sm:space-x-2.5 px-3 py-2 sm:px-4 sm:py-2 rounded-full border shadow-sm transition-all hover:scale-105 active:scale-95 ${role === 'teacher' ? 'bg-indigo-50 border-indigo-200 text-indigo-700 hover:bg-indigo-100' : 'bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100'}`}>
+              <button onClick={handleToggleRole} title={role === 'teacher' ? 'Xem thử giao diện học sinh' : 'Trở lại góc nhìn giáo viên'} aria-label={role === 'teacher' ? 'Xem thử giao diện học sinh' : 'Trở lại góc nhìn giáo viên'} className={`flex items-center space-x-1 sm:space-x-2.5 px-3 py-2 sm:px-4 sm:py-2 rounded-full border shadow-sm transition-all hover:scale-105 active:scale-95 ${role === 'teacher' ? 'bg-indigo-50 border-indigo-200 text-indigo-700 hover:bg-indigo-100' : 'bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100'}`}>
                 {role === 'teacher' ? <GraduationCap className="w-4 h-4 sm:w-4.5 sm:h-4.5" /> : <User className="w-4 h-4 sm:w-4.5 sm:h-4.5" />}
                 <span className="text-[10px] sm:text-sm font-black inline">
-                   <span className="hidden sm:inline">Góc nhìn: {role === 'teacher' ? 'Giáo viên' : 'Học sinh'}</span>
+                   <span className="hidden sm:inline">{role === 'teacher' ? 'Xem học sinh' : 'Về giáo viên'}</span>
                    <span className="sm:hidden">{role === 'teacher' ? 'Giáo viên' : 'Học sinh'}</span>
                 </span>
                 <RefreshCw className="w-3 h-3 ml-1 opacity-50 hidden sm:block" />
               </button>
             ) : loginRole === 'student' ? (
               <>
+                <Suspense fallback={null}><StudentLeaveRequestsButton key={`${activeStudentProfile?.id}/${currentSchoolYear}`} student={activeStudentProfile} currentSchoolYear={currentSchoolYear} disabled={activeStudentIsReadOnly} /></Suspense>
                 <button type="button" onClick={() => { setShowStudentMailbox(true); fetchStudentMailbox(); }} className="relative flex h-9 w-9 items-center justify-center rounded-full border border-blue-100 bg-blue-50 text-blue-700 shadow-sm transition-colors hover:bg-blue-100" title="Hộp thư của em">
                   <Bell className="h-4.5 w-4.5" />
                   {studentMailboxUnreadCount > 0 && (
@@ -8587,10 +8215,11 @@ ${lessonBlocks}`;
               </>
             ) : null}
             <button onClick={handleLogout} className="text-[10px] sm:text-xs font-black text-slate-400 hover:text-rose-500 transition-colors uppercase tracking-widest">Thoát</button>
-          </div>
+          </TeacherHeaderActions>
         </div>
       </header>}
 
+      {conversationDialog}
       {showStudentMailbox && role === 'student' && (
         <div className="fixed inset-0 z-[220] flex items-center justify-center bg-slate-950/55 p-2 backdrop-blur-sm sm:p-5">
           <div className="flex h-[min(760px,94dvh)] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-white/30 bg-white shadow-2xl sm:rounded-3xl">
@@ -8604,6 +8233,9 @@ ${lessonBlocks}`;
                 <button type="button" onClick={() => { setShowStudentMailbox(false); setSelectedStudentMailboxMessage(null); }} className="flex h-9 w-9 items-center justify-center rounded-full bg-rose-500 text-white" title="Đóng"><X className="h-4 w-4" /></button>
               </div>
             </div>
+            <button type="button" onClick={() => openConversations()} className="flex shrink-0 items-center justify-center gap-2 border-b border-blue-100 bg-white px-3 py-3 text-sm font-semibold text-blue-700 hover:bg-blue-50">
+              <Mail className="h-4 w-4" /> Nhắn admin {conversationInbox.unreadCount > 0 && <span className="rounded-full bg-rose-500 px-2 py-0.5 text-xs text-white">Có trả lời mới</span>}
+            </button>
             <div className="grid min-h-0 flex-1 sm:grid-cols-[minmax(280px,38%)_1fr]">
               <div className="min-h-0 overflow-y-auto border-b border-slate-100 bg-slate-50/70 p-2 sm:border-b-0 sm:border-r sm:p-3">
                 {isLoadingStudentMailbox && studentMailboxItems.length === 0 ? (
@@ -8634,6 +8266,7 @@ ${lessonBlocks}`;
                       <div className="mt-2 text-[10px] font-bold text-slate-400">{selectedStudentMailboxMessage.createdAt ? new Date(selectedStudentMailboxMessage.createdAt).toLocaleString('vi-VN') : ''}</div>
                     </div>
                     <div className="whitespace-pre-wrap text-sm font-medium leading-7 text-slate-700 sm:text-base">{selectedStudentMailboxMessage.body}</div>
+                    {selectedStudentMailboxMessage.source === 'admin' && <button type="button" onClick={() => openConversations(selectedStudentMailboxMessage)} className="mt-4 inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white"><Mail className="h-4 w-4" />Trả lời admin</button>}
                     {selectedStudentMailboxMessage.source === 'auto' && selectedStudentMailboxMessage.targetGrade && (
                       <button type="button" onClick={() => { openStudentMailboxMessage(selectedStudentMailboxMessage); setShowStudentMailbox(false); }} className="mt-5 inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-3 text-xs font-black uppercase text-white shadow-sm">
                         <BookOpen className="h-4 w-4" /> Mở nội dung
@@ -8653,36 +8286,14 @@ ${lessonBlocks}`;
       )}
       
       <main className="learning-main max-w-6xl mx-auto px-4 py-4 sm:py-8 flex-1 w-full relative z-10 flex flex-col">
-        <div className={`student-learning-navigation flex flex-nowrap items-center text-[clamp(9px,2.35vw,11px)] sm:text-xs font-black text-slate-400 ${selectedLesson && role === 'teacher' ? 'mb-2' : 'mb-2 sm:mb-8'} bg-white/80 backdrop-blur-md px-2.5 sm:px-6 py-2 sm:py-4 rounded-xl sm:rounded-2xl shadow-sm border border-white/60 uppercase tracking-wide sm:tracking-widest shrink-0 overflow-hidden`}>
-            <button onClick={resetNavigationWithClean} aria-label="Trang chủ" className="hover:text-blue-600 flex items-center transition-colors whitespace-nowrap flex-shrink-0" title="Trang chủ"><Home className="w-3.5 h-3.5 sm:w-4 sm:h-4 mr-0 sm:mr-2" /> <span className="hidden sm:inline">{'Trang ch\u1ee7'}</span></button>
-            {selectedGrade && <><ChevronRight className="w-3 h-3 sm:w-4 sm:h-4 mx-0.5 sm:mx-2 opacity-30 flex-shrink-0" /><div className="relative flex-shrink-0"><select aria-label="Khối lớp" value={selectedGrade} onChange={(e) => { setSelectedGrade(e.target.value); setIsTextbookExpanded(true); }} className="appearance-none bg-emerald-50 text-emerald-700 border border-emerald-100 pl-1.5 pr-5 sm:pl-2 sm:pr-7 py-0.5 rounded-md sm:rounded-lg whitespace-nowrap font-black focus:outline-none focus:ring-2 focus:ring-emerald-100 cursor-pointer">{navigationGrades.map(g => <option key={g} value={g}>{'Kh\u1ed1i ' + g}</option>)}</select><ChevronDown className="pointer-events-none absolute right-1 sm:right-2 top-1/2 -translate-y-1/2 w-3 h-3 opacity-60" /></div></>}
-            {selectedSubject && <><ChevronRight className="w-3 h-3 sm:w-4 sm:h-4 mx-0.5 sm:mx-2 opacity-30 flex-shrink-0" />{role === 'teacher'
-              ? <TeacherSubjectSelect subjects={navigationSubjects} value={selectedSubject} onChange={selectLearningSubject} />
-              : <button onClick={() => setSelectedLesson(null)} aria-label={`Danh sách tuần môn ${selectedSubject}`} title={selectedSubject} className="student-subject-return bg-sky-50 text-sky-700 border border-sky-100 px-1.5 sm:px-2 py-0.5 rounded-md sm:rounded-lg whitespace-nowrap truncate min-w-0 max-w-[82px] sm:max-w-none">{selectedSubject}</button>}</>}
-            {role === 'student' && activeStudentProfile?.isClassLeader && !selectedLesson && (
-              <button type="button" onClick={() => setShowClassOps(true)} className="ml-auto sm:ml-3 bg-emerald-600 text-white px-2.5 sm:px-3 py-1.5 rounded-lg sm:rounded-xl whitespace-nowrap flex items-center gap-1.5 shadow-sm">
-                <ListChecks className="w-3.5 h-3.5" /> <span>Điểm danh</span>
-              </button>
-            )}
-            {selectedLesson && <>
-              <ChevronRight className="w-3 h-3 sm:w-4 sm:h-4 mx-0.5 sm:mx-2 opacity-30 flex-shrink-0" />
-              <div className="learning-week-navigation ml-auto flex items-center gap-0.5 sm:gap-1.5 bg-blue-50/90 border border-blue-100 rounded-lg sm:rounded-xl p-0.5 sm:p-1 shadow-sm flex-shrink-0">
-                <button type="button" onClick={() => setSelectedLesson(String(Math.max(1, Number(selectedLesson || 1) - 1)))} disabled={Number(selectedLesson) <= 1} aria-label="Tuần trước" className="w-7 h-7 sm:w-9 sm:h-9 rounded-md sm:rounded-lg bg-white text-blue-700 flex items-center justify-center shadow-sm disabled:opacity-40 active:scale-95"><ChevronLeft className="w-3.5 h-3.5 sm:w-4 sm:h-4" /></button>
-                <select aria-label="Tuần học" value={selectedLesson} onChange={(e) => setSelectedLesson(e.target.value)} className={`h-7 sm:h-9 bg-white border-0 ${getWeekData(selectedLesson).isExam ? getWeekData(selectedLesson).text : 'text-blue-900'} font-black text-[clamp(10px,2.5vw,11px)] sm:text-sm px-1 sm:px-3 rounded-md sm:rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-200 cursor-pointer text-center w-[clamp(74px,20vw,92px)] sm:w-[120px] shadow-sm`}>
-                  {Array.from({ length: TOTAL_LESSONS }, (_, i) => i + 1).map(l => {
-                    const lData = getWeekData(l);
-                    return <option key={l} value={String(l)}>{(quizLessonSet.has(String(l)) ? '* ' : '') + (lData.isExam ? lData.main : 'Tuần ' + l)}</option>
-                  })}
-                </select>
-                <button type="button" onClick={() => setSelectedLesson(String(Math.min(TOTAL_LESSONS, Number(selectedLesson || 1) + 1)))} disabled={Number(selectedLesson) >= TOTAL_LESSONS} aria-label="Tuần sau" className="w-7 h-7 sm:w-9 sm:h-9 rounded-md sm:rounded-lg bg-white text-blue-700 flex items-center justify-center shadow-sm disabled:opacity-40 active:scale-95"><ChevronRight className="w-3.5 h-3.5 sm:w-4 sm:h-4" /></button>
-              </div>
-            </>}
-        </div>
+        {role === 'student' && loginRole !== 'teacher' && <div className="student-mobile-updates mb-2 sm:hidden"><HomeUpdateTicker items={combinedFeedSorted} onOpen={openHomepageFeedItem} grade={activeStudentGrade} error={learningUpdates.error} /></div>}
+        {!compactTeacherLesson && learningNavigation}
         
         {role && !selectedLesson && !selectedSubject && (
            <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 flex-1 flex flex-col">
 
 
+              {role === 'teacher' ? <TeacherClassPicker profile={teacherProfile} grade={selectedGrade} onChange={g => { setSelectedGrade(g); setSelectedSubject(null); setIsTextbookExpanded(false); }} /> : (
               <div className="learning-grade-picker hidden sm:flex justify-center mb-8 gap-4 bg-white/60 p-2 rounded-2xl shadow-sm border border-white/50 w-fit mx-auto">
                  <div className="px-4 py-3 text-sm font-black text-slate-400 uppercase tracking-widest flex items-center border-r border-slate-200">Chọn Khối</div>
                  {navigationGrades.map(g => (
@@ -8691,8 +8302,9 @@ ${lessonBlocks}`;
                     </button>
                  ))}
               </div>
+              )}
 
-              <div className={`sm:hidden flex-1 flex flex-col ${selectedGrade ? 'hidden' : 'flex'}`}>
+              <div className={`learning-mobile-grade-picker sm:hidden flex-1 flex flex-col ${selectedGrade ? 'hidden' : 'flex'}`}>
                   <div className="flex items-center gap-3 mb-4 bg-white/60 backdrop-blur-sm p-3.5 rounded-2xl inline-flex border border-white/50 shadow-sm self-start shrink-0">
                      <div className="w-2.5 h-7 bg-blue-600 rounded-full"></div>
                      <h2 className="text-lg font-black text-slate-800 uppercase tracking-widest">{role === 'teacher' && teacherTab === 'chuyen_mon' ? 'Nghiệp vụ' : 'Khối Lớp'}</h2>
@@ -8782,7 +8394,7 @@ ${lessonBlocks}`;
                 const journey = lessonJourneyMap[String(l)] || null;
                 const journeyPercent = Math.max(0, Math.min(100, Number(journey?.percent || 0)));
                 return (
-                <button key={l} onClick={() => setSelectedLesson(String(l))} className={`${wData.bg} border ${wData.border} shadow-sm rounded-xl py-2 sm:py-3 min-h-[50px] sm:min-h-[72px] flex flex-col items-center justify-center group transition-all active:scale-95 relative overflow-hidden`}>
+                <button key={l} aria-label={getWeekDisplayName(String(l))} onClick={() => setSelectedLesson(String(l))} className={`${wData.bg} border ${wData.border} shadow-sm rounded-xl py-2 sm:py-3 min-h-[50px] sm:min-h-[72px] flex flex-col items-center justify-center group transition-all active:scale-95 relative overflow-hidden`}>
                     {wData.isExam && <div className="absolute top-0 right-0 bg-white/50 w-full h-full z-0 rotate-45 scale-150 mix-blend-overlay hidden sm:block"></div>}
                     {quizLessonSet.has(String(l)) && (
                       <div className={`absolute top-1 left-1 sm:top-1.5 sm:left-1.5 z-20 bg-rose-500 text-white rounded-full w-5 h-5 sm:w-auto sm:h-auto sm:px-1.5 sm:py-1 shadow-md flex items-center justify-center sm:gap-1 ${role === 'student' && !quizDone ? 'animate-pulse ring-2 ring-rose-200' : ''}`} title={`${quizDone ? 'Da lam bai kiem tra' : 'Co bai kiem tra chua lam'}: ${quizBadgeLabel}`} aria-label={`${quizDone ? 'Da lam bai kiem tra' : 'Co bai kiem tra chua lam'}: ${quizBadgeLabel}`}>
@@ -8848,7 +8460,7 @@ ${lessonBlocks}`;
                     {planStatus && <div className={`mt-2 rounded-lg px-3 py-2 text-[10px] font-black ${planStatus.includes('thành công') ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'}`}>{planStatus}</div>}
                   </div>
                 </div>
-                {showLearningResultsWorkspace && quickScoreLockedContext && <Suspense fallback={<p className="p-4 text-blue-700">Đang mở bảng điểm...</p>}><TeacherQuickScorePanel scope={{ quickScoreGrade, quickScoreLockedContext, selectedSubject, canWriteCurrentSchoolYear, activeSchoolYear, user }} selection={{ quickVisibleSemesters, setQuickVisibleSemesters, quickSelectedSubjects, quickSelectedSemesters, quickSubjectColSpanBySubject }} draft={{ quickScorebookSavingKey, quickScorebookDocId, quickScorebookEdits, setQuickScorebookEdits, quickInputDrafts, setQuickInputDrafts, quickScorebookLoaded }} actions={{ setShowLearningResultsWorkspace, setQuickScoreLockedContext, showNotification, setActiveQuickScoreRowKey, toggleQuickPriorityStudent, handleQuickScoreInputKeyDown, saveQuickScoreValue }} table={{ quickScoreStudents, getQuickScoreColumnWidth, getQuickScoreStudentKey, quickPriorityStudentIds, activeQuickScoreRowKey, quickVisibleScoreColumnsBySubject, getQuickScoreKey, getQuickScoreInputValue, getQuickSemesterTermAverage, getQuickSemesterScoreResult, formatScoreDisplayValue, getQuickScoreTextClass, quickQuizScoreKeySet, parseScoreNumber, getQuickAcademicResult }} /></Suspense>}
+                {!showTeacherScores && teacherQuickScorePanel}
               </div>
             )}
           </div>
@@ -8878,119 +8490,43 @@ ${lessonBlocks}`;
                   </select>
                   <button onClick={() => setSelectedLesson(String(parseInt(selectedLesson) + 1))} disabled={parseInt(selectedLesson) >= TOTAL_LESSONS} className="p-2 sm:p-3 bg-white rounded-lg sm:rounded-xl shadow-md disabled:opacity-50 hover:bg-blue-50 transition-colors text-blue-700 active:scale-95"><ChevronRight className="w-5 h-5 sm:w-6 sm:h-6" /></button>
                 </div>
-                
-                {role === 'teacher' && (
-                  <button onClick={handleOpenAiModal} className="lg:hidden bg-gradient-to-r from-indigo-50 to-blue-50 text-indigo-700 px-3 py-2 rounded-xl text-[10px] font-black flex items-center gap-1.5 border border-indigo-200 shadow-sm active:scale-95">
-                    <Sparkles className="w-3.5 h-3.5 text-indigo-500 animate-pulse" /> TẠO ĐỀ
-                  </button>
-                )}
+
               </div>
             </div>
-            
+
             <div className="lesson-card bg-white/95 rounded-2xl sm:rounded-[2.5rem] shadow-2xl border border-white/60 overflow-hidden">
-              {(role !== 'student' || activeStudentProfile?.isClassLeader || studentCurrentQuizVisible || studentScheduledQuizPending) && (
-              <div className="lesson-toolbar bg-gradient-to-r from-indigo-100/95 via-blue-50/95 to-white px-4 sm:px-8 py-3 sm:py-4 border-b border-indigo-200 shadow-sm flex flex-col">
-                <div className="lesson-heading-row flex items-center justify-between w-full">
-                    <div className="lesson-heading flex items-center gap-2.5">
-                    <div className="bg-blue-600 p-2 sm:p-2.5 rounded-lg sm:rounded-xl text-white shadow-md ring-4 ring-blue-100/80">
-                      <FileText className="w-3.5 h-3.5 sm:w-5 sm:h-5" />
-                    </div>
-                    <h3 className="font-black text-sm sm:text-xl text-indigo-950 uppercase tracking-wide">Bài học</h3>
-                  </div>
-
-                  {role === 'student' && activeStudentProfile?.isClassLeader && (
-                    <button type="button" onClick={() => setShowClassOps(true)} className="ml-auto mr-2 bg-emerald-600 text-white px-2.5 sm:px-3 py-1.5 rounded-lg sm:rounded-xl whitespace-nowrap flex items-center gap-1.5 shadow-sm text-[10px] sm:text-xs font-black uppercase">
-                      <ListChecks className="w-3.5 h-3.5" /> <span>Điểm danh</span>
-                    </button>
-                  )}
-
-                  {role === 'student' && (studentCurrentQuizVisible || studentScheduledQuizPending) && (
-                    <button type="button" onClick={() => { if (!studentCurrentQuizVisible) return; setShowStudentQuizPanel(true); requestAnimationFrame(() => document.getElementById('quiz-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' })); }} className={`text-white px-3 py-2 rounded-xl text-[10px] sm:text-xs font-black uppercase tracking-widest shadow-md flex items-center gap-1.5 ${studentCurrentQuizVisible ? 'bg-rose-600' : 'bg-blue-600 cursor-default'}`}>
-                      {studentCurrentQuizVisible ? <Bell className="w-3.5 h-3.5" /> : <Clock className="w-3.5 h-3.5" />}
-                      {studentCurrentQuizVisible ? 'Có bài kiểm tra' : `Mở sau ${scheduledQuizCountdownText}`}
-                    </button>
-                  )}
-
-                  {role === 'teacher' && (
-                    <div className="lesson-editing-tools flex items-center gap-2">
-                      <label className="lg:hidden px-3 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded-lg text-[10px] font-black uppercase flex items-center gap-1.5 shadow-sm border border-emerald-200 active:scale-95 cursor-pointer">
-                        <ImageIcon className="w-3.5 h-3.5" /> Chèn ảnh
-                        <input type="file" accept="image/*" onChange={handleToolbarImageUpload} className="hidden" />
-                      </label>
-
-                      <button onClick={() => setShowMobileToolbar(!showMobileToolbar)} className="lg:hidden px-3 py-2 bg-slate-100 text-slate-600 rounded-lg text-[10px] font-black uppercase flex items-center gap-1.5 shadow-sm border border-slate-200 active:scale-95">
-                        <Palette className="w-3.5 h-3.5" /> {showMobileToolbar ? 'Ẩn công cụ' : 'Công cụ'}
-                      </button>
-
-                      <div className="lesson-desktop-formatting hidden lg:flex flex-wrap items-center gap-1.5 bg-white p-1.5 rounded-2xl shadow-sm border border-slate-200 transition-all">
-                        <button onMouseDown={e => {e.preventDefault(); document.execCommand('bold')}} className="p-2 sm:p-2.5 hover:bg-slate-100 rounded-lg sm:rounded-xl text-slate-700 transition-colors" title="In đậm"><Bold className="w-3.5 h-3.5 sm:w-4 sm:h-4" /></button>
-                        <button onMouseDown={e => {e.preventDefault(); document.execCommand('italic')}} className="p-2 sm:p-2.5 hover:bg-slate-100 rounded-lg sm:rounded-xl text-slate-700 transition-colors" title="In nghiêng"><Italic className="w-3.5 h-3.5 sm:w-4 sm:h-4" /></button>
-                        <button onMouseDown={e => {e.preventDefault(); document.execCommand('underline')}} className="p-2 sm:p-2.5 hover:bg-slate-100 rounded-lg sm:rounded-xl text-slate-700 transition-colors" title="Gạch chân"><Underline className="w-3.5 h-3.5 sm:w-4 sm:h-4" /></button>
-                        <div className="w-px h-5 bg-slate-200 mx-1 hidden sm:block"></div>
-                        <button onMouseDown={e => {e.preventDefault(); document.execCommand('justifyLeft')}} className="p-2 sm:p-2.5 hover:bg-slate-100 rounded-lg sm:rounded-xl text-slate-700 transition-colors" title="Canh trái"><AlignLeft className="w-3.5 h-3.5 sm:w-4 sm:h-4" /></button>
-                        <button onMouseDown={e => {e.preventDefault(); document.execCommand('justifyCenter')}} className="p-2 sm:p-2.5 hover:bg-slate-100 rounded-lg sm:rounded-xl text-slate-700 transition-colors" title="Canh giữa"><AlignCenter className="w-3.5 h-3.5 sm:w-4 sm:h-4" /></button>
-                        <button onMouseDown={e => {e.preventDefault(); document.execCommand('justifyRight')}} className="p-2 sm:p-2.5 hover:bg-slate-100 rounded-lg sm:rounded-xl text-slate-700 transition-colors" title="Canh phải"><AlignRight className="w-3.5 h-3.5 sm:w-4 sm:h-4" /></button>
-                        <button onMouseDown={e => {e.preventDefault(); document.execCommand('justifyFull')}} className="p-2 sm:p-2.5 hover:bg-slate-100 rounded-lg sm:rounded-xl text-slate-700 transition-colors" title="Canh đều"><AlignJustify className="w-3.5 h-3.5 sm:w-4 sm:h-4" /></button>
-                        <div className="w-px h-5 bg-slate-200 mx-1 hidden sm:block"></div>
-                        <div className="flex items-center gap-2 sm:gap-2.5 px-2">
-                          <button onMouseDown={e => {e.preventDefault(); document.execCommand('foreColor', false, '#000000')}} className="w-3.5 h-3.5 sm:w-4 sm:h-4 rounded-full bg-black border border-slate-300 hover:scale-125 transition-transform shadow-sm" title="Đen"></button>
-                          <button onMouseDown={e => {e.preventDefault(); document.execCommand('foreColor', false, '#dc2626')}} className="w-3.5 h-3.5 sm:w-4 sm:h-4 rounded-full bg-red-600 border border-red-700 hover:scale-125 transition-transform shadow-sm" title="Đỏ"></button>
-                          <button onMouseDown={e => {e.preventDefault(); document.execCommand('foreColor', false, '#2563eb')}} className="w-3.5 h-3.5 sm:w-4 sm:h-4 rounded-full bg-blue-600 border border-blue-700 hover:scale-125 transition-transform shadow-sm" title="Xanh dương"></button>
-                          <button onMouseDown={e => {e.preventDefault(); document.execCommand('foreColor', false, '#16a34a')}} className="w-3.5 h-3.5 sm:w-4 sm:h-4 rounded-full bg-green-600 border border-green-700 hover:scale-125 transition-transform shadow-sm" title="Xanh lá"></button>
-                          <button onMouseDown={e => {e.preventDefault(); document.execCommand('foreColor', false, '#ea580c')}} className="w-3.5 h-3.5 sm:w-4 sm:h-4 rounded-full bg-orange-600 border border-orange-700 hover:scale-125 transition-transform shadow-sm" title="Cam"></button>
-                        </div>
-                        <div className="w-px h-5 bg-slate-200 mx-1 hidden sm:block"></div>
-                        <label className="flex items-center gap-1 sm:gap-1.5 hover:bg-emerald-50 text-emerald-700 p-2 sm:p-2.5 rounded-lg sm:rounded-xl transition-colors cursor-pointer font-bold text-[10px] sm:text-xs" title="Chèn ảnh từ thiết bị">
-                          <ImageIcon className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
-                          <span className="hidden xl:inline">Tải ảnh</span>
-                          <input type="file" accept="image/*" onChange={handleToolbarImageUpload} className="hidden" />
-                        </label>
-                        <label className="flex items-center gap-1 sm:gap-1.5 hover:bg-emerald-50 text-emerald-700 p-2 sm:p-2.5 rounded-lg sm:rounded-xl transition-colors cursor-pointer font-bold text-[10px] sm:text-xs" title="Chụp ảnh bằng Camera">
-                          <Camera className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
-                          <span className="hidden xl:inline">Chụp</span>
-                          <input type="file" accept="image/*" capture="environment" onChange={handleToolbarImageUpload} className="hidden" />
-                        </label>
-                      </div>
-                      <div className="w-px h-8 bg-slate-200 hidden lg:block mx-1"></div>
-                      <button onClick={handleOpenAiModal} className="hidden lg:flex bg-gradient-to-r from-indigo-50 to-blue-50 text-indigo-700 px-4 py-2.5 rounded-xl text-xs font-black items-center gap-2 border border-indigo-200 hover:shadow-md transition-all active:scale-95 shadow-sm">
-                        <Sparkles className="w-4 h-4 text-indigo-500 animate-pulse" /> TẠO ĐỀ AI
-                      </button>
-                    </div>
-                  )}
-                </div>
-
-                {role === 'teacher' && showMobileToolbar && (
-                    <div className="lg:hidden mt-3 flex flex-wrap items-center gap-1 bg-white p-1.5 rounded-xl shadow-sm border border-slate-200 animate-in slide-in-from-top-2 duration-200">
-                      <button onMouseDown={e => {e.preventDefault(); document.execCommand('bold')}} className="p-2 hover:bg-slate-100 rounded-lg text-slate-700"><Bold className="w-4 h-4" /></button>
-                      <button onMouseDown={e => {e.preventDefault(); document.execCommand('italic')}} className="p-2 hover:bg-slate-100 rounded-lg text-slate-700"><Italic className="w-4 h-4" /></button>
-                      <button onMouseDown={e => {e.preventDefault(); document.execCommand('underline')}} className="p-2 hover:bg-slate-100 rounded-lg text-slate-700"><Underline className="w-4 h-4" /></button>
-                      <div className="w-px h-5 bg-slate-200 mx-1"></div>
-                      <button onMouseDown={e => {e.preventDefault(); document.execCommand('justifyLeft')}} className="p-2 hover:bg-slate-100 rounded-lg text-slate-700"><AlignLeft className="w-4 h-4" /></button>
-                      <button onMouseDown={e => {e.preventDefault(); document.execCommand('justifyCenter')}} className="p-2 hover:bg-slate-100 rounded-lg text-slate-700"><AlignCenter className="w-4 h-4" /></button>
-                      <button onMouseDown={e => {e.preventDefault(); document.execCommand('justifyRight')}} className="p-2 hover:bg-slate-100 rounded-lg text-slate-700"><AlignRight className="w-4 h-4" /></button>
-                      <div className="w-px h-5 bg-slate-200 mx-1"></div>
-                      <div className="flex items-center gap-2 px-1">
-                        <button onMouseDown={e => {e.preventDefault(); document.execCommand('foreColor', false, '#000000')}} className="w-4 h-4 rounded-full bg-black border border-slate-300"></button>
-                        <button onMouseDown={e => {e.preventDefault(); document.execCommand('foreColor', false, '#dc2626')}} className="w-4 h-4 rounded-full bg-red-600 border border-red-700"></button>
-                        <button onMouseDown={e => {e.preventDefault(); document.execCommand('foreColor', false, '#2563eb')}} className="w-4 h-4 rounded-full bg-blue-600 border border-blue-700"></button>
-                      </div>
-                    </div>
-                )}
-              </div>
-              
-              )}
-              <div className="p-0 relative">
+              {role === 'teacher' && isAdmin && <LessonDeliveryPanel admin delivery={lessonDelivery} />}
+              {role === 'student' && noteReadError && <p role="alert" className="m-3 text-sm text-orange-700">{noteReadError} Mở Tùy chọn để tải lại.</p>}
+              {role === 'teacher' && <LessonToolbar key={noteId} teacher layout={lessonLayout}
+                deliveryStatus={!isAdmin && <LessonDeliveryPanel compact delivery={lessonDelivery} />}
+                mathEnabled={lessonMathEnabled} onDelete={requestDeleteLesson}
+                deleteDisabled={isLoadingNote || isSavingNote || lessonRemoval.busy || !canWriteCurrentSchoolYear || !noteHtml.trim()}
+                canRestoreDeleted={lessonRemoval.canRestore} onRestoreDeleted={lessonRemoval.restore}
+                editing={lessonEditorView.showEditor} onEdit={lessonEditorView.edit}
+                onToggleEditing={handleToggleLessonEditor}
+                editDisabled={isLoadingNote || !canWriteCurrentSchoolYear || lessonRemoval.busy}
+                onImportPdf={() => setShowLessonPdfImport(true)}
+                onNormalize={lessonNormalizer.open} normalizeDisabled={isLoadingNote || lessonRemoval.busy || !noteHtml.trim() || !canWriteCurrentSchoolYear}
+                onUndo={lessonNormalizer.restore} canUndo={lessonNormalizer.canUndo}
+                onCreateQuiz={() => selectTeacherQuizWorkspaceTab('compose')} onImageUpload={handleToolbarImageUpload}>
+                {role === 'teacher' && lessonAnswers.count > 0 && <LessonAnswerVisibilityControl visible={lessonAnswers.visible} onChange={handleLessonAnswersChange} disabled={isLoadingNote || !canWriteCurrentSchoolYear || noteLayoutState?.noteId !== noteId} />}
+              </LessonToolbar>}
+              <div ref={lessonLayout.containerRef} className="lesson-layout p-0 relative">
                 {role === 'teacher' ? (
                   <div className="relative">
+                    <div hidden={!lessonEditorView.showEditor} className={`lesson-editor-source lesson-layout-scroll lesson-editor-viewport ${isEditorExpanded ? 'is-expanded' : ''} overflow-y-auto`}>
                     <div 
                          id="teacher-editor-box"
                          ref={(node) => { contentEditableRef.current = node; }}
-                         contentEditable={true} 
-                         onInput={handleEditorInput}
-                         onPaste={handlePaste}
+                         contentEditable={canWriteCurrentSchoolYear && !lessonRemoval.busy}
+                         onInput={() => { lessonEditorView.edit(); handleEditorInput(); }}
+                         onPaste={event => { lessonEditorView.edit(); handlePaste(event); }}
                          onClick={handleEditorImageClick} 
                          data-placeholder="Thầy cô hãy gõ, dán nội dung (hoặc dán ảnh) trực tiếp tại đây..." 
-                         className={`lesson-editor-viewport ${isEditorExpanded ? 'is-expanded' : ''} rich-editor p-4 sm:p-8 md:p-10 text-lg sm:text-xl leading-relaxed focus:outline-none overflow-y-auto transition-all duration-300`} />
+                         data-columns={lessonLayout.columns}
+                         className="lesson-column-content rich-editor p-4 sm:p-8 md:p-10 text-lg sm:text-xl leading-relaxed focus:outline-none" />
+                    </div>
+                    {!lessonEditorView.showEditor && <TeacherLessonPreview key={`${activeSchoolYear}/${noteId}`} html={noteHtml} columns={lessonLayout.columns} expanded={isEditorExpanded} loading={isLoadingNote || noteLayoutState?.noteId !== noteId} mathEnabled={lessonMathEnabled} />}
                     
                     {selectedImage && (
                       <div className="absolute z-50 bg-white shadow-2xl border-2 border-slate-200 rounded-xl p-1.5 flex items-center gap-1.5 animate-in zoom-in-95 duration-200" style={{ top: imagePopupPos.y, left: imagePopupPos.x, transform: 'translateX(-50%)' }}>
@@ -9005,22 +8541,22 @@ ${lessonBlocks}`;
                     {isPastingImage && <div className="absolute top-6 right-8 bg-emerald-500 text-white text-xs px-5 py-2.5 rounded-full font-black animate-bounce shadow-2xl flex items-center gap-2"><Loader2 className="w-3.5 h-3.5 animate-spin" /> Đang tải ảnh lên Drive...</div>}
                   </div>
                 ) : (
-                  <div ref={studentContentRef} className="lesson-readable-content lesson-editor-viewport p-4 sm:p-10 text-lg sm:text-xl leading-relaxed student-content">
-                    {noteHtml ? <div dangerouslySetInnerHTML={{ __html: sanitizeHtml(noteHtml) }} /> : <p className="text-slate-300 font-bold text-center mt-10 sm:mt-20 uppercase tracking-[0.2em]">Chưa có nội dung từ thầy cô.</p>}
+                  <div id="lesson-section" ref={studentContentRef} className="lesson-readable-content lesson-editor-viewport p-4 sm:p-10 text-lg sm:text-xl leading-relaxed student-content">
+                    {studentNoteHtml ? <div className="lesson-column-content" data-columns={lessonLayout.columns} dangerouslySetInnerHTML={{ __html: studentNoteHtml }} /> : <p className="text-slate-300 font-bold text-center mt-10 sm:mt-20 uppercase tracking-[0.2em]">Chưa có nội dung từ thầy cô.</p>}
                   </div>
                 )}
               </div>
 
-              {currentQuickQuizMaterials.length > 0 && (
+              {role !== 'teacher' && currentQuickQuizMaterials.length > 0 && (
                 <div className="lesson-quick-practice border-t border-emerald-100 bg-emerald-50/55 px-4 py-2.5 sm:px-8 sm:py-3">
                   <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
                     <div className="flex shrink-0 items-center gap-2 text-emerald-900 font-black text-[11px] sm:text-xs uppercase tracking-tight">
                       <ListChecks className="h-3.5 w-3.5" />
-                      Kiểm tra kiến thức nhanh
+                      Câu hỏi ôn tập
                     </div>
                     <div className="flex min-w-0 flex-wrap gap-2">
                       {currentQuickQuizMaterials.map((m) => {
-                        const questionCount = m.quizData?.questions?.length || 10;
+                        const questionCount = m.questionCount || m.quizData?.questionCountPerAttempt || m.quizData?.questions?.length;
                         return (
                           <button
                             key={m.id}
@@ -9032,9 +8568,9 @@ ${lessonBlocks}`;
                               <ListChecks className="h-4 w-4" />
                             </span>
                             <span className="min-w-0">
-                              <span className="block truncate text-xs sm:text-sm font-black text-emerald-950">{m.title || 'Hỏi đáp nhanh'}</span>
+                              <span className="block truncate text-xs sm:text-sm font-black text-emerald-950">{m.title || 'Câu hỏi ôn tập'}</span>
                               <span className="block truncate text-[10px] sm:text-[11px] font-bold text-emerald-700">
-                                {role === 'teacher' ? `${questionCount} câu và đáp án` : `${questionCount} câu, đạt 8/10`}
+                                {questionCount ? `${questionCount} câu · ` : ''}{role === 'teacher' ? 'Xem câu hỏi và đáp án' : 'Đạt 8/10 để qua'}
                               </span>
                             </span>
                             <ChevronRight className="h-4 w-4 shrink-0 text-emerald-500 transition-transform group-hover:translate-x-0.5" />
@@ -9064,17 +8600,19 @@ ${lessonBlocks}`;
               {role === 'teacher' && (
                 <div className="lesson-attachments bg-slate-50/50 border-t border-slate-200 p-2 sm:p-6">
                   <div className="lesson-actions-row flex flex-row items-center justify-between gap-1 mb-2 sm:mb-4">
-                    <div className="flex items-center gap-1.5 flex-wrap">
+                    <div className="lesson-attachment-actions flex items-center gap-1.5">
                       <button type="button" onClick={() => setShowInlineLink(prev => !prev)} className={`text-[10px] sm:text-xs font-black flex items-center gap-1 transition-all hover:underline ${showInlineLink ? 'text-slate-600' : 'text-blue-600 hover:text-blue-800'}`}>
                         {showInlineLink ? <X className="w-3 h-3 sm:w-3.5 sm:h-3.5" /> : <LinkIcon className="w-3 h-3 sm:w-3.5 sm:h-3.5" />}
                         <span className="whitespace-nowrap">{showInlineLink ? 'ĐÓNG FORM' : '+ ĐÍNH KÈM'}</span>
                       </button>
+                      <LessonReviewChips reviews={currentQuickQuizMaterials} onOpen={openMaterial} onRemove={handleDeleteLessonReview} removingIds={removingReviewIds} />
                     </div>
                     <div className="flex items-center gap-1.5 sm:gap-2">
+                      <LessonReviewCreateButton disabled={isLoadingNote || !canWriteCurrentSchoolYear} onCurrent={() => handleOpenAiModal('quick')} onBatch={() => setShowLessonReviewBatch(true)} />
                       <button onClick={() => setIsEditorExpanded(!isEditorExpanded)} className="bg-white text-slate-600 border border-slate-200 px-2 py-1.5 sm:px-4 sm:py-2.5 rounded-lg sm:rounded-xl text-[9px] sm:text-[10px] uppercase tracking-widest font-black flex items-center gap-1 hover:bg-slate-50 transition-all active:scale-95 shadow-sm whitespace-nowrap">
                         {isEditorExpanded ? <><Minimize className="w-3 h-3 sm:w-4 sm:h-4" /> <span className="hidden sm:inline">THU GỌN</span></> : <><Maximize className="w-3 h-3 sm:w-4 sm:h-4" /> <span className="hidden sm:inline">MỞ RỘNG</span></>}
                       </button>
-                      <button onClick={handleSaveNote} disabled={isSavingNote} className="bg-blue-600 text-white px-3 py-1.5 sm:px-6 sm:py-2.5 rounded-lg sm:rounded-xl text-[10px] sm:text-xs font-black flex items-center justify-center gap-1 shadow-md hover:bg-blue-700 transition-all active:scale-95 disabled:opacity-50 whitespace-nowrap">
+                      <button onClick={handleSaveNote} disabled={isSavingNote || lessonRemoval.busy || !canWriteCurrentSchoolYear || isLoadingNote} className="bg-blue-600 text-white px-3 py-1.5 sm:px-6 sm:py-2.5 rounded-lg sm:rounded-xl text-[10px] sm:text-xs font-black flex items-center justify-center gap-1 shadow-md hover:bg-blue-700 transition-all active:scale-95 disabled:opacity-50 whitespace-nowrap">
                         {isSavingNote ? <Loader2 className="w-3 h-3 sm:w-4 sm:h-4 animate-spin" /> : (saveSuccess ? <CheckCircle2 className="w-3 h-3 sm:w-4 sm:h-4" /> : <Save className="w-3 h-3 sm:w-4 sm:h-4" />)}
                         <span>LƯU</span>
                       </button>
@@ -9103,9 +8641,7 @@ ${lessonBlocks}`;
                     </div>
                   )}
                   
-                  {sortedCurrentStudyMaterials.length === 0 ? (
-                    <div className="text-center py-2 sm:py-8 border border-dashed sm:border-2 border-slate-200 rounded-xl sm:rounded-2xl bg-white/50"><p className="text-[10px] sm:text-xs text-slate-400 font-bold italic">Chưa có tài liệu đính kèm.</p></div>
-                  ) : (
+                  {sortedCurrentStudyMaterials.length > 0 && (
                     <div className="flex flex-wrap gap-1.5 sm:gap-2 mt-1 sm:mt-2">
                       {sortedCurrentStudyMaterials.map((m) => (
                         <div key={m.id} className="bg-white border border-slate-200 rounded-full px-2 sm:px-3 py-0.5 sm:py-1.5 flex items-center gap-1 sm:gap-2 shadow-sm group hover:border-blue-400 transition-all">
@@ -9125,17 +8661,7 @@ ${lessonBlocks}`;
 
             {role === 'teacher' && (
               <div className="sm:hidden fixed left-0 right-0 bottom-0 z-[115] border-t border-slate-200 bg-white/95 px-3 pb-[calc(env(safe-area-inset-bottom)+0.5rem)] pt-2 shadow-[0_-10px_30px_rgba(15,23,42,0.14)] backdrop-blur">
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowQuizEditor(true);
-                      requestAnimationFrame(() => document.getElementById('quiz-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
-                    }}
-                    className="h-11 rounded-2xl bg-rose-500 text-white text-[11px] font-black uppercase shadow-sm flex items-center justify-center gap-1.5 active:scale-95"
-                  >
-                    <CheckCircle2 className="w-4 h-4" /> Bài kiểm tra
-                  </button>
+                <div className="grid grid-cols-1 gap-2">
                   <button
                     type="button"
                     onClick={() => setShowCommonLibraryWorkspace(true)}
@@ -9149,19 +8675,10 @@ ${lessonBlocks}`;
 
             {/* TÀI LIỆU ĐÃ GHIM (DÀNH CHO HỌC SINH) */}
 
-            {(role === 'teacher' || studentCurrentQuizVisible) && (
+            {role !== 'teacher' && studentCurrentQuizVisible && (
               <div id="quiz-section" className="quiz-panel bg-white/95 rounded-2xl sm:rounded-[2rem] shadow-xl border border-rose-100 overflow-hidden">
                 <div className="w-full px-4 sm:px-6 py-3 sm:py-4 bg-rose-50/75 border-b border-rose-100 flex items-center justify-between gap-3">
-                  <button type="button" onClick={() => { if (role === 'teacher') { setShowQuizEditor(prev => { const next = !prev; if (!next) setShowQuizToolbar(false); return next; }); return; } setShowStudentQuizPanel(prev => !prev); }} className="flex-1 text-left font-black text-rose-800 text-xs sm:text-sm uppercase tracking-tight flex items-center gap-2"><CheckCircle2 className="w-4 h-4 sm:w-5 sm:h-5" /> {activeSelfQuiz ? `Bài kiểm tra - làm ${activeSelfQuizQuestionCount} câu` : 'Bài kiểm tra'}</button>
-                  {role === 'teacher' && (
-                    <div className="flex items-center gap-2">
-                      {activeSelfQuiz && <span className="hidden sm:inline-flex h-9 items-center rounded-xl border border-rose-200 bg-white px-3 text-[10px] font-black uppercase text-rose-700 shadow-sm">Đã phát {activeSelfQuizQuestionCount} câu</span>}
-                      <button type="button" onClick={(e) => { e.stopPropagation(); openQuickQuizPreview(); }} disabled={!quizHasQuickContent} className="h-9 px-3 rounded-xl bg-white text-rose-700 border border-rose-200 text-[10px] sm:text-xs font-black uppercase shadow-sm flex items-center justify-center gap-1.5 hover:bg-rose-500 hover:text-white disabled:opacity-40 disabled:hover:bg-white disabled:hover:text-rose-700">
-                        <FileText className="w-3.5 h-3.5" /> <span className="hidden sm:inline">Xem đề kiểm tra</span><span className="sm:hidden">Xem đề</span>
-                      </button>
-                      {showQuizEditor ? <ChevronUp className="w-5 h-5 text-rose-700" /> : <ChevronDown className="w-5 h-5 text-rose-700" />}
-                    </div>
-                  )}
+                  <button type="button" onClick={() => setShowStudentQuizPanel(prev => !prev)} className="flex-1 text-left font-black text-rose-800 text-xs sm:text-sm uppercase tracking-tight flex items-center gap-2"><CheckCircle2 className="w-4 h-4 sm:w-5 sm:h-5" /> {activeSelfQuiz ? `Bài kiểm tra - làm ${activeSelfQuizQuestionCount} câu` : 'Bài kiểm tra'}</button>
                   {role !== 'teacher' && studentCurrentQuizVisible && (
                     <div className="flex items-center gap-2">
                       <ChevronDown className={`w-5 h-5 text-rose-700 transition-transform ${showStudentQuizPanel ? 'rotate-180' : ''}`} />
@@ -9173,202 +8690,6 @@ ${lessonBlocks}`;
                     </div>
                   )}
                 </div>
-                {role === 'teacher' && showQuizEditor && (
-                  <div className="p-3 sm:p-5 space-y-3 sm:space-y-4 animate-in slide-in-from-top-2 duration-200">
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                      <button type="button" onClick={() => { setQuizTeacherTab('compose'); setShowQuizResults(false); setShowQuizComposeWorkspace(true); }} className={`${showQuizComposeWorkspace ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-emerald-700 border-emerald-100'} h-11 px-2 sm:px-3 rounded-xl font-black text-[10px] sm:text-xs uppercase border shadow-sm flex items-center justify-center gap-2 text-center leading-tight`}><Pencil className="w-3.5 h-3.5" /> Soạn đề</button>
-                      <button type="button" onClick={openAutoWorkTeacherTab} className={`${showQuizWorkWorkspace && !showQuizResults ? 'bg-sky-600 text-white border-sky-600' : 'bg-white text-sky-700 border-sky-100'} h-11 px-2 sm:px-3 rounded-xl font-black text-[10px] sm:text-xs uppercase border shadow-sm flex items-center justify-center gap-2 text-center leading-tight`}><ListChecks className="w-3.5 h-3.5" /> Bài làm tự động</button>
-                      <button type="button" onClick={openScoreTeacherTab} className={`${showQuizWorkWorkspace && showQuizResults ? 'bg-blue-700 text-white border-blue-700' : 'bg-white text-blue-700 border-blue-100'} h-11 px-2 sm:px-3 rounded-xl font-black text-[10px] sm:text-xs uppercase border shadow-sm flex items-center justify-center gap-2 text-center leading-tight relative`}>
-                        <FileText className="w-3.5 h-3.5" /> Chấm điểm ({quizScoreCount})
-                        {pendingHandwrittenSubmissionCount > 0 && (
-                          <span className="absolute -top-2 -right-2 min-w-6 h-6 rounded-full bg-rose-600 px-1.5 text-[10px] font-black text-white flex items-center justify-center shadow-md">{pendingHandwrittenSubmissionCount}</span>
-                        )}
-                      </button>
-                      <button type="button" onClick={handleToggleQuizPublish} disabled={isSavingQuiz} className={`${quizPublishAction.className} h-11 px-2 sm:px-3 rounded-xl font-black text-[10px] sm:text-xs uppercase border shadow-sm flex items-center justify-center gap-2 text-center leading-tight disabled:opacity-50`}>
-                        {quizPublishAction.icon === 'hide' ? <X className="w-3.5 h-3.5" /> : <ExternalLink className="w-3.5 h-3.5" />} {isSavingQuiz ? 'Đang lưu' : quizPublishAction.label}
-                      </button>
-                    </div>
-                    {showQuizWorkWorkspace && quizTeacherTab === 'work' && <div className="quiz-work-page fixed inset-0 z-[999] h-[100dvh] w-screen overflow-y-auto overscroll-contain bg-slate-100 p-2 sm:p-3">
-                      <div className="w-full max-w-none mx-auto space-y-3 sm:space-y-4">
-                        <div className="sticky top-0 z-10 rounded-3xl border border-sky-100 bg-white/95 px-3 sm:px-5 py-3 sm:py-4 shadow-lg backdrop-blur flex items-center justify-between gap-3">
-                          <div className="min-w-0">
-                            <h3 className="font-black text-sky-900 text-base sm:text-xl uppercase tracking-tight flex items-center gap-2"><ListChecks className="w-5 h-5" /> {showQuizResults ? 'Chấm bài tự động' : 'Bài làm tự động'}</h3>
-                            <div className="text-[10px] sm:text-xs font-bold text-sky-700/70 truncate">{showQuizResults ? 'Xem điểm trắc nghiệm, tự luận và cho học sinh làm lại' : 'Chọn trắc nghiệm hoặc tự luận để tạo và quản lý bài làm'}</div>
-                          </div>
-                          <div className="flex flex-wrap items-center justify-end gap-2">
-                            {(showSelfQuizBuilder || showHandwrittenSubmissions) && (
-                              <>
-                                <button type="button" onClick={openSelfQuizTeacherTab} className={`h-11 px-3 sm:px-4 rounded-2xl border text-xs font-black uppercase flex items-center gap-2 ${showSelfQuizBuilder ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-emerald-700 border-emerald-100 hover:bg-emerald-50'}`}>
-                                  <ListChecks className="w-4 h-4" /> Trắc nghiệm
-                                </button>
-                                <button type="button" onClick={openHandwrittenTeacherTab} className={`h-11 px-3 sm:px-4 rounded-2xl border text-xs font-black uppercase flex items-center gap-2 ${showHandwrittenSubmissions ? 'bg-sky-600 text-white border-sky-600' : 'bg-white text-sky-700 border-sky-100 hover:bg-sky-50'}`}>
-                                  <UploadCloud className="w-4 h-4" /> Tự luận
-                                  {pendingHandwrittenSubmissionCount > 0 && <span className="min-w-5 h-5 rounded-full bg-rose-600 px-1.5 text-[10px] text-white flex items-center justify-center">{pendingHandwrittenSubmissionCount}</span>}
-                                </button>
-                              </>
-                            )}
-                            <button type="button" onClick={() => setShowQuizWorkWorkspace(false)} className="h-11 px-3 sm:px-4 rounded-2xl bg-slate-100 text-slate-700 border border-slate-200 text-xs font-black uppercase flex items-center gap-2 hover:bg-slate-200">
-                              <X className="w-4 h-4" /> Đóng
-                            </button>
-                          </div>
-                        </div>
-                        <div className="rounded-3xl border border-sky-100 bg-white shadow-xl p-3 sm:p-5 space-y-3 sm:space-y-4">
-                    {!showSelfQuizBuilder && !showHandwrittenSubmissions && !showQuizResults && (
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                        <button type="button" onClick={openSelfQuizTeacherTab} className="min-h-[120px] rounded-3xl border border-emerald-100 bg-emerald-50 p-5 text-left shadow-sm hover:bg-emerald-100 transition-colors">
-                          <div className="w-12 h-12 rounded-2xl bg-emerald-600 text-white flex items-center justify-center mb-4">
-                            <ListChecks className="w-6 h-6" />
-                          </div>
-                          <div className="font-black text-emerald-950 text-lg uppercase">Trắc nghiệm</div>
-                          <div className="mt-2 text-sm font-bold text-emerald-800/75 leading-relaxed">Tạo bài trắc nghiệm tự chấm, chọn đáp án đúng và lưu cho học sinh làm.</div>
-                        </button>
-                        <button type="button" onClick={openHandwrittenTeacherTab} className="relative min-h-[120px] rounded-3xl border border-sky-100 bg-sky-50 p-5 text-left shadow-sm hover:bg-sky-100 transition-colors">
-                          {pendingHandwrittenSubmissionCount > 0 && (
-                            <span className="absolute right-4 top-4 min-w-7 h-7 rounded-full bg-rose-600 px-2 text-xs font-black text-white flex items-center justify-center shadow-md">{pendingHandwrittenSubmissionCount}</span>
-                          )}
-                          <div className="w-12 h-12 rounded-2xl bg-sky-600 text-white flex items-center justify-center mb-4">
-                            <UploadCloud className="w-6 h-6" />
-                          </div>
-                          <div className="font-black text-sky-950 text-lg uppercase">Tự luận</div>
-                          <div className="mt-2 text-sm font-bold text-sky-800/75 leading-relaxed">Xem bài tự luận học sinh nộp, chấm bài chờ và lưu điểm giáo viên.</div>
-                        </button>
-                      </div>
-                    )}
-                    <Suspense fallback={<div className="rounded-2xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-xs font-black text-emerald-700">Đang mở công cụ trắc nghiệm...</div>}>
-                      <SelfQuizTeacherTools
-                        quizData={quizData}
-                        currentQuizResults={currentQuizResults}
-                        handwrittenSubmissions={currentHandwrittenSubmissions}
-                        students={allStudents}
-                        selectedGrade={selectedGrade}
-                        currentSchoolYear={currentSchoolYear}
-                        showSelfQuizBuilder={showSelfQuizBuilder}
-                        showQuizResults={showQuizResults}
-                        showHandwrittenSubmissions={showHandwrittenSubmissions}
-                        selfQuizDraft={selfQuizDraft}
-                        setSelfQuizDraft={setSelfQuizDraft}
-                        onCreateDraft={openSelfQuizTeacherTab}
-                        onToggleBuilder={() => { setShowSelfQuizBuilder(false); setShowQuizWorkWorkspace(false); }}
-                        onToggleResults={() => { setShowQuizResults(false); setShowQuizWorkWorkspace(false); }}
-                        onToggleHandwritten={openHandwrittenTeacherTab}
-                        onOpenHandwrittenSubmission={openHandwrittenSubmissionByKey}
-                        onResetQuizAttempts={resetQuizAttemptsForCurrentLesson}
-                        onResetStudentAttempt={resetQuizAttemptsForStudent}
-                        onAddQuestion={addSelfQuizQuestion}
-                        onUpdateQuestion={updateSelfQuizQuestion}
-                        onUpdateOption={updateSelfQuizOption}
-                        onRemoveQuestion={removeSelfQuizQuestion}
-                        onSaveSelfQuiz={handleSaveSelfQuiz}
-                        showWorkTabs={false}
-                      />
-                    </Suspense>
-                    {showHandwrittenSubmissions && (
-                    <div className="rounded-2xl border border-sky-100 bg-sky-50/60 overflow-hidden">
-                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-3 sm:px-4 py-3 border-b border-sky-100">
-                        <button type="button" onClick={() => setShowHandwrittenSubmissions(prev => !prev)} className="text-left font-black text-sky-900 text-xs sm:text-sm uppercase flex items-center gap-2">
-                          <UploadCloud className="w-4 h-4" /> Tự luận tự động ({currentHandwrittenSubmissions.length})
-                        </button>
-                        <div className="flex flex-wrap gap-2">
-                          <button type="button" onClick={resetQuizAttemptsForCurrentLesson} disabled={currentQuizResults.length + currentHandwrittenSubmissions.length === 0} className="px-3 py-2 rounded-xl bg-rose-50 text-rose-600 border border-rose-100 text-[10px] sm:text-xs font-black uppercase flex items-center gap-1.5 hover:bg-rose-600 hover:text-white transition-colors disabled:opacity-50">
-                            <RefreshCw className="w-3.5 h-3.5" /> Reset bai lam
-                          </button>
-                          <button type="button" onClick={handleGradeNextSubmission} disabled={gradingSubmissionId || currentHandwrittenSubmissions.length === 0} className="px-3 py-2 rounded-xl bg-indigo-600 text-white text-[10px] sm:text-xs font-black uppercase shadow-sm flex items-center gap-1.5 disabled:opacity-50">
-                            {gradingSubmissionId ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />} Chấm bài chờ
-                          </button>
-                          <button type="button" onClick={() => setShowHandwrittenSubmissions(false)} className="px-3 py-2 rounded-xl bg-rose-50 text-rose-600 border border-rose-100 text-[10px] sm:text-xs font-black uppercase flex items-center gap-1.5 hover:bg-rose-600 hover:text-white transition-colors">
-                            <X className="w-3.5 h-3.5" /> Đóng
-                          </button>
-                        </div>
-                      </div>
-                      {showHandwrittenSubmissions && (
-                        <div className="p-3 sm:p-4 space-y-3 bg-white/70">
-                          {studentEssayText && (
-                            <div className="rounded-2xl border border-amber-100 bg-amber-50 p-3 sm:p-4">
-                              <div className="mb-2 text-[10px] font-black uppercase text-amber-700">Đề tự luận</div>
-                              <div
-                                ref={essayPromptRef}
-                                className="rounded-xl border border-amber-100 bg-white p-3 sm:p-4 text-xs sm:text-sm font-bold text-slate-800 leading-relaxed student-content"
-                                dangerouslySetInnerHTML={{ __html: sanitizeHtml(formatEssayPromptHtml(studentEssayText)) }}
-                              />
-                            </div>
-                          )}
-                          {currentHandwrittenSubmissions.length > 0 && (
-                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 rounded-xl border border-sky-100 bg-sky-50 px-3 py-2">
-                              <div className="text-[10px] sm:text-xs font-black text-sky-800 uppercase">
-                                Bài {handwrittenViewerIndex + 1}/{currentHandwrittenSubmissions.length}
-                              </div>
-                              <div className="flex items-center gap-2">
-                                <button type="button" onClick={() => setHandwrittenViewerIndex(prev => Math.max(prev - 1, 0))} disabled={handwrittenViewerIndex <= 0} className="px-3 py-2 rounded-xl bg-white text-sky-700 border border-sky-100 text-[10px] font-black uppercase disabled:opacity-40 flex items-center gap-1">
-                                  <ChevronLeft className="w-3.5 h-3.5" /> Trước
-                                </button>
-                                <button type="button" onClick={() => setHandwrittenViewerIndex(prev => Math.min(prev + 1, currentHandwrittenSubmissions.length - 1))} disabled={handwrittenViewerIndex >= currentHandwrittenSubmissions.length - 1} className="px-3 py-2 rounded-xl bg-white text-sky-700 border border-sky-100 text-[10px] font-black uppercase disabled:opacity-40 flex items-center gap-1">
-                                  Sau <ChevronRight className="w-3.5 h-3.5" />
-                                </button>
-                              </div>
-                            </div>
-                          )}
-                          {currentHandwrittenSubmissions.length === 0 ? (
-                            <div className="rounded-xl border border-dashed border-sky-200 bg-white p-5 text-center text-slate-400 text-xs sm:text-sm font-bold">
-                              Chưa có bài viết tay nào được nộp cho bài này.
-                            </div>
-                          ) : [selectedHandwrittenSubmission].filter(Boolean).map(submission => {
-                            const draft = submissionGradeDrafts[submission.id] || {};
-                            const displayScore = draft.teacherScore ?? submission.teacherScore ?? submission.aiScore ?? '';
-                            const displayMaxScore = draft.teacherMaxScore ?? submission.teacherMaxScore ?? submission.aiMaxScore ?? '10';
-                            const displayComment = draft.teacherComment ?? submission.teacherComment ?? '';
-                            const isGradingThis = gradingSubmissionId === submission.id || submission.aiStatus === 'grading';
-                            return (
-                              <div key={submission.id} className="rounded-2xl border border-slate-200 bg-white p-3 sm:p-4 shadow-sm">
-                                <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-3">
-                                  <div className="min-w-0">
-                                    <div className="font-black text-slate-900 text-sm sm:text-base truncate">{submission.studentName || 'Học sinh'} <span className="text-[11px] text-slate-400">{submission.studentAccessCode ? `- ${submission.studentAccessCode}` : ''}</span></div>
-                                    <div className="text-[10px] sm:text-xs font-bold text-slate-500 mt-0.5">
-                                      {submission.submittedAt ? new Date(submission.submittedAt).toLocaleString('vi-VN') : ''} • {submission.fileName || 'Bài nộp'}
-                                    </div>
-                                    <div className={`inline-flex mt-2 px-2.5 py-1 rounded-full text-[10px] font-black uppercase border ${submission.status === 'left_page' ? 'bg-rose-50 text-rose-700 border-rose-100' : submission.status === 'teacher_reviewed' ? 'bg-emerald-50 text-emerald-700 border-emerald-100' : submission.aiStatus === 'graded' ? 'bg-blue-50 text-blue-700 border-blue-100' : submission.aiStatus === 'error' ? 'bg-rose-50 text-rose-700 border-rose-100' : 'bg-amber-50 text-amber-700 border-amber-100'}`}>
-                                      {submission.status === 'left_page' ? 'HS đã thoát ra ngoài' : submission.status === 'teacher_reviewed' ? 'GV đã duyệt' : submission.aiStatus === 'graded' ? 'AI đã chấm nháp' : submission.aiStatus === 'error' ? 'AI lỗi' : isGradingThis ? 'Đang chấm AI' : 'Chờ AI'}
-                                    </div>
-                                  </div>
-                                  <div className="flex flex-wrap gap-2">
-                                    {submission.fileUrl && <a href={submission.fileUrl} target="_blank" rel="noopener noreferrer" className="px-3 py-2 rounded-xl bg-slate-50 text-slate-700 border border-slate-200 text-[10px] sm:text-xs font-black uppercase flex items-center gap-1.5"><ExternalLink className="w-3.5 h-3.5" /> Mở bài</a>}
-                                    <button type="button" onClick={() => runAiGradingForSubmission(submission)} disabled={isGradingThis || !submission.fileId} className="px-3 py-2 rounded-xl bg-indigo-50 text-indigo-700 border border-indigo-100 text-[10px] sm:text-xs font-black uppercase flex items-center gap-1.5 disabled:opacity-50">
-                                      {isGradingThis ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />} Chấm AI
-                                    </button>
-                                  </div>
-                                </div>
-                                {submission.fileUrl && (
-                                  <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 overflow-hidden">
-                                    <iframe src={getEmbedUrl(submission.fileUrl)} title={`Bài của ${submission.studentName || 'học sinh'}`} className="w-full h-[320px] sm:h-[520px] bg-white border-0" allowFullScreen />
-                                  </div>
-                                )}
-                                {submission.aiComment && (
-                                  <div className="mt-3 rounded-xl border border-blue-100 bg-blue-50 p-3">
-                                    <div className="text-[10px] font-black uppercase text-blue-600 mb-1">Nhận xét AI</div>
-                                    <div className="text-xs sm:text-sm font-bold text-slate-700 whitespace-pre-wrap max-h-40 overflow-y-auto">{submission.aiComment}</div>
-                                  </div>
-                                )}
-                                {submission.aiError && submission.aiStatus === 'error' && (
-                                  <div className="mt-3 rounded-xl border border-rose-100 bg-rose-50 p-3 text-xs font-black text-rose-700">{submission.aiError}</div>
-                                )}
-                                <div className="mt-3 grid grid-cols-1 sm:grid-cols-[110px_90px_1fr_auto] gap-2">
-                                  <input value={displayScore} onChange={(e) => updateSubmissionGradeDraft(submission.id, 'teacherScore', e.target.value)} placeholder="Điểm" className="border border-slate-200 rounded-xl px-3 py-2 text-sm font-black text-slate-800 focus:outline-none focus:border-emerald-400" />
-                                  <input value={displayMaxScore} onChange={(e) => updateSubmissionGradeDraft(submission.id, 'teacherMaxScore', e.target.value)} placeholder="/10" className="border border-slate-200 rounded-xl px-3 py-2 text-sm font-black text-slate-800 focus:outline-none focus:border-emerald-400" />
-                                  <input value={displayComment} onChange={(e) => updateSubmissionGradeDraft(submission.id, 'teacherComment', e.target.value)} placeholder="Nhận xét của giáo viên..." className="border border-slate-200 rounded-xl px-3 py-2 text-sm font-bold text-slate-800 focus:outline-none focus:border-emerald-400" />
-                                  <button type="button" onClick={() => saveTeacherGradeForSubmission(submission)} className="px-4 py-2 rounded-xl bg-emerald-600 text-white text-xs font-black uppercase flex items-center justify-center gap-1.5 shadow-sm">
-                                    <Save className="w-3.5 h-3.5" /> Lưu điểm
-                                  </button>
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </div>
-                    )}
-                        </div>
-                      </div>
-                    </div>}
-                  </div>)}
                 {role !== 'teacher' && studentCurrentQuizVisible && showStudentQuizPanel && (
                   activeSelfQuiz ? (
                     <div ref={studentQuizContentRef} className="student-quiz-form student-quiz-viewport p-3 sm:p-5 student-content space-y-3">
@@ -9441,14 +8762,14 @@ ${lessonBlocks}`;
                             <h4 className="font-black text-amber-900 text-sm sm:text-base uppercase">Phần tự luận</h4>
                             <span className="text-[10px] font-black text-amber-700 bg-white border border-amber-100 rounded-full px-3 py-1">Nộp tay</span>
                           </div>
-                          <div className="bg-white border border-amber-100 rounded-xl p-4 text-sm sm:text-base font-bold text-slate-800 whitespace-pre-wrap leading-relaxed">{studentEssayText}</div>
+                          <p className="text-sm text-amber-900">Em cần trình bày từng bước giải, không chỉ ghi đáp án. Ảnh phải rõ và đủ các trang.</p><div className="bg-white border border-amber-100 rounded-xl p-4 text-sm sm:text-base font-bold text-slate-800 whitespace-pre-wrap leading-relaxed">{studentEssayText}</div>
                           <button type="button" onClick={() => studentSubmitSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })} className="w-full sm:w-auto px-4 py-2.5 bg-amber-600 text-white rounded-xl text-xs font-black uppercase shadow-sm">Nộp phần tự luận bên dưới</button>
                         </div>
                       )}
                       {studentSelfQuizSubmitted && activeSelfQuiz.showScoreAfterSubmit === false && <div className="bg-blue-50 border border-blue-100 rounded-xl p-3 text-center text-blue-700 text-sm font-black">Đã ghi nhận bài làm. Giáo viên sẽ xem điểm trong bảng điểm.</div>}
                     </div>
                   ) : (
-                    <div ref={studentQuizContentRef} className="student-quiz-viewport p-4 sm:p-8 text-base sm:text-lg leading-relaxed student-content"><div dangerouslySetInnerHTML={{ __html: sanitizeHtml(quizHtml) }} /></div>
+                    <div ref={studentQuizContentRef} className="student-quiz-viewport p-4 sm:p-8 text-base sm:text-lg leading-relaxed student-content"><div dangerouslySetInnerHTML={{ __html: normalizeMathHtml(quizHtml) }} /></div>
                   )
                 )}
               </div>
@@ -9714,10 +9035,10 @@ ${lessonBlocks}`;
                         <iframe src={getEmbedUrl(studentSavedHandwrittenSubmission.fileUrl)} title="Bài tự luận đã nộp" className="w-full h-[320px] sm:h-[520px] bg-white border-0" allowFullScreen />
                       </div>
                     )}
-                    {(studentSavedHandwrittenSubmission?.aiComment || studentSavedHandwrittenSubmission?.teacherComment) && (
+                    {studentSavedHandwrittenSubmission?.status === 'teacher_reviewed' && studentSavedHandwrittenSubmission?.teacherComment && (
                       <div className="rounded-2xl border border-blue-100 bg-blue-50 p-4">
                         <div className="text-[10px] font-black uppercase text-blue-700 mb-2">Nhận xét</div>
-                        <div className="text-xs sm:text-sm font-bold text-slate-700 whitespace-pre-wrap">{studentSavedHandwrittenSubmission.teacherComment || studentSavedHandwrittenSubmission.aiComment}</div>
+                        <div className="text-xs sm:text-sm font-bold text-slate-700 whitespace-pre-wrap">{studentSavedHandwrittenSubmission.teacherComment}</div>
                       </div>
                     )}
                   </div>
@@ -9728,6 +9049,7 @@ ${lessonBlocks}`;
             {/* --- NỘP BÀI HỌC SINH --- */}
             {role === 'student' && studentCanAccessCurrentGradeQuiz && (
               <div ref={studentSubmitSectionRef} className="student-submission-panel bg-white/95 rounded-2xl sm:rounded-[2rem] shadow-xl border border-white/70 overflow-hidden animate-in fade-in duration-500">
+                <p className="px-4 pt-3 text-sm text-amber-800">Bài tự luận cần có từng bước giải và kết luận, không chỉ ghi đáp án. Chụp rõ, đủ các trang để AI và giáo viên đọc được.</p>
                  <div className="student-submission-heading flex flex-row items-center gap-3 sm:gap-5 px-4 sm:px-8 py-3 sm:py-5 border-b border-slate-100 bg-gradient-to-r from-sky-50 to-emerald-50 text-left">
                     <div className="bg-white p-2 sm:p-3 rounded-xl text-sky-600 shadow-sm border border-sky-100"><UploadCloud className="w-5 h-5 sm:w-6 sm:h-6" /></div>
                     <div className="min-w-0">
@@ -9791,231 +9113,88 @@ ${lessonBlocks}`;
         )}
       </main>
 
-      {showQuickQuizPreview && (
-        <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm flex items-center justify-center p-3 sm:p-5 z-[95] animate-in fade-in duration-200">
-          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-5xl max-h-[92vh] flex flex-col overflow-hidden border border-white/20">
-            <div className="px-4 sm:px-6 py-4 bg-emerald-50 border-b border-emerald-100 flex items-center justify-between gap-3">
-              <div className="min-w-0">
-                <h3 className="font-black text-emerald-900 text-base sm:text-xl uppercase tracking-tight flex items-center gap-2"><FileText className="w-5 h-5" /> Xem đề nhanh</h3>
-                <p className="text-[10px] sm:text-xs font-bold text-emerald-700/70 truncate">Đề kiểm tra kèm đáp án và biểu điểm dành cho giáo viên</p>
-              </div>
-              <button type="button" onClick={() => setShowQuickQuizPreview(false)} className="p-3 rounded-full bg-white border border-emerald-100 text-slate-500 hover:bg-rose-500 hover:text-white shadow-sm transition-colors">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            <div ref={quickQuizPreviewRef} className="teacher-content p-4 sm:p-7 text-base sm:text-lg leading-relaxed overflow-y-auto">
-              <div dangerouslySetInnerHTML={{ __html: sanitizeHtml(getCurrentQuizContent()) }} />
-            </div>
-          </div>
-        </div>
-      )}
+      <LessonNormalizeDialog normalizer={lessonNormalizer} />
+      {role === 'teacher' && showLessonReviewBatch && <Suspense fallback={<div className="pdf-import-backdrop" role="status">Đang mở tạo ôn tập hàng loạt…</div>}><LessonReviewBatchDialog key={lessonPdfScopeKey} context={lessonPdfContext}
+        service={lessonReviewBatchService} requestAI={requestLessonReviewBatchAI} onClose={() => setShowLessonReviewBatch(false)} onOpenSaved={openMaterial} /></Suspense>}
+      {role === 'teacher' && showLessonPdfImport && <Suspense fallback={<div role="status" className="pdf-import-backdrop">Đang mở công cụ nhập PDF…</div>}><LessonPdfImportDialog key={lessonPdfScopeKey} context={lessonPdfContext}
+        requestAI={requestLessonPdfAI} readLessons={lessonPdfService.readLessons} saveLesson={lessonPdfService.saveLesson} onClose={() => setShowLessonPdfImport(false)} /></Suspense>}
+      {showQuickQuizPreview && <QuickQuizPreview content={getCurrentQuizContent() || selfQuizDraftToHtml(selfQuizDraft)} quizData={selfQuizDraft.questions.length ? selfQuizDraft : quizData} deliveryMode={teacherQuizWorkspaceTab === 'publish' ? pendingQuizDeliveryMode : quizDeliveryMode} onClose={() => setShowQuickQuizPreview(false)} />}
 
-      {showQuizPublishModal && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-[100] animate-in fade-in duration-200">
-          <div className="bg-white rounded-3xl shadow-2xl max-w-md w-full p-6 border border-white/20">
-            <h3 className="text-lg font-black text-slate-800 mb-3">Chọn cách phát đề</h3>
-            <p className="text-sm text-slate-500 font-bold mb-5">Bài kiểm tra sẽ hiển thị cho học sinh theo lựa chọn của thầy cô.</p>
-            <div className="space-y-3">
-              {quizData?.questions?.length > 0 && (
-                <div className="bg-emerald-50 border border-emerald-100 rounded-2xl p-3">
-                  <div className="text-[10px] font-black text-emerald-700 uppercase mb-2">Học sinh sẽ thấy bản nào?</div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <button type="button" onClick={() => setPendingQuizDeliveryMode('auto')} className={`py-2 rounded-xl text-[10px] font-black uppercase border ${pendingQuizDeliveryMode === 'auto' ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-emerald-700 border-emerald-100'}`}>Tự chấm</button>
-                    <button type="button" onClick={() => setPendingQuizDeliveryMode('manual')} className={`py-2 rounded-xl text-[10px] font-black uppercase border ${pendingQuizDeliveryMode === 'manual' ? 'bg-slate-700 text-white border-slate-700' : 'bg-white text-slate-700 border-slate-200'}`}>Bản thường</button>
-                  </div>
-                </div>
-              )}
-              <div className="bg-blue-50 border border-blue-100 rounded-2xl p-3">
-                <div className="flex items-center justify-between gap-3 mb-2">
-                  <div className="text-[10px] font-black text-blue-800 uppercase">Ghi điểm vào cột nào?</div>
-                  {quizScoreSubject && <div className="text-[10px] font-black text-blue-500">{quizScoreSubject.label} · {quizScoreSemester === 'hki' ? 'HK1' : 'HK2'}</div>}
-                </div>
-                {!quizScoreSubject ? (
-                  <div className="text-xs font-bold text-slate-500 bg-white rounded-xl p-3 border border-blue-100">Môn này chưa có bảng điểm nhanh nên chưa tự ghi điểm.</div>
-                ) : (
-                  <>
-                    <div className="grid grid-cols-4 gap-2">
-                      <button type="button" onClick={() => setPendingQuizScoreTarget(null)} className={`py-2 rounded-xl text-[10px] font-black uppercase border ${!pendingQuizScoreTarget ? 'bg-slate-700 text-white border-slate-700' : 'bg-white text-slate-600 border-slate-200'}`}>Không ghi</button>
-                      {quizScoreTargetOptions.map(option => {
-                        const active = pendingQuizScoreTarget
-                          && String(pendingQuizScoreTarget.semester) === String(quizScoreSemester)
-                          && Number(pendingQuizScoreTarget.pageIndex) === Number(quizScoreSubject.pageIndex)
-                          && Number(pendingQuizScoreTarget.scoreIndex) === Number(option.scoreIndex);
-                        return (
-                          <button
-                            key={`score-target-${option.label}`}
-                            type="button"
-                            disabled={option.used}
-                            onClick={() => setPendingQuizScoreTarget({
-                              grade: String(selectedGrade || ''),
-                              schoolYear: currentSchoolYear || '',
-                              semester: quizScoreSemester,
-                              semesterLabel: quizScoreSemester === 'hki' ? 'HK1' : 'HK2',
-                              subjectKey: quizScoreSubject.key,
-                              subjectLabel: quizScoreSubject.label,
-                              pageIndex: quizScoreSubject.pageIndex,
-                              scoreIndex: option.scoreIndex,
-                              label: option.label
-                            })}
-                            className={`py-2 rounded-xl text-[10px] font-black uppercase border transition-all ${active ? 'bg-blue-600 text-white border-blue-600 shadow-sm' : option.used ? 'bg-slate-100 text-slate-300 border-slate-200 cursor-not-allowed' : 'bg-white text-blue-700 border-blue-100 hover:bg-blue-600 hover:text-white'}`}
-                          >
-                            {option.label}
-                          </button>
-                        );
-                      })}
-                    </div>
-                    <div className="mt-2 text-[10px] font-bold text-blue-500">Cột mờ là cột đã có điểm trong bảng điểm của khối này.</div>
-                  </>
-                )}
-              </div>
-              <button onClick={confirmQuizPublishNow} className="w-full py-3 bg-emerald-600 text-white rounded-2xl font-black shadow-lg">Phát đề ngay</button>
-              <div className="bg-slate-50 border border-slate-200 rounded-2xl p-3">
-                <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Hẹn ngày giờ (giờ Việt Nam)</label>
-                <input type="datetime-local" value={quizPublishModalAt} onChange={(e) => setQuizPublishModalAt(e.target.value)} className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 font-bold text-slate-700 outline-none" />
-                <button onClick={confirmQuizSchedule} className="mt-3 w-full py-2.5 bg-blue-600 text-white rounded-xl font-black text-xs">Lưu và hẹn giờ</button>
-              </div>
-              <button onClick={() => setShowQuizPublishModal(false)} className="w-full py-2.5 bg-slate-100 text-slate-700 rounded-xl font-bold">Hủy</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* --- MODAL AI --- */}
       {showAiModal && (
-        <div className="ai-modal fixed inset-0 bg-slate-900/80 backdrop-blur-md z-[90] flex items-center justify-center p-3 sm:p-4 animate-in fade-in duration-300">
-          <div className="ai-modal-card bg-white rounded-[2rem] sm:rounded-[3rem] shadow-2xl w-full max-w-6xl max-h-[95vh] flex flex-col overflow-hidden border border-white/20">
-            <div className="px-4 sm:px-8 py-4 sm:py-6 border-b bg-indigo-50 flex justify-between items-center gap-3 flex-shrink-0">
-              <div className="min-w-0">
-                <h3 className="text-xl sm:text-3xl font-black text-indigo-900 tracking-tight">Tạo đề AI</h3>
-                <p className="text-[10px] sm:text-xs font-black text-indigo-600 uppercase tracking-widest mt-1">Tạo đề từ bài giảng và tài liệu đính kèm</p>
-              </div>
-              <button onClick={() => setShowAiModal(false)} className="p-3 bg-white rounded-full border shadow-lg hover:bg-rose-500 hover:text-white transition-all active:scale-90"><X className="w-5 h-5 sm:w-6 sm:h-6" /></button>
+        <div className="ai-modal fixed inset-0 z-[90] flex items-center justify-center bg-slate-900/70 p-3">
+          <section role="dialog" aria-modal="true" aria-labelledby="quiz-ai-title" className="ai-modal-card flex max-h-[92dvh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl bg-white shadow-xl">
+            <header className="flex items-center justify-between gap-3 border-b px-5 py-4"><div><h3 id="quiz-ai-title" className="font-bold text-indigo-900">{aiPurpose === 'exam' ? 'Tạo đề kiểm tra bằng AI' : 'Câu hỏi ôn tập'}</h3><p className="mt-1 text-sm text-slate-600">{teacherClassLabel(teacherProfile, selectedGrade)} · {selectedSubject} · {getWeekDisplayName(selectedLesson)}</p></div><button type="button" aria-label={aiPurpose === 'exam' ? 'Đóng tạo đề AI' : 'Đóng câu hỏi ôn tập'} disabled={isSavingQuiz} onClick={() => { aiGenerationRef.current += 1; setShowAiModal(false); setIsAiLoading(false); }} className="workspace-close-button"><X className="h-5 w-5" /><span>Đóng</span></button></header>
+            <div className="space-y-4 overflow-y-auto p-5">
+              <p className="text-sm">Nguồn: bài học {selectedSubject} · Khối {selectedGrade} · {getWeekDisplayName(selectedLesson)}. Có thể đổi nguồn trong phần nâng cao.</p>
+              {aiPurpose === 'quick' ? <LessonReviewOptions count={aiQuestionTemplate} essayCount={aiEssayCount} disabled={isAiLoading || isSavingQuiz} onChange={changeLessonReviewOptions} /> : <label className="block text-sm font-semibold">Loại câu hỏi <span className="lesson-review-select-hint">Nhấn vào để chọn số lượng</span>
+                <select aria-label="Loại câu hỏi AI" value={aiQuestionTemplate} disabled={isAiLoading || isSavingQuiz} onChange={event => {
+                  const value = event.target.value; setAiQuestionTemplate(value); setAiResponse(''); setAiError('');
+                  handleAiPromptTemplateSelect(value === 'mixed' ? 'Hãy tạo đề gồm 10 câu trắc nghiệm (5 điểm) và 2 câu tự luận (5 điểm), kèm đáp án và biểu điểm từng ý.' : value === 'essay' ? 'Hãy tạo 4 câu tự luận, kèm đáp án và biểu điểm từng ý, tổng 10 điểm.' : `Hãy tạo ${value} câu trắc nghiệm A, B, C, D kèm đáp án và biểu điểm, tổng 10 điểm.`);
+                }} className="mt-2 w-full rounded-lg border p-3">
+                  <option value="10">10 câu trắc nghiệm</option><option value="mixed">Trắc nghiệm và tự luận</option><option value="essay">Đề tự luận</option>
+                </select>
+              </label>}
+              <details className="quiz-advanced"><summary>Nâng cao: nguồn tài liệu và yêu cầu riêng</summary><div className="mt-3 space-y-3">
+                <fieldset disabled={isAiLoading || isSavingQuiz} className="min-w-0 space-y-3" onChange={() => { setAiResponse(''); setAiError(''); }}>
+                <div className="flex flex-wrap gap-2"><button type="button" aria-pressed={aiToolTab === 'quick'} onClick={() => { setAiResponse(''); setAiError(''); setAiToolTab('quick'); setShowAiLessonPicker(false); setAiContextContent(getLessonOfficialText(selectedLesson)); }} className="rounded-lg border px-3 py-2 text-sm">Bài giảng</button><button type="button" aria-pressed={aiToolTab === 'pro'} onClick={() => { setAiResponse(''); setAiError(''); setAiToolTab('pro'); }} className="rounded-lg border px-3 py-2 text-sm">Tài liệu đính kèm / AI bên ngoài</button></div>
+                <label className="block text-sm">Nội dung nguồn<textarea aria-label="Nội dung nguồn AI" value={aiContextContent} onChange={event => setAiContextContent(event.target.value)} className="mt-2 min-h-36 w-full rounded-lg border p-3" /></label>
+                <details onToggle={event => setShowAiLessonPicker(event.currentTarget.open)}><summary className="cursor-pointer text-sm">Chọn thêm tuần làm nguồn</summary><div className="mt-2 grid max-h-40 grid-cols-5 gap-2 overflow-auto">{Array.from({ length: TOTAL_LESSONS }, (_, i) => i + 1).map(lesson => <label key={lesson} className="rounded-lg border p-2 text-xs"><input type="checkbox" checked={aiSelectedLessons.includes(lesson)} onChange={event => setAiSelectedLessons(prev => event.target.checked ? [...prev, lesson].sort((a, b) => a - b) : prev.filter(value => value !== lesson))} /> Tuần {lesson}</label>)}</div></details>
+                <label className="block text-sm">Yêu cầu của thầy cô<textarea aria-label="Yêu cầu tạo đề AI" value={aiPrompt} onChange={event => setAiPrompt(event.target.value)} className="mt-2 min-h-28 w-full rounded-lg border p-3" /></label>
+                {aiToolTab === 'pro' && <><p className="text-xs text-slate-500">Sao chép yêu cầu sang AI bên ngoài, sau đó dán kết quả vào khung soạn đề.</p><div className="flex gap-2"><button type="button" onClick={handleOpenChatGptPrompt} className="rounded-lg border px-3 py-2 text-sm">Mở ChatGPT</button><button type="button" onClick={handleCopyGeminiProPrompt} className="rounded-lg border px-3 py-2 text-sm">Mở Gemini</button></div></>}
+                </fieldset>
+              </div></details>
+              {aiToolTab === 'quick' && <button type="button" onClick={handleGenerateAI} disabled={isAiLoading || !aiPrompt.trim()} className="flex w-full items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-3 font-semibold text-white disabled:opacity-50">{isAiLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}{isAiLoading ? 'Đang tạo…' : 'Tạo câu hỏi'}</button>}
+              {aiError && <p role="alert" className="rounded-lg bg-rose-50 p-3 text-sm text-rose-700">{aiError}</p>}
+              {aiPurpose === 'quick' && (isAiLoading || aiResponse) && aiReviewStatus && <p role="status" className="rounded-lg bg-indigo-50 p-3 text-sm text-indigo-800">{aiReviewStatus}</p>}
+              <AiQuestionResult response={aiResponse} html={sanitizeHtml(formatAiText(aiResponse))} previewRef={aiResponseContentRef} editable={aiPurpose === 'quick'} count={aiQuestionTemplate} essayCount={aiEssayCount} disabled={isSavingQuiz || isAiLoading} onRepair={() => handleGenerateAI({ repair: true })} onChange={value => { setAiResponse(value); setAiSaveError(''); setAiReviewStatus(''); }} />
             </div>
-
-            <div className="flex-1 overflow-y-auto bg-slate-50/70 p-4 sm:p-8 space-y-6">
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 sm:gap-8">
-                <div className="flex flex-col min-h-[320px]">
-                  <div className="flex items-center justify-between gap-3 mb-3">
-                    <label className="block text-xs font-black text-slate-400 uppercase tracking-widest">Nội dung nguồn</label>
-                    <span className="bg-emerald-100 text-emerald-700 px-3 py-1 rounded-full text-[10px] font-black uppercase whitespace-nowrap">Đã tự lấy dữ liệu</span>
-                  </div>
-                  <textarea value={aiContextContent} onChange={(e) => setAiContextContent(e.target.value)} placeholder="Khung này hiển thị nội dung AI nhận được. Có thể dán thêm nội dung vào đây..." className="flex-1 w-full bg-white border-2 border-slate-100 p-4 sm:p-6 rounded-3xl focus:outline-none focus:ring-4 focus:ring-indigo-50 min-h-[280px] font-medium leading-relaxed text-sm sm:text-base shadow-inner" />
-                </div>
-
-                <div className="flex flex-col min-h-[320px]">
-                  <div className="bg-white p-1.5 rounded-3xl border border-slate-100 shadow-sm mb-4 grid grid-cols-2 gap-1.5">
-                    <button type="button" onClick={() => { setAiToolTab('quick'); setShowAiLessonPicker(false); }} className={`py-3 rounded-2xl font-black text-[10px] sm:text-xs uppercase tracking-widest transition-all ${aiToolTab === 'quick' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 hover:bg-slate-50'}`}>Nguồn bài giảng</button>
-                    <button type="button" onClick={() => setAiToolTab('pro')} className={`py-3 rounded-2xl font-black text-[10px] sm:text-xs uppercase tracking-widest transition-all ${aiToolTab === 'pro' ? 'bg-emerald-600 text-white shadow-lg' : 'text-slate-500 hover:bg-slate-50'}`}>Nguồn đính kèm</button>
-                  </div>
-
-                  <button type="button" onClick={() => setShowAiLessonPicker(prev => !prev)} className="w-full mb-3 bg-emerald-50 text-emerald-700 border-2 border-emerald-100 font-black py-3 rounded-2xl text-xs uppercase tracking-widest">Lấy dữ liệu từ các bài trước</button>
-                  {showAiLessonPicker && (
-                    <div className="mb-4 bg-white border-2 border-emerald-100 rounded-3xl p-4 shadow-sm">
-                      <div className="flex items-center justify-between gap-3 mb-3">
-                        <div className="font-black text-emerald-900 text-xs uppercase tracking-widest">{aiToolTab === 'pro' ? 'Dùng tài liệu ở bài' : 'Dùng nội dung bài giảng'}</div>
-                        <button type="button" onClick={() => setAiSelectedLessons(Array.from({ length: Number(selectedLesson || 1) }, (_, i) => i + 1))} className="px-3 py-2 bg-emerald-50 text-emerald-700 rounded-xl text-[10px] font-black uppercase whitespace-nowrap">{'Từ đầu -> ' + (getWeekData(selectedLesson).isExam ? getWeekData(selectedLesson).main : 'Tuần ' + (selectedLesson || 1))}</button>
-                      </div>
-                      <div className="grid grid-cols-5 sm:grid-cols-7 gap-2 max-h-28 overflow-y-auto pr-1">
-                        {Array.from({ length: TOTAL_LESSONS }, (_, i) => i + 1).map(lesson => (
-                          <label key={lesson} className={`cursor-pointer text-center rounded-xl border-2 py-2 text-[10px] font-black transition-all ${aiSelectedLessons.includes(lesson) ? 'bg-emerald-600 border-emerald-600 text-white shadow-md' : 'bg-slate-50 border-slate-100 text-slate-500 hover:border-emerald-300'}`}>
-                            <input type="checkbox" className="hidden" checked={aiSelectedLessons.includes(lesson)} onChange={(e) => setAiSelectedLessons(prev => e.target.checked ? [...prev, lesson].sort((a, b) => a - b) : prev.filter(x => x !== lesson))} />
-                            {getWeekData(lesson).isExam ? getWeekData(lesson).main : 'T' + lesson}
-                          </label>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  <label className="block text-xs font-black text-slate-400 uppercase tracking-widest mb-3">Chọn mẫu nhanh</label>
-                  <select className="sm:hidden w-full bg-white border-2 border-slate-100 rounded-2xl px-4 py-3 mb-3 text-xs font-black text-slate-700 uppercase" defaultValue="" onChange={(e) => handleAiPromptTemplateSelect(e.target.value)}>
-                    <option value="" disabled>Chọn mẫu nhanh</option>
-                    <option value="Hay tao 40 cau hoi trac nghiem nhanh co 4 dap an A, B, C, D dua tren noi dung bai hoc. Chi tao trac nghiem, khong tao tu luan. Kem dap an A/B/C/D ro tung cau. He thong se rut 10 cau bat ky cho hoc sinh lam.">40 câu, rút 10</option>
-                    <option value="Hay tao 10 cau hoi trac nghiem co 4 dap an A, B, C, D, phan hoa tu nhan biet den van dung. Kem dap an va bieu diem ro tung cau/tung y.">10 câu trắc nghiệm</option>
-                    <option value="Hay tao 10 cau trac nghiem van dung nhe, co 4 dap an A, B, C, D. Chi tao trac nghiem, kem dap an A/B/C/D ro tung cau.">10 câu vận dụng nhẹ</option>
-                    <option value="Hay tao bo cau hoi on tap kiem tra 1 tiet, bao quat cac bai da chon, gom trac nghiem va tu luan. Sap xep theo muc do de den kho, kem dap an va bieu diem ro tung cau/tung y.">Ôn tập kiểm tra 1 tiết</option>
-                  </select>
-                  <div className="hidden sm:grid grid-cols-2 gap-2 mb-4">
-                    {[
-                      { label: '40 câu, rút 10', text: 'Hãy tạo 40 câu hỏi trắc nghiệm nhanh có 4 đáp án A, B, C, D dựa trên nội dung bài học. Chỉ tạo trắc nghiệm, không tạo tự luận. Kèm đáp án A/B/C/D rõ từng câu. Hệ thống sẽ rút 10 câu bất kỳ cho học sinh làm.' },
-                      { label: '10 câu trắc nghiệm', text: 'Hãy tạo 10 câu hỏi trắc nghiệm có 4 đáp án A, B, C, D, phân hóa từ nhận biết đến vận dụng. Chỉ soạn đề, kèm đáp án và biểu điểm rõ từng câu/từng ý.' },
-                      { label: '10 câu vận dụng nhẹ', text: 'Hãy tạo 10 câu trắc nghiệm vận dụng nhẹ có 4 đáp án A, B, C, D. Chỉ tạo trắc nghiệm, không tạo tự luận. Kèm đáp án A/B/C/D rõ từng câu.' },
-                      { label: 'Ôn tập kiểm tra 1 tiết', text: 'Hãy tạo bộ câu hỏi ôn tập kiểm tra 1 tiết, bao quát các bài đã chọn, gồm trắc nghiệm và tự luận. Sắp xếp theo mức độ dễ đến khó, kèm đáp án và biểu điểm rõ từng câu/từng ý.' }
-                    ].map(template => (
-                      <button key={template.label} type="button" onClick={() => setAiPrompt(template.text)} className={`text-left border-2 rounded-2xl px-4 py-3 transition-all ${aiPrompt === template.text ? 'bg-indigo-100 border-indigo-400 shadow-md ring-2 ring-indigo-50' : 'bg-white hover:bg-indigo-50 border-slate-100 hover:border-indigo-200'}`}>
-                        <span className={`block text-xs font-black uppercase tracking-widest ${aiPrompt === template.text ? 'text-indigo-800' : 'text-slate-800'}`}>{template.label}</span>
-                      </button>
-                    ))}
-                  </div>
-
-                  <label className="block text-xs font-black text-slate-400 uppercase tracking-widest mb-3">Yêu cầu cụ thể của thầy cô</label>
-                  <textarea value={aiPrompt} onChange={(e) => setAiPrompt(e.target.value)} placeholder="Khu tạo prompt: giáo viên có thể sửa theo ý mình." className="w-full bg-blue-50/50 border-4 border-dashed border-blue-100 p-4 sm:p-6 rounded-3xl focus:outline-none focus:ring-4 focus:ring-blue-50 font-black text-blue-900 text-sm sm:text-base shadow-inner min-h-[150px]" />
-
-                  {aiToolTab === 'pro' ? (
-                    <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      <button type="button" onClick={handleOpenChatGptPrompt} className="w-full bg-emerald-50 text-emerald-700 border-2 border-emerald-100 font-black py-4 rounded-2xl flex items-center justify-center gap-3 shadow-sm hover:bg-emerald-100 transition-all active:scale-95"><FileText className="w-5 h-5" />Mở ChatGPT</button>
-                      <button type="button" onClick={handleCopyGeminiProPrompt} className="w-full bg-emerald-600 text-white font-black py-4 rounded-2xl flex items-center justify-center gap-3 shadow-lg hover:bg-emerald-700 transition-all active:scale-95"><ExternalLink className="w-5 h-5" />Mở Gemini</button>
-                    </div>
-                  ) : (
-                    <button onClick={handleGenerateAI} disabled={isAiLoading || !aiPrompt.trim()} className="mt-4 w-full bg-indigo-600 text-white font-black py-4 rounded-2xl flex items-center justify-center gap-3 shadow-lg hover:bg-indigo-700 transition-all active:scale-95 disabled:opacity-50">{isAiLoading ? <Loader2 className="w-6 h-6 animate-spin" /> : <Sparkles className="w-6 h-6" />} Tạo đề ngay</button>
-                  )}
-                </div>
-              </div>
-
-              {aiError && <div className="bg-rose-50 text-rose-600 p-4 rounded-2xl border-2 border-rose-100 font-black text-center uppercase tracking-widest">{aiError}</div>}
-              {aiResponse && (
-                <div className="bg-white border-4 border-emerald-50 rounded-3xl p-4 sm:p-8 shadow-xl">
-                  <div ref={aiResponseContentRef} className="ai-response-content prose prose-lg sm:prose-xl max-w-none font-medium leading-relaxed" dangerouslySetInnerHTML={{ __html: sanitizeHtml(formatAiText(aiResponse)) }} />
-                  <div className="mt-6 grid grid-cols-1 sm:flex sm:justify-end gap-3 border-t-4 border-slate-50 pt-6">
-                    <button onClick={appendAiToQuickQuiz} className="bg-emerald-600 text-white px-6 py-4 rounded-2xl font-black flex items-center justify-center gap-3 shadow-lg hover:bg-emerald-700 transition-all active:scale-95"><Save className="w-5 h-5" />Phát hỏi đáp nhanh</button>
-                    <button onClick={appendAiToQuiz} className="bg-indigo-600 text-white px-6 py-4 rounded-2xl font-black flex items-center justify-center gap-3 shadow-lg hover:bg-indigo-700 transition-all active:scale-95"><CheckCircle2 className="w-5 h-5" />Đưa vào khung đề</button>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
+            {aiResponse && <AiQuestionSaveBar saving={isSavingQuiz} disabled={isAiLoading || (aiPurpose === 'quick' && !!prepareAiLessonReview(aiResponse, aiQuestionTemplate, aiEssayCount).error)} error={aiSaveError} onSave={aiPurpose === 'exam' ? appendAiToQuiz : appendAiToQuickQuiz} label={aiPurpose === 'exam' ? 'Dùng đề này' : 'Lưu câu hỏi ôn tập'} />}
+          </section>
         </div>
       )}
-      
+
       {/* MODAL XEM TÀI LIỆU */}
       {viewingMaterial && (
-        <div className="fixed inset-0 bg-slate-900/95 backdrop-blur-xl z-[70] flex flex-col animate-in fade-in duration-300">
-          <div className="flex items-center justify-between px-4 sm:px-8 py-4 sm:py-5 bg-slate-900 text-white border-b border-white/10 shadow-2xl">
+        <div className={`fixed inset-0 bg-slate-900/95 backdrop-blur-xl z-[70] flex flex-col animate-in fade-in duration-300 ${viewingMaterial.type === 'quick_quiz' ? 'lesson-review-viewer' : ''}`}>
+          <div className="material-viewer-header flex items-center justify-between px-4 sm:px-8 py-4 sm:py-5 bg-slate-900 text-white border-b border-white/10 shadow-2xl">
             <div className="flex items-center space-x-3 sm:space-x-5 flex-1 truncate">
-              <div className="hidden sm:block bg-white/10 p-3 rounded-2xl border border-white/20">{viewingMaterial.type === 'quick_quiz' ? <ListChecks className="w-7 h-7 text-emerald-300" /> : <FileText className="w-7 h-7 text-blue-400" />}</div>
+              <div className="material-viewer-icon hidden sm:block bg-white/10 p-3 rounded-2xl border border-white/20">{viewingMaterial.type === 'quick_quiz' ? <ListChecks className="w-7 h-7 text-emerald-300" /> : <FileText className="w-7 h-7 text-blue-400" />}</div>
               <h3 className="font-black text-lg sm:text-2xl truncate tracking-tight">{viewingMaterial.title}</h3>
             </div>
             <div className="flex items-center space-x-2 sm:space-x-4">
               {viewingMaterial.type !== 'quick_quiz' && <button onClick={() => handleCopyLink(viewingMaterial.url)} className="bg-white/10 p-3 sm:px-6 sm:py-3 rounded-xl sm:rounded-2xl font-black text-xs border border-white/10 flex items-center gap-2.5 transition-all hover:bg-white/20 uppercase tracking-widest active:scale-95"><Copy className="w-4 h-4 sm:w-5 sm:h-5" /><span className="hidden sm:inline">Copy Link</span></button>}
               {viewingMaterial.type !== 'quick_quiz' && <a href={isYouTubeUrl(viewingMaterial.url) ? getYouTubeWatchUrl(viewingMaterial.url) : viewingMaterial.url} target="_blank" rel="noopener noreferrer" className="bg-blue-600 p-3 sm:px-8 sm:py-3 rounded-xl sm:rounded-2xl font-black text-xs shadow-2xl border-b-4 border-blue-800 flex items-center gap-2.5 hover:bg-blue-500 transition-all uppercase tracking-widest active:scale-95"><ExternalLink className="w-4 h-4 sm:w-5 sm:h-5" /><span className="hidden sm:inline">{isYouTubeUrl(viewingMaterial.url) ? 'Mở YouTube' : 'Tải về máy'}</span></a>}
-              <div className="hidden sm:block w-px h-10 bg-white/10 mx-4 opacity-50"></div>
-              <button onClick={() => setViewingMaterial(null)} className="p-3 sm:p-4 bg-rose-600 sm:bg-white/10 rounded-xl sm:rounded-full hover:bg-rose-500 transition-all active:scale-75"><X className="w-4 h-4 sm:w-7 sm:h-7 text-white" /></button>
+              {viewingMaterial.type !== 'quick_quiz' && <div className="hidden sm:block w-px h-10 bg-white/10 mx-4 opacity-50"></div>}
+              <button aria-label={viewingMaterial.type === 'quick_quiz' ? 'Đóng câu hỏi ôn tập' : 'Đóng tài liệu'} onClick={() => setViewingMaterial(null)} className="material-viewer-close p-3 sm:p-4 bg-rose-600 sm:bg-white/10 rounded-xl sm:rounded-full hover:bg-rose-500 transition-all active:scale-75"><X className="w-4 h-4 sm:w-7 sm:h-7 text-white" />{viewingMaterial.type === 'quick_quiz' && <span>Đóng</span>}</button>
             </div>
           </div>
-          <div className="flex-1 p-0 sm:p-3 md:p-8 bg-slate-900/50 relative overflow-y-auto">
+          <div className="material-viewer-body flex-1 p-0 sm:p-3 md:p-8 bg-slate-900/50 relative overflow-y-auto">
             {viewingMaterial.type === 'quick_quiz' && (
-              <div ref={quickMaterialContentRef} className="mx-auto max-w-4xl rounded-none bg-white p-4 shadow-2xl sm:rounded-[2rem] sm:p-6">
-                <div className="mb-4 rounded-2xl border border-emerald-100 bg-emerald-50 p-4">
-                  <div className="font-black uppercase text-emerald-900">Hỏi đáp nhanh</div>
-                  <div className="mt-1 text-sm font-bold text-emerald-700">Chọn đáp án và nộp bài. Cần đạt tối thiểu 8/10 để qua.</div>
+              <div ref={quickMaterialContentRef} className="lesson-review-sheet">
+                <div className="lesson-review-intro">
+                  <div className="font-semibold text-emerald-900">Câu hỏi ôn tập</div>
+                  <div className="text-emerald-700">Chọn đáp án và nộp bài · Đạt từ 8/10 để qua.</div>
                 </div>
+                {viewingQuickQuizIssues.length > 0 && <div role="alert" className="mb-4 whitespace-pre-wrap rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">{role === 'student' ? 'Bộ câu hỏi có công thức hoặc phương án bị lỗi. Em báo giáo viên kiểm tra lại trước khi làm.' : `Bộ câu hỏi cần sửa hoặc nhập lại từ nội dung gốc trước khi cho học sinh làm:\n${viewingQuickQuizIssues.join('\n')}`}</div>}
                 {role === 'student' && <input value={studentQuizName} onChange={(e) => setStudentQuizName(e.target.value)} placeholder="Nhập họ tên..." className="mb-4 w-full rounded-xl border border-slate-200 px-4 py-3 text-sm font-bold outline-none focus:border-emerald-400" />}
-                <div className="space-y-3">
+                <div className="lesson-review-questions">
                   {viewingQuickQuizQuestions.map((q, qIndex) => (
-                    <div key={q.id} className="rounded-2xl border border-slate-200 p-4">
-                      <div className="font-black text-slate-900">{qIndex + 1}. {q.text}</div>
-                      <div className="mt-3 grid grid-cols-1 gap-2">
+                    <div key={q.id} className="lesson-review-question">
+                      <div className="lesson-review-question-text">{qIndex + 1}. {q.text}</div>
+                      <div className="lesson-review-answers">
                         {q.displayOptions.map((opt, optIndex) => {
                           const checked = quickMaterialAnswers[q.id] === opt.id;
                           const showCorrection = ['teacher', 'admin'].includes(role) || !SERVER_QUIZ_ENABLED && !!quickMaterialResult;
                           const isCorrectOption = opt.id === q.correctOptionId;
                           const isWrongSelection = showCorrection && checked && !isCorrectOption;
                           return (
-                            <label key={opt.id} className={`flex cursor-pointer items-start gap-3 rounded-xl border p-3 text-sm font-bold ${showCorrection && isCorrectOption ? 'border-emerald-300 bg-emerald-50 text-emerald-900' : isWrongSelection ? 'border-rose-300 bg-rose-50 text-rose-900' : checked ? 'border-blue-300 bg-blue-50 text-blue-900' : 'border-slate-200 bg-slate-50 text-slate-700'}`}>
-                              <input type="radio" name={`quick-material-${q.id}`} checked={checked} disabled={role !== 'student' || (quickMaterialResult && !quickMaterialResult.needsRetake)} onChange={() => { setQuickMaterialAnswers(prev => ({ ...prev, [q.id]: opt.id })); if (quickMaterialResult?.needsRetake) setQuickMaterialResult(null); if (quickMaterialWarning) setQuickMaterialWarning(''); }} className="mt-1" />
-                              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-xs font-black">{String.fromCharCode(65 + optIndex)}</span>
-                              <span className="flex-1 whitespace-pre-wrap">{opt.text}</span>
-                              {showCorrection && isCorrectOption && <span className="text-[10px] font-black uppercase text-emerald-700">Đúng</span>}
-                              {isWrongSelection && <span className="text-[10px] font-black uppercase text-rose-700">Sai</span>}
+                            <label key={opt.id} className={`lesson-review-option ${showCorrection && isCorrectOption ? 'is-correct' : isWrongSelection ? 'is-wrong' : checked ? 'is-selected' : ''}`}>
+                              {role === 'student' && <input type="radio" name={`quick-material-${q.id}`} checked={checked} disabled={!!quickMaterialResult && !quickMaterialResult.needsRetake} onChange={() => { setQuickMaterialAnswers(prev => ({ ...prev, [q.id]: opt.id })); if (quickMaterialResult?.needsRetake) setQuickMaterialResult(null); if (quickMaterialWarning) setQuickMaterialWarning(''); }} />}
+                              <span className="lesson-review-option-letter">{String.fromCharCode(65 + optIndex)}.</span>
+                              <span className="lesson-review-option-text">{opt.text}
+                                {showCorrection && isCorrectOption && <span className="lesson-review-correction">✓ Đúng</span>}
+                                {isWrongSelection && <span className="lesson-review-correction">Sai</span>}
+                              </span>
                             </label>
                           );
                         })}
@@ -10023,10 +9202,11 @@ ${lessonBlocks}`;
                     </div>
                   ))}
                 </div>
+                {viewingQuickQuizData?.essayQuestions?.length > 0 && <section className="lesson-review-essays mt-5 border-t border-slate-200 pt-4"><h4 className="font-bold text-slate-900">Tự luận ôn tập</h4><p className="mt-1 text-sm text-slate-500">Tự luyện, không tính vào điểm trắc nghiệm.</p><ol className="mt-3 space-y-3">{viewingQuickQuizData.essayQuestions.map((question, index) => <li key={question.id || index} className="whitespace-pre-wrap rounded-xl border border-slate-200 p-4"><strong>Bài {index + 1}. </strong>{question.text}</li>)}</ol></section>}
                 {quickMaterialWarning && <div className="mt-4 rounded-xl border border-rose-100 bg-rose-50 p-3 text-sm font-black text-rose-700">{quickMaterialWarning}</div>}
                 {SERVER_QUIZ_ENABLED && role !== 'student' && quickServer.response?.migrationRequired && <button className="mt-3 rounded bg-blue-600 px-4 py-2 text-white" onClick={async () => { try { const old = quickServer.response.quiz; await requestServerQuiz('publish', { kind: 'material', quizId: viewingMaterial.id, expectedVersion: null, expectedLegacyUpdatedAt: old.updatedAt ?? null, quiz: { ...old, content: old.sourceContent || '', deliveryMode: 'auto', isPublished: true, publishAt: null } }); quickServer.reload(); showNotification('Đã chuyển đề nhanh sang ngân hàng riêng.'); } catch (error) { showNotification(error.message, 'error'); } }}>Chuyển đề cũ sang máy chủ</button>}
                 {quickMaterialResult && !quickMaterialResult.needsRetake && <div className="mt-4 rounded-xl border border-emerald-100 bg-emerald-50 p-3 text-sm font-black text-emerald-700">Đã qua bài: {formatPointScore(quickMaterialResult.score)}/{formatPointScore(quickMaterialResult.total || 10)}</div>}
-                {role === 'student' && <button type="button" onClick={handleSubmitQuickMaterialQuiz} disabled={isSubmittingQuickMaterial || (quickMaterialResult && !quickMaterialResult.needsRetake)} className="mt-5 w-full rounded-2xl bg-emerald-600 px-5 py-4 text-sm font-black uppercase text-white shadow-lg disabled:opacity-50">{isSubmittingQuickMaterial ? 'Đang nộp...' : quickMaterialResult?.needsRetake ? 'Nộp lại' : 'Nộp hỏi đáp nhanh'}</button>}
+                {role === 'student' && <button type="button" onClick={handleSubmitQuickMaterialQuiz} disabled={viewingQuickQuizIssues.length > 0 || isSubmittingQuickMaterial || (quickMaterialResult && !quickMaterialResult.needsRetake)} className="mt-5 w-full rounded-2xl bg-emerald-600 px-5 py-4 text-sm font-black uppercase text-white shadow-lg disabled:opacity-50">{isSubmittingQuickMaterial ? 'Đang nộp...' : quickMaterialResult?.needsRetake ? 'Nộp lại' : 'Nộp hỏi đáp nhanh'}</button>}
               </div>
             )}
             {viewingMaterial.type !== 'quick_quiz' && isYouTubeUrl(viewingMaterial.url) && (

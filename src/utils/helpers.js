@@ -1,16 +1,25 @@
 import { ADMIN_SERVER_SESSION_STORAGE_KEY, STAFF_SERVER_SESSION_STORAGE_KEY } from '../config/sessionKeys.js';
 export { GRADES, SUBJECTS, TOTAL_LESSONS } from '../config/learningDomain.js';
-export const SCHOOL_YEARS = Array.from({length: 11}, (_, i) => `${2025 + i}-${2026 + i}`);
+export const SCHOOL_YEARS = Array.from({length: 13}, (_, i) => `${2023 + i}-${2024 + i}`);
 
 export const GOOGLE_API_KEY = 'AIzaSyAQwyUzt2jb8kBh_S4V2_SjuFKZi5K3Mc4';
 export const GEMINI_MODELS = [
-  { id: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash Lite' },
-  { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
   { id: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash' },
+  { id: 'gemini-3.6-flash', label: 'Gemini 3.6 Flash' },
   { id: 'gemini-3.5-flash-lite', label: 'Gemini 3.5 Flash Lite' },
-  { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' }
+  { id: 'gemini-3.1-flash-lite', label: 'Gemini 3.1 Flash Lite' },
+  { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
+  { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
+  { id: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash Lite' }
 ];
-export const DEFAULT_GEMINI_MODEL = 'gemini-2.5-flash-lite';
+export const DEFAULT_GEMINI_MODEL = 'gemini-3.8-flash';
+export const GEMINI_IMAGE_MODELS = [
+  { id: 'gemini-nano-banana-2.1', label: 'Nano Banana 2.1' },
+  { id: 'gemini-3.1-flash-image', label: 'Nano Banana 2' },
+  { id: 'gemini-3.1-flash-lite-image', label: 'Nano Banana 2 Lite' },
+  { id: 'gemini-3-pro-image', label: 'Nano Banana Pro' },
+  { id: 'gemini-2.5-flash-image', label: 'Nano Banana' }
+];
 
 export const TEXTBOOK_FOLDERS = {
   '6': '1Y7JgYgb4WlFNZUQ-caMsFk-VKXn2oz_u',
@@ -186,7 +195,7 @@ export const normalizeServiceErrorMessage = (message, action = '') => {
   return `${raw.slice(0, 897)}...`;
 };
 
-export const postAppsScript = async (payload, { timeoutMs = 120000, signal } = {}) => {
+export const postAppsScript = async (payload, { timeoutMs = payload.action === 'gemini' ? 240000 : 120000, signal } = {}) => {
   const sessionPayload = typeof window === 'undefined' ? {} : {
     adminSessionToken: window.sessionStorage.getItem(ADMIN_SERVER_SESSION_STORAGE_KEY) || undefined,
     studentSessionToken: window.sessionStorage.getItem('khl-student-server-session-v1') || undefined,
@@ -223,7 +232,7 @@ export const postAppsScript = async (payload, { timeoutMs = 120000, signal } = {
   }
   return data;
   } catch (error) {
-    if (timedOut) throw new Error('Máy chủ phản hồi quá lâu. Yêu cầu ghi có thể đã được xử lý; hãy kiểm tra trạng thái trước khi thử lại.', { cause: error });
+    if (timedOut) throw new Error(payload.action === 'gemini' ? 'AI phản hồi quá lâu. Nội dung đang soạn được giữ nguyên; thầy cô có thể thử lại.' : 'Máy chủ phản hồi quá lâu. Yêu cầu ghi có thể đã được xử lý; hãy kiểm tra trạng thái trước khi thử lại.', { cause: error });
     throw error;
   } finally {
     clearTimeout(timer);

@@ -1,23 +1,24 @@
 import { sanitizeHtml } from './safeHtml.js';
+import { mapOutsideQuizMath, protectQuizMath } from './quizMath.js';
+import { normalizeMathDelimiters, normalizeMathText } from './quizContent.js';
 
 export const SELF_QUIZ_OPTION_IDS = ['a', 'b', 'c', 'd'];
 
 export const makeId = (prefix = 'id') => `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
 export const normalizeQuizText = (text = '') =>
-  String(text || '')
+  mapOutsideQuizMath(normalizeMathDelimiters(text), prose => prose
     .replace(/\r/g, '')
     .replace(/\u00a0/g, ' ')
-    .replace(/\\\\/g, '\\')
     .replace(/[ \t]+/g, ' ')
-    .replace(/\n{3,}/g, '\n\n')
+    .replace(/\n{3,}/g, '\n\n'))
     .trim();
 
 const cleanGeneratedQuizText = (text = '') =>
-  normalizeQuizText(text)
+  mapOutsideQuizMath(normalizeQuizText(text), prose => prose
     .replace(/\s+(?:Câu|Cau|Question)\s*$/i, '')
     .replace(/\s+(?:Câu|Cau|Question)\s+\d{1,3}\s*[:.)-]?\s*$/i, '')
-    .replace(/\s+(?:Câu|Cau|Question)\s+\d{1,3}\s*[:.)-]\s+.*$/i, '')
+    .replace(/\s+(?:Câu|Cau|Question)\s+\d{1,3}\s*[:.)-]\s+.*$/i, ''))
     .trim();
 
 export const getDefaultSelfQuizDraft = () => ({
@@ -47,27 +48,37 @@ const foldText = (text = '') =>
     .toLowerCase();
 
 export const stripHtmlToText = (html = '') => {
-  const source = String(html || '')
+  const math = protectQuizMath(html);
+  const source = math.source
+    .replace(/<(sup|sub)\b[^>]*>([\s\S]*?)<\/\1>/gi, (_, tag, value) => `${tag.toLowerCase() === 'sup' ? '^' : '_'}{${value}}`)
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<\/(p|div|li|tr|h[1-6]|section|article|blockquote)>/gi, '\n')
     .replace(/<li[^>]*>/gi, '\n');
-  if (typeof document === 'undefined') return source.replace(/<[^>]+>/g, ' ').trim();
+  const decode = value => value.replace(/&(?:lt|gt|amp|quot|apos|nbsp|#\d+|#x[\da-f]+);/gi, entity => {
+    const name = entity.slice(1, -1).toLowerCase();
+    if (name.startsWith('#')) {
+      const code = name.startsWith('#x') ? parseInt(name.slice(2), 16) : Number(name.slice(1));
+      return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : entity;
+    }
+    return { lt: '<', gt: '>', amp: '&', quot: '"', apos: "'", nbsp: ' ' }[name];
+  });
+  if (typeof document === 'undefined') return decode(math.restore(source.replace(/<[^>]+>/g, ' '))).trim();
   const tmp = document.createElement('div');
   tmp.innerHTML = sanitizeHtml(source);
-  return (tmp.innerText || tmp.textContent || '').trim();
+  return math.restore(tmp.innerText || tmp.textContent || '', decode).trim();
 };
 
 const prepareQuizTextForParsing = (text = '') =>
-  String(text || '')
+  mapOutsideQuizMath(text, prose => prose
     .replace(/\r/g, '')
     .replace(/\u00a0/g, ' ')
     .replace(/([^\n])\s*((?:c(?:\u00e2u|au)|question)\s*\d{1,3}\s*[:.)-]?)/gi, '$1\n$2')
     .replace(/([^\n])\s*(\d{1,3}\s*[:.)-]\s+)/g, '$1\n$2')
-    .replace(/([^\n])\s*(?:[-*•]\s*)?(\(?[A-D]\)?\s*[:.)-]\s+)/gi, '$1\n$2')
+    .replace(/([^\n])\s*(?:[-*•]\s*)?(\(?[A-D]\)?\s*[:.)-]\s+)/g, '$1\n$2')
     .replace(/([^\n])\s*((?:(?:\u0111(?:\u00e1|a)p\s*(?:\u00e1|a)n|dap\s*an|answer)\s*[:.)-]|d\/a\s*[:.)-]?|da\s*:))/gi, '$1\n$2')
     .replace(/[ \t]+\n/g, '\n')
     .replace(/\n[ \t]+/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
+    .replace(/\n{3,}/g, '\n\n'))
     .trim();
 
 const isAnswerMarkerLine = (line = '') => {
@@ -153,12 +164,11 @@ export const buildAnswerMap = (text = '') => {
 };
 
 const readQuestionLine = (line = '') => {
-  const match = foldText(line).match(/^(?:(?:cau|question)\s*)?(\d{1,3})\s*[:.)-]\s*/);
+  const match = line.match(/^(?:(?:Câu|Cau|Question)\s*)?(\d{1,3})(?:\s*\(\s*\d+(?:[,.]\d+)?\s*(?:điểm|diem|đ|points?)\s*\))?\s*[:.)-]\s*/i);
   if (!match) return null;
-  const prefix = line.match(/^(?:(?:Câu|Cau|Question)\s*)?\d{1,3}\s*[:.)-]\s*/i)?.[0] || '';
   return {
     number: String(Number(match[1])),
-    text: cleanGeneratedQuizText(line.slice(prefix.length))
+    text: cleanGeneratedQuizText(line.slice(match[0].length))
   };
 };
 
@@ -171,17 +181,21 @@ const readOptionLine = (line = '') => {
 };
 
 export const parseSelfQuizFromHtml = (html = '') => {
-  const text = prepareQuizTextForParsing(stripHtmlToText(html));
+  const math = protectQuizMath(stripHtmlToText(html));
+  const text = prepareQuizTextForParsing(math.source);
   const answerMap = buildAnswerMap(text);
   const questions = [];
+  const parseIssues = [], questionNumbers = new Set();
   let currentQuestion = null;
   let currentOptionId = '';
   let inAnswerSection = false;
+  let inEssaySection = false;
 
   const commitQuestion = () => {
     if (!currentQuestion) return;
     const hasEnoughOptions = currentQuestion.options.filter(option => option.text).length >= 2;
     if (normalizeQuizText(currentQuestion.text) && hasEnoughOptions) questions.push(currentQuestion);
+    else parseIssues.push(`Câu ${currentQuestion.sourceNumber} chưa đủ nội dung hoặc phương án; không thể nhập đầy đủ.`);
   };
 
   text.split('\n').forEach(rawLine => {
@@ -193,21 +207,25 @@ export const parseSelfQuizFromHtml = (html = '') => {
       currentOptionId = '';
       return;
     }
-    if (inAnswerSection) return;
+    if (inAnswerSection || inEssaySection) return;
 
-    if (currentQuestion && isEssaySectionLine(line)) {
+    if (isEssaySectionLine(line)) {
       commitQuestion();
       currentQuestion = null;
       currentOptionId = '';
+      inEssaySection = true;
       return;
     }
 
     const questionLine = readQuestionLine(line);
     if (questionLine) {
       commitQuestion();
+      if (questionNumbers.has(questionLine.number)) parseIssues.push(`Câu ${questionLine.number} bị lặp số thứ tự.`);
+      questionNumbers.add(questionLine.number);
       currentQuestion = {
         id: makeId(`q${questionLine.number}`),
-        text: questionLine.text || `Cau ${questionLine.number}`,
+        sourceNumber: questionLine.number,
+        text: questionLine.text,
         options: SELF_QUIZ_OPTION_IDS.map(id => ({ id, text: '' })),
         correctOptionId: answerMap[questionLine.number] || '',
         points: 1
@@ -218,6 +236,9 @@ export const parseSelfQuizFromHtml = (html = '') => {
 
     const optionLine = readOptionLine(line);
     if (currentQuestion && optionLine) {
+      if (currentQuestion.options.some(option => option.id === optionLine.id && option.text)) {
+        parseIssues.push(`Câu ${currentQuestion.sourceNumber}, phương án ${optionLine.id.toUpperCase()} bị lặp nhãn; cần kiểm tra dữ liệu nhập.`);
+      }
       currentQuestion.options = currentQuestion.options.map(option =>
         option.id === optionLine.id ? { ...option, text: optionLine.text } : option
       );
@@ -237,6 +258,12 @@ export const parseSelfQuizFromHtml = (html = '') => {
 
   commitQuestion();
 
+  questions.forEach(question => {
+    question.text = normalizeMathText(math.restore(question.text));
+    question.options.forEach(option => { option.text = normalizeMathText(math.restore(option.text)); });
+    delete question.sourceNumber;
+  });
+
   const multipleChoiceTotalPoints = getMultipleChoiceTotalPoints(text);
   if (multipleChoiceTotalPoints > 0 && questions.length > 0) {
     const pointPerQuestion = roundPoint(multipleChoiceTotalPoints / questions.length);
@@ -247,7 +274,8 @@ export const parseSelfQuizFromHtml = (html = '') => {
 
   return {
     ...getDefaultSelfQuizDraft(),
-    questions
+    questions,
+    ...(parseIssues.length ? { parseIssues } : {})
   };
 };
 

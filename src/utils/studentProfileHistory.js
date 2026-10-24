@@ -82,7 +82,7 @@ export function attendanceForYear(schoolYear, records, attendance) {
     unpermitted: absences.filter(day => day.status === 'KP').length, days: absences };
 }
 
-export function buildStudentProfileHistory({ student = {}, records = [], original = student, currentSchoolYear = '', attendance = [], academicResults = new Map() } = {}) {
+export function buildStudentProfileHistory({ student = {}, records = [], original = student, currentSchoolYear = '', attendance = [], academicResults = new Map(), annualResults = new Map() } = {}) {
   const linked = linkedProfileRecords(student, records, original);
   const actual = new Map();
   const history = new Map();
@@ -148,6 +148,11 @@ export function buildStudentProfileHistory({ student = {}, records = [], origina
 
     const result = prefix => {
       if (!grade || year > currentYear || (dropped && !dropout)) return '';
+      const annual = annualResults.get(schoolYear);
+      if (annual?.grade === grade && annual.schoolCode === getStudentSchoolCode(record || student)) {
+        const annualValue = annual[prefix === 'hocLuc' ? 'academic' : 'conduct'];
+        if (annualValue) return annualValue;
+      }
       const scorebookRecord = record === student ? original : record;
       const matchingScorebook = scorebookRecord && getSchoolGrade(scorebookRecord.className) === grade
         && profileSchoolYear(scorebookRecord.schoolYear) === schoolYear && getStudentSchoolCode(scorebookRecord) === getStudentSchoolCode(record);
@@ -155,7 +160,9 @@ export function buildStudentProfileHistory({ student = {}, records = [], origina
       if (scorebook) return scorebook;
       const specific = text(record?.[`${prefix}Lop${grade}`] || record?.[prefix]);
       if (specific) return specific;
-      if (prefix === 'hocLuc' && promotions.get(schoolYear)?.academicResult) return text(promotions.get(schoolYear).academicResult);
+      const promotion = promotions.get(schoolYear);
+      const promotionResult = text(promotion?.[prefix === 'hocLuc' ? 'academicResult' : 'conductResult']);
+      if (promotionResult && (!promotion.sourceClassName || getSchoolGrade(promotion.sourceClassName) === grade)) return promotionResult;
       // Cumulative grade fields cannot distinguish two years spent in the same grade.
       if (gradeYears.get(grade) !== 1) return '';
       return text(ordered.slice().reverse().find(item => text(item[`${prefix}Lop${grade}`]))?.[`${prefix}Lop${grade}`]);

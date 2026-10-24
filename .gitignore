@@ -38,3 +38,7 @@ cauhinh.json
 *.njsproj
 *.sln
 *.sw?
+
+.wrangler/
+.cloudflare-public-env/
+.cloudflare-artifacts/

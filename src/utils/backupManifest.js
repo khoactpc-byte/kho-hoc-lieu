@@ -1,6 +1,6 @@
-export const BACKUP_COLLECTIONS = ['students', 'scorebooks', 'class_attendance', 'class_timetables',
+export const BACKUP_COLLECTIONS = ['students', 'scorebooks', 'class_attendance', 'student_leave_requests', 'class_timetables',
   'class_schedules', 'news', 'student_profile_requests', 'admission_applications', 'materials',
-  'lesson_notes', 'lesson_quizzes', 'quiz_results', 'quick_quiz_results', 'lesson_progress', 'handwritten_submissions', 'student_code_registry', 'student_code_counters', 'student_sync_jobs', 'student_archives', 'school_year_jobs', 'schedule_publications'];
+  'lesson_notes', 'lesson_quizzes', 'learning_updates', 'quiz_results', 'quick_quiz_results', 'lesson_progress', 'handwritten_submissions', 'student_code_registry', 'student_code_counters', 'student_sync_jobs', 'student_archives', 'school_year_jobs', 'schedule_publications'];
 const isObject = value => Boolean(value && typeof value === 'object' && !Array.isArray(value));
 export function validateRestoreSnapshot(snapshot) {
   if (snapshot?.version === 3) {

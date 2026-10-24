@@ -5,8 +5,10 @@ export function scopedCollection(name, identity, context = {}) {
   const base = collection(db, 'artifacts', appId, 'public', 'data', name);
   if (!identity) return null;
   if (identity.role === 'admin') {
-    return context.schoolYear && ['quiz_results', 'quick_quiz_results', 'lesson_progress', 'handwritten_submissions', 'class_attendance'].includes(name)
-      ? query(base, where('schoolYear', '==', context.schoolYear)) : base;
+    const filters = [];
+    if (context.schoolYear && ['students', 'lesson_progress', 'class_attendance'].includes(name)) filters.push(where('schoolYear', '==', context.schoolYear));
+    if (context.grade && ['materials', 'lesson_notes', 'lesson_quizzes'].includes(name)) filters.push(where('grade', '==', String(context.grade)));
+    return filters.length ? query(base, ...filters) : base;
   }
   if (identity.role === 'teacher') {
     const constraints = [where('schoolCode', '==', identity.schoolCode)];

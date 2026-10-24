@@ -123,7 +123,7 @@ export default function PrimaryAcademicWorkspace({ grade = '1', initialMode = 's
       </td>)}</tr>)}</tbody>
   </table>;
 
-  return <div className="fixed inset-x-0 top-[114px] bottom-0 z-[140] flex flex-col bg-slate-50 sm:top-[84px]" aria-label="Học vụ tiểu học">
+  return <div className="fixed inset-x-0 top-[76px] bottom-0 z-[140] flex flex-col bg-slate-50 sm:top-[84px]" aria-label="Học vụ tiểu học">
     <div className="flex shrink-0 flex-wrap items-center gap-2 border-b bg-white p-3 text-sm">
       <BookOpen className="h-5 w-5 text-sky-700" /><h1 className="mr-auto">{mode === 'transcript' ? 'Học bạ' : 'Sổ điểm'} Tiểu học · {currentSchoolYear}</h1>
       <button onClick={() => setMode(mode === 'transcript' ? 'scorebook' : 'transcript')} className="rounded border px-3 py-1.5">{mode === 'transcript' ? 'Sổ điểm' : 'Học bạ'}</button>

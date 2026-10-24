@@ -1,11 +1,11 @@
 {
-  "name": "kho-hoc-lieu",
+  "name": "tthtcd-trung-my-tay-web",
   "private": true,
   "version": "1.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "vite build --config vite.cloudflare.config.js && node scripts/package-cloudflare.mjs",
     "lint": "eslint src test netlify scripts/*.mjs *.config.js --max-warnings=0",
     "lint:all": "npm run lint",
     "test": "node --test test/*.test.js",
@@ -14,14 +14,20 @@
     "check": "npm test && npm run lint && npm run check:syntax && npm run build",
     "preview": "vite preview",
     "postinstall": "node scripts/harden-build-dependencies.mjs",
-    "prebuild": "node scripts/harden-build-dependencies.mjs"
+    "prebuild": "node scripts/harden-build-dependencies.mjs",
+    "test:cloudflare": "node --test test/cloudflareGateway.test.js",
+    "preview:cloudflare": "node scripts/preview-cloudflare.mjs"
   },
   "dependencies": {
     "dompurify": "^3.4.16",
+    "fflate": "^0.8.3",
     "firebase": "^11.6.1",
     "firebase-admin": "^14.5.0",
     "lucide-react": "^0.300.0",
+    "mammoth": "^1.13.0",
     "parse5": "^8.0.1",
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^6.4.299",
     "react": "^18.2.0",
     "react-dom": "^18.2.0"
   },

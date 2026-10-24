@@ -8,6 +8,14 @@ export const STUDENT_PROFILE_PROVINCE_FIELDS = {
   householdProvince: { kind: 'address', label: 'Tỉnh / Thành HK', dependents: ['householdWard'] }
 };
 
+export const STUDENT_PROFILE_ADDRESS_GROUPS = [
+  { kind: 'birth', province: 'birthProvince', district: 'birthDistrict', ward: 'birthWard', label: 'Nơi sinh' },
+  { kind: 'birth', province: 'birthRegistrationProvince', district: 'birthRegistrationDistrict', ward: 'birthRegistrationWard', label: 'Nơi đăng ký khai sinh' },
+  { kind: 'birth', province: 'hometownProvince', district: 'hometownDistrict', ward: 'hometownWard', label: 'Quê quán' },
+  { kind: 'address', province: 'province', ward: 'ward', label: 'Nơi ở hiện tại' },
+  { kind: 'address', province: 'householdProvince', ward: 'householdWard', label: 'Thường trú' }
+];
+
 export function studentProfileProvinceLabel(value) {
   const text = String(value ?? '').replace(/\s+/g, ' ').trim();
   const key = text.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/gi, 'd').toLowerCase().replace(/[^a-z]/g, '');
@@ -35,6 +43,8 @@ export function updateStudentProfileAddressDraft(previous, key, value) {
   if (field && studentProfileProvinceLabel(previous[key]) !== studentProfileProvinceLabel(value)) {
     for (const dependent of field.dependents) next[dependent] = '';
   }
+  const districtGroup = STUDENT_PROFILE_ADDRESS_GROUPS.find(group => group.district === key);
+  if (districtGroup && previous[key] !== value) next[districtGroup.ward] = '';
   return next;
 }
 

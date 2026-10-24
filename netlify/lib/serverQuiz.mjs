@@ -6,6 +6,8 @@ import { extractSchoolYearFromText } from '../../src/utils/schoolYearText.js';
 import { studentHtml } from './studentHtml.mjs';
 import { sameData } from '../../src/utils/dataEquality.js';
 import { writeScoreAudit } from './scoreAudit.mjs';
+import { learningUpdateMetadata, learningUpdateId, LEARNING_UPDATES_COLLECTION } from '../../src/utils/learningUpdates.js';
+import { quizQualityIssues } from '../../src/utils/quizQuality.js';
 
 const digest = value => createHash('sha256').update(value).digest('hex');
 const sourceFile = SCOREBOOK_SOURCE_FILE;
@@ -53,10 +55,19 @@ function definition(data) {
   const limit = Number(input.questionCountPerAttempt || 0);
   const passingPercent = Number(input.passingPercent ?? 80);
   require(Number.isInteger(limit) && limit >= 0 && limit <= questions.length && Number.isFinite(passingPercent) && passingPercent >= 0 && passingPercent <= 100, 400, 'Số câu hoặc mức đạt không hợp lệ.');
+  const essays = input.essayQuestions ?? [];
+  require(Array.isArray(essays) && essays.length <= 5, 400, 'Chỉ thêm tối đa 5 câu tự luận ôn tập.');
+  const essayQuestions = essays.map((question, index) => {
+    require(question && typeof question === 'object' && typeof question.text === 'string' && question.text.trim(), 400, 'Câu tự luận thiếu nội dung.');
+    return { id: `essay-${index + 1}`, text: text(question.text.trim()) };
+  });
+  const qualityIssues = quizQualityIssues({ questions, essayQuestions });
+  require(!qualityIssues.length, 400, qualityIssues.join('\n'));
   // Store only the validated bank. Browser-supplied score/author/policy fields are never trusted.
   return { questions, questionCountPerAttempt: limit, shuffleQuestions: input.shuffleQuestions !== false,
     shuffleOptions: input.shuffleOptions !== false, showScoreAfterSubmit: input.showScoreAfterSubmit !== false,
-    allowRetake: input.allowRetake !== false, requirePassingScore: input.requirePassingScore === true, passingPercent };
+    allowRetake: input.allowRetake !== false, requirePassingScore: input.requirePassingScore === true, passingPercent,
+    ...(essayQuestions.length ? { essayQuestions } : {}) };
 }
 
 function scope(data) {
@@ -105,6 +116,7 @@ function studentResult(result, config) {
 function studentAttempt(attempt, config) {
   return { attemptId: attempt.id, version: attempt.version,
     quizData: { ...Object.fromEntries(['allowRetake', 'showScoreAfterSubmit', 'requirePassingScore', 'passingPercent'].map(key => [key, config[key]])),
+      ...(config.essayQuestions?.length ? { essayQuestions: config.essayQuestions.map((question, index) => ({ id: `essay-${index + 1}`, text: question.text })) } : {}),
       shuffleQuestions: false, shuffleOptions: false, questions: attempt.questions.map(question => ({ id: question.id, text: question.text, points: question.points,
         options: question.options.map(option => ({ id: option.id, text: option.text })) })) } };
 }
@@ -121,7 +133,12 @@ export function createQuizService({ store, appId, now = Date.now, uuid = randomU
   const headRef = quizId => privateRef('quizzes', kind === 'material' ? `material-${quizId}` : quizId);
   const slotRef = (quizId, uid) => privateRef('quiz_slots', digest(`${kind === 'material' ? 'material:' : ''}${quizId}:${uid}`));
   const resultRef = attemptId => ref(resultName, attemptId);
-  const publicMetadata = data => ({ ...metadata(data), ...(kind === 'material' ? { type: 'quick_quiz', studentSafe: true, placement: data.placement || 'lesson_content', createdAt: data.createdAt || data.updatedAt, url: '' } : {}) });
+  const publicMetadata = data => ({ ...metadata(data), ...(kind === 'material' ? { type: 'quick_quiz', studentSafe: true, placement: data.placement || 'lesson_content', createdAt: data.createdAt || data.updatedAt, url: '', questionCount: data.quizData?.questionCountPerAttempt || data.quizData?.questions?.length || 0, essayQuestionCount: data.quizData?.essayQuestions?.length || 0 } : {}) });
+  const writeLearningUpdate = (transaction, quizId, data) => {
+    const updateKind = kind === 'material' ? 'material' : 'quiz';
+    const update = learningUpdateMetadata(updateKind, quizId, { ...data, ...(kind === 'material' ? { type: 'quick_quiz' } : {}) });
+    if (update) transaction.set(ref(LEARNING_UPDATES_COLLECTION, learningUpdateId(updateKind, quizId)), update);
+  };
   const snapshotData = snapshot => snapshot.exists ? snapshot.data() : null;
 
   async function read(identity, { quizId }) {
@@ -131,7 +148,7 @@ export function createQuizService({ store, appId, now = Date.now, uuid = randomU
     require(data, 404, 'Chưa có bài kiểm tra.'); assertTeacher(identity, data);
     return { quiz: data, migrationRequired: !head };
   }
-  async function publish(identity, { quizId, quiz, expectedVersion, expectedLegacyUpdatedAt }) {
+  async function publish(identity, { quizId, quiz, expectedVersion, expectedLegacyUpdatedAt, onlyIfLessonMissing = false, expectedLessonHash }) {
     require(quiz && typeof quiz === 'object' && !Array.isArray(quiz), 400, 'Dữ liệu đề không hợp lệ.');
     const version = uuid(), updatedAt = now();
     return store.runTransaction(async transaction => {
@@ -146,6 +163,16 @@ export function createQuizService({ store, appId, now = Date.now, uuid = randomU
       if (old || oldPublic) require(['schoolYear', 'schoolCode', 'grade', 'subject', 'lesson'].every(key => String((old || oldPublic)[key]) === context[key]), 409, 'Không được chuyển đề sang phạm vi khác.');
       require(!settings.maintenance?.active, 423, 'Hệ thống đang sao lưu hoặc phục hồi.');
       require(!settings.inputYearLocks?.[context.schoolYear], 423, 'Năm học đang khóa nhập liệu.');
+      if (onlyIfLessonMissing === true) {
+        require(kind === 'material', 400, 'Chỉ tạo bù bộ ôn tập của bài học.');
+        const noteId = `${context.schoolCode === 'NAN' ? '' : `${context.schoolCode}_`}g${context.grade}_${context.subject.replace(/\s/g, '')}_l${context.lesson}`;
+        const note = snapshotData(await transaction.get(ref('lesson_notes', noteId)));
+        require(note?.content && typeof expectedLessonHash === 'string' && digest(note.content) === expectedLessonHash, 409, 'Bài học vừa thay đổi. Rà lại danh sách và tạo lại tuần này.');
+        const matches = await transaction.get(store.collection(`${root}/materials`).where('schoolYear', '==', context.schoolYear).where('schoolCode', '==', context.schoolCode)
+          .where('grade', '==', context.grade).where('subject', '==', context.subject).where('lesson', '==', context.lesson).where('type', '==', 'quick_quiz'));
+        const existing = matches.docs.find(item => item.data().cleared !== true && item.data().hasContent !== false);
+        if (existing) return { skipped: true, quiz: { ...existing.data(), id: existing.id } };
+      }
       require(['auto', 'manual'].includes(data.deliveryMode) && (kind === 'lesson' || data.deliveryMode === 'auto'), 400, 'Hình thức đề không hợp lệ.');
       const config = data.deliveryMode === 'auto' ? definition(data) : null;
       require(data.publishAt == null || (typeof data.publishAt === 'number' && Number.isFinite(data.publishAt) && data.publishAt > 0), 400, 'Lịch phát đề không hợp lệ.');
@@ -157,6 +184,7 @@ export function createQuizService({ store, appId, now = Date.now, uuid = randomU
       transaction.set(headRef(quizId), full);
       // Replace, never merge: remove answer fields and archives from the old public document.
       transaction.set(ref(publicName, quizId), publicMetadata(full));
+      writeLearningUpdate(transaction, quizId, full);
       return { quiz: full, migrationRequired: false };
     });
   }
@@ -177,6 +205,7 @@ export function createQuizService({ store, appId, now = Date.now, uuid = randomU
       }
       require(!settings.maintenance?.active, 423, 'Hệ thống đang sao lưu hoặc phục hồi. Thử lại sau.');
       if (head.deliveryMode === 'manual') return { quiz: publicMetadata(head), content: studentHtml(head.content), manual: true };
+      require(!quizQualityIssues(head.quizData).length, 409, 'Bộ câu hỏi có công thức hoặc phương án bị lỗi. Báo giáo viên kiểm tra và lưu lại đề trước khi làm.');
       if (slot?.version === head.serverVersion && slot.attemptId) {
         const attempt = snapshotData(await transaction.get(privateRef('quiz_attempts', slot.attemptId)));
         require(attempt, 409, 'Lượt làm đã bị xóa. Báo giáo viên mở lại.');
@@ -364,6 +393,7 @@ export function createQuizService({ store, appId, now = Date.now, uuid = randomU
       const tombstone = { ...context, cleared: true, content: '', title: '', quizData: null, scoreTarget: null,
         deliveryMode: 'manual', isPublished: false, publishAt: null, serverVersion: uuid(), updatedAt: now(), authorId: identity.uid };
       transaction.set(headRef(quizId), tombstone); transaction.set(ref(publicName, quizId), publicMetadata(tombstone));
+      writeLearningUpdate(transaction, quizId, tombstone);
       return { quiz: tombstone };
     });
   }
@@ -381,16 +411,19 @@ export function createQuizService({ store, appId, now = Date.now, uuid = randomU
     return { results, after: page.docs.length === 100 ? page.docs.at(-1).id : null };
   }
   async function studentDocument(identity, payload) {
-    let content, data;
+    let content, data, essayQuestions;
     const escape = value => String(value || '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
     if (identity.role === 'student') {
       const response = await start(identity, payload);
       require(!response.pending, 403, 'Đề chưa phát hoặc đang khóa.'); data = response.quiz;
+      essayQuestions = response.quizData?.essayQuestions || [];
       content = response.manual ? response.content : response.quizData.questions.map((q, i) => `<p>${i + 1}. ${escape(q.text)}</p><ul>${q.options.map(o => `<li>${escape(o.text)}</li>`).join('')}</ul>`).join('');
     } else {
       data = (await read(identity, payload)).quiz;
+      essayQuestions = data.quizData?.essayQuestions || [];
       content = data.deliveryMode === 'manual' ? studentHtml(data.content) : data.quizData.questions.map((q, i) => `<p>${i + 1}. ${escape(q.text)}</p><ul>${q.options.map(o => `<li>${escape(o.text)}</li>`).join('')}</ul>`).join('');
     }
+    if (essayQuestions.length) content += '<h2>Tự luận ôn tập</h2>' + essayQuestions.map((question, index) => `<p>Bài ${index + 1}. ${escape(question.text)}</p>`).join('');
     return { html: `<h1>${escape(data.title)}</h1>${content}`, filename: `De-hoc-sinh-${payload.quizId}-${data.serverVersion}`.slice(0, 200), serverVersion: data.serverVersion };
   }
   return { read, publish, start, submit, reset, archive, clear, history, studentDocument };

@@ -1,6 +1,6 @@
 import { studentWorkKey } from '../utils/studentRecords';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, CheckCircle2, FileText, ListChecks, Plus, RotateCcw, Save, Trash2, X } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, ListChecks, Plus, Trash2 } from 'lucide-react';
 import { SELF_QUIZ_OPTION_IDS } from '../utils/selfQuiz';
 import { removeAccents, typesetMath } from '../utils/helpers';
 
@@ -46,7 +46,6 @@ const TEXT = {
 };
 
 export default function SelfQuizTeacherTools({
-  quizData,
   currentQuizResults,
   handwrittenSubmissions = [],
   students = [],
@@ -54,27 +53,18 @@ export default function SelfQuizTeacherTools({
   currentSchoolYear,
   showSelfQuizBuilder,
   showQuizResults,
-  showHandwrittenSubmissions = false,
   selfQuizDraft,
   setSelfQuizDraft,
-  onCreateDraft,
-  onToggleBuilder,
-  onToggleResults,
-  onToggleHandwritten,
   onOpenHandwrittenSubmission,
   onResetQuizAttempts,
   onResetStudentAttempt,
   onAddQuestion,
   onUpdateQuestion,
   onUpdateOption,
-  onRemoveQuestion,
-  onSaveSelfQuiz,
-  showWorkTabs = true
+  onRemoveQuestion
 }) {
-  const [localWarning, setLocalWarning] = useState('');
-  const [saveFeedback, setSaveFeedback] = useState(null);
-  const [isSaving, setIsSaving] = useState(false);
-  const previewRef = useRef(null);
+  const previewRef = useRef(null), resultsRef = useRef(null);
+  const [resultFilter, setResultFilter] = useState('all'), [studentSearch, setStudentSearch] = useState(''), [expandedKey, setExpandedKey] = useState('');
   const questions = useMemo(() => selfQuizDraft?.questions || [], [selfQuizDraft?.questions]);
   const hasAnyAttempts = currentQuizResults.length > 0 || handwrittenSubmissions.length > 0;
   const normalizeOptionId = (id) => String(id || '').trim().toLowerCase();
@@ -164,12 +154,12 @@ export default function SelfQuizTeacherTools({
       .sort((a, b) => (b.reviewedAt || b.aiGradedAt || b.submittedAt || 0) - (a.reviewedAt || a.aiGradedAt || a.submittedAt || 0))[0] || null;
   };
 
-  const getRowStatus = (row, quizPair, essayPair) => {
+  const getRowStatus = (row, essayPair) => {
     const hasQuiz = !!row.result;
     const hasEssay = !!row.essay;
     if (!hasQuiz && !hasEssay) return { text: 'Chưa làm', className: 'bg-slate-50 text-slate-500 border-slate-200' };
-    if (hasEssay && !essayPair.hasScore) return { text: 'Chờ chấm', className: 'bg-amber-50 text-amber-700 border-amber-200' };
-    if (hasQuiz || essayPair.hasScore) return { text: 'Đã có điểm', className: 'bg-emerald-50 text-emerald-700 border-emerald-100' };
+    if (hasEssay && (row.essay.status !== 'teacher_reviewed' || !essayPair.hasScore)) return { text: 'Chờ chấm', className: 'bg-amber-50 text-amber-700 border-amber-200' };
+    if (hasQuiz || essayPair.hasScore) return { text: 'Đã chấm', className: 'bg-emerald-50 text-emerald-700 border-emerald-100' };
     return { text: 'Đã nộp', className: 'bg-blue-50 text-blue-700 border-blue-100' };
   };
 
@@ -194,19 +184,7 @@ export default function SelfQuizTeacherTools({
     const text = Number.isInteger(rounded) ? String(rounded) : String(rounded).replace(/\.?0+$/, '');
     return text.replace('.', ',');
   };
-  const getSelfQuizScorePoint = (result = null, pair = null) => {
-    if (!result || !pair?.hasScore) return 0;
-    const answers = Array.isArray(result.answers) ? result.answers : [];
-    const questionCount = answers.length || (quizData?.questions || []).length || Number(result.total || 0) || 0;
-    const quizTotal = (quizData?.questions || []).reduce((sum, q) => sum + (Number(q.points) || 0), 0) || Number(result.total || 0) || 0;
-    if (answers.length && questionCount && quizTotal) return answers.filter(answer => answer.isCorrect).length * (quizTotal / questionCount);
-    return pair.score;
-  };
   const formatPointOnly = (value, hasScore) => hasScore ? formatPointScore(value) : '-';
-
-  const invalidQuestions = useMemo(() => questions
-    .map((q, index) => ({ q, index }))
-    .filter(({ q }) => !q.text?.trim() || (q.options || []).filter(opt => opt.text?.trim()).length < 2), [questions]);
 
   const missingAnswerQuestions = useMemo(() => questions
     .map((q, index) => ({ q, index }))
@@ -221,63 +199,16 @@ export default function SelfQuizTeacherTools({
     ? `${normalizeOptionId(question.correctOptionId).toUpperCase()}. ${getOptionText(question, question.correctOptionId) || TEXT.emptyText}`
     : TEXT.notSelected;
 
-  const clearWarning = () => {
-    setLocalWarning('');
-    setSaveFeedback(null);
-  };
-
   useEffect(() => {
     if (showSelfQuizBuilder) typesetMath(previewRef.current);
   }, [showSelfQuizBuilder, questions]);
 
-  const handleSaveClick = async () => {
-    if (invalidQuestions.length) {
-      const numbers = invalidQuestions.map(({ index }) => index + 1).join(', ');
-      setLocalWarning(`${TEXT.question} ${numbers} ch\u01b0a \u0111\u1ee7 n\u1ed9i dung ho\u1eb7c ch\u01b0a \u0111\u1ee7 l\u1ef1a ch\u1ecdn. Th\u1ea7y c\u00f4 ki\u1ec3m tra l\u1ea1i tr\u01b0\u1edbc khi l\u01b0u.`);
-      setSaveFeedback(null);
-      return;
-    }
-    if (missingAnswerQuestions.length) {
-      const numbers = missingAnswerQuestions.map(({ index }) => index + 1).join(', ');
-      setLocalWarning(`${TEXT.question} ${numbers} ch\u01b0a ch\u1ecdn \u0111\u00e1p \u00e1n \u0111\u00fang. Th\u1ea7y c\u00f4 b\u1ea5m v\u00e0o v\u00f2ng tr\u00f2n A/B/C/D c\u1ea1nh \u0111\u00e1p \u00e1n \u0111\u00fang r\u1ed3i l\u01b0u l\u1ea1i.`);
-      setSaveFeedback(null);
-      return;
-    }
-    clearWarning();
-    setIsSaving(true);
-    setSaveFeedback({ type: 'info', message: '\u0110ang l\u01b0u \u0111\u1ec1 t\u1ef1 ch\u1ea5m...' });
-    try {
-      const result = await onSaveSelfQuiz();
-      if (result?.ok === false) {
-        setSaveFeedback({ type: 'error', message: result.message || 'Ch\u01b0a l\u01b0u \u0111\u01b0\u1ee3c \u0111\u1ec1 t\u1ef1 ch\u1ea5m.' });
-      } else {
-        setSaveFeedback({ type: 'success', message: result?.message || '\u0110\u00e3 l\u01b0u \u0111\u1ec1 t\u1ef1 ch\u1ea5m.' });
-      }
-    } catch (error) {
-      setSaveFeedback({ type: 'error', message: `Ch\u01b0a l\u01b0u \u0111\u01b0\u1ee3c \u0111\u1ec1 t\u1ef1 ch\u1ea5m: ${error?.message || 'l\u1ed7i kh\u00f4ng x\u00e1c \u0111\u1ecbnh'}` });
-    } finally {
-      setIsSaving(false);
-    }
-  };
+  useEffect(() => { if (showQuizResults) typesetMath(resultsRef.current); }, [showQuizResults, expandedKey, currentQuizResults]);
 
   return (
     <>
-      {showWorkTabs && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-          <button type="button" onClick={onCreateDraft} className={`${showSelfQuizBuilder ? 'bg-slate-700 hover:bg-slate-800' : 'bg-emerald-600 hover:bg-emerald-700'} text-white px-3 py-2.5 rounded-xl text-[10px] sm:text-xs font-black shadow-md flex items-center justify-center gap-2 uppercase transition-colors`}>
-            <ListChecks className="w-4 h-4" /> <span>{showSelfQuizBuilder ? TEXT.closeSelfQuiz : TEXT.openSelfQuiz}</span>
-          </button>
-          <button type="button" onClick={onToggleHandwritten} className={`${showHandwrittenSubmissions ? 'bg-sky-600 text-white border-sky-600' : 'bg-white text-sky-700 border-sky-100'} px-3 py-2.5 rounded-xl text-[10px] sm:text-xs font-black shadow-sm flex items-center justify-center gap-2 uppercase border`}>
-            <FileText className="w-4 h-4" /> {TEXT.essayAuto} ({handwrittenSubmissions.length})
-          </button>
-        </div>
-      )}
-
       {showSelfQuizBuilder && (
         <div className="relative bg-gradient-to-b from-emerald-50 to-white border border-emerald-100 rounded-[1.75rem] sm:rounded-2xl p-3 sm:p-4 space-y-3 shadow-sm">
-          <button type="button" onClick={onToggleBuilder} className="absolute right-3 top-3 w-9 h-9 rounded-full bg-rose-50 text-rose-600 border border-rose-100 flex items-center justify-center hover:bg-rose-600 hover:text-white transition-colors shadow-sm" title="Đóng">
-            <X className="w-4 h-4" />
-          </button>
           <div className="flex items-start gap-3 pr-10">
             <div className="w-11 h-11 rounded-2xl bg-emerald-600 text-white shadow-sm flex items-center justify-center shrink-0">
               <ListChecks className="w-5 h-5" />
@@ -288,34 +219,36 @@ export default function SelfQuizTeacherTools({
             </div>
           </div>
 
-          {(localWarning || missingAnswerQuestions.length > 0) && (
+          {(missingAnswerQuestions.length > 0) && (
             <div className="bg-amber-50 border border-amber-200 text-amber-800 rounded-xl px-3 py-2 text-[11px] sm:text-xs font-bold flex items-start gap-2">
               <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
-              <span>{localWarning || `C\u00f2n ${missingAnswerQuestions.length} c\u00e2u ch\u01b0a ch\u1ecdn \u0111\u00e1p \u00e1n \u0111\u00fang. N\u1ebfu \u0111\u1ec1 kh\u00f4ng c\u00f3 d\u00f2ng "Dap an: 1B 2A...", app s\u1ebd kh\u00f4ng t\u1ef1 \u0111o\u00e1n \u0111\u00e1p \u00e1n.`}</span>
+              <span>{`C\u00f2n ${missingAnswerQuestions.length} c\u00e2u ch\u01b0a ch\u1ecdn \u0111\u00e1p \u00e1n \u0111\u00fang. N\u1ebfu \u0111\u1ec1 kh\u00f4ng c\u00f3 d\u00f2ng "Dap an: 1B 2A...", app s\u1ebd kh\u00f4ng t\u1ef1 \u0111o\u00e1n \u0111\u00e1p \u00e1n.`}</span>
             </div>
           )}
 
-          <div className="grid grid-cols-3 gap-1.5 sm:gap-2">
+          <details className="quiz-advanced"><summary>Tùy chọn trắc nghiệm</summary><div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
             <label className="bg-white border border-emerald-100 rounded-2xl px-2 py-2 flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-2 text-[8.5px] sm:text-[10px] font-black text-emerald-800 uppercase text-center shadow-sm"><input className="accent-emerald-600" type="checkbox" checked={!!selfQuizDraft.shuffleQuestions} onChange={(e) => setSelfQuizDraft(prev => ({ ...prev, shuffleQuestions: e.target.checked }))} /> {TEXT.shuffleQuestions}</label>
             <label className="bg-white border border-emerald-100 rounded-2xl px-2 py-2 flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-2 text-[8.5px] sm:text-[10px] font-black text-emerald-800 uppercase text-center shadow-sm"><input className="accent-emerald-600" type="checkbox" checked={!!selfQuizDraft.shuffleOptions} onChange={(e) => setSelfQuizDraft(prev => ({ ...prev, shuffleOptions: e.target.checked }))} /> {TEXT.shuffleOptions}</label>
             <label className="bg-white border border-emerald-100 rounded-2xl px-2 py-2 flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-2 text-[8.5px] sm:text-[10px] font-black text-emerald-800 uppercase text-center shadow-sm"><input className="accent-emerald-600" type="checkbox" checked={selfQuizDraft.showScoreAfterSubmit !== false} onChange={(e) => setSelfQuizDraft(prev => ({ ...prev, showScoreAfterSubmit: e.target.checked }))} /> {TEXT.showScore}</label>
           </div>
 
-          <div className="grid grid-cols-1 xl:grid-cols-2 gap-3 max-h-[calc(100dvh-245px)] sm:max-h-[calc(100vh-270px)] overflow-y-auto pr-1">
+          </details>
+          <p className="text-xs text-slate-500">Điểm trắc nghiệm được chia đều theo thang điểm của đề. Kiểm tra đáp án rồi bấm Lưu đề ở cuối trang.</p>
+          <div className="space-y-3">
             <div className="space-y-3 sm:space-y-3">
               {questions.map((q, qIndex) => (
                 <div key={q.id} className="bg-white border border-emerald-100 rounded-[1.6rem] p-3 space-y-3 shadow-sm">
                   <div className="flex items-start gap-2">
                     <div className="w-9 h-9 rounded-2xl bg-emerald-100 text-emerald-700 font-black flex items-center justify-center text-sm flex-shrink-0">{qIndex + 1}</div>
-                    <textarea value={q.text} onChange={(e) => { clearWarning(); onUpdateQuestion(q.id, { text: e.target.value }); }} placeholder="Nội dung câu hỏi..." className="flex-1 min-h-[58px] border border-slate-200 bg-slate-50 rounded-2xl p-3 text-sm font-bold focus:outline-none focus:border-emerald-400 focus:bg-white leading-snug" />
+                    <textarea value={q.text} onChange={(e) => onUpdateQuestion(q.id, { text: e.target.value })} placeholder="Nội dung câu hỏi..." className="flex-1 min-h-[58px] border border-slate-200 bg-slate-50 rounded-2xl p-3 text-sm font-bold focus:outline-none focus:border-emerald-400 focus:bg-white leading-snug" />
                     <button type="button" onClick={() => onRemoveQuestion(q.id)} className="w-9 h-9 rounded-2xl bg-rose-50 text-rose-500 hover:bg-rose-100 flex items-center justify-center shrink-0"><Trash2 className="w-4 h-4" /></button>
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                     {SELF_QUIZ_OPTION_IDS.map(optionId => (
                       <label key={optionId} className={`flex items-center gap-2 border rounded-2xl p-2 transition-colors ${normalizeOptionId(q.correctOptionId) === optionId ? 'bg-emerald-50 border-emerald-300 shadow-sm' : 'bg-slate-50 border-slate-200'}`}>
-                        <input className="w-4 h-4 accent-emerald-600 shrink-0" type="radio" name={`correct-${q.id}`} checked={normalizeOptionId(q.correctOptionId) === optionId} onChange={() => { clearWarning(); onUpdateQuestion(q.id, { correctOptionId: optionId }); }} />
+                        <input className="w-4 h-4 accent-emerald-600 shrink-0" type="radio" name={`correct-${q.id}`} checked={normalizeOptionId(q.correctOptionId) === optionId} onChange={() => onUpdateQuestion(q.id, { correctOptionId: optionId })} />
                         <span className={`font-black text-xs uppercase w-7 h-7 rounded-xl flex items-center justify-center shrink-0 ${normalizeOptionId(q.correctOptionId) === optionId ? 'bg-white text-emerald-700 border border-emerald-200' : 'bg-white text-slate-600 border border-slate-200'}`}>{optionId.toUpperCase()}</span>
-                        <input value={getOptionText(q, optionId)} onChange={(e) => { clearWarning(); onUpdateOption(q.id, optionId, e.target.value); }} placeholder={`${TEXT.optionPlaceholder} ${optionId.toUpperCase()}`} className="min-w-0 flex-1 bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold focus:outline-none focus:border-emerald-400" />
+                        <input value={getOptionText(q, optionId)} onChange={(e) => onUpdateOption(q.id, optionId, e.target.value)} placeholder={`${TEXT.optionPlaceholder} ${optionId.toUpperCase()}`} className="min-w-0 flex-1 bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold focus:outline-none focus:border-emerald-400" />
                         {normalizeOptionId(q.correctOptionId) === optionId && <span className="hidden sm:inline text-[9px] font-black text-emerald-700 bg-emerald-100 rounded-full px-2 py-1 uppercase">{TEXT.correct}</span>}
                       </label>
                     ))}
@@ -324,15 +257,12 @@ export default function SelfQuizTeacherTools({
                     <div className={`rounded-xl px-3 py-2 text-[10px] font-black border ${q.correctOptionId ? 'bg-emerald-50 text-emerald-700 border-emerald-100' : 'bg-amber-50 text-amber-800 border-amber-200'}`}>
                       {TEXT.correctAnswer}: {getCorrectLabel(q)}
                     </div>
-                    <div className="flex items-center justify-end gap-2">
-                      <span className="text-[10px] font-black text-slate-400 uppercase">{TEXT.point}</span>
-                      <input type="number" min="0.25" step="0.25" value={q.points} onChange={(e) => onUpdateQuestion(q.id, { points: e.target.value })} className="w-20 border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-black text-center" />
-                    </div>
+
                   </div>
                 </div>
               ))}
             </div>
-            <div ref={previewRef} className="bg-white border border-emerald-100 rounded-2xl p-4 sm:p-5 space-y-4 shadow-sm xl:sticky xl:top-0 self-start">
+            <details className="quiz-advanced" onToggle={event => { if (event.currentTarget.open) typesetMath(previewRef.current); }}><summary>Xem trước câu hỏi và đáp án</summary><div ref={previewRef} className="space-y-4 pt-3">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-emerald-50 pb-3">
                   <div className="font-black text-slate-900 uppercase text-sm">{TEXT.previewTitle}</div>
                   <div className="text-[10px] font-black text-emerald-700 bg-emerald-50 border border-emerald-100 rounded-full px-3 py-1">{questions.length} {TEXT.questions}</div>
@@ -354,105 +284,70 @@ export default function SelfQuizTeacherTools({
                     </div>
                   </div>
                 ))}
-            </div>
+            </div></details>
           </div>
 
           <div className="flex flex-col sm:flex-row justify-end gap-2">
             <button type="button" onClick={onAddQuestion} className="px-4 py-2.5 bg-white text-emerald-700 border border-emerald-200 rounded-xl text-xs font-black uppercase flex items-center justify-center gap-1.5"><Plus className="w-4 h-4" /> {TEXT.addQuestion}</button>
-            <button type="button" onClick={handleSaveClick} disabled={isSaving} className="px-4 py-2.5 bg-emerald-600 text-white rounded-xl text-xs font-black uppercase shadow-md flex items-center justify-center gap-2 disabled:opacity-60"><Save className="w-4 h-4" /> {isSaving ? '\u0110ang l\u01b0u...' : TEXT.save}</button>
+
           </div>
-          {saveFeedback && (
-            <div className={`rounded-xl px-3 py-2 text-[11px] sm:text-xs font-black border ${saveFeedback.type === 'success' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : saveFeedback.type === 'error' ? 'bg-rose-50 text-rose-700 border-rose-200' : 'bg-blue-50 text-blue-700 border-blue-200'}`}>
-              {saveFeedback.message}
-            </div>
-          )}
         </div>
       )}
 
       {showQuizResults && (
-        <div className="relative bg-blue-50 border border-blue-100 rounded-2xl p-3 sm:p-4">
-          <button type="button" onClick={onToggleResults} className="absolute right-3 top-3 w-8 h-8 rounded-full bg-rose-50 text-rose-600 border border-rose-100 flex items-center justify-center hover:bg-rose-600 hover:text-white transition-colors" title="Đóng">
-            <X className="w-4 h-4" />
-          </button>
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3 pr-10">
-            <h4 className="font-black text-blue-900 text-sm uppercase">{TEXT.resultsTitle}</h4>
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-[10px] font-black text-blue-600 uppercase">{latestResultRows.length} học sinh</span>
-              {hasAnyAttempts && (
-                <button type="button" onClick={onResetQuizAttempts} className="px-3 py-2 rounded-xl bg-rose-50 text-rose-600 border border-rose-100 text-[10px] font-black uppercase flex items-center gap-1.5 hover:bg-rose-600 hover:text-white transition-colors">
-                  <RotateCcw className="w-3.5 h-3.5" /> Reset bai lam
-                </button>
-              )}
-            </div>
+        <section ref={resultsRef} className="quiz-results-table">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h4 className="font-semibold">Bài nộp & Chấm điểm · {latestResultRows.length} học sinh</h4>
+            {hasAnyAttempts && <details className="quiz-more-menu"><summary>Tùy chọn</summary><div><button type="button" onClick={onResetQuizAttempts} className="text-rose-700">Cho cả lớp làm lại…</button></div></details>}
           </div>
-          {latestResultRows.length === 0 ? (
-            <div className="bg-white border border-blue-100 rounded-xl p-4 text-center text-xs font-bold text-slate-500">{hasAnyAttempts ? 'Co du lieu bai lam treo nhung chua ghep duoc vao bang. Bam Reset bai lam de don bai hien tai.' : TEXT.noSubmissions}</div>
-          ) : (
-            <div className="overflow-x-auto bg-white rounded-xl border border-blue-100">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-blue-50 text-blue-900 uppercase font-black">
-                  <tr>
-                    <th className="px-3 py-2">{TEXT.student}</th>
-                    <th className="px-3 py-2">{TEXT.score}</th>
-                    <th className="px-3 py-2">{TEXT.essayScore}</th>
-                    <th className="px-3 py-2">{TEXT.totalScore}</th>
-                    <th className="px-3 py-2">{TEXT.percent}</th>
-                    <th className="px-3 py-2">{TEXT.time}</th>
-                    <th className="px-3 py-2 text-right">Làm lại</th>
-                    <th className="px-3 py-2 text-right">Reset</th>
-                  </tr>
-                </thead>
-                <tbody>{latestResultRows.map(row => {
-                  const result = row.result || {};
-                  const essay = getEssaySubmissionForResult(row);
-                  const quizPair = getScorePair(result.score, result.total);
-                  const essayPair = getScorePair(essay?.teacherScore ?? essay?.aiScore, essay?.teacherMaxScore ?? essay?.aiMaxScore);
-                  const quizPointScore = getSelfQuizScorePoint(result, quizPair);
-                  const essayPointScore = essayPair.hasScore ? essayPair.score : 0;
-                  const totalScore = (quizPair.hasScore ? quizPointScore : 0) + essayPointScore;
-                  const hasTotalScore = quizPair.hasScore || essayPair.hasScore;
-                  const percent = hasTotalScore ? Math.round((totalScore / 10) * 100) : 0;
-                  const displayTime = Math.max(Number(result.submittedAt || 0), Number(essay?.submittedAt || 0));
-                  const rowStatus = getRowStatus(row, quizPair, essayPair);
-                  return (
-                    <tr key={row.key || `${result.id || row.studentName}-${essay?.id || ''}`} className="border-t border-blue-50">
-                      <td className="px-3 py-2">
-                        <div className="font-bold text-slate-800">{row.studentName || result.studentName || essay?.studentName || TEXT.student}</div>
-                        <div className={`mt-1 inline-flex rounded-full border px-2 py-0.5 text-[9px] font-black uppercase ${rowStatus.className}`}>{rowStatus.text}</div>
-                      </td>
-                      <td className="px-3 py-2 font-black text-emerald-700">{formatPointOnly(quizPointScore, quizPair.hasScore)}</td>
-                      <td className="px-3 py-2 font-black text-indigo-700">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span>{formatPointOnly(essayPointScore, essayPair.hasScore)}</span>
-                          {essay && (
-                            <button type="button" onClick={() => onOpenHandwrittenSubmission?.(row.key)} className="rounded-lg border border-indigo-100 bg-indigo-50 px-2 py-1 text-[9px] font-black uppercase text-indigo-700 hover:bg-indigo-600 hover:text-white">
-                              Mở
-                            </button>
-                          )}
-                        </div>
-                      </td>
-                      <td className="px-3 py-2 font-black text-blue-800">{hasTotalScore ? formatPointScore(totalScore) : '-'}</td>
-                      <td className="px-3 py-2 font-bold">{percent}%</td>
-                      <td className="px-3 py-2 text-slate-500 font-bold">{displayTime ? new Date(displayTime).toLocaleString('vi-VN') : '-'}</td>
-                      <td className="px-3 py-2 text-right">
-                        {(row.result || essay) && (
-                          <button type="button" onClick={() => onResetStudentAttempt?.(row.key, row.studentName || result.studentName || essay?.studentName || '')} className="rounded-lg border border-rose-100 bg-rose-50 px-2 py-1 text-[9px] font-black uppercase text-rose-600 hover:bg-rose-600 hover:text-white">
-                            Làm lại
-                          </button>
-                        )}
-                      </td>
-                      <td className="px-3 py-2 text-right">
-                        <button type="button" onClick={() => onResetStudentAttempt?.(row.key, row.studentName || result.studentName || essay?.studentName || '')} disabled={!row.key} className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-[9px] font-black uppercase text-slate-600 hover:bg-slate-700 hover:text-white disabled:opacity-40">
-                          Reset
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })}</tbody>
-              </table>
-            </div>
-          )}
-        </div>
+          <div className="my-3 flex flex-wrap gap-2" role="group" aria-label="Lọc bài nộp">
+            {[['all', 'Tất cả'], ['missing', 'Chưa làm'], ['pending', 'Chờ chấm'], ['done', 'Đã chấm']].map(([key, label]) => {
+              const count = latestResultRows.filter(row => {
+                const essay = getEssaySubmissionForResult(row);
+                const pending = essay && (essay.status !== 'teacher_reviewed' || essay.teacherScore == null || String(essay.teacherScore).trim() === '');
+                return key === 'all' || (key === 'missing' ? !row.result && !essay : key === 'pending' ? pending : (row.result || essay) && !pending);
+              }).length;
+              return <button key={key} type="button" aria-pressed={resultFilter === key} onClick={() => setResultFilter(key)} className="rounded-lg border px-3 py-2 text-sm">{label} ({count})</button>;
+            })}
+            <input aria-label="Tìm học sinh trong bài nộp" placeholder="Tên hoặc mã học sinh" value={studentSearch} onChange={event => setStudentSearch(event.target.value)} className="min-w-0 rounded-lg border px-3 py-2 text-sm" />
+          </div>
+          <p className="mb-3 text-xs text-slate-500">Điểm AI là gợi ý. Bài tự luận được tính vào tổng điểm sau khi giáo viên lưu duyệt.</p>
+          <div className="overflow-x-auto"><table className="w-full text-left text-sm"><thead><tr><th>Học sinh</th><th>Trắc nghiệm</th><th>Tự luận</th><th>Tổng điểm</th><th>Trạng thái</th><th>Thao tác</th></tr></thead>
+            <tbody>{latestResultRows.filter(row => {
+              const essay = getEssaySubmissionForResult(row);
+              const pending = essay && (essay.status !== 'teacher_reviewed' || essay.teacherScore == null || String(essay.teacherScore).trim() === '');
+              const matches = resultFilter === 'all' || (resultFilter === 'missing' ? !row.result && !essay : resultFilter === 'pending' ? pending : (row.result || essay) && !pending);
+              return matches && normalizeNameKey(row.studentName + row.studentAccessCode).includes(normalizeNameKey(studentSearch));
+            }).map(row => {
+              const result = row.result || {}, essay = getEssaySubmissionForResult(row);
+              const quizPair = getScorePair(result.score, result.total);
+              const essayPair = getScorePair(essay?.teacherScore, essay?.teacherMaxScore);
+              const reviewed = essay?.status === 'teacher_reviewed' && essayPair.hasScore;
+              const hasTotalScore = quizPair.hasScore || reviewed;
+              const total = (quizPair.hasScore ? quizPair.score : 0) + (reviewed ? essayPair.score : 0);
+              const status = getRowStatus(row, essayPair);
+              return <tr key={row.key} className="border-t align-top">
+                <td><strong>{row.studentName}</strong><small className="block text-slate-500">{row.studentAccessCode}</small></td>
+                <td>{formatPointOnly(quizPair.score, quizPair.hasScore)}</td>
+                <td>{formatPointOnly(essayPair.score, reviewed)}{essay && !reviewed && essay.aiScore != null && <small className="block text-slate-500">AI gợi ý: {essay.aiScore}</small>}</td>
+                <td>{hasTotalScore ? formatPointScore(total) : '—'}{essay && !reviewed && <small className="block text-amber-700">Chưa duyệt tự luận</small>}</td>
+                <td>{status.text}</td>
+                <td><div className="flex flex-wrap gap-2">
+                  {row.result && <button type="button" className="quiz-row-action" aria-expanded={expandedKey === row.key} onClick={() => setExpandedKey(expandedKey === row.key ? '' : row.key)}>Xem trắc nghiệm</button>}
+                  {essay && <button type="button" className="quiz-row-action" onClick={() => onOpenHandwrittenSubmission?.(row.key)}>{reviewed ? 'Xem tự luận' : 'Chấm tự luận'}</button>}
+                  {(row.result || essay) && <details><summary className="cursor-pointer text-slate-500">Thêm</summary><button type="button" onClick={() => onResetStudentAttempt?.(row.key, row.studentName)} className="mt-2 text-rose-700">Cho làm lại…</button></details>}
+                </div>
+                {expandedKey === row.key && row.result && <section className="mt-3 min-w-64 space-y-2" aria-label={'Trắc nghiệm của ' + row.studentName}>
+                  {result.submittedAt && <p className="text-xs text-slate-500">Nộp lúc {new Date(result.submittedAt).toLocaleString('vi-VN')}</p>}
+                  {!result.answers?.length && <p>Chưa có chi tiết đáp án.</p>}
+                  {(result.answers || []).map((answer, i) => <div key={answer.questionId || i} className="rounded-lg bg-slate-50 p-2"><p className="whitespace-pre-wrap">Câu {i + 1}. {answer.questionText}</p><p className={answer.isCorrect ? 'text-emerald-700' : 'text-rose-700'}>Chọn: {String(answer.selectedOptionId || '—').toUpperCase()} · Đáp án: {String(answer.correctOptionId || '—').toUpperCase()} · {answer.isCorrect ? 'Đúng' : 'Sai'}</p></div>)}
+                </section>}
+                </td>
+              </tr>;
+            })}</tbody>
+          </table></div>
+          {!latestResultRows.length && <p className="p-4 text-center text-slate-500">Chưa có học sinh hoặc bài nộp trong lớp này.</p>}
+        </section>
       )}
     </>
   );

@@ -5,7 +5,9 @@ export function studentHtml(html) {
   const scrub = node => {
     node.childNodes = (node.childNodes || []).filter(child => {
       const classes = child.attrs?.find(attr => attr.name === 'class')?.value.split(/\s+/) || [];
-      return !classes.includes('teacher-only') && !['script', 'iframe', 'object', 'embed', 'template'].includes(child.tagName);
+      const answer = child.attrs?.some(attr => attr.name === 'data-lesson-answer');
+      const released = child.attrs?.some(attr => attr.name === 'data-student-visible' && attr.value === 'true');
+      return !classes.includes('teacher-only') && (!answer || released) && !['script', 'iframe', 'object', 'embed', 'template'].includes(child.tagName);
     });
     for (const child of node.childNodes) {
       if (child.nodeName === '#comment') child.data = '';

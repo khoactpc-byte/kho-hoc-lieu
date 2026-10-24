@@ -1,15 +1,9 @@
-import { initializeApp, cert, getApps } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
-import { getFirestore } from 'firebase-admin/firestore';
+import { firebaseStore } from './firebaseStore.mjs';
 
 export function firebaseServer() {
-  let app = getApps().find(item => item.name === 'khl-identity');
-  if (!app) {
-    const account = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON || '{}');
-    if (!account.project_id || !account.private_key || !account.client_email) throw new Error('Firebase server chưa được cấu hình.');
-    app = initializeApp({ credential: cert(account) }, 'khl-identity');
-  }
-  return { store: getFirestore(app), auth: getAuth(app), appId: process.env.KHL_APP_ID || 'kho-hoc-lieu-chinh' };
+  const { app, store, appId } = firebaseStore();
+  return { store, auth: getAuth(app), appId };
 }
 
 export async function verifyStaffSession(payload) {

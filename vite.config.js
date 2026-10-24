@@ -4,6 +4,7 @@ import scorebookTemplatePlugin from './scripts/scorebook-template-plugin.mjs'
 
 export default defineConfig({
   plugins: [react(), scorebookTemplatePlugin()],
+  server: { fs: { deny: ['.env', '.env.*', '*.{crt,pem}', '**/.git/**', '**/key firebase/**', '**/identity-bridge.local'] } },
   build: {
     target: ['chrome80', 'edge80', 'firefox78', 'safari13'],
     rollupOptions: {

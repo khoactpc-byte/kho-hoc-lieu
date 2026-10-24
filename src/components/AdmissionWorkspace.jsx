@@ -13,7 +13,7 @@ export default function AdmissionWorkspace({
   onDelete
 }) {
   return (
-    <div className="fixed inset-x-0 top-[114px] sm:top-[84px] bottom-0 z-[120] bg-slate-100 p-2 font-normal text-slate-700 sm:p-3">
+    <div className="fixed inset-x-0 top-[76px] sm:top-[84px] bottom-0 z-[120] bg-slate-100 p-2 font-normal text-slate-700 sm:p-3">
       <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-lg border border-slate-200 bg-white">
         <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-slate-200 bg-slate-50 px-3 py-2">
           <div className="min-w-0">

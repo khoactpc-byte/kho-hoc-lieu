@@ -1,6 +1,11 @@
 import { parseScoreNumber, formatScoreNumber, calculateSemesterAverage, calculateYearAverage, academicSummary } from '../utils/scorebookCalculations';
 import ScorebookMigrationNotice from './ScorebookMigrationNotice';
 import ScorebookToolbar from './ScorebookToolbar';
+import ScorebookPageView from './ScorebookPageView';
+import TranscriptStudentPicker from './TranscriptStudentPicker';
+import { displaySchoolClass, scorebookRosterClassLabel, transcriptClassForYear } from '../utils/scorebookClasses';
+import { HISTORICAL_FIRST_YEAR, ROSTER_DIGITAL_START_YEAR, historicalRosterForYear } from '../utils/historicalStudents';
+import { linkedProfileRecords, profileSchoolYear } from '../utils/studentProfileHistory';
 import { studentEditKey, hasLegacyRowEdits } from '../utils/studentScoreKeys';
 import { useScorebookDraft } from '../hooks/useScorebookDraft';
 import { normalizeNumericScore } from '../utils/scoreValues';
@@ -9,13 +14,16 @@ import { resolveScorebookDocument, scorebookDocumentId } from '../utils/scoreboo
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import { collection, onSnapshot } from 'firebase/firestore';
-import { ChevronLeft, ChevronRight, Download, Save, Search, X } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Download, Save, X } from 'lucide-react';
 import { appId, db } from '../config/firebase';
 import scorebookTemplate from '../data/scorebookTemplate.json';
 import { compareSchoolRosterStudents, DEFAULT_SCHOOL_CODE, getSchoolClassTeacherAssignments, getSchoolGrade, getStudentSchoolCode, normalizeSchoolClassName, normalizeSchoolCode, normalizeSchoolYearKey, SCHOOL_OPTIONS } from '../utils/schoolClasses';
 
 const PREFERRED_START_SHEET = 'Bia';
 const TRANSCRIPT_SIGNATURE_SETTINGS_KEY = 'khl-transcript-signature-settings-v1';
+const TRANSCRIPT_START_YEAR_SETTINGS_KEY = 'khl-transcript-start-year-v1';
+const COMMUNITY_CENTER_NAME = 'TT Học tập cộng đồng phường Trung Mỹ Tây';
+const COMMUNITY_CENTER_SHORT_NAME = 'TT HTCĐ phường Trung Mỹ Tây';
 
 const makeCellKey = (sheetName, row, col) => `${sheetName}!${row}:${col}`;
 
@@ -222,19 +230,6 @@ const CLASS_TEACHER_SUBJECTS = [
   'Chủ nhiệm'
 ];
 
-const getClassLabel = (grade) => {
-  const text = String(grade || '').trim();
-  const cleaned = text
-    .replace(/^khối\s*/i, '')
-    .replace(/^lớp\s*/i, '')
-    .replace(/\s*PC$/i, '')
-    .trim();
-  const gradeText = cleaned.match(/(?:^|\D)(1[0-2]|[1-9])(?:\D|$)/)?.[1] || cleaned || '9';
-  return `LỚP ${gradeText}PC`;
-};
-
-const getPcClassName = (value, fallback = '9') => getClassLabel(value || fallback).replace('LỚP ', '');
-
 const getGradeFromClass = (className = '') => {
   const match = String(className || '').trim().match(/(?:^|\D)(1[0-2]|[1-9])(?:\D|$)/);
   return match ? match[1] : '';
@@ -256,7 +251,7 @@ const getSchoolYearStartYear = (schoolYear = '') => {
 
 const schoolYearLabelFromStart = (startYear) => `${startYear} - ${startYear + 1}`;
 const compactSchoolYearLabel = normalizeSchoolYearKey;
-const TRANSCRIPT_DIGITAL_START_YEAR = 2025;
+const TRANSCRIPT_DIGITAL_START_YEAR = HISTORICAL_FIRST_YEAR;
 
 const pad2 = (value) => String(value).padStart(2, '0');
 const toDateKey = (date) => `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
@@ -784,10 +779,20 @@ export default function ScorebookWorkspace({
 
   const showHeaders = false;
   const [previewMode, setPreviewMode] = useState(false);
+  const [viewZoom, setViewZoom] = useState('auto');
   const [printMode, setPrintMode] = useState('all');
   const [printPageIndex, setPrintPageIndex] = useState(0);
   const [showTeacherPanel, setShowTeacherPanel] = useState(false);
   const [showTranscriptPrintPanel, setShowTranscriptPrintPanel] = useState(false);
+  const [transcriptStartYear, setTranscriptStartYear] = useState(() => {
+    try {
+      const saved = profileSchoolYear(window.localStorage.getItem(TRANSCRIPT_START_YEAR_SETTINGS_KEY));
+      return saved && Number(saved.slice(0, 4)) >= HISTORICAL_FIRST_YEAR ? saved : '2025-2026';
+    } catch { return '2025-2026'; }
+  });
+  useEffect(() => {
+    window.localStorage.setItem(TRANSCRIPT_START_YEAR_SETTINGS_KEY, transcriptStartYear);
+  }, [transcriptStartYear]);
   const [transcriptSignatureSettings, setTranscriptSignatureSettings] = useState(() => {
     try {
       const saved = JSON.parse(window.localStorage.getItem(TRANSCRIPT_SIGNATURE_SETTINGS_KEY) || '{}');
@@ -808,7 +813,15 @@ export default function ScorebookWorkspace({
   const [attendanceDocs, setAttendanceDocs] = useState([]);
   const [workspaceMode, setWorkspaceMode] = useState(initialMode);
   const [transcriptStudentId, setTranscriptStudentId] = useState('');
-  const [transcriptStudentSearch, setTranscriptStudentSearch] = useState('');
+  const historicalRosters = useMemo(() => {
+    const years = new Set(['2023-2024', '2024-2025', currentSchoolYear, ...students.map(student => student.schoolYear)]
+      .map(profileSchoolYear).filter(Boolean));
+    return new Map([...years].map(year => [year, historicalRosterForYear(students, year)]));
+  }, [students, currentSchoolYear]);
+  const getRosterForYear = useCallback(year => {
+    const key = profileSchoolYear(year);
+    return historicalRosters.get(key) || [];
+  }, [historicalRosters]);
   const [scorebookSchoolCode, setScorebookSchoolCode] = useState(() => normalizeSchoolCode(initialSchoolCode) || DEFAULT_SCHOOL_CODE);
   const selectedScorebookSchool = SCHOOL_OPTIONS.find(item => item.code === scorebookSchoolCode) || SCHOOL_OPTIONS[0];
   const selectedSchoolTeachers = scorebookSchoolCode === 'TQK' ? tqkTeachers : nanTeachers;
@@ -838,7 +851,7 @@ export default function ScorebookWorkspace({
   );
   const sheetMaps = useMemo(() => buildSheetMaps(activeSheet || {}), [activeSheet]);
   const currentSchoolYearKey = compactSchoolYearLabel(currentSchoolYear);
-  const legacyTeacherYearKey = compactSchoolYearLabel(schoolYearLabelFromStart(TRANSCRIPT_DIGITAL_START_YEAR));
+  const legacyTeacherYearKey = compactSchoolYearLabel(schoolYearLabelFromStart(ROSTER_DIGITAL_START_YEAR));
   const getTeacherAssignmentsForYearGrade = useCallback((schoolYearLabel = currentSchoolYear, gradeValue = grade) => {
     const byYear = classTeacherAssignments?.byYear;
     const schoolYearKey = compactSchoolYearLabel(schoolYearLabel);
@@ -1042,6 +1055,7 @@ export default function ScorebookWorkspace({
     .scorebook-print-root { border: 0 !important; box-shadow: none !important; border-radius: 0 !important; overflow: visible !important; }
     .scorebook-scroll { display: block !important; width: 210mm !important; overflow: visible !important; box-shadow: none !important; border: none !important; padding: 0 !important; background: white !important; }
     .transcript-print-root { display: block !important; width: 210mm !important; margin: 0 auto !important; padding: 0 !important; background: white !important; }
+    .scorebook-page-view, .scorebook-page-stage, .scorebook-page-content { width: auto !important; height: auto !important; margin: 0 !important; overflow: visible !important; transform: none !important; }
     .transcript-page-frame {
       width: 210mm !important;
       height: 297mm !important;
@@ -1195,7 +1209,9 @@ export default function ScorebookWorkspace({
   const isFullYearSummarySheet = activeSheet.name === 'TongHopCaNam';
   const isClassificationSheet = activeSheet.name === 'DanhGiaXepLoai';
   const isPrincipalCommentSheet = activeSheet.name === 'NhanXetCuaHT_CaNam';
-  const classLabel = getClassLabel(grade);
+  const isDesignedSheet = isCoverSheet || isInnerCoverSheet || isProfileSheet || isGuideSheet || isAttendanceSheet || isGradeSectionCoverSheet
+    || isSemesterOneReviewSheet || isSemesterOneScoreSheet || isSemesterOneSummarySheet || isSemesterTwoReviewSheet || isSemesterTwoScoreSheet
+    || isSemesterTwoSummarySheet || isFullYearSummarySheet || isClassificationSheet || isPrincipalCommentSheet;
   const teacherPanelHomeroomTeacherName = decodeSemesterDisplayText(
     getTeacherAssignmentsForYearGrade(currentSchoolYear, grade)?.['Chủ nhiệm']
     || getTeacherAssignmentsForYearGrade(currentSchoolYear, grade)?.['Chu nhiem']
@@ -1383,13 +1399,14 @@ export default function ScorebookWorkspace({
     getPageSegmentsForSheet(sheet).map((page, index) => ({ ...page, sheet, originalIndex: index }))
   )).map((page, globalIndex) => ({ ...page, globalPageNumber: globalIndex + 1 }));
   const gradeYearStudents = useMemo(() => {
-    return [...(Array.isArray(students) ? students : [])]
+    return getRosterForYear(currentSchoolYear)
       .filter(student => (student.status || 'active') !== 'dropped')
       .filter(student => String(getGradeFromClass(student.className || student.grade || '')) === String(grade))
       .filter(student => !student.schoolYear || normalizeSchoolYearKey(student.schoolYear) === normalizeSchoolYearKey(currentSchoolYear))
       .sort(compareSchoolRosterStudents);
-  }, [students, grade, currentSchoolYear]);
+  }, [getRosterForYear, grade, currentSchoolYear]);
   const allClassStudents = useMemo(() => gradeYearStudents.filter(student => getStudentSchoolCode(student) === scorebookSchoolCode), [gradeYearStudents, scorebookSchoolCode]);
+  const classLabel = scorebookRosterClassLabel(allClassStudents, grade);
   const unassignedStudents = useMemo(() => gradeYearStudents.filter(student => getStudentSchoolCode(student) === 'UNKNOWN'), [gradeYearStudents]);
   const unassignedBook = useMemo(() => resolveScorebookDocument(savedScorebooks.documents, { ...scorebookScope, schoolCode: 'UNKNOWN' }), [savedScorebooks.documents, scorebookScope]);
   const transcriptStudents = useMemo(() => allClassStudents, [allClassStudents]);
@@ -1397,44 +1414,24 @@ export default function ScorebookWorkspace({
     if (!transcriptStudents.length) return null;
     return transcriptStudents.find(student => student.id === transcriptStudentId) || transcriptStudents[0];
   }, [transcriptStudents, transcriptStudentId]);
-  const transcriptStudentOptionLabel = (student = {}) => (
-    `${titleCaseText(student.fullName)}${student.className ? ` - ${student.className}` : ''}`
-  );
   useEffect(() => {
     if (!transcriptStudents.length) {
       if (transcriptStudentId) setTranscriptStudentId('');
-      if (transcriptStudentSearch) setTranscriptStudentSearch('');
       return;
     }
     if (!transcriptStudents.some(student => student.id === transcriptStudentId)) {
       setTranscriptStudentId(transcriptStudents[0].id);
     }
-  }, [transcriptStudents, transcriptStudentId, transcriptStudentSearch]);
-  useEffect(() => {
-    if (selectedTranscriptStudent && !transcriptStudentSearch) {
-      setTranscriptStudentSearch(transcriptStudentOptionLabel(selectedTranscriptStudent));
-    }
-  }, [selectedTranscriptStudent, transcriptStudentSearch]);
+  }, [transcriptStudents, transcriptStudentId]);
   const selectedTranscriptStudentIndex = Math.max(0, transcriptStudents.findIndex(student => student.id === selectedTranscriptStudent?.id));
   const selectTranscriptStudent = (student) => {
     if (!student?.id) return;
     setTranscriptStudentId(student.id);
-    setTranscriptStudentSearch(transcriptStudentOptionLabel(student));
   };
   const selectTranscriptStudentByIndex = (index) => {
     if (!transcriptStudents.length) return;
     const nextIndex = Math.min(Math.max(index, 0), transcriptStudents.length - 1);
     selectTranscriptStudent(transcriptStudents[nextIndex]);
-  };
-  const selectTranscriptStudentBySearch = (value) => {
-    setTranscriptStudentSearch(value);
-    const normalized = normalizeSortText(value);
-    if (!normalized) return;
-    const exact = transcriptStudents.find(student => normalizeSortText(transcriptStudentOptionLabel(student)) === normalized);
-    const found = exact || transcriptStudents.find(student => (
-      normalizeSortText(`${student.fullName || ''} ${student.className || ''} ${student.accessCode || ''} ${student.studentCode || ''}`).includes(normalized)
-    ));
-    if (found?.id) setTranscriptStudentId(found.id);
   };
   const effectiveRosterPage = Math.min(rosterPage, Math.max(0, Math.ceil(allClassStudents.length / 40) - 1));
   const classStudents = useMemo(() => allClassStudents.slice(effectiveRosterPage * 40, effectiveRosterPage * 40 + 40), [allClassStudents, effectiveRosterPage]);
@@ -2763,7 +2760,9 @@ export default function ScorebookWorkspace({
   };
 
   const transcriptStudentName = (student = selectedTranscriptStudent) => titleCaseText(decodeDisplayText(student?.fullName));
-  const transcriptStudentClass = (student = selectedTranscriptStudent) => getPcClassName(decodeDisplayText(student?.className || student?.grade), grade);
+  const transcriptStudentClass = (student = selectedTranscriptStudent, yearEntry = {}) => transcriptClassForYear({
+    student: student || {}, records: students, schoolYear: yearEntry.schoolYear || currentSchoolYear, currentSchoolYear
+  });
   const transcriptRegisterCode = (student = selectedTranscriptStudent) => decodeDisplayText(student?.pcgdCode || student?.registerCode || student?.studentCode || student?.accessCode || '');
   const transcriptStudentPhotoUrl = (student = selectedTranscriptStudent) => {
     const directPhoto = student?.portraitUrl || student?.portraitURL || student?.photoUrl || student?.photoURL || student?.avatarUrl || student?.avatarURL || student?.imageUrl || student?.profileImageUrl || student?.studentPhotoUrl || student?.pictureUrl || student?.portrait || student?.photo || student?.avatar || student?.picture || '';
@@ -2838,27 +2837,46 @@ export default function ScorebookWorkspace({
     const currentGradeNumber = Number(getGradeFromClass(student?.className || grade) || grade || 6);
     const inferredStart = currentStart - Math.max(0, currentGradeNumber - 6);
     const knownStart = getTranscriptFirstStartYear(student);
+    const enrollmentYear = profileSchoolYear(student?.enrollmentYear);
     const firstStart = Math.max(
       TRANSCRIPT_DIGITAL_START_YEAR,
+      Number(transcriptStartYear.slice(0, 4)),
+      enrollmentYear ? Number(enrollmentYear.slice(0, 4)) : 0,
       Math.min(
         currentStart,
         inferredStart,
         Number.isFinite(knownStart) ? knownStart : currentStart
       )
     );
-    return Array.from({ length: Math.max(1, currentStart - firstStart + 1) }, (_, index) => {
+    return Array.from({ length: Math.max(0, currentStart - firstStart + 1) }, (_, index) => {
       const startYear = firstStart + index;
+      const className = transcriptClassForYear({ student: student || {}, records: students,
+        schoolYear: schoolYearLabelFromStart(startYear), currentSchoolYear });
       return {
         startYear,
         schoolYear: schoolYearLabelFromStart(startYear),
         compactSchoolYear: compactSchoolYearLabel(schoolYearLabelFromStart(startYear)),
-        gradeNumber: Math.max(6, Math.min(9, currentGradeNumber - (currentStart - startYear)))
+        gradeNumber: Number(getSchoolGrade(className)) || currentGradeNumber - (currentStart - startYear)
       };
-    });
-  }, [currentSchoolYear, grade, getTranscriptFirstStartYear, selectedTranscriptStudent]);
+    }).filter(entry => entry.gradeNumber >= 6 && entry.gradeNumber <= 9);
+  }, [currentSchoolYear, grade, getTranscriptFirstStartYear, selectedTranscriptStudent, students, transcriptStartYear]);
   const transcriptYearEntries = useMemo(
     () => getTranscriptYearEntriesForStudent(selectedTranscriptStudent),
     [getTranscriptYearEntriesForStudent, selectedTranscriptStudent]
+  );
+  const renderTranscriptStartYearSelect = (label) => (
+    <label className="flex flex-wrap items-center gap-2 text-sm text-slate-700">
+      {label}
+      <select aria-label={label} value={transcriptStartYear} onChange={event => {
+        setTranscriptStartYear(event.target.value);
+        setTranscriptPrintDraft(previous => ({ ...previous, year: '', mode: 'all' }));
+      }} className="scorebook-select">
+        {Array.from({ length: Math.max(2025, getSchoolYearStartYear(currentSchoolYear), Number(transcriptStartYear.slice(0, 4))) - HISTORICAL_FIRST_YEAR + 1 }, (_, index) => {
+          const start = HISTORICAL_FIRST_YEAR + index, year = `${start}-${start + 1}`;
+          return <option key={year} value={year}>{year}</option>;
+        })}
+      </select>
+    </label>
   );
   const sameSchoolYear = (a = '', b = '') => compactSchoolYearLabel(a) === compactSchoolYearLabel(b);
   const getScorebookEditsForYearGrade = (schoolYearLabel = currentSchoolYear, gradeValue = grade, schoolCode = scorebookSchoolCode) => {
@@ -2870,27 +2888,25 @@ export default function ScorebookWorkspace({
     }).document?.edits || {};
   };
   const studentIdentityKey = (student = {}) => {
-    const stable = String(student.accessCode || student.studentCode || student.pcgdCode || student.identityCode || '').trim().toUpperCase();
+    const stable = String(student.studentKey || student.accessCode || student.studentCode || student.pcgdCode || student.identityCode || student.id || '').trim().toUpperCase();
     if (stable) return stable;
     return `${normalizeSortText(student.fullName)}__${String(student.birthDate || '').trim()}`;
   };
   const getTranscriptYearContext = (yearEntry = {}, transcriptStudent = selectedTranscriptStudent) => {
     const selectedKey = studentIdentityKey(transcriptStudent || {});
-    const selectedNameBirth = `${normalizeSortText(transcriptStudent?.fullName || '')}__${String(transcriptStudent?.birthDate || '').trim()}`;
     const gradeKey = String(yearEntry.gradeNumber || '');
-    const gradeYearStudents = [...(Array.isArray(students) ? students : [])]
+    const gradeYearStudents = getRosterForYear(yearEntry.schoolYear)
       .filter(student => (student.status || 'active') !== 'dropped')
       .filter(student => String(getGradeFromClass(student.className || student.grade || '')) === gradeKey)
       .filter(student => !student.schoolYear || sameSchoolYear(student.schoolYear, yearEntry.schoolYear));
-    const identityMatch = gradeYearStudents.find(student => studentIdentityKey(student) === selectedKey)
-      || gradeYearStudents.find(student => `${normalizeSortText(student.fullName)}__${String(student.birthDate || '').trim()}` === selectedNameBirth)
+    const linkedIds = new Set(linkedProfileRecords(transcriptStudent || {}, students).map(student => student.id));
+    const identityMatch = gradeYearStudents.find(student => linkedIds.has(student.id) || studentIdentityKey(student) === selectedKey)
       || null;
     const schoolCode = getStudentSchoolCode(identityMatch || transcriptStudent || {});
     const yearStudents = gradeYearStudents
       .filter(student => getStudentSchoolCode(student) === schoolCode)
       .sort(compareSchoolRosterStudents);
-    const matchedStudent = yearStudents.find(student => studentIdentityKey(student) === selectedKey)
-      || yearStudents.find(student => `${normalizeSortText(student.fullName)}__${String(student.birthDate || '').trim()}` === selectedNameBirth)
+    const matchedStudent = yearStudents.find(student => student === identityMatch)
       || null;
     return {
       yearStudents,
@@ -3108,19 +3124,15 @@ export default function ScorebookWorkspace({
           <div style={{ fontSize: 76, fontWeight: 700, lineHeight: 1 }}>{TRANSCRIPT_TEXT.title}</div>
           <div style={{ marginTop: 18, fontSize: 21, fontWeight: 700 }}>{TRANSCRIPT_TEXT.subtitle}</div>
         </div>
-        <div style={{ position: 'absolute', top: 760, left: coverLeft + 40, right: coverRight + 40, display: 'grid', gridTemplateColumns: '170px 1fr', columnGap: 18 }}>
-          <div style={infoLabel}>
-            <div>Họ tên học viên:</div>
-            <div>Trung tâm:</div>
-            <div>Phường/Xã:</div>
-            <div>Tỉnh/Thành phố:</div>
-          </div>
-          <div style={infoValue}>
-            <EditableText value={customText('transcriptCover:studentName', transcriptStudentName(student))} onCommit={(next) => commitCustomText('transcriptCover:studentName', transcriptStudentName(student), next)} />
-             <EditableText value={customText('transcriptCover:center', selectedScorebookSchool.name)} onCommit={(next) => commitCustomText('transcriptCover:center', selectedScorebookSchool.name, next)} />
-            <EditableText value={customText('transcriptCover:district', 'Trung Mỹ Tây').replace(/^\((.*)\)$/, '$1')} onCommit={(next) => commitCustomText('transcriptCover:district', 'Trung Mỹ Tây', next)} />
-            <EditableText value={customText('transcriptCover:province', 'HỒ CHÍ MINH')} onCommit={(next) => commitCustomText('transcriptCover:province', 'HỒ CHÍ MINH', next)} />
-          </div>
+        <div style={{ position: 'absolute', top: 760, left: coverLeft + 40, right: coverRight + 40, display: 'grid', gridTemplateColumns: '170px minmax(0, 1fr)', columnGap: 18 }}>
+          <div style={infoLabel}>Họ tên học viên:</div>
+          <EditableText style={infoValue} value={customText('transcriptCover:studentName', transcriptStudentName(student))} onCommit={(next) => commitCustomText('transcriptCover:studentName', transcriptStudentName(student), next)} />
+          <div style={infoLabel}>Trung tâm:</div>
+          <div style={{ ...infoValue, whiteSpace: 'nowrap' }} data-transcript-center="cover">{COMMUNITY_CENTER_NAME}</div>
+          <div style={infoLabel}>Phường/Xã:</div>
+          <EditableText style={infoValue} value={customText('transcriptCover:district', 'Trung Mỹ Tây').replace(/^\((.*)\)$/, '$1')} onCommit={(next) => commitCustomText('transcriptCover:district', 'Trung Mỹ Tây', next)} />
+          <div style={infoLabel}>Tỉnh/Thành phố:</div>
+          <EditableText style={infoValue} value={customText('transcriptCover:province', 'HỒ CHÍ MINH')} onCommit={(next) => commitCustomText('transcriptCover:province', 'HỒ CHÍ MINH', next)} />
         </div>
         <div style={{ position: 'absolute', bottom: 67, left: coverLeft, right: coverRight, textAlign: 'center', fontSize: 17, fontWeight: 700 }}>
           Số sổ đăng bộ PCGD: {transcriptRegisterCode(student) || '....................'}/THCS
@@ -3256,8 +3268,8 @@ export default function ScorebookWorkspace({
             {processRows.map((row, index) => (
               <tr key={`transcript-process-${index}`} style={{ height: 43 }}>
                 <td style={{ border: '1.2px solid #111', textAlign: 'center' }}>{row ? row.compactSchoolYear : '20.. - 20..'}</td>
-                <td style={{ border: '1.2px solid #111', textAlign: 'center' }}>{row ? getPcClassName(row.gradeNumber, grade) : ''}</td>
-                <td style={{ border: '1.2px solid #111', paddingLeft: 8 }}>{row ? 'TTHTCĐ Phường Trung Mỹ Tây, TPHCM' : ''}</td>
+                <td style={{ border: '1.2px solid #111', textAlign: 'center' }}>{row ? transcriptStudentClass(student, row) : ''}</td>
+                <td data-transcript-center="history" title={row ? COMMUNITY_CENTER_NAME : undefined} style={{ border: '1.2px solid #111', padding: '2px 8px', fontSize: 16, lineHeight: 1.15 }}>{row ? `${COMMUNITY_CENTER_SHORT_NAME}, TP. Hồ Chí Minh` : ''}</td>
               </tr>
             ))}
           </tbody>
@@ -3275,7 +3287,7 @@ export default function ScorebookWorkspace({
       <>
         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 18, fontWeight: 700, fontStyle: 'italic', marginBottom: 4 }}>
           <div>Họ và tên: <span>{transcriptStudentName(student)}</span></div>
-          <div>Lớp: <span>{getPcClassName(yearEntry?.gradeNumber || transcriptStudentClass(student), grade)}</span></div>
+          <div>Lớp: <span>{transcriptStudentClass(student, yearEntry)}</span></div>
           <div>Năm học: <span>{yearEntry?.compactSchoolYear || compactSchoolYearLabel(currentSchoolYear)}</span></div>
         </div>
         <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed', fontFamily: '"Times New Roman", Times, serif' }}>
@@ -3406,7 +3418,7 @@ export default function ScorebookWorkspace({
       <>
         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 18, fontWeight: 700, fontStyle: 'italic', marginBottom: 4 }}>
           <div>Họ và tên: <span>{transcriptStudentName(student)}</span></div>
-          <div>Lớp: <span>{getPcClassName(yearEntry?.gradeNumber || transcriptStudentClass(student), grade)}</span></div>
+          <div>Lớp: <span>{transcriptStudentClass(student, yearEntry)}</span></div>
           <div>Năm học: <span>{yearEntry?.compactSchoolYear || compactSchoolYearLabel(currentSchoolYear)}</span></div>
         </div>
         <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed', fontFamily: '"Times New Roman", Times, serif' }}>
@@ -3586,7 +3598,7 @@ export default function ScorebookWorkspace({
   })();
 
   return (
-    <div className="scorebook-workspace-shell fixed inset-x-0 top-[114px] sm:top-[84px] bottom-0 z-[140] flex min-h-0 flex-col bg-slate-50 p-2 print:static print:bg-white print:p-0" style={workspaceTop === null ? undefined : { top: workspaceTop }}>
+    <div className="scorebook-workspace-shell fixed inset-x-0 top-[76px] sm:top-[84px] bottom-0 z-[140] flex min-h-0 flex-col bg-slate-50 p-2 print:static print:bg-white print:p-0" style={workspaceTop === null ? undefined : { top: workspaceTop }}>
       <style>{`
         @page { size: ${isTranscriptMode ? '210mm 297mm' : '297mm 420mm'}; margin: ${isTranscriptMode ? '0' : '5mm 7mm'}; }
         .scorebook-print-root, .scorebook-print-root table, .scorebook-print-root td, .scorebook-print-root th { font-family: "Times New Roman", Times, serif; }
@@ -3608,6 +3620,8 @@ export default function ScorebookWorkspace({
           .scorebook-workspace-shell { position: static !important; inset: auto !important; width: ${isTranscriptMode ? '210mm' : '283mm'} !important; min-height: ${isTranscriptMode ? '297mm' : '410mm'} !important; margin: 0 !important; padding: 0 !important; background: white !important; overflow: visible !important; }
           .scorebook-print-root { position: static !important; width: ${isTranscriptMode ? '210mm' : '283mm'} !important; min-height: ${isTranscriptMode ? '297mm' : '410mm'} !important; margin: 0 !important; padding: 0 !important; background: white !important; overflow: visible !important; display: block !important; }
           .scorebook-toolbar, .scorebook-tabs { display: none !important; }
+          .scorebook-main { display: block !important; overflow: visible !important; }
+          .scorebook-page-view, .scorebook-page-stage, .scorebook-page-content { width: auto !important; height: auto !important; margin: 0 !important; overflow: visible !important; transform: none !important; }
           .scorebook-scroll { display: block !important; width: ${isTranscriptMode ? '210mm' : '283mm'} !important; overflow: visible !important; box-shadow: none !important; border: none !important; padding: 0 !important; background: white !important; }
           .scorebook-scroll > div { width: ${isTranscriptMode ? '210mm' : '283mm'} !important; margin: 0 !important; padding: 0 !important; }
           .scorebook-scroll > div > div { width: ${isTranscriptMode ? '210mm' : '283mm'} !important; margin: 0 !important; padding: 0 !important; }
@@ -3665,7 +3679,7 @@ export default function ScorebookWorkspace({
         .transcript-page * { letter-spacing: 0 !important; }
       `}</style>
 
-      <div className="scorebook-print-root min-h-0 flex-1 rounded-lg border border-slate-200 bg-white shadow-sm overflow-hidden flex flex-col print:h-auto print:rounded-none print:border-0 print:shadow-none">
+      <div className="scorebook-print-root min-h-0 flex-1 rounded-lg border border-slate-200 bg-white shadow-sm overflow-hidden print:h-auto print:rounded-none print:border-0 print:shadow-none">
         <ScorebookToolbar
           mode={workspaceMode}
           onModeChange={mode => { setWorkspaceMode(mode); setPreviewMode(false); }}
@@ -3703,7 +3717,6 @@ export default function ScorebookWorkspace({
           <label className="flex items-center gap-1.5">Khối:
             <select value={String(grade || '')} onChange={event => {
               setTranscriptStudentId('');
-              setTranscriptStudentSearch('');
               onGradeChange?.(event.target.value);
             }} className="scorebook-select w-16">
               {allowedGrades.map(item => <option key={item} value={item}>{item}</option>)}
@@ -3713,7 +3726,6 @@ export default function ScorebookWorkspace({
             <select value={scorebookSchoolCode} onChange={event => {
               setScorebookSchoolCode(event.target.value);
               setTranscriptStudentId('');
-              setTranscriptStudentSearch('');
               setPreviewMode(false);
             }} className="scorebook-select w-48 max-w-full">
               {SCHOOL_OPTIONS.map(school => <option key={school.code} value={school.code}>{school.name}</option>)}
@@ -3728,25 +3740,27 @@ export default function ScorebookWorkspace({
             </select>
           </label>}
           {isTranscriptMode ? (
-            <div className="flex min-w-0 items-center gap-1">
-              <button type="button" onClick={() => selectTranscriptStudentByIndex(selectedTranscriptStudentIndex - 1)}
-                disabled={!transcriptStudents.length || selectedTranscriptStudentIndex <= 0} title="Học sinh trước" aria-label="Học sinh trước" className="scorebook-step-button">
-                <ChevronLeft className="h-4 w-4" />
-              </button>
-              <div className="relative min-w-0">
-                <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
-                <input value={transcriptStudentSearch} onChange={event => selectTranscriptStudentBySearch(event.target.value)}
-                  list={`transcript-student-options-${grade}`} placeholder="Gõ tên học sinh..." aria-label="Tìm học sinh trong học bạ" className="scorebook-select w-52 !pl-7" />
+            <div className="scorebook-student-picker min-w-0 space-y-1">
+              {renderTranscriptStartYearSelect('Học bạ từ năm học')}
+              <TranscriptStudentPicker key={`${currentSchoolYear}-${grade}-${scorebookSchoolCode}`}
+                students={transcriptStudents.map(student => ({ ...student, label: titleCaseText(student.fullName), classLabel: displaySchoolClass(student.className) || 'Chưa rõ lớp' }))}
+                selectedId={selectedTranscriptStudent?.id} selectedPrintIds={transcriptDraftStudentIds}
+                onViewStudent={selectTranscriptStudent} onPrintSelectionChange={setTranscriptPrintStudentIds} />
+              <div className="flex items-center justify-between gap-1">
+                <button type="button" onClick={() => selectTranscriptStudentByIndex(selectedTranscriptStudentIndex - 1)}
+                  disabled={!transcriptStudents.length || selectedTranscriptStudentIndex <= 0} title="Học sinh trước" aria-label="Học sinh trước" className="scorebook-step-button">
+                  <ChevronLeft className="h-4 w-4" />
+                </button>
+                <span className="whitespace-nowrap px-1 text-xs text-slate-500">{transcriptStudents.length ? `${selectedTranscriptStudentIndex + 1}/${transcriptStudents.length}` : '0/0'}</span>
+                <button type="button" onClick={() => selectTranscriptStudentByIndex(selectedTranscriptStudentIndex + 1)}
+                  disabled={!transcriptStudents.length || selectedTranscriptStudentIndex >= transcriptStudents.length - 1} title="Học sinh sau" aria-label="Học sinh sau" className="scorebook-step-button">
+                  <ChevronRight className="h-4 w-4" />
+                </button>
               </div>
-              <button type="button" onClick={() => selectTranscriptStudentByIndex(selectedTranscriptStudentIndex + 1)}
-                disabled={!transcriptStudents.length || selectedTranscriptStudentIndex >= transcriptStudents.length - 1} title="Học sinh sau" aria-label="Học sinh sau" className="scorebook-step-button">
-                <ChevronRight className="h-4 w-4" />
-              </button>
-              <span className="whitespace-nowrap px-1 text-xs text-slate-500">{transcriptStudents.length ? `${selectedTranscriptStudentIndex + 1}/${transcriptStudents.length}` : '0/0'}</span>
             </div>
           ) : (
             <>
-              <div className="flex min-w-0 items-center gap-1">
+              <div className="scorebook-sheet-picker flex min-w-0 items-center gap-1">
                 <label className="mr-0.5 flex min-w-0 items-center gap-1.5">Trang sổ:
                   <select value={activeSheet.name} onChange={event => setActiveSheetName(event.target.value)} className="scorebook-select w-56 max-w-full">
                     {workbookSheets.map(sheet => <option key={sheet.name} value={sheet.name}>{sheet.label || sheet.name}</option>)}
@@ -3776,19 +3790,26 @@ export default function ScorebookWorkspace({
               </label>}
             </>
           )}
+          <label className="flex items-center gap-1.5">Tỷ lệ xem:
+            <select aria-label="Tỷ lệ xem" value={viewZoom} onChange={event => setViewZoom(event.target.value)} className="scorebook-select">
+              <option value="auto">Tự thu gọn</option>
+              <option value="0.6">60%</option><option value="0.75">75%</option><option value="1">100%</option><option value="1.25">125%</option>
+            </select>
+          </label>
         </ScorebookToolbar>
+        <div className="scorebook-main flex min-h-0 min-w-0 flex-col overflow-hidden">
         <ScorebookMigrationNotice docId={docId} edits={edits} students={allClassStudents} user={user} showNotification={showNotification}
           scoreSubjects={HKI_SCORE_SUBJECTS} reviewSubjects={HKI_REVIEW_SUBJECTS} />
 
         {scorebookSchoolCode !== 'UNKNOWN' && (unassignedStudents.length > 0 || unassignedBook.candidates.length > 0) && (
           <div className="scorebook-toolbar flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-slate-200 bg-blue-50/50 px-3 py-1.5 text-xs text-slate-600">
             <span>Còn {unassignedStudents.length} hồ sơ{unassignedBook.candidates.length ? ` và ${unassignedBook.candidates.length} sổ đã lưu` : ''} năm {currentSchoolYear}, khối {grade} chưa gán cơ sở.</span>
-            <button type="button" onClick={() => { setScorebookSchoolCode('UNKNOWN'); setTranscriptStudentId(''); setTranscriptStudentSearch(''); setPreviewMode(false); }} className="text-blue-700 underline underline-offset-2">Xem hồ sơ, sổ cũ</button>
+            <button type="button" onClick={() => { setScorebookSchoolCode('UNKNOWN'); setTranscriptStudentId(''); setPreviewMode(false); }} className="text-blue-700 underline underline-offset-2">Xem hồ sơ, sổ cũ</button>
           </div>
         )}
         {(resolvedBook.archived || resolvedBook.needsSelection) && (
           <div className="scorebook-toolbar border-b border-slate-200 bg-slate-50 px-3 py-1.5 text-xs text-slate-600">
-            {resolvedBook.needsSelection ? 'Có nhiều bản sổ đã lưu. Chọn bản cần xem ở phía trên.' : 'Đang mở bản sổ cũ đã lưu.'}
+            {resolvedBook.needsSelection ? 'Có nhiều bản sổ đã lưu. Chọn bản cần xem trong thanh điều khiển.' : 'Đang mở bản sổ cũ đã lưu.'}
             {scorebookSchoolCode === 'UNKNOWN' && ' Hồ sơ và sổ này chưa được gán cơ sở.'}
           </div>
         )}
@@ -3796,11 +3817,6 @@ export default function ScorebookWorkspace({
 
         <datalist id={`scorebook-teacher-names-${grade}`}>
           {teacherNameOptions.map(name => <option key={name} value={name} />)}
-        </datalist>
-        <datalist id={`transcript-student-options-${grade}`}>
-          {transcriptStudents.map((student, index) => (
-            <option key={`transcript-option-${student.id || index}`} value={transcriptStudentOptionLabel(student)} />
-          ))}
         </datalist>
 
         {showTranscriptPrintPanel && (
@@ -3818,8 +3834,13 @@ export default function ScorebookWorkspace({
                 </button>
               </div>
               <div className="space-y-3">
+                <div className="rounded-md border border-blue-100 bg-blue-50 p-3">
+                  {renderTranscriptStartYearSelect('In từ năm học')}
+                  <p className="mt-2 text-xs text-slate-600">Các năm trước đã ghi tay sẽ không in lại. Danh sách học sinh và sổ điểm vẫn quản lý đầy đủ theo năm.</p>
+                  {!transcriptYearEntries.length && <p className="mt-1 text-xs text-amber-800">Không có trang kết quả trong khoảng năm đã chọn của học sinh đang xem.</p>}
+                </div>
                 <div className="rounded-md border border-emerald-100 bg-emerald-50 p-3 text-sm font-normal text-emerald-950">
-                  Đã chọn {transcriptDraftStudentIds.length || 1} học sinh. Muốn đổi danh sách in thì tích trực tiếp ở bảng học sinh bên trái.
+                  Đã chọn {transcriptDraftStudentIds.length || 1} học sinh từ mục “Danh sách học sinh” ở thanh bên trái.
                 </div>
                 <label className="flex items-center gap-3 rounded-md border border-slate-200 bg-slate-50 p-3 font-normal text-slate-700">
                   <input
@@ -3839,7 +3860,7 @@ export default function ScorebookWorkspace({
                     onChange={() => setTranscriptPrintDraft(prev => ({ ...prev, mode: 'all' }))}
                     className="h-5 w-5 accent-emerald-600"
                   />
-                  In kết quả tất cả các năm
+                  In kết quả từ năm đã chọn
                 </label>
                 <div className="rounded-md border border-slate-200 bg-white p-3">
                   <label className="flex items-center gap-3 font-normal text-slate-700">
@@ -3866,7 +3887,7 @@ export default function ScorebookWorkspace({
                 </div>
               </div>
               <div className="mt-4 rounded-md bg-emerald-50 p-3 text-xs font-normal text-emerald-900">
-                Gợi ý: in nguyên sổ thì chọn “3 trang đầu” và “tất cả các năm”. Nếu chỉ cần bổ sung năm lẻ, chọn “một năm học” để xuất đúng 2 trang kết quả.
+                Để nối tiếp học bạ ghi tay, chọn năm bắt đầu và bỏ chọn “3 trang đầu”. Nếu chỉ cần bổ sung một năm, chọn “một năm học” để in đúng 2 trang kết quả.
               </div>
               <div className="mt-4 flex justify-end gap-2">
                 <button type="button" onClick={() => setShowTranscriptPrintPanel(false)} className="h-9 rounded border border-slate-200 bg-white px-4 text-sm font-normal text-slate-600 hover:bg-slate-50">Đóng</button>
@@ -3945,94 +3966,16 @@ export default function ScorebookWorkspace({
           </div>
         )}
 
-        <div className={`scorebook-scroll min-h-0 flex-1 overflow-auto p-2 sm:p-3 ${previewMode || isTranscriptMode ? 'bg-slate-200' : 'bg-slate-100'}`}>
+        <div className="scorebook-scroll min-h-0 min-w-0 flex-1 overflow-auto bg-slate-200/70 p-2 sm:p-3">
           {isTranscriptMode ? (
-            <div className="flex min-h-full items-start gap-4">
-              <div className="transcript-list-panel sticky top-0 flex h-[calc(100vh-190px)] max-h-full min-h-0 w-[360px] shrink-0 self-start flex-col rounded-md border border-slate-200 bg-white p-3 shadow-sm">
-                <div className="mb-3 shrink-0">
-                  <div className="flex items-start justify-between gap-2">
-                    <div>
-                      <div className="text-base font-normal text-slate-900">Danh sách học sinh khối {grade}</div>
-                      <div className="text-xs font-normal text-slate-500">Bấm tên để xem, tích ô để chọn in nhiều học sinh.</div>
-                    </div>
-                    <div className="rounded-lg bg-emerald-50 px-2 py-1 text-xs font-normal text-emerald-700">
-                      {transcriptDraftStudentIds.length} chọn
-                    </div>
-                  </div>
-                  <div className="mt-3 grid grid-cols-2 gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setTranscriptPrintStudentIds(transcriptStudents.map(student => student.id).filter(Boolean))}
-                      className="h-9 rounded bg-emerald-600 px-2 text-xs font-normal text-white hover:bg-emerald-700"
-                    >
-                      Chọn cả lớp
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setTranscriptPrintStudentIds([])}
-                      className="h-9 rounded border border-slate-200 bg-white px-2 text-xs font-normal text-slate-600 hover:bg-slate-50"
-                    >
-                      Bỏ chọn
-                    </button>
-                  </div>
-                </div>
-                <div className="min-h-0 flex-1 overflow-y-scroll overscroll-contain rounded border border-slate-100">
-                  <table className="w-full text-sm">
-                    <thead className="sticky top-0 bg-slate-50 text-xs font-normal uppercase text-slate-500">
-                      <tr>
-                        <th className="w-10 px-2 py-2 text-center">In</th>
-                        <th className="w-10 px-2 py-2 text-center">STT</th>
-                        <th className="px-2 py-2 text-left">Họ và tên</th>
-                        <th className="w-16 px-2 py-2 text-center">Lớp</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {transcriptStudents.map((student, index) => {
-                        const active = selectedTranscriptStudent?.id === student.id;
-                        const checked = transcriptPrintStudentIds.includes(student.id);
-                        return (
-                          <tr
-                            key={`transcript-student-${student.id || index}`}
-                            onClick={() => selectTranscriptStudent(student)}
-                            className={`cursor-pointer border-t border-slate-100 ${active ? 'bg-blue-50 text-blue-800' : 'bg-white text-slate-700 hover:bg-blue-50'}`}
-                          >
-                            <td className="px-2 py-2 text-center">
-                              <input
-                                type="checkbox"
-                                checked={checked}
-                                onChange={(event) => {
-                                  event.stopPropagation();
-                                  setTranscriptPrintStudentIds(prev => (
-                                    prev.includes(student.id)
-                                      ? prev.filter(id => id !== student.id)
-                                      : [...prev, student.id].filter(Boolean)
-                                  ));
-                                }}
-                                onClick={(event) => event.stopPropagation()}
-                                className="h-4 w-4 accent-emerald-600"
-                                title="Chọn in học bạ"
-                              />
-                            </td>
-                            <td className="px-2 py-2 text-center font-normal">{index + 1}</td>
-                            <td className="px-2 py-2 font-normal">{titleCaseText(student.fullName)}</td>
-                            <td className="px-2 py-2 text-center font-normal">{getPcClassName(student.className || student.grade, grade)}</td>
-                          </tr>
-                        );
-                      })}
-                      {!transcriptStudents.length && (
-                        <tr>
-                          <td colSpan={4} className="px-3 py-6 text-center text-sm font-normal text-slate-500">Chưa có học sinh trong khối này.</td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-              <div className="transcript-print-root flex-1 space-y-5">
+            <div className="scorebook-transcript-layout min-h-full">
+              <div className="transcript-print-root min-w-0 flex-1 space-y-5">
                 {selectedTranscriptStudent ? transcriptVisiblePages.map((page, index) => (
-                  <div key={`transcript-page-${page.key || index}`} className="transcript-page-frame mx-auto bg-white shadow-2xl border border-slate-300" style={{ width: transcriptPageWidth, height: transcriptPageHeight }}>
+                  <ScorebookPageView key={`transcript-page-${page.key || index}`} width={transcriptPageWidth} zoom={viewZoom}>
+                  <div className="transcript-page-frame mx-auto bg-white shadow-2xl border border-slate-300" style={{ width: transcriptPageWidth, height: transcriptPageHeight }}>
                     {page.render(page.pageNumber)}
                   </div>
+                  </ScorebookPageView>
                 )) : (
                   <div className="mx-auto rounded-2xl bg-white p-8 text-center font-bold text-slate-500 shadow">Chọn một học sinh để tạo học bạ.</div>
                 )}
@@ -4054,6 +3997,7 @@ export default function ScorebookWorkspace({
                 return (
                   <div key={`preview-page-${index}`} className="mx-auto">
                     <div className="scorebook-page-label mb-2 text-center text-xs font-black text-slate-500">Trang {displayedPageNumber}{printMode !== 'workbook' ? ` (${pageIndex + 1}/${activePageSegments.length})` : ''}{page.blank ? ' - trắng để in 2 mặt' : ''}</div>
+                    <ScorebookPageView width={pageWidth} zoom={viewZoom}>
                     <div className="scorebook-page-frame bg-white shadow-2xl border border-slate-300 overflow-hidden" style={{ width: pageWidth, height: pageHeight, padding: pageMargin, position: 'relative' }}>
                       {page.blank ? (
                         <div className="h-full w-full bg-white" />
@@ -4098,14 +4042,15 @@ export default function ScorebookWorkspace({
                         </div>
                       )}
                     </div>
+                    </ScorebookPageView>
                   </div>
                 );
               })}
             </div>
           ) : (
+          <ScorebookPageView width={(isDesignedSheet ? pageWidth : Math.max(pageWidth, tableWidth)) + 18} zoom={viewZoom}>
           <div
-            className={previewMode ? 'mx-auto bg-white shadow-2xl border border-slate-300 overflow-hidden' : 'inline-block min-w-full rounded-md bg-white p-2 shadow-sm'}
-            style={previewMode ? { width: pageWidth, height: pageHeight, padding: pageMargin } : undefined}
+            className="scorebook-editor rounded-md bg-white p-2 shadow-sm"
           >
             <div className="scorebook-page-label mb-2">
               <div className="text-sm font-normal text-slate-700">{activeSheet.label || activeSheet.name}</div>
@@ -4256,7 +4201,9 @@ export default function ScorebookWorkspace({
             </div>
             )}
           </div>
+          </ScorebookPageView>
           )}
+        </div>
         </div>
       </div>
     </div>

@@ -8,6 +8,6 @@ export function useDefaultLearningGrade({ role, studentGrade, grades, grade, sub
     const defaultGrade = ownGrade || (desktop ? grades[0] : '');
     if (!defaultGrade) return;
     setGrade(defaultGrade);
-    setTextbookExpanded(desktop);
+    setTextbookExpanded(role !== 'teacher' && desktop);
   }, [role, studentGrade, grades, grade, subject, lesson, setGrade, setTextbookExpanded]);
 }

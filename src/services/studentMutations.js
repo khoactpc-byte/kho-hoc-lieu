@@ -6,6 +6,7 @@ import { assertStudentSchoolYear, getSchoolYearStart } from '../utils/schoolYear
 import { buildStudentYearReconciliation } from '../utils/studentYearReconciliation';
 import { getStudentEntryGrade, normalizeSchoolYearKey } from '../utils/schoolClasses';
 import { PROFILE_DOCUMENT_FIELDS, hasNewProfileFiles, replacedProfileFileIds } from '../utils/profileDocumentFiles';
+export { createHistoricalStudentRecord } from './historicalStudentRecovery';
 
 const records = name => collection(db, 'artifacts', appId, 'public', 'data', name);
 const ref = (name, id) => doc(records(name), id);
@@ -149,7 +150,7 @@ export async function saveStudentRecord(input, { codePrefix, allocateCode = fals
         ? { repairSchoolYearFrom: current.sheetSync.repairSchoolYearFrom, repairStudentRecordId: current.sheetSync.repairStudentRecordId } : {};
       const data = { ...(current || {}), ...plain(input), studentKey, accessCode: candidate,
         createdAt: current?.createdAt || Date.now(), updatedAt: Date.now(), updatedBy: actor,
-        syncRevision: Number(current?.syncRevision || 0) + 1, sheetSync: { status: 'pending', jobId: `${target.id}--${mutationId}`, updatedAt: Date.now(), ...retainedRepair } };
+        syncRevision: Number(current?.syncRevision || 0) + 1, sheetSync: { status: input.historicalRecovery || current?.historicalRecovery ? 'web_only' : 'pending', jobId: `${target.id}--${mutationId}`, updatedAt: Date.now(), ...retainedRepair } };
       if (data.status === 'dropped') {
         const classHistory = { ...(data.classHistory || {}) };
         const currentYear = normalizeSchoolYearKey(data.schoolYear);
@@ -180,16 +181,17 @@ export async function saveStudentRecord(input, { codePrefix, allocateCode = fals
         fileIds: [...new Set(cleanupFields.flatMap(field => field.fileIds))], status: 'pending', createdAt: Date.now(), actor
       } : null;
       if (cleanupJob) data.sheetSync.cleanupJobId = data.sheetSync.jobId;
-      transaction.set(codeRef, { studentKey, studentId: target.id, studentIds: [...new Set([...(owner?.studentIds || (owner?.studentId ? [owner.studentId] : [])), target.id])], updatedAt: Date.now() });
+      transaction.set(codeRef, { studentKey, studentId: data.historicalRecovery ? owner?.studentId || data.historicalRecovery.sourceStudentId : target.id,
+        studentIds: [...new Set([...(owner?.studentIds || (owner?.studentId ? [owner.studentId] : [])), target.id])], updatedAt: Date.now() });
       // Retain aliases, so old work and a historical-year login code never belong to another child.
       if (oldRef && (!oldOwner || ownsCode(oldOwner, studentKey, target.id, sourceId))) transaction.set(oldRef, { ...(oldOwner || {}), studentKey, studentId: oldOwner?.studentId || target.id, retired: true, updatedAt: Date.now() });
       if (counterRef && candidate.startsWith(prefix)) transaction.set(counterRef, { next: Math.max(Number(counter?.next || 1), Number(candidate.slice(prefix.length)) + 1) });
       transaction.set(target, data);
       for (const { requestRef, decision } of requestDecisions) {
-        if (Object.keys(decision.remainingChanges || {}).length) transaction.set(requestRef, { changes: decision.remainingChanges, updatedAt: Date.now() }, { merge: true });
+        if (Object.keys(decision.remainingChanges || {}).length) transaction.set(requestRef, { changes: decision.remainingChanges, updatedAt: Date.now() }, { mergeFields: ['changes', 'updatedAt'] });
         else transaction.delete(requestRef);
       }
-      transaction.set(ref('student_sync_jobs', data.sheetSync.jobId), { studentId: target.id, studentKey, revision: data.syncRevision,
+      if (!data.historicalRecovery) transaction.set(ref('student_sync_jobs', data.sheetSync.jobId), { studentId: target.id, studentKey, revision: data.syncRevision,
         status: 'pending', createdAt: Date.now(), actor, registration: registration || null, ...retainedRepair });
       if (cleanupJob) transaction.set(ref('student_file_cleanup_jobs', data.sheetSync.jobId), cleanupJob);
       return { ...data, id: target.id };
@@ -218,6 +220,7 @@ export async function deleteStudentRecord(student, actor = '') {
 export async function retryStudentSync(studentId, send, { registrationComplete } = {}) {
   const target = ref('students', studentId);
   const initial = (await getDocFromServer(target)).data();
+  if (initial?.historicalRecovery) return { skipped: true, reason: 'historical_web_only' };
   if (!initial?.sheetSync?.jobId) throw new Error('Chưa có lượt đồng bộ bền vững cho hồ sơ này.');
   const jobRef = ref('student_sync_jobs', initial.sheetSync.jobId);
   const workerId = globalThis.crypto.randomUUID();

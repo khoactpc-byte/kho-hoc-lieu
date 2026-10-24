@@ -1,4 +1,4 @@
-import { getStudentSchoolCode, normalizeSchoolClassName } from './schoolClasses.js';
+import { DEFAULT_SCHOOL_CODE, getStudentSchoolCode, normalizeSchoolClassName } from './schoolClasses.js';
 import { sameData } from './dataEquality.js';
 
 // This is an explicit repair for the existing NAN roster, not an inference from a suffix.
@@ -82,7 +82,7 @@ export function planClassNormalization(snapshot) {
 export function attendanceDocumentId(rows, { schoolYear, schoolCode, className, date }) {
   const matches = rows.filter(row => row.schoolYear === schoolYear && row.date === date && row.className === className && getStudentSchoolCode(row) === schoolCode);
   if (matches.length > 1) throw new Error('Có nhiều bảng điểm danh cùng lớp/ngày; cần đối chiếu trước khi sửa.');
-  return matches[0]?.id || `${schoolYear}_${date}_K${className}`;
+  return matches[0]?.id || `${schoolYear}_${date}_${schoolCode && schoolCode !== DEFAULT_SCHOOL_CODE ? `${schoolCode}_` : ''}K${className}`;
 }
 
 export function verifyClassNormalization(before, after, plan) {

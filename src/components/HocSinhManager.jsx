@@ -1,5 +1,12 @@
+import useStudentProfileLocations from '../hooks/useStudentProfileLocations';
+import StudentProfileAddressSelect from './StudentProfileAddressSelect';
+import StudentProfileAddressFields from './StudentProfileAddressFields';
+import StudentProfileFamilyFields from './StudentProfileFamilyFields';
+import { updateStudentProfileAddressDraft } from '../utils/studentProfileProvinces';
+import { assertStudentProfileAddressChanges } from '../services/studentProfileLocations';
 import { parseScoreNumber, calculateSemesterAverage, calculateYearAverage, academicSummary } from '../utils/scorebookCalculations';
 import { saveStudentRecord, deleteStudentRecord, retryStudentSync, retryPendingStudentSync } from '../services/studentMutations';
+import { rejectStudentProfileChanges } from '../services/studentProfileDecisions';
 import { processRecords } from '../utils/bulkOperations';
 import { assertStudentSchoolYear, registrationSchoolYear } from '../utils/schoolYearText';
 import { approveProfileRequestGroups, groupProfileRequests } from '../utils/profileRequestBatch';
@@ -8,13 +15,14 @@ import { requestJsonp } from '../services/jsonpClient';
 import { fetchPendingRegistrations } from '../services/pendingRegistrations';
 import { REGISTRATION_WEB_APP_URL } from '../config/registration';
 import { findPromotionTarget, promotionSourceVersions } from '../utils/promotionTargets';
-import { provinceFilterKey, provinceFilterLabel, provinceOptionLabel } from '../utils/provinceLabels';
+import { provinceFilterKey, provinceFilterLabel } from '../utils/provinceLabels';
 import { studentRowView } from '../utils/studentScoreKeys';
 import { studentAcademicContexts, studentCenterAcademicResults, scorebookYearSummary } from '../utils/studentAcademicResults';
 import { isGraduatedStudent, mergeStudentClassHistory, THCS_COMPLETED_CLASS } from '../utils/studentCompletion';
 import { resolveScorebookDocument } from '../utils/scorebookArchive';
 import { buildStudentYearReconciliation, reconciledStudentRecord, restoreClassesFromPriorRoster, sheetClassConflict } from '../utils/studentYearReconciliation';
 import StudentYearReconciliation from './StudentYearReconciliation';
+import HistoricalStudentRecovery from './HistoricalStudentRecovery';
 import StudentSheetImportStatus from './StudentSheetImportStatus';
 import StudentSheetReconciliation from './StudentSheetReconciliation';
 import { buildSheetReconciliation, sheetRecordForYear, studentDuplicateGroups } from '../utils/studentSheetReconciliation';
@@ -22,7 +30,7 @@ import { sameData } from '../utils/dataEquality';
 import { sanitizeHtml } from '../utils/safeHtml';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { collection, deleteDoc, doc, getDocsFromServer, onSnapshot, query as firestoreQuery, setDoc, where } from 'firebase/firestore';
+import { collection, getDocsFromServer, onSnapshot, query as firestoreQuery, where } from 'firebase/firestore';
 import {
   Users,
   ArrowDownAZ,
@@ -69,8 +77,7 @@ import { belongsToEducationLevel, educationGrades, educationLabel } from '../uti
 import { buildStudentProfileHistory, profileSchoolYear } from '../utils/studentProfileHistory';
 import ProfileChangeTable from './ProfileChangeTable';
 import ProfileFileCleanupQueue from './ProfileFileCleanupQueue';
-import { profileCleanupMessage, retryProfileFileCleanup } from '../services/profileFileCleanup';
-import { STUDENT_PROFILE_SECTIONS, studentProfileSection } from '../utils/studentProfileLayout';
+import { STUDENT_PROFILE_SECTIONS, isStudentProfileFamilyField, studentProfileSection } from '../utils/studentProfileLayout';
 
 const STUDENT_FIELDS = [
   { key: 'fullName', label: 'Họ và tên', required: true, sticky: true },
@@ -296,7 +303,6 @@ const MOBILE_VISIBLE_COLUMNS = [
 const EMPTY_FILTER_VALUE = '__EMPTY__';
 const HAS_DOCUMENT_FILTER_VALUE = '__HAS_DOCUMENT__';
 const STUDENT_DATA_SHEET_URL = 'https://docs.google.com/spreadsheets/d/1oIGnM9Dw_3bUl8xfTKYE0XKsBvJWHb-J7qvD11fDcMM/edit?gid=0#gid=0';
-const ADDRESS_DIRECTORY_CACHE_KEY = 'khl-address-directory-v2';
 const STUDENT_DB_PREFS_KEY = 'khl-student-db-prefs-v1';
 const STUDENT_EXPORT_DRIVE_FOLDER_ID = '1rSQB_aAM4oY_NcZY_sqBESAK1u5v87za';
 const JOURNEY_SCORE_COLUMNS = [
@@ -1428,7 +1434,7 @@ const fileToBase64Payload = (file, documentItem = {}, student = {}) => new Promi
   reader.readAsDataURL(file);
 });
 
-export default function HocSinhManager({ students = [], educationLevel = '', configuredClassOptions = [], currentSchoolYear, systemSchoolYear = '', initialTab = 'current', initialTabKey = 0, user, showNotification, onBack, onOpenAttendance, onSendTestResults, onSendMailboxMessages, learningProgressRows = [], onBeforeDangerousAction, onStartSchoolYearPromotion, schoolYearPromotionState = null, pendingRegistrationSnapshot, onPendingRegistrationsLoaded, onRegistrationsResolved }) {
+export default function HocSinhManager({ students = [], educationLevel = '', configuredClassOptions = [], currentSchoolYear, systemSchoolYear = '', initialTab = 'current', initialTabKey = 0, profileOpenRequest, profileOverlayZIndex = 90, onProfileRequestClose, user, showNotification, onBack, onOpenAttendance, onSendTestResults, onSendMailboxMessages, onOpenMailboxHistory, onOpenConversations, conversationUnreadCount = 0, learningProgressRows = [], learningDataReady = true, onLearningDataNeeded, onBeforeDangerousAction, onStartSchoolYearPromotion, schoolYearPromotionState = null, pendingRegistrationSnapshot, profileRequestsSnapshot, onPendingRegistrationsLoaded, onRegistrationsResolved }) {
   const [query, setQuery] = useState('');
   const [showSearch, setShowSearch] = useState(false);
   const searchButtonRef = useRef(null);
@@ -1472,6 +1478,7 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
   const [editing, setEditing] = useState(null);
   const [profileReadOnly, setProfileReadOnly] = useState(false);
   const editingOriginal = useRef(null);
+  const handledProfileRequest = useRef(null);
   const [profileAttendance, setProfileAttendance] = useState([]);
   const [profileAttendanceState, setProfileAttendanceState] = useState('loading');
   const [profileAttendanceScope, setProfileAttendanceScope] = useState('');
@@ -1486,7 +1493,6 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
   const [showDocumentPreviews, setShowDocumentPreviews] = useState(false);
   const [showClassStats, setShowClassStats] = useState(false);
   const [showExportChoice, setShowExportChoice] = useState(false);
-  const [sendingTestResultStudentId, setSendingTestResultStudentId] = useState('');
   const [exportFormat, setExportFormat] = useState('');
   const [excelExportAction, setExcelExportAction] = useState('');
   const [showUtilitiesMenu, setShowUtilitiesMenu] = useState(false);
@@ -1513,6 +1519,12 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
   const [mailCategory, setMailCategory] = useState('general');
   const [mailTitle, setMailTitle] = useState('');
   const [mailBody, setMailBody] = useState('');
+  const needsLearningMailData = mailComposerStudents.length > 0 && ['score', 'progress'].includes(mailCategory) && !mailBody.trim();
+  const learningMailLoading = Boolean(onLearningDataNeeded && needsLearningMailData && !learningDataReady);
+  useEffect(() => {
+    onLearningDataNeeded?.(needsLearningMailData);
+    return () => onLearningDataNeeded?.(false);
+  }, [onLearningDataNeeded, needsLearningMailData]);
   const [isSendingMailboxMessages, setIsSendingMailboxMessages] = useState(false);
   const [isSharingPdf, setIsSharingPdf] = useState(false);
   const [isSharingSheet, setIsSharingSheet] = useState(false);
@@ -1520,7 +1532,6 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
   const [sharedSheetLink, setSharedSheetLink] = useState('');
   const [missingInfoReport, setMissingInfoReport] = useState('');
   const [profileReminderCheck, setProfileReminderCheck] = useState(null);
-  const [addressDirectory, setAddressDirectory] = useState({ provinces: [], communes: {} });
   const [quickEdit, setQuickEdit] = useState(null);
   const [quickEditSaving, setQuickEditSaving] = useState(false);
   useEffect(() => setOpenFilterKey(null), [studentTab]);
@@ -1591,52 +1602,29 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
   }, [classFilter, statusFilter, quickIssueFilter, visibleColumns]);
 
   useEffect(() => {
-    return onSnapshot(profileRequestsCollection, snapshot => {
-      setProfileRequests(snapshot.docs
-        .map(item => {
-          const data = item.data() || {};
+    const accept = rows => {
+      setProfileRequests(rows
+        .map(data => {
           return {
-            id: item.id,
             ...data,
             studentId: safePlainValue(data.studentId),
             studentName: safePlainValue(data.studentName),
             accessCode: safePlainValue(data.accessCode),
             className: safePlainValue(data.className),
-            changes: sanitizeStudentChanges(data.changes)
+            changes: sanitizeStudentChanges(data.changes),
+            storedChanges: data.changes
           };
         })
         .filter(item => (item.status || 'pending') === 'pending')
         .filter(item => Object.keys(sanitizeStudentChanges(item.changes)).length > 0)
         .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)));
-    });
-  }, [profileRequestsCollection]);
-  useEffect(() => {
-    const ref = collection(db, 'artifacts', appId, 'public', 'data', 'scorebooks');
-    return onSnapshot(ref, snapshot => {
-      setAcademicScorebooks(snapshot.docs.map(item => ({ ...item.data(), id: item.id })));
-      setAcademicScorebooksReady(true);
-      const nextMap = {};
-      snapshot.docs.forEach(item => {
-        const data = item.data() || {};
-        if (data.campusNormalization?.archivedTo) return;
-        if (String(data.sourceFile || '') !== String(scorebookTemplate.sourceFile || '')) return;
-        const gradeKey = String(data.grade || '').trim();
-        const schoolYearKey = normalizeSchoolYearKey(data.schoolYear || '');
-        if (!gradeKey || !schoolYearKey) return;
-        const schoolCode = normalizeSchoolCode(data.schoolCode) || normalizeSchoolCode(data.schoolName);
-        if (!schoolCode) return;
-        const mapKey = `${schoolYearKey}__${gradeKey}__${schoolCode}`;
-        const existing = nextMap[mapKey];
-        if (!existing || Number(data.updatedAt || 0) >= Number(existing.updatedAt || 0)) {
-          nextMap[mapKey] = { id: item.id, edits: data.edits || {}, updatedAt: Number(data.updatedAt || 0) };
-        }
-      });
-      setScorebookEditsByYearGrade(nextMap);
-    }, () => {
-      setAcademicScorebooksReady(false);
-      showNotification?.('Chưa tải được dữ liệu sổ điểm để điền quá trình học.', 'error');
-    });
-  }, [showNotification]);
+    };
+    if (Array.isArray(profileRequestsSnapshot)) {
+      accept(profileRequestsSnapshot);
+      return undefined;
+    }
+    return onSnapshot(profileRequestsCollection, snapshot => accept(snapshot.docs.map(item => ({ ...item.data(), id: item.id }))));
+  }, [profileRequestsCollection, profileRequestsSnapshot]);
   const previousSchoolYear = useMemo(() => getPreviousSchoolYear(currentSchoolYear), [currentSchoolYear]);
   const yearStudents = useMemo(
     () => scopedStudents.filter(student => String(student.schoolYear || currentSchoolYear) === String(currentSchoolYear)),
@@ -1732,6 +1720,40 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
     return map;
   }, [safeStudents, currentSchoolYear]);
   const showCenterResultColumns = studentTab === 'journey' || (studentTab === 'current' && visibleColumns.some(key => ACADEMIC_RESULT_FIELD_KEYS.has(key)));
+  const needsAcademicScorebooks = profileOpen || showCenterResultColumns || showUtilitiesMenu || Boolean(yearReconciliation) || Boolean(schoolYearPromotionPreview);
+  useEffect(() => {
+    if (!needsAcademicScorebooks) return undefined;
+    let active = true;
+    setAcademicScorebooksReady(false);
+    const ref = collection(db, 'artifacts', appId, 'public', 'data', 'scorebooks');
+    const unsubscribe = onSnapshot(ref, snapshot => {
+      if (!active) return;
+      setAcademicScorebooks(snapshot.docs.map(item => ({ ...item.data(), id: item.id })));
+      setAcademicScorebooksReady(true);
+      const nextMap = {};
+      snapshot.docs.forEach(item => {
+        const data = item.data() || {};
+        if (data.campusNormalization?.archivedTo) return;
+        if (String(data.sourceFile || '') !== String(scorebookTemplate.sourceFile || '')) return;
+        const gradeKey = String(data.grade || '').trim();
+        const schoolYearKey = normalizeSchoolYearKey(data.schoolYear || '');
+        if (!gradeKey || !schoolYearKey) return;
+        const schoolCode = normalizeSchoolCode(data.schoolCode) || normalizeSchoolCode(data.schoolName);
+        if (!schoolCode) return;
+        const mapKey = `${schoolYearKey}__${gradeKey}__${schoolCode}`;
+        const existing = nextMap[mapKey];
+        if (!existing || Number(data.updatedAt || 0) >= Number(existing.updatedAt || 0)) {
+          nextMap[mapKey] = { id: item.id, edits: data.edits || {}, updatedAt: Number(data.updatedAt || 0) };
+        }
+      });
+      setScorebookEditsByYearGrade(nextMap);
+    }, () => {
+      if (!active) return;
+      setAcademicScorebooksReady(false);
+      showNotification?.('Chưa tải được dữ liệu sổ điểm để điền quá trình học.', 'error');
+    });
+    return () => { active = false; unsubscribe(); };
+  }, [needsAcademicScorebooks, showNotification]);
   const profileAttendanceYears = useMemo(() => {
     const years = new Set();
     if (showCenterResultColumns) {
@@ -2084,29 +2106,7 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
       .filter(row => (!journeyYearFilter || row.include) && (!needle || row.searchable.includes(needle)))
       .sort((a, b) => compareClassThenName(a.student, b.student));
   }, [scopedStudents, query, journeyYearFilter, journeyClassFilter]);
-  const addressProvinceOptions = useMemo(() => uniqueTextItems([
-    ...addressDirectory.provinces,
-    ...safeStudents.flatMap(student => [student.province, student.householdProvince]),
-    editing?.province,
-    editing?.householdProvince
-  ]).sort((a, b) => a.localeCompare(b, 'vi', { sensitivity: 'base' })), [addressDirectory.provinces, safeStudents, editing?.province, editing?.householdProvince]);
-  const getWardOptions = useCallback((province = '', currentValue = '', household = false) => {
-    const provinceName = String(province || '').trim();
-    const sheetOptions = addressDirectory.communes[provinceName] || [];
-    const studentOptions = safeStudents
-      .filter(student => !provinceName || student.province === provinceName || student.householdProvince === provinceName)
-      .flatMap(student => household ? [student.householdWard, student.ward] : [student.ward, student.householdWard]);
-    return uniqueTextItems([...sheetOptions, ...studentOptions, currentValue])
-      .sort((a, b) => a.localeCompare(b, 'vi', { sensitivity: 'base' }));
-  }, [addressDirectory.communes, safeStudents]);
-  const editCurrentWardOptions = useMemo(
-    () => getWardOptions(editing?.province, editing?.ward, false),
-    [getWardOptions, editing?.province, editing?.ward]
-  );
-  const editHouseholdWardOptions = useMemo(
-    () => getWardOptions(editing?.householdProvince, editing?.householdWard, true),
-    [getWardOptions, editing?.householdProvince, editing?.householdWard]
-  );
+  const profileLocations = useStudentProfileLocations(Boolean(editing), editing || {});
   const findRegistrationDuplicate = useCallback((registration = {}) => {
     const identityCode = String(registration.identityCode || registration.maDinhDanh || '').replace(/^'/, '').trim();
     if (/^\d{12}$/.test(identityCode)) {
@@ -2205,77 +2205,6 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
     }
   }, [journeyClassFilter, journeyClassOptions]);
 
-  const isEditingStudent = Boolean(editing);
-  useEffect(() => {
-    if (!isEditingStudent || addressDirectory.provinces.length) return;
-    try {
-      const cached = JSON.parse(localStorage.getItem(ADDRESS_DIRECTORY_CACHE_KEY) || 'null');
-      if (cached?.provinces?.length) {
-        setAddressDirectory({
-          provinces: uniqueTextItems(cached.provinces),
-          communes: cached.communes || {}
-        });
-        return;
-      }
-    } catch {
-      localStorage.removeItem(ADDRESS_DIRECTORY_CACHE_KEY);
-    }
-    let active = true;
-    loadRegistrationDataAction('addressDirectory')
-      .then(response => {
-        if (!active) return;
-        if (response.provinces?.length || response.communes) {
-          const nextDirectory = {
-            provinces: uniqueTextItems(response.provinces || response.items || []),
-            communes: response.communes || {}
-          };
-          setAddressDirectory(nextDirectory);
-          localStorage.setItem(ADDRESS_DIRECTORY_CACHE_KEY, JSON.stringify(nextDirectory));
-          return;
-        }
-        return loadRegistrationDataAction('provinces').then(fallback => {
-          if (!active) return;
-          setAddressDirectory(prev => ({ ...prev, provinces: uniqueTextItems(fallback.items || fallback.provinces || []) }));
-        });
-      })
-      .catch(() => {
-        loadRegistrationDataAction('provinces')
-          .then(fallback => {
-            if (!active) return;
-            setAddressDirectory(prev => ({ ...prev, provinces: uniqueTextItems(fallback.items || fallback.provinces || []) }));
-          })
-          .catch(() => {});
-      });
-    return () => { active = false; };
-  }, [isEditingStudent, addressDirectory.provinces.length]);
-
-  useEffect(() => {
-    if (!isEditingStudent) return;
-    const targets = uniqueTextItems([editing.province, editing.householdProvince])
-      .filter(province => !Object.prototype.hasOwnProperty.call(addressDirectory.communes, province));
-    if (!targets.length) return;
-    targets.forEach(province => {
-      loadRegistrationDataAction('communes', { province })
-        .then(response => {
-          setAddressDirectory(prev => ({
-            ...prev,
-            communes: {
-              ...prev.communes,
-              [province]: uniqueTextItems(response.items || response.communes || [])
-            }
-          }));
-        })
-        .catch(() => {
-          setAddressDirectory(prev => ({
-            ...prev,
-            communes: {
-              ...prev.communes,
-              [province]: []
-            }
-          }));
-        });
-    });
-  }, [isEditingStudent, editing?.province, editing?.householdProvince, addressDirectory.communes]);
   const duplicateRegistrationCount = useMemo(
     () => reviewedRegistrations.filter(item => item.duplicateReason && !item.registrationSyncPending).length,
     [reviewedRegistrations]
@@ -2371,7 +2300,7 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
   };
 
   const sendMailboxComposerMessages = async () => {
-    if (!onSendMailboxMessages || !mailComposerStudents.length) return;
+    if ((!onSendMailboxMessages && !onSendTestResults) || !mailComposerStudents.length || learningMailLoading) return;
     const cleanTitle = mailTitle.trim();
     if (!cleanTitle) {
       showNotification?.('Nhập tiêu đề thư trước khi gửi.', 'error');
@@ -2532,9 +2461,25 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
   const openCreate = () => { setProfileReadOnly(false); editingOriginal.current = null; setEditing({ ...emptyStudent, schoolYear: currentSchoolYear, enrollmentYear: String(new Date().getFullYear()) }); };
   const openEdit = (student) => { const original = students.find(item => item.id === student.id) || student; setProfileReadOnly(false); editingOriginal.current = original; setEditing(normalizeStudentRecord({ ...emptyStudent, ...original }, currentSchoolYear)); };
   const openView = (student) => { const original = students.find(item => item.id === student.id) || student; setProfileReadOnly(true); editingOriginal.current = original; setEditing(normalizeStudentRecord({ ...emptyStudent, ...original }, currentSchoolYear)); };
+  useEffect(() => {
+    if (!profileOpenRequest?.key || handledProfileRequest.current === profileOpenRequest.key) return;
+    const original = students.find(profile => profile.id === profileOpenRequest.studentId && profile.accessCode === profileOpenRequest.accessCode
+      && String(profile.schoolCode || '') === String(profileOpenRequest.schoolCode || ''));
+    if (!original) return;
+    handledProfileRequest.current = profileOpenRequest.key;
+    if (editing?.id === original.id) return;
+    if (editing && !profileReadOnly) {
+      showNotification?.('Đang sửa một hồ sơ khác. Hãy lưu hoặc đóng hồ sơ đó trước khi mở học sinh này.', 'error');
+      return;
+    }
+    setProfileReadOnly(true);
+    editingOriginal.current = original;
+    setEditing(normalizeStudentRecord({ ...emptyStudent, ...original }, currentSchoolYear));
+  }, [profileOpenRequest, students, currentSchoolYear, editing, profileReadOnly, showNotification]);
   const startQuickEdit = (student, field) => {
     if (!quickEditEnabled || quickEditSaving || studentTab !== 'current' || isImageOnlyView || !student?.id || !field?.key) return;
     if (DOCUMENT_FIELD_KEYS.has(field.key) || field.key === 'grade') return;
+    if (profileLocations.fields[field.key]) { openEdit(student); return; }
     if (centerAcademicByStudent.get(student.id)?.sources[field.key]) return;
     if (isReadOnlyStudentRecord(student)) {
       showNotification?.(readOnlyStudentMessage(student), 'error');
@@ -2582,12 +2527,7 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
     setQuickEditSaving(true);
     try {
       const updatedStudent = await persistStudent({ ...student, ...patch });
-      try {
-        await syncPersistedStudent(updatedStudent);
-        showNotification?.(`Đã sửa ${field.label} và cập nhật Sheet.`);
-      } catch (sheetError) {
-        showNotification?.(`Đã sửa ${field.label} trong database, nhưng Sheet chưa cập nhật: ${sheetError.message}`, 'error');
-      }
+      showNotification?.(`Đã sửa ${field.label} trên Web.` + queuedSheetNote(updatedStudent));
       postAppsScript({
         action: 'writeAuditLog',
         auditAction: 'sua_nhanh_ho_so_hoc_sinh',
@@ -2603,6 +2543,7 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
   };
   const closeEdit = () => {
     setEditing(null);
+    onProfileRequestClose?.();
     setProfileReadOnly(false);
     setDocumentViewer(null);
     setUploadingDocumentKey('');
@@ -2611,7 +2552,7 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
     if (profileReadOnly) return;
     setEditing(prev => {
       if (!prev) return prev;
-      const next = { ...prev, [key]: value };
+      const next = updateStudentProfileAddressDraft(prev, key, value);
       if (key === 'status') {
         if (value === 'dropped') return normalizeStudentRecord(next, currentSchoolYear);
         if (prev.status === 'dropped' && editingOriginal.current?.status !== 'dropped') {
@@ -2628,8 +2569,6 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
         if (!prev.entryGrade) next.entryGrade = getGradeFromClass(value);
       }
       if (key === 'grade' && getGradeFromClass(prev.className) !== value) next.className = '';
-      if (key === 'province' && prev.province !== value) next.ward = '';
-      if (key === 'householdProvince' && prev.householdProvince !== value) next.householdWard = '';
       return next;
     });
   };
@@ -2972,18 +2911,7 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
   };
   const syncPersistedStudent = student => retryStudentSync(student.id, saved => syncStudentToSheet(saved, saved.schoolYear), { registrationComplete: completeRegistrationSync });
 
-  const completeApprovedProfile = async student => {
-    await syncPersistedStudent(student);
-    if (!student.sheetSync?.cleanupJobId) return {};
-    try {
-      return { cleanup: await retryProfileFileCleanup(student.sheetSync.cleanupJobId, syncPersistedStudent) };
-    } catch (error) {
-      return { cleanupError: error.message };
-    }
-  };
-  const approvedProfileCleanupNote = completion => completion.cleanupError
-    ? ' File cũ chưa dọn xong; dùng “Thử dọn lại” trong mục File cũ chờ dọn. ' + completion.cleanupError
-    : completion.cleanup ? ' ' + profileCleanupMessage(completion.cleanup) : '';
+  const queuedSheetNote = student => student.sheetSync?.status === 'web_only' ? '' : ' Chờ đồng bộ sang Sheet.';
   const reportStudentBatch = (result, label) => showNotification?.(label + ': ' + result.succeeded.length + '/' + (result.succeeded.length + result.failed.length) + ' hồ sơ thành công, đồng bộ Sheet được xếp hàng.' + (result.failed.length ? ' Còn ' + result.failed.length + ' hồ sơ lỗi: ' + result.failed[0].error.message : ''), result.failed.length ? 'error' : 'success');
   const retrySheetJobs = async () => {
     if (isSaving) return;
@@ -2993,7 +2921,8 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
     try { const result = await retryPendingStudentSync(yearStudents, saved => syncStudentToSheet(saved, saved.schoolYear), progress => setSheetRetryStatus({ ...progress, phase: 'running' }), { registrationComplete: completeRegistrationSync });
       const firstFailure = result.failed[0];
       const failureMessage = firstFailure ? (firstFailure.record.fullName || 'Học sinh') + (firstFailure.record.accessCode ? ' (' + firstFailure.record.accessCode + ')' : '') + ': ' + firstFailure.error.message : '';
-      setSheetRetryStatus({ phase: 'done', completed: total, total, succeeded: result.succeeded.length, failed: result.failed.length, error: failureMessage });
+      setSheetRetryStatus({ phase: 'done', completed: total, total, succeeded: result.succeeded.length, failed: result.failed.length, error: failureMessage,
+        failures: result.failed.map(item => ({ id: item.record.id, name: item.record.fullName, code: item.record.accessCode, reason: item.error.message })) });
       showNotification?.('Đồng bộ lại: ' + result.succeeded.length + ' thành công; ' + result.failed.length + ' còn lỗi.' + (result.failed.length ? ' ' + result.failed[0].error.message : ''), result.failed.length ? 'error' : 'success');
     } catch (error) {
       setSheetRetryStatus(current => ({ ...current, phase: 'done', error: error.message }));
@@ -3009,6 +2938,7 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
  setIsSaving(true);
  try {
   const original = editingOriginal.current;
+  await assertStudentProfileAddressChanges({ draft: editing, current: original || {}, optionsByField: profileLocations.provinceOptions, editableFields: STUDENT_FIELDS, lookup: profileLocations.lookup });
   const linkedSource = original?.previousStudentId ? students.find(student => student.id === original.previousStudentId) : null;
   const collapseToPreviousYear = Boolean(original && linkedSource
     && getYearStart(original.schoolYear) > getYearStart(linkedSource.schoolYear)
@@ -3019,8 +2949,7 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
     collapseToPreviousYear,
     collapseSourceExpected: collapseToPreviousYear ? linkedSource : undefined
   });
-  try { await syncPersistedStudent(payload); showNotification?.(payload.collapsedStudentId ? `Đã gộp hồ sơ lên nhầm năm về ${payload.schoolYear}, giữ trạng thái Bỏ học và cập nhật Sheet.` : 'Đã lưu hồ sơ và cập nhật Sheet.'); }
-  catch (error) { showNotification?.('Đã lưu hồ sơ; đồng bộ Sheet đang chờ thử lại: ' + error.message, 'error'); }
+  showNotification?.((payload.collapsedStudentId ? `Đã gộp hồ sơ lên nhầm năm về ${payload.schoolYear}, giữ trạng thái Bỏ học trên Web.` : 'Đã lưu hồ sơ trên Web.') + queuedSheetNote(payload));
   closeEdit();
  } catch(error) { showNotification?.('Chưa lưu được học sinh: ' + error.message, 'error'); }
  finally { setIsSaving(false); }
@@ -3038,24 +2967,13 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
       if (request.id !== requestId) return [request];
       if (!fieldKey) return [];
       const nextChanges = sanitizeStudentChanges(request.changes);
-      delete nextChanges[fieldKey];
-      return Object.keys(nextChanges).length ? [{ ...request, changes: nextChanges }] : [];
+      const storedChanges = { ...(request.storedChanges ?? request.changes) };
+      for (const key of Array.isArray(fieldKey) ? fieldKey : [fieldKey]) {
+        delete nextChanges[key];
+        delete storedChanges[key];
+      }
+      return Object.keys(nextChanges).length ? [{ ...request, changes: nextChanges, storedChanges }] : [];
     }));
-  };
-
-  const updateProfileRequestAfterFieldDecision = async (request = {}, fieldKey = '') => {
-    const remainingChanges = sanitizeStudentChanges(request.changes);
-    delete remainingChanges[fieldKey];
-    if (Object.keys(remainingChanges).length === 0) {
-      await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'student_profile_requests', request.id));
-      hideProfileRequestFieldLocally(request.id);
-      return;
-    }
-    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'student_profile_requests', request.id), {
-      changes: remainingChanges,
-      updatedAt: Date.now()
-    }, { merge: true });
-    hideProfileRequestFieldLocally(request.id, fieldKey);
   };
 
   const approveProfileField = async (request={},fieldKey='') => {
@@ -3065,11 +2983,11 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
  setIsSaving(true);
  try {
   const value=safePlainValue(request.changes?.[fieldKey]); const changes=sanitizeStudentChanges(request.changes);delete changes[fieldKey];
-  const student=await persistStudent({...before,id:request.studentId,[fieldKey]:value,...(fieldKey==='className'?{grade:getGradeFromClass(value)}:{})},{profileDecision:{requestId:request.id,expectedChanges:request.changes,remainingChanges:changes}});
+  await assertStudentProfileAddressChanges({ draft: { ...before, [fieldKey]: value }, current: before, editableFields: STUDENT_FIELDS });
+  const student=await persistStudent({...before,id:request.studentId,[fieldKey]:value,...(fieldKey==='className'?{grade:getGradeFromClass(value)}:{})},{profileDecision:{requestId:request.id,expectedChanges:request.storedChanges ?? request.changes,remainingChanges:changes}});
   hideProfileRequestFieldLocally(request.id,fieldKey);
   if(editing?.id===student.id)setEditing(prev=>prev?{...prev,[fieldKey]:value}:prev);
-  try{const completion=await completeApprovedProfile(student);showNotification?.('Đã duyệt thông tin và đồng bộ Sheet.'+approvedProfileCleanupNote(completion),completion.cleanupError?'error':'success');}
-  catch(error){showNotification?.('Đã duyệt thông tin; việc đồng bộ được giữ để thử lại: '+error.message,'error');}
+  showNotification?.('Đã duyệt thông tin trên Web.' + queuedSheetNote(student));
  }catch(error){showNotification?.('Chưa duyệt được thông tin: '+error.message,'error');}
  finally{setIsSaving(false);}
 };
@@ -3078,8 +2996,9 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
     if (!request?.id || !fieldKey) return;
     setIsSaving(true);
     try {
-      await updateProfileRequestAfterFieldDecision(request, fieldKey);
-      showNotification?.(`Đã bỏ qua: ${STUDENT_FIELD_LABELS[fieldKey] || fieldKey}.`);
+      const { rejectedFields } = await rejectStudentProfileChanges(request, fieldKey);
+      hideProfileRequestFieldLocally(request.id, rejectedFields);
+      showNotification?.(`Đã bỏ qua: ${rejectedFields.map(key => STUDENT_FIELD_LABELS[key] || key).join(', ')}.`);
     } catch (error) {
       showNotification?.(`Chưa bỏ qua được dòng này: ${error.message}`, 'error');
     } finally {
@@ -3106,8 +3025,7 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
    grade: isDropping ? '' : getGradeFromClass(restoredClassName)
   }, { reactivateDropout: !isDropping });
   setStatusFilter(['active']);
-  try{await syncPersistedStudent(saved);showNotification?.(isDropping ? 'Đã đánh dấu bỏ học; lớp và khối năm nay đã để trống.' : 'Đã đưa học sinh trở lại lớp trước đó.');}
-  catch(error){showNotification?.('Tình trạng đã cập nhật; đồng bộ Sheet đang chờ thử lại: '+error.message,'error');}
+  showNotification?.((isDropping ? 'Đã đánh dấu bỏ học; lớp và khối năm nay đã để trống.' : 'Đã đưa học sinh trở lại lớp trước đó.') + queuedSheetNote(saved));
  }catch(error){showNotification?.('Chưa cập nhật được: '+error.message,'error');}
  finally{setIsSaving(false);}
 };
@@ -3748,7 +3666,7 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
  if(isSaving||registrationMutationRef.current)return;
  const targets=registrations.length?registrations:reviewedRegistrations.filter(item=>selectedRegistrationIds.has(item.tempId));
  if(!targets.length){showNotification?.('Chưa chọn hồ sơ đăng ký.','error');return;}
- const valid=targets.filter(item=>item.registrationSyncPending||!findRegistrationDuplicate(item));
+ const valid=targets.filter(item=>!item.registrationSyncPending&&!findRegistrationDuplicate(item));
  if(!valid.length){showNotification?.('Hồ sơ trùng với danh sách học sinh trên website. Hãy đối chiếu và chọn Cập nhật/Đã có để giữ hàng trên Sheet.','error');return;}
  if(!beginRegistrationMutation())return;
  try {
@@ -3763,22 +3681,18 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
    if(!student.sheetSync?.jobId)student=await persistStudent(student,{registration});
    return {registration,student};
   });
-  const synced=new Set(),syncErrors=[];
-  for(const {value:{registration,student}} of result.succeeded){
-   try{await syncPersistedStudent(student);synced.add(safePlainValue(registration.tempId||registration.id));}
-   catch(error){syncErrors.push(error);}
-  }
-  setPendingRegistrations(prev=>prev.filter(item=>!synced.has(safePlainValue(item.tempId||item.id))));
-  onRegistrationsResolved?.(valid.filter(item=>synced.has(safePlainValue(item.tempId||item.id))));
+  const savedIds=new Set(result.succeeded.map(({value:{registration}})=>safePlainValue(registration.tempId||registration.id)));
+  setPendingRegistrations(prev=>prev.filter(item=>!savedIds.has(safePlainValue(item.tempId||item.id))));
+  onRegistrationsResolved?.(valid.filter(item=>savedIds.has(safePlainValue(item.tempId||item.id))));
   setSelectedRegistrationIds(new Set(result.failed.map(item=>item.record.tempId)));
-  showNotification?.('Database: '+result.succeeded.length+'/'+valid.length+' hồ sơ; Sheet: '+synced.size+'/'+result.succeeded.length+'. '+(result.failed.length?result.failed[0].error.message+' ':'')+(syncErrors.length?'Việc đồng bộ chưa xong được giữ trong hàng đợi.':''),result.failed.length||syncErrors.length?'error':'success');
+  showNotification?.('Đã duyệt '+result.succeeded.length+'/'+valid.length+' hồ sơ trên Web; chờ đồng bộ sang Sheet.'+(result.failed.length?' '+result.failed[0].error.message:''),result.failed.length?'error':'success');
  }catch(error){showNotification?.('Duyệt hồ sơ chưa hoàn tất: '+error.message,'error');}
  finally{registrationMutationRef.current=false;setIsSaving(false);}
 };
 
   const approveAllRegistrations = () => {
     if (isSaving || isLoadingRegistrations || registrationMutationRef.current) return;
-    const eligible = reviewedRegistrations.filter(item => item.registrationSyncPending || !item.duplicateReason);
+    const eligible = reviewedRegistrations.filter(item => !item.registrationSyncPending && !item.duplicateReason);
     const skipped = reviewedRegistrations.length - eligible.length;
     if (!eligible.length) {
       showNotification?.('Không có hồ sơ mới đủ điều kiện duyệt; hãy kiểm tra các hồ sơ trùng.', 'error');
@@ -3796,7 +3710,6 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
     if (isSaving || profileBatchLock.current || !profileRequests.length) return;
     profileBatchLock.current = true;
     setIsSaving(true);
-    let screenUnlocked = false;
     const total = profileRequests.length;
     setProfileBatchStatus({ phase: 'saving', total, completed: 0, succeeded: 0, failed: 0 });
     try {
@@ -3807,8 +3720,9 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
         const changes = sanitizeStudentChanges(group.changes);
         if (!Object.keys(changes).length) throw new Error('Yêu cầu không có thông tin hợp lệ.');
         if (changes.className) changes.grade = getGradeFromClass(changes.className);
+        await assertStudentProfileAddressChanges({ draft: { ...before, ...changes }, current: before, editableFields: STUDENT_FIELDS });
         const student = await persistStudent({ ...before, ...changes, id: group.studentId }, {
-          profileDecisions: group.requests.map(request => ({ requestId: request.id, expectedChanges: request.changes, remainingChanges: {} }))
+          profileDecisions: group.requests.map(request => ({ requestId: request.id, expectedChanges: request.storedChanges ?? request.changes, remainingChanges: {} }))
         });
         const approvedIds = new Set(group.requests.map(request => request.id));
         setProfileRequests(current => current.filter(request => !approvedIds.has(request.id)));
@@ -3817,27 +3731,15 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
       const succeeded = result.succeeded.reduce((count, item) => count + item.record.requests.length, 0);
       const failed = total - succeeded;
       const error = result.failed[0]?.error.message || '';
-      // Each saved student already has a durable Sheet job; unlock the screen now.
-      setIsSaving(false);
-      screenUnlocked = true;
-      const summary = { total, completed: total, succeeded, failed, error, syncTotal: result.succeeded.length };
-      setProfileBatchStatus({ ...summary, phase: 'syncing', synced: 0 });
-      const sync = await processRecords(result.succeeded, item => completeApprovedProfile(item.value), progress => {
-        setProfileBatchStatus({ ...summary, phase: 'syncing', synced: progress.completed });
-      });
-      const completions = sync.succeeded.map(item => item.value);
-      const cleanupPending = completions.filter(item => item.cleanupError).length;
-      const cleanupResults = completions.filter(item => item.cleanup).flatMap(item => item.cleanup.results);
-      const cleanupNote = (cleanupResults.length ? ' ' + profileCleanupMessage({ results: cleanupResults }) : '')
-        + (cleanupPending ? ' Còn ' + cleanupPending + ' hồ sơ chờ dọn file cũ; dùng “Thử dọn lại” trong mục File cũ chờ dọn.' : '');
-      setProfileBatchStatus({ ...summary, phase: 'done', synced: sync.succeeded.length, syncFailed: sync.failed.length, cleanupNote });
-      showNotification?.('Đã duyệt ' + succeeded + '/' + total + ' yêu cầu.' + (failed ? ' Còn ' + failed + ' yêu cầu chưa duyệt: ' + error : '') + (sync.failed.length ? ' Đồng bộ Sheet chưa xong được giữ để thử lại.' : '') + cleanupNote, failed || sync.failed.length || cleanupPending ? 'error' : 'success');
+      const syncQueued = result.succeeded.filter(item => item.value.sheetSync?.status !== 'web_only').length;
+      setProfileBatchStatus({ total, completed: total, succeeded, failed, error, syncQueued, phase: 'done' });
+      showNotification?.('Đã duyệt ' + succeeded + '/' + total + ' yêu cầu trên Web.' + (syncQueued ? ' ' + syncQueued + ' hồ sơ chờ đồng bộ sang Sheet.' : '') + (failed ? ' Còn ' + failed + ' yêu cầu chưa duyệt: ' + error : ''), failed ? 'error' : 'success');
     } catch (error) {
       setProfileBatchStatus(current => ({ ...current, phase: 'error', error: error.message }));
       showNotification?.('Duyệt tất cả chưa hoàn tất: ' + error.message, 'error');
     } finally {
       profileBatchLock.current = false;
-      if (!screenUnlocked) setIsSaving(false);
+      setIsSaving(false);
     }
   };
 
@@ -3848,10 +3750,10 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
  if(!Object.keys(changes).length){showNotification?.('Yêu cầu không có thông tin hợp lệ.','error');return;}
  setIsSaving(true);
  try {
-  const student=await persistStudent({...before,...changes,id:request.studentId},{profileDecision:{requestId:request.id,expectedChanges:request.changes,remainingChanges:{}}});
+  await assertStudentProfileAddressChanges({ draft: { ...before, ...changes }, current: before, editableFields: STUDENT_FIELDS });
+  const student=await persistStudent({...before,...changes,id:request.studentId},{profileDecision:{requestId:request.id,expectedChanges:request.storedChanges ?? request.changes,remainingChanges:{}}});
   hideProfileRequestFieldLocally(request.id);
-  try{const completion=await completeApprovedProfile(student);showNotification?.('Đã duyệt hồ sơ và đồng bộ Sheet.'+approvedProfileCleanupNote(completion),completion.cleanupError?'error':'success');}
-  catch(error){showNotification?.('Hồ sơ đã cập nhật; đồng bộ Sheet được giữ để thử lại: '+error.message,'error');}
+  showNotification?.('Đã duyệt hồ sơ trên Web.' + queuedSheetNote(student));
  }catch(error){showNotification?.('Chưa duyệt được yêu cầu: '+error.message,'error');}
  finally{setIsSaving(false);}
 };
@@ -3860,7 +3762,7 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
     if (!request?.id || !window.confirm('Từ chối yêu cầu sửa hồ sơ này?')) return;
     setIsSaving(true);
     try {
-      await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'student_profile_requests', request.id));
+      await rejectStudentProfileChanges(request);
       postAppsScript({ action: 'writeAuditLog', auditAction: 'tu_choi_sua_ho_so', actor: user?.uid || 'Admin', details: { studentId: request.studentId || '', requestId: request.id } }).catch(() => undefined);
       hideProfileRequestFieldLocally(request.id);
       showNotification?.('Đã từ chối yêu cầu sửa hồ sơ.');
@@ -3986,6 +3888,16 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
         icon: <Mail className="h-4 w-4 text-emerald-600" />, disabled: !onSendMailboxMessages || selectedIds.size === 0,
         onClick: utilityAction(() => openMailboxComposer(yearStudents.filter(student => selectedIds.has(student.id))))
       }, {
+        id: 'conversations', label: `Tin nhắn học sinh${conversationUnreadCount ? ` (${conversationUnreadCount} chưa đọc)` : ''}`,
+        note: 'Xem câu hỏi học sinh gửi và trả lời riêng cho từng em.',
+        icon: <Mail className="h-4 w-4 text-blue-600" />, disabled: !onOpenConversations,
+        onClick: utilityAction(() => onOpenConversations?.())
+      }, {
+        id: 'mailHistory', label: 'Thư đã gửi',
+        note: 'Tìm thư theo tên hoặc mã học sinh, xem nội dung và trạng thái đã đọc; xóa riêng thư gửi nhầm sau khi đối chiếu người nhận.',
+        icon: <Mail className="h-4 w-4 text-sky-600" />, disabled: !onOpenMailboxHistory,
+        onClick: utilityAction(() => onOpenMailboxHistory?.())
+      }, {
         id: 'codes', label: 'Quản lý mã học sinh',
         note: 'Cấp mã đăng nhập còn thiếu, hoặc cấp lại cả năm đang xem.',
         icon: <KeyRound className="h-4 w-4 text-amber-600" />, disabled: isSaving,
@@ -4003,10 +3915,10 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
       }]
     },
     {
-      id: 'sheet', label: studentTab === 'current' ? 'Dữ liệu Web ↔ Sheet' : 'Dữ liệu Sheet',
-      tabLabel: studentTab === 'current' ? 'Web ↔ Sheet' : 'Dữ liệu Sheet',
+      id: 'sheet', label: 'Đồng bộ Web → Sheet',
+      tabLabel: 'Web → Sheet',
       icon: <FileSpreadsheet className="h-4 w-4" />, badge: pendingSheetSyncCount,
-      note: 'Chọn đúng chiều dữ liệu: Sheet → Web hoặc Web → Sheet.',
+      note: 'Web lưu hồ sơ chính. Gửi các thay đổi sang Sheet khi bạn cần; nhập từ Sheet chỉ là thao tác đối chiếu thủ công.',
       actions: [...(pendingSheetSyncCount > 0 ? [{
         id: 'retry', label: `Thử lại Web → Sheet (${pendingSheetSyncCount})`,
         note: 'Web đã lưu các hồ sơ này nhưng Google Sheet chưa nhận xong. Bấm để gửi lại từ Web sang Sheet; không đọc dữ liệu từ Sheet về Web.',
@@ -4023,7 +3935,7 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
         icon: <UploadCloud className="h-4 w-4 text-indigo-600" />,
         onClick: utilityAction(() => setShowImport(true))
       }, {
-        id: 'fromSheet', label: 'Sheet → Web: cập nhật hồ sơ',
+        id: 'fromSheet', label: 'Nhập từ Sheet (thủ công)',
         note: 'Đọc dữ liệu từ Google Sheet rồi cập nhật hồ sơ trên Web. Sau đó hiện bảng để bạn chọn thêm hồ sơ thiếu hoặc áp dụng lớp đúng năm.',
         icon: <RefreshCw className="h-4 w-4 text-blue-600" />, disabled: isSaving,
         onClick: utilityAction(syncStudentsFromSheet)
@@ -4080,22 +3992,12 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
     const fieldOptions = field.key === 'entryGrade'
       ? [...new Set([...educationGrades(educationLevel), editing.entryGrade].filter(Boolean))].sort((a, b) => Number(a) - Number(b))
       : field.key === 'gender' ? [...new Set(['Nam', 'Nữ', editing.gender].filter(Boolean))] : null;
-    const listId = field.key === 'province' || field.key === 'householdProvince'
-      ? 'admin-province-options'
-      : field.key === 'ward'
-        ? 'admin-current-ward-options'
-        : field.key === 'householdWard'
-          ? 'admin-household-ward-options'
-          : undefined;
-    const placeholder = field.key === 'ward' || field.key === 'householdWard'
-      ? 'Chọn tỉnh trước, rồi gõ/chọn phường xã'
-      : field.key === 'province' || field.key === 'householdProvince'
-        ? 'Gõ hoặc chọn tỉnh/thành'
-        : '';
     return (
       <label key={field.key} className="flex flex-col gap-1">
         <span className="text-[10px] font-normal uppercase text-slate-400">{field.label}{field.required && !(field.key === 'className' && isDropped) ? ' *' : ''}</span>
-        {field.key === 'schoolCode' ? (
+        {profileLocations.fields[field.key] ? (
+          <StudentProfileAddressSelect field={field} value={editing[field.key] || ''} state={profileLocations.fields[field.key]} disabled={profileReadOnly || isSaving} onChange={updateEditingField} className="border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-normal bg-white focus:outline-none focus:border-indigo-400 disabled:bg-slate-50" />
+        ) : field.key === 'schoolCode' ? (
           <select disabled={profileReadOnly} value={normalizeSchoolCode(editing.schoolCode) || 'UNKNOWN'} onChange={(e) => updateEditingField(field.key, e.target.value)} className="border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-normal bg-white focus:outline-none focus:border-indigo-400">
             {SCHOOL_OPTIONS.map(school => <option key={school.code} value={school.code}>{school.name}</option>)}
           </select>
@@ -4123,7 +4025,7 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
             {ACADEMIC_RESULT_OPTIONS.map(option => <option key={option || '-'} value={option}>{option || '-'}</option>)}
           </select>
         ) : (
-          <input readOnly={profileReadOnly} value={editing[field.key] || ''} list={listId} placeholder={placeholder} onChange={(e) => updateEditingField(field.key, e.target.value)} className="border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-normal focus:outline-none focus:border-indigo-400" />
+          <input readOnly={profileReadOnly} value={editing[field.key] || ''} onChange={(e) => updateEditingField(field.key, e.target.value)} className="border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-normal focus:outline-none focus:border-indigo-400" />
         )}
       </label>
     );
@@ -4213,6 +4115,7 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
               <Trash2 className="h-4 w-4" /> Xóa {selectedCount ? `(${selectedCount})` : ''}
             </button>
           )}
+          {onOpenConversations && <button type="button" onClick={onOpenConversations} className="flex h-7 shrink-0 items-center gap-1 rounded-md border border-blue-200 bg-blue-50 px-2 text-[11px] text-blue-700 sm:h-9 sm:rounded-lg sm:px-3 sm:text-sm"><Mail className="h-4 w-4" />Tin nhắn học sinh{conversationUnreadCount > 0 && <span className="rounded-full bg-rose-500 px-1.5 text-xs text-white">{conversationUnreadCount}</span>}</button>}
           <div className="relative shrink-0">
             <button
               ref={utilitiesButtonRef}
@@ -4262,6 +4165,8 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
         )}
       </div>
 
+      {studentTab === 'current' && <HistoricalStudentRecovery key={currentSchoolYear} students={students} schoolYear={currentSchoolYear} educationLevel={educationLevel}
+        actor={user?.uid || 'Admin'} busy={isSaving} onBusyChange={setIsSaving} onSync={syncPersistedStudent} onView={openView} />}
       {studentTab === 'current' && <StudentSheetImportStatus status={sheetImportStatus} onClose={() => setSheetImportStatus(null)} />}
       {sheetReconciliation && <StudentSheetReconciliation key={`${sheetReconciliation.schoolYear}:${sheetReconciliation.mode || 'sheet'}`}
         report={sheetReconciliation} webStudents={yearStudents} busy={isSaving} onApply={applySheetReconciliation}
@@ -4427,11 +4332,18 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
         </div>
       )}
 
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-slate-200 bg-sky-50 px-3 py-2 text-xs text-slate-700">
+        <span>Hồ sơ lưu trên Web · {currentSchoolYear}: {pendingSheetSyncCount ? `${pendingSheetSyncCount} hồ sơ chờ gửi sang Sheet` : 'Không có hồ sơ chờ gửi sang Sheet'}.</span>
+        <button type="button" onClick={retrySheetJobs} disabled={isSaving || !pendingSheetSyncCount} className="inline-flex items-center gap-1 rounded border border-sky-200 bg-white px-2 py-1 text-sky-800 disabled:opacity-50">
+          <RefreshCw className={`h-3.5 w-3.5 ${sheetRetryStatus?.phase === 'running' ? 'animate-spin' : ''}`} /> Đồng bộ sang Sheet ({pendingSheetSyncCount})
+        </button>
+      </div>
       {sheetRetryStatus && (
         <div role="status" aria-live="polite" className="shrink-0 border-b border-slate-200 bg-slate-50 px-3 py-2 text-xs font-normal text-slate-700">
           {sheetRetryStatus.phase === 'running' ? 'Đang thử lại đồng bộ Sheet: ' + sheetRetryStatus.completed + '/' + sheetRetryStatus.total + ' hồ sơ.' : 'Đồng bộ Sheet: ' + sheetRetryStatus.succeeded + '/' + sheetRetryStatus.total + ' hồ sơ thành công.'}
           {sheetRetryStatus.failed > 0 && ' Còn ' + sheetRetryStatus.failed + ' hồ sơ lỗi, đã giữ để thử lại.'}
           {sheetRetryStatus.error && ' ' + sheetRetryStatus.error}
+          {sheetRetryStatus.failures?.length > 0 && <details className="mt-1"><summary className="cursor-pointer">Xem lý do từng hồ sơ</summary><ul className="mt-1 space-y-1">{sheetRetryStatus.failures.map(item => <li key={item.id}>{item.name} · {item.code || 'chưa có mã'}: {item.reason}</li>)}</ul></details>}
         </div>
       )}
       {studentTab === 'profileRequests' ? (
@@ -4441,13 +4353,12 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-normal">
               <div className="text-slate-600">
                 <div>{profileRequests.length} yêu cầu chờ duyệt · Cùng một thông tin, ưu tiên bản gửi mới nhất.</div>
-                <div className="mt-1">Duyệt ảnh/giấy tờ mới sẽ tự dọn file cũ sau khi lưu và đồng bộ thành công. File còn được sử dụng sẽ được giữ lại.</div>
+                <div className="mt-1">Ảnh/giấy tờ cũ được giữ lại đến khi đồng bộ Sheet thành công. Sau đó dùng “Thử dọn lại” trong mục File cũ chờ dọn.</div>
                 {profileBatchStatus && <div role="status" aria-live="polite" className="mt-1">
                   {profileBatchStatus.phase === 'saving'
                     ? 'Đang duyệt ' + profileBatchStatus.completed + '/' + profileBatchStatus.total + ' yêu cầu…'
                     : 'Đã duyệt ' + profileBatchStatus.succeeded + '/' + profileBatchStatus.total + ' yêu cầu.'}
-                  {profileBatchStatus.phase === 'syncing' && ' Đang đồng bộ Sheet ' + profileBatchStatus.synced + '/' + profileBatchStatus.syncTotal + ' học sinh và dọn file cũ; bạn có thể tiếp tục thao tác.'}
-                  {profileBatchStatus.phase === 'done' && profileBatchStatus.syncTotal > 0 && (profileBatchStatus.syncFailed ? ' Còn ' + profileBatchStatus.syncFailed + ' hồ sơ chờ đồng bộ lại Sheet.' : ' Đã đồng bộ Sheet.')}
+                  {profileBatchStatus.syncQueued > 0 && ' ' + profileBatchStatus.syncQueued + ' hồ sơ chờ đồng bộ sang Sheet.'}
                   {profileBatchStatus.failed > 0 && ' Còn ' + profileBatchStatus.failed + ' yêu cầu chưa duyệt.'}
                   {profileBatchStatus.cleanupNote}
                   {profileBatchStatus.error && ' ' + profileBatchStatus.error}
@@ -4999,21 +4910,11 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
                         {onSendTestResults && (
                           <button
                             type="button"
-                            onClick={async () => {
-                              setSendingTestResultStudentId(student.id);
-                              try {
-                                await onSendTestResults(student);
-                              } catch (error) {
-                                showNotification?.(`Chưa gửi được kết quả kiểm tra: ${error.message}`, 'error');
-                              } finally {
-                                setSendingTestResultStudentId('');
-                              }
-                            }}
-                            disabled={sendingTestResultStudentId === student.id}
+                            onClick={() => openMailboxComposer([student], 'score')}
                             title="Gửi kết quả kiểm tra vào hộp thư học sinh"
                             className="p-1 rounded bg-emerald-50 border border-emerald-100 text-emerald-700 hover:bg-emerald-100 disabled:opacity-50"
                           >
-                            {sendingTestResultStudentId === student.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <Mail className="w-4 h-4" />}
+                            <Mail className="w-4 h-4" />
                           </button>
                         )}
                         <button type="button" onClick={() => openEdit(student)} title="Sửa thông tin" className="p-1 rounded bg-white border border-slate-200 text-blue-600 hover:bg-blue-50">
@@ -5033,7 +4934,7 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
                       {student.registrationSyncPending ? (
                         <div className="space-y-1">
                           <span className="inline-flex rounded-full bg-amber-100 text-amber-800 border border-amber-200 px-2 py-1 font-normal text-[10px] uppercase">Chờ đồng bộ Sheet</span>
-                          <div className="text-[11px] text-amber-700">Hồ sơ đã duyệt. Nhấn Đồng ý để tiếp tục đồng bộ.</div>
+                          <div className="text-[11px] text-amber-700">Hồ sơ đã lưu trên Web. Dùng Đồng bộ sang Sheet để gửi tiếp.</div>
                         </div>
                       ) : student.duplicateReason ? (
                         <div className="space-y-1">
@@ -5045,8 +4946,8 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
                         <span className="inline-flex rounded-full bg-emerald-50 text-emerald-700 border border-emerald-100 px-2 py-1 font-normal text-[10px] uppercase">Hồ sơ mới · {student.schoolYear}</span>
                       )}
                       <div className="mt-2 flex flex-wrap items-center justify-center gap-1.5">
-                        <button type="button" onClick={() => approveRegistrations([student])} disabled={isSaving || (Boolean(student.duplicateReason) && !student.registrationSyncPending)} title={student.registrationSyncPending ? 'Tiếp tục đồng bộ hồ sơ đã duyệt lên Google Sheet' : student.duplicateReason ? 'Cần đối chiếu hồ sơ trùng trước khi đồng ý' : 'Duyệt hồ sơ và đưa vào danh sách học sinh'} className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-normal text-white hover:bg-emerald-700 disabled:opacity-40">
-                          <CheckCircle2 className="h-3.5 w-3.5" /> Đồng ý
+                        <button type="button" onClick={() => student.registrationSyncPending ? retrySheetJobs() : approveRegistrations([student])} disabled={isSaving || (Boolean(student.duplicateReason) && !student.registrationSyncPending)} title={student.registrationSyncPending ? 'Tiếp tục đồng bộ hồ sơ đã duyệt lên Google Sheet' : student.duplicateReason ? 'Cần đối chiếu hồ sơ trùng trước khi đồng ý' : 'Duyệt hồ sơ và đưa vào danh sách học sinh'} className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-normal text-white hover:bg-emerald-700 disabled:opacity-40">
+                          <CheckCircle2 className="h-3.5 w-3.5" /> {student.registrationSyncPending ? 'Đồng bộ Sheet' : 'Đồng ý'}
                         </button>
                         <button type="button" onClick={() => deletePendingRegistration(student)} disabled={isSaving} title="Từ chối và xóa hàng đăng ký khỏi Google Sheet" className="inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-normal text-rose-700 hover:bg-rose-100 disabled:opacity-40">
                           <X className="h-3.5 w-3.5" /> Từ chối
@@ -5072,7 +4973,7 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
       )}
 
       {profileReminderCheck && typeof document !== 'undefined' && createPortal(
-        <StudentProfileReminderDialog check={profileReminderCheck} onSend={onSendMailboxMessages} onClose={closeProfileReminderCheck} />,
+        <StudentProfileReminderDialog check={profileReminderCheck} onSend={onSendMailboxMessages} onClose={closeProfileReminderCheck} onOpenMailboxHistory={onOpenMailboxHistory} />,
         document.body
       )}
       {mailComposerStudents.length > 0 && typeof document !== 'undefined' && createPortal((
@@ -5122,9 +5023,10 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
               </div>
             </div>
             <div className="flex justify-end gap-2 border-t border-slate-100 bg-slate-50 px-4 py-3">
+              {learningMailLoading && <span role="status" className="mr-auto self-center text-xs text-slate-600">Đang tải kết quả, tiến độ học. Nếu có lỗi tải, đóng rồi mở lại để thử lại.</span>}
               <button type="button" onClick={closeMailboxComposer} disabled={isSendingMailboxMessages} className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-normal text-slate-600 disabled:opacity-40">Hủy</button>
-              <button type="button" onClick={sendMailboxComposerMessages} disabled={isSendingMailboxMessages} className="flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-xs font-normal text-white shadow-sm disabled:opacity-50">
-                {isSendingMailboxMessages ? <Loader2 className="h-4 w-4 animate-spin" /> : <Mail className="h-4 w-4" />}
+              <button type="button" onClick={sendMailboxComposerMessages} disabled={isSendingMailboxMessages || learningMailLoading} className="flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-xs font-normal text-white shadow-sm disabled:opacity-50">
+                {isSendingMailboxMessages || learningMailLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Mail className="h-4 w-4" />}
                 Gửi {mailComposerStudents.length} thư
               </button>
             </div>
@@ -5140,33 +5042,28 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
         }} />,
         document.body
       )}
-      {editing && (
-        <div className="fixed inset-0 z-[90] bg-slate-900/60 backdrop-blur-sm p-2 sm:p-3 flex items-center justify-center" role="dialog" aria-modal="true" aria-labelledby="admin-student-profile-title">
-          <div className="bg-white rounded-lg shadow-2xl w-full min-w-0 min-h-0 max-w-[1280px] max-h-[min(94dvh,100%)] overflow-hidden flex flex-col font-normal">
-            <div className="shrink-0 px-3 py-2 border-b bg-slate-50 flex items-center justify-between gap-3">
-              <div>
+      {editing && createPortal(
+        <div className="student-profile-overlay z-[90] bg-slate-900/60 backdrop-blur-sm" style={{ zIndex: profileOverlayZIndex }} role="dialog" aria-modal="true" aria-labelledby="admin-student-profile-title" onKeyDown={event => { if (event.key === 'Escape' && !documentViewer) { event.stopPropagation(); closeEdit(); } }}>
+          <div className="student-profile-panel bg-white rounded-lg shadow-2xl font-normal">
+            <div className="student-profile-header shrink-0 px-3 py-2 border-b bg-slate-50">
+              <div className="student-profile-heading min-w-0">
                  <h4 id="admin-student-profile-title" className="font-normal text-slate-900">{profileReadOnly ? 'Xem hồ sơ học sinh' : 'Hồ sơ học sinh'}</h4>
-                <p className="text-xs text-slate-500 font-normal">{editing.fullName || 'Học sinh mới'}{editing.className ? ` · Lớp ${editing.className}` : ''}</p>
+                <p className="truncate text-xs text-slate-500 font-normal">{editing.fullName || 'Học sinh mới'}{editing.className ? ` · Lớp ${editing.className}` : ''}</p>
               </div>
-              <button type="button" onClick={closeEdit} aria-label="Đóng hồ sơ" className="p-2 rounded-xl bg-white border border-slate-200 text-slate-500 hover:text-rose-600"><X className="w-5 h-5" /></button>
+              <div className="student-profile-actions flex flex-wrap items-center justify-end gap-2">
+                <button type="button" onClick={closeEdit} className="h-8 px-4 bg-white border border-slate-200 text-slate-600 rounded text-xs font-normal">{profileReadOnly ? 'Đóng' : 'Hủy'}</button>
+                {profileReadOnly && <button type="button" onClick={() => setProfileReadOnly(false)} className="h-8 px-4 bg-indigo-600 text-white rounded text-xs font-normal flex items-center justify-center gap-2"><Pencil className="w-4 h-4" /> Chỉnh sửa hồ sơ</button>}
+                {!profileReadOnly && <button type="button" onClick={saveStudent} disabled={isSaving || Boolean(uploadingDocumentKey)} className="h-8 px-4 bg-indigo-600 text-white rounded text-xs font-normal shadow-md flex items-center justify-center gap-2 disabled:opacity-60"><Save className="w-4 h-4" /> Lưu hồ sơ</button>}
+              </div>
+              <button type="button" autoFocus onClick={closeEdit} aria-label="Đóng hồ sơ" className="student-profile-close shrink-0 p-2 rounded-xl bg-white border border-slate-200 text-slate-500 hover:text-rose-600"><X className="w-5 h-5" /></button>
             </div>
-              <datalist id="admin-province-options">
-                {addressProvinceOptions.map(item => <option key={item} value={item} label={provinceOptionLabel(item)} />)}
-              </datalist>
-              <datalist id="admin-current-ward-options">
-                {editCurrentWardOptions.map(item => <option key={item} value={item} />)}
-              </datalist>
-              <datalist id="admin-household-ward-options">
-                {editHouseholdWardOptions.map(item => <option key={item} value={item} />)}
-              </datalist>
-
             <StudentProfileSections sections={[
               ...STUDENT_PROFILE_SECTIONS.map(section => ({
                 ...section,
                 content: (
                   <div className="space-y-3">
                     {section.key === 'learning' && <p className="text-xs text-slate-500">Quy đổi đánh giá cũ: Trung bình = Đạt, Khá = Khá, Giỏi = Tốt.</p>}
-                    <div className={`grid grid-cols-1 gap-x-3 gap-y-2 sm:grid-cols-2 ${section.key === 'identity' ? 'lg:grid-cols-5' : 'lg:grid-cols-4'}`}>
+                    {section.key === 'address' ? <StudentProfileAddressFields fields={adminEditFields.filter(field => studentProfileSection(field.key) === 'address')} renderField={renderProfileField} /> : <div className={`grid grid-cols-1 gap-x-3 gap-y-2 sm:grid-cols-2 ${section.key === 'identity' ? 'lg:grid-cols-5' : 'lg:grid-cols-4'}`}>
                       {section.key === 'identity' && (<>
               <label className="flex flex-col gap-1">
                 <span className="text-[10px] font-normal uppercase text-slate-400">Mã học sinh</span>
@@ -5195,8 +5092,11 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
               </label>
 
                       </>)}
-                      {adminEditFields.filter(field => studentProfileSection(field.key) === section.key).map(renderProfileField)}
-                    </div>
+                      {adminEditFields.filter(field => studentProfileSection(field.key) === section.key && !isStudentProfileFamilyField(field.key)).map(renderProfileField)}
+                    </div>}
+                    {section.key === 'identity' && (
+                      <StudentProfileFamilyFields fields={adminEditFields.filter(field => isStudentProfileFamilyField(field.key))} renderField={renderProfileField} />
+                    )}
                     {section.key === 'identity' && (
                       <section aria-label="Quá trình học" className="border-t border-slate-200 pt-3">
                         <StudentProfileHistory rows={profileHistoryRows} attendanceState={profileAttendanceState} onRetryAttendance={() => setProfileAttendanceRetry(value => value + 1)} />
@@ -5230,23 +5130,19 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
                 </div>
               ) }] : [])
             ]} />
-            <div className="shrink-0 px-3 py-2 border-t bg-slate-50 flex justify-end gap-2">
-               <button type="button" onClick={closeEdit} className="h-8 px-4 bg-white border border-slate-200 text-slate-600 rounded text-xs font-normal">{profileReadOnly ? 'Đóng' : 'Hủy'}</button>
-               {profileReadOnly && <button type="button" onClick={() => setProfileReadOnly(false)} className="h-8 px-4 bg-indigo-600 text-white rounded text-xs font-normal flex items-center justify-center gap-2"><Pencil className="w-4 h-4" /> Chỉnh sửa hồ sơ</button>}
-               {!profileReadOnly && <button type="button" onClick={saveStudent} disabled={isSaving || Boolean(uploadingDocumentKey)} className="h-8 px-4 bg-indigo-600 text-white rounded text-xs font-normal shadow-md flex items-center justify-center gap-2 disabled:opacity-60"><Save className="w-4 h-4" /> Lưu hồ sơ</button>}
-            </div>
           </div>
-        </div>
+        </div>, document.body
       )}
-      {documentViewer && (
+      {documentViewer && createPortal((
         <DocumentViewerModal
+          overlayZIndex={Math.max(140, profileOverlayZIndex + 5)}
           viewer={documentViewer}
           onClose={() => setDocumentViewer(null)}
           onSelect={(index) => setDocumentViewer(prev => prev ? ({ ...prev, index }) : prev)}
           onPrevious={() => setDocumentViewer(prev => prev ? ({ ...prev, index: Math.max(0, prev.index - 1) }) : prev)}
           onNext={() => setDocumentViewer(prev => prev ? ({ ...prev, index: Math.min(prev.urls.length - 1, prev.index + 1) }) : prev)}
         />
-      )}
+      ), document.body)}
       {showCodeChoiceModal && (
         <div className="fixed inset-0 z-[95] bg-slate-900/60 backdrop-blur-sm p-4 flex items-center justify-center">
           <div className="bg-white rounded-3xl shadow-2xl max-w-md w-full p-5">
@@ -5481,7 +5377,7 @@ function DocumentManager({ docItem, value, uploading, onUpload, onRemove, onOpen
   );
 }
 
-function DocumentViewerModal({ viewer, onClose, onSelect, onPrevious, onNext }) {
+function DocumentViewerModal({ viewer, onClose, onSelect, onPrevious, onNext, overlayZIndex = 140 }) {
   const urls = viewer.urls || [];
   const index = viewer.index || 0;
   const currentUrl = urls[index] || '';
@@ -5489,14 +5385,14 @@ function DocumentViewerModal({ viewer, onClose, onSelect, onPrevious, onNext }) 
   const isPdf = /\.pdf(\?|$)/i.test(currentUrl);
 
   return (
-    <div className="fixed inset-0 z-[140] bg-slate-950/80 p-2 sm:p-4 backdrop-blur-sm">
+    <div className="fixed inset-0 z-[140] bg-slate-950/80 p-2 sm:p-4 backdrop-blur-sm" style={{ zIndex: overlayZIndex }} role="dialog" aria-modal="true" aria-label={viewer.title} onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); onClose(); } }}>
       <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
         <div className="flex shrink-0 items-center justify-between gap-3 border-b border-slate-100 bg-slate-50 px-3 py-2 sm:px-4">
           <div className="min-w-0">
             <div className="truncate text-sm font-normal uppercase text-slate-900">{viewer.title}</div>
             <div className="text-[11px] font-normal text-slate-500">File {Math.min(index + 1, urls.length)}/{urls.length}</div>
           </div>
-          <button type="button" onClick={onClose} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-rose-600 text-white shadow-sm" title="Đóng">
+          <button type="button" autoFocus onClick={onClose} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-rose-600 text-white shadow-sm" title="Đóng">
             <X className="h-5 w-5" />
           </button>
         </div>

@@ -22,5 +22,6 @@ export const teacherHasContentScope = (profile = null, { schoolCode, grade, subj
   if (!profile || profile.role !== 'teacher') return false;
   if (normalizeSchoolCode(profile.schoolCode) !== normalizeSchoolCode(schoolCode)) return false;
   return (profile.grades || []).map(String).includes(String(grade || ''))
-    && (profile.subjects || []).includes(String(subject || ''));
+    && (profile.subjects || []).includes(String(subject || ''))
+    && (!profile.subjectsByGrade || (profile.subjectsByGrade[String(grade)] || []).includes(String(subject || '')));
 };
