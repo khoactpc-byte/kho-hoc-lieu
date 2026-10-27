@@ -3,6 +3,7 @@ import useSingleRowToolbar from '../hooks/useSingleRowToolbar';
 import useNarrowScreen from '../hooks/useNarrowScreen';
 import StudentDisplayOptions from './StudentDisplayOptions';
 import StudentMobileList from './StudentMobileList';
+import StudentPortrait from './StudentPortrait';
 import StudentProfileAddressSelect from './StudentProfileAddressSelect';
 import StudentProfileAddressFields from './StudentProfileAddressFields';
 import StudentProfileFamilyFields from './StudentProfileFamilyFields';
@@ -1463,6 +1464,7 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
   const [query, setQuery] = useState('');
   const narrow = useNarrowScreen();
   const [mobileToolsOpen, setMobileToolsOpen] = useState(false);
+  const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
   const [mobileTableView, setMobileTableView] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
   const [studentSearch, setStudentSearch] = useState(EMPTY_STUDENT_SEARCH);
@@ -1516,7 +1518,7 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
   const [profileAttendanceRetry, setProfileAttendanceRetry] = useState(0);
   const profileOpen = Boolean(editing);
   const [avatarStudent, setAvatarStudent] = useState(null);
-  const [showPortraits, setShowPortraits] = useState(false);
+  const [showPortraits, setShowPortraits] = useState(() => window.innerWidth < 768);
   const [documentViewer, setDocumentViewer] = useState(null);
   const [uploadingDocumentKey, setUploadingDocumentKey] = useState('');
   const [showImport, setShowImport] = useState(false);
@@ -4085,8 +4087,9 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
             </button>
           )}
         </div>
-        <div ref={toolbarRef} data-mobile-expanded={mobileToolsOpen} className="student-database-actions flex flex-nowrap items-center justify-start overflow-x-auto pb-1 lg:min-w-0 lg:flex-1 lg:pb-0">
-          {narrow && studentTab !== 'journey' && studentTab !== 'profileRequests' && <label className="student-mobile-search"><Search size={16} /><input aria-label="Tìm nhanh học sinh" type="search" placeholder="Tên, mã học sinh…" value={query} onChange={event => setQuery(event.target.value)} /></label>}
+        <div ref={toolbarRef} data-mobile-expanded={mobileToolsOpen} data-mobile-filters={mobileFiltersOpen} className="student-database-actions flex flex-nowrap items-center justify-start overflow-x-auto pb-1 lg:min-w-0 lg:flex-1 lg:pb-0">
+          {narrow && studentTab !== 'journey' && studentTab !== 'profileRequests' && <button type="button" data-mobile-primary className="student-mobile-filter-toggle" aria-label="Tìm và lọc học sinh" aria-expanded={mobileFiltersOpen} aria-controls="student-mobile-filter-fields" onClick={() => setMobileFiltersOpen(value => !value)}><Search size={16} />Tìm & lọc{(query || gradeFilter != null || classFilter != null) && <b aria-hidden="true">•</b>}</button>}
+          {narrow && mobileFiltersOpen && studentTab !== 'journey' && studentTab !== 'profileRequests' && <label className="student-mobile-search"><Search size={16} /><input aria-label="Tìm nhanh học sinh" type="search" placeholder="Tên, mã học sinh…" value={query} onChange={event => setQuery(event.target.value)} /></label>}
           <button type="button" className="student-mobile-tools-toggle" aria-label="Thêm công cụ hồ sơ" title="Thêm công cụ hồ sơ" aria-expanded={mobileToolsOpen} onClick={() => setMobileToolsOpen(value => !value)}><MoreHorizontal size={18} /></button>
           {onBack && (
             <button type="button" onClick={onBack} title="Đóng database" className="hidden sm:flex sm:order-last shrink-0 w-9 h-9 border border-slate-200 bg-white text-slate-500 hover:bg-rose-50 hover:text-rose-600 rounded items-center justify-center transition-colors">
@@ -4728,7 +4731,7 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
       )}
 
       <>
-      <div className="student-database-filters shrink-0 grid grid-cols-2 items-center gap-2 border-b border-slate-200 bg-slate-50 px-2 py-2 text-sm text-slate-700 sm:flex sm:flex-wrap">
+      <div id="student-mobile-filter-fields" data-mobile-open={mobileFiltersOpen} className="student-database-filters shrink-0 grid grid-cols-2 items-center gap-2 border-b border-slate-200 bg-slate-50 px-2 py-2 text-sm text-slate-700 sm:flex sm:flex-wrap">
         <StudentDisplayOptions>
         <label className="col-span-2 flex h-8 shrink-0 cursor-pointer items-center gap-2 sm:mr-1">
           <input type="checkbox" checked={showPortraits} onChange={event => setShowPortraits(event.target.checked)} aria-label="Hiện ảnh" className="h-4 w-4 accent-sky-700" />
@@ -4745,23 +4748,23 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
         <div className="student-database-filter-field flex min-w-0 items-center gap-2">
           <span className="shrink-0">Khối:</span>
           <div className="min-w-0 flex-1 sm:w-40">
-            <StudentFilterDropdown label="Khối" options={gradeOptions.map(grade => ({ value: grade, label: `Khối ${grade}` }))} value={gradeFilter} onChange={changeGradeFilter}
-              open={openFilterKey === 'toolbar:grade'} onOpenChange={open => setOpenFilterKey(open ? 'toolbar:grade' : null)} />
+            {narrow ? <select aria-label="Lọc khối học sinh" value={gradeFilter == null ? '' : gradeFilter.length === 1 ? gradeFilter[0] : '__custom'} onChange={event => changeGradeFilter(event.target.value ? [event.target.value] : null)}><option value="">Tất cả</option>{gradeFilter != null && gradeFilter.length !== 1 && <option value="__custom" disabled>{gradeFilter.length ? gradeFilter.length + ' mục đã chọn' : 'Chưa chọn mục'}</option>}{gradeOptions.map(grade => <option key={grade} value={grade}>Khối {grade}</option>)}</select> : <StudentFilterDropdown label="Khối" options={gradeOptions.map(grade => ({ value: grade, label: `Khối ${grade}` }))} value={gradeFilter} onChange={changeGradeFilter}
+              open={openFilterKey === 'toolbar:grade'} onOpenChange={open => setOpenFilterKey(open ? 'toolbar:grade' : null)} />}
           </div>
         </div>
         <div className="student-database-filter-field flex min-w-0 items-center gap-2">
           <span className="shrink-0">Lớp:</span>
           <div className="min-w-0 flex-1 sm:w-40">
-            <StudentFilterDropdown label="Lớp" options={filteredClassOptions.map(className => ({ value: className, label: className }))} value={classFilter} onChange={setClassFilter}
-              open={openFilterKey === 'toolbar:class'} onOpenChange={open => setOpenFilterKey(open ? 'toolbar:class' : null)} />
+            {narrow ? <select aria-label="Lọc lớp học sinh" value={classFilter == null ? '' : classFilter.length === 1 ? classFilter[0] : '__custom'} onChange={event => setClassFilter(event.target.value ? [event.target.value] : null)}><option value="">Tất cả</option>{classFilter != null && classFilter.length !== 1 && <option value="__custom" disabled>{classFilter.length ? classFilter.length + ' mục đã chọn' : 'Chưa chọn mục'}</option>}{filteredClassOptions.map(className => <option key={className} value={className}>{className}</option>)}</select> : <StudentFilterDropdown label="Lớp" options={filteredClassOptions.map(className => ({ value: className, label: className }))} value={classFilter} onChange={setClassFilter}
+              open={openFilterKey === 'toolbar:class'} onOpenChange={open => setOpenFilterKey(open ? 'toolbar:class' : null)} />}
           </div>
         </div>
         {studentTab === 'current' ? (
           <div className="student-database-filter-field student-database-status col-span-2 flex min-w-0 items-center gap-2 sm:min-w-[260px]">
             <span className="shrink-0">Trạng thái:</span>
             <div className="min-w-0 flex-1">
-              <StudentFilterDropdown label="Trạng thái" options={[{ value: 'active', label: 'Đang học' }, { value: 'dropped', label: 'Bỏ học' }, { value: 'completed', label: 'TNTHCS' }]} value={statusFilter} onChange={setStatusFilter}
-                open={openFilterKey === 'toolbar:status'} onOpenChange={open => setOpenFilterKey(open ? 'toolbar:status' : null)} />
+              {narrow ? <select aria-label="Lọc trạng thái học sinh" value={statusFilter == null ? '' : statusFilter.length === 1 ? statusFilter[0] : '__custom'} onChange={event => setStatusFilter(event.target.value ? [event.target.value] : null)}><option value="">Tất cả</option>{statusFilter != null && statusFilter.length !== 1 && <option value="__custom" disabled>{statusFilter.length ? statusFilter.length + ' mục đã chọn' : 'Chưa chọn mục'}</option>}<option value="active">Đang học</option><option value="dropped">Bỏ học</option><option value="completed">TNTHCS</option></select> : <StudentFilterDropdown label="Trạng thái" options={[{ value: 'active', label: 'Đang học' }, { value: 'dropped', label: 'Bỏ học' }, { value: 'completed', label: 'TNTHCS' }]} value={statusFilter} onChange={setStatusFilter}
+                open={openFilterKey === 'toolbar:status'} onOpenChange={open => setOpenFilterKey(open ? 'toolbar:status' : null)} />}
             </div>
           </div>
         ) : (
@@ -4832,7 +4835,7 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
       )}
 
       {narrow && studentTab === 'current' && !mobileTableView && !isImageOnlyView ? <StudentMobileList students={filteredStudents} selectedIds={activeSelectedIds} onToggle={toggleSelectStudent}
-        onOpen={student => quickEditEnabled ? openEdit(student) : openView(student)} showPortraits={showPortraits} allSelected={allFilteredSelected} onToggleAll={toggleSelectAllFiltered} /> : <div className="min-h-0 flex-1 overflow-auto">
+        onOpen={student => quickEditEnabled ? openEdit(student) : openView(student)} onPortrait={setAvatarStudent} showPortraits={showPortraits} allSelected={allFilteredSelected} onToggleAll={toggleSelectAllFiltered} /> : <div className="min-h-0 flex-1 overflow-auto">
         <table className={`student-database-table w-full table-fixed border-collapse text-center text-xs ${showPortraits ? 'student-database-portrait-view' : ''} ${isImageOnlyView ? 'student-database-image-view' : ''}`} style={{ minWidth: databaseTableWidth }} aria-label="Database học sinh">
           <colgroup>
             {databaseColumnWidths.map((width, index) => <col key={index} style={{ width }} />)}
@@ -5308,12 +5311,7 @@ function StudentAvatarPreview({ student, onClose, onOpenProfile }) {
           </button>
         </div>
         <div className="flex h-56 items-center justify-center overflow-hidden rounded-lg bg-slate-50">
-          <DriveImage key={student.portraitUrl || 'empty'} url={student.portraitUrl} alt={`Ảnh đại diện ${student.fullName}`} className="h-full w-full object-contain" fallback={
-            <div className="flex flex-col items-center gap-2 px-4 text-center text-sm text-slate-400">
-              <UserRound className="h-12 w-12" />
-              {student.portraitUrl ? 'Chưa tải được ảnh đại diện.' : 'Chưa có ảnh đại diện.'}
-            </div>
-          } />
+          <StudentPortrait key={student.portraitUrl || 'empty'} url={student.portraitUrl} name={student.fullName} size={640} showStatus className="h-full w-full object-contain" />
         </div>
         <button ref={profileButtonRef} type="button" onClick={onOpenProfile} className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg bg-sky-700 px-3 py-2 text-sm font-normal text-white hover:bg-sky-800">
           <FileText className="h-4 w-4" /> Mở hồ sơ

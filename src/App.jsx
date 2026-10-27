@@ -87,6 +87,7 @@ import AdminCheckWorkspace from './components/AdminCheckWorkspace';
 import TeacherLearningMaterialTracker from './components/TeacherLearningMaterialTracker';
 import { buildLearningMaterialRows } from './utils/learningMaterialStats';
 import HomeNewsCard from './components/HomeNewsCard';
+import MobileNewsList from './components/MobileNewsList';
 import HomeUpdateTicker from './components/HomeUpdateTicker';
 import useLearningUpdates from './hooks/useLearningUpdates';
 import { buildLearningTicker, learningUpdateDestination } from './utils/learningUpdates';
@@ -7411,17 +7412,7 @@ ${lessonBlocks}`;
                 </div>
 
                 {mobileHomepageNews.length > 0 ? (
-                  <div className="home-mobile-news-split">
-                    <HomeNewsCard key={mobileHomepageNews[0].id} news={mobileHomepageNews[0]} compact
-                      image={getSharpNewsImageSrc(extractNewsImageSrc(mobileHomepageNews[0].content))}
-                      fallback={getNewsImageFallbackSrc(mobileHomepageNews[0].content)} fileId={extractNewsDriveFileId(mobileHomepageNews[0].content)} onOpen={setViewingNews} />
-                    <div className="home-mobile-news-list">
-                      {mobileHomepageNews.slice(1).map(newsItem => <button key={newsItem.id} type="button" onClick={() => setViewingNews(newsItem)}>
-                        <h4>{newsItem.title}</h4><p>{getNewsPlainText(newsItem.content).slice(0, 180)}</p>
-                        <span>{new Date(newsItem.createdAt).toLocaleDateString('vi-VN')}</span>
-                      </button>)}
-                    </div>
-                  </div>
+                  <MobileNewsList items={mobileHomepageNews} onOpen={setViewingNews} />
                 ) : <p className="p-4 text-sm text-slate-500">Đang cập nhật tin tức...</p>}
               </div>
 
@@ -7800,6 +7791,7 @@ ${lessonBlocks}`;
 
   const teacherQuickScorePanel = showLearningResultsWorkspace && quickScoreLockedContext && <Suspense fallback={<p className="p-4 text-blue-700">Đang mở bảng điểm...</p>}><TeacherQuickScorePanel scope={{ popup: showTeacherScores, classLabel: teacherClassLabel(teacherProfile, quickScoreGrade), quickScoreGrade, quickScoreLockedContext, selectedSubject, canWriteCurrentSchoolYear, activeSchoolYear, user }} selection={{ quickVisibleSemesters, setQuickVisibleSemesters, quickSelectedSubjects, quickSelectedSemesters, quickSubjectColSpanBySubject }} draft={{ quickScorebookSavingKey, quickScorebookDocId, quickScorebookEdits, setQuickScorebookEdits, quickInputDrafts, setQuickInputDrafts, quickScorebookLoaded }} actions={{ setShowLearningResultsWorkspace: value => { setShowLearningResultsWorkspace(value); if (!value) setShowTeacherScores(false); }, setQuickScoreLockedContext, showNotification, setActiveQuickScoreRowKey, toggleQuickPriorityStudent, handleQuickScoreInputKeyDown, saveQuickScoreValue }} table={{ quickScoreStudents, getQuickScoreColumnWidth, getQuickScoreStudentKey, quickPriorityStudentIds, activeQuickScoreRowKey, quickVisibleScoreColumnsBySubject, getQuickScoreKey, getQuickScoreInputValue, getQuickSemesterTermAverage, getQuickSemesterScoreResult, formatScoreDisplayValue, getQuickScoreTextClass, quickQuizScoreKeySet, parseScoreNumber, getQuickAcademicResult }} /></Suspense>;
   const compactTeacherLesson = Boolean(loginRole === 'teacher' && selectedLesson && !adminTeaching.active && !hideMainHeaderForWorkspace);
+  const mobileTeacher = narrowScreen && loginRole === 'teacher' && !adminTeaching.active;
   const learningNavigation = (
     <div className={`student-learning-navigation flex flex-nowrap items-center text-[clamp(9px,2.35vw,11px)] sm:text-xs font-black text-slate-400 ${selectedLesson && role === 'teacher' ? 'mb-2' : 'mb-2 sm:mb-8'} bg-white/80 backdrop-blur-md px-2.5 sm:px-6 py-2 sm:py-4 rounded-xl sm:rounded-2xl shadow-sm border border-white/60 uppercase tracking-wide sm:tracking-widest shrink-0 overflow-hidden`}>
             <button onClick={resetNavigationWithClean} aria-label="Trang chủ" className="hover:text-blue-600 flex items-center transition-colors whitespace-nowrap flex-shrink-0" title="Trang chủ"><Home className="w-3.5 h-3.5 sm:w-4 sm:h-4 mr-0 sm:mr-2" /> <span className="hidden sm:inline">{'Trang ch\u1ee7'}</span></button>
@@ -7839,7 +7831,7 @@ ${lessonBlocks}`;
   );
 
   return (
-    <div className={`min-h-screen flex flex-col text-slate-800 font-sans relative ${compactTeacherLesson ? 'teacher-lesson-focus ' : ''}${selectedLesson ? 'lesson-reading ' : ''}${role === 'student' ? `student-portal${selectedLesson ? ' student-reading' : ''}` : role === 'teacher' ? 'teacher-portal' : ''}`} style={focusBackgroundStyle}><MainBackground />
+    <div className={`min-h-screen flex flex-col text-slate-800 font-sans relative ${mobileTeacher ? 'teacher-mobile ' : ''}${compactTeacherLesson ? 'teacher-lesson-focus ' : ''}${selectedLesson ? 'lesson-reading ' : ''}${role === 'student' ? `student-portal${selectedLesson ? ' student-reading' : ''}` : role === 'teacher' ? 'teacher-portal' : ''}`} style={focusBackgroundStyle}><MainBackground />
       {restoringLogin && <p role="status" className="fixed bottom-4 left-1/2 z-[170] -translate-x-1/2 rounded-lg bg-white px-4 py-2 text-sm text-blue-800 shadow-lg">Đang kiểm tra phiên đăng nhập…</p>}
       {notificationToast}
       {role === 'teacher' && showTeacherScores && teacherQuickScorePanel && createPortal(<div className="teacher-score-popup" role="dialog" aria-modal="true" aria-label="Điểm số" onKeyDown={event => { if (event.key === 'Escape') { setShowTeacherScores(false); setShowLearningResultsWorkspace(false); setQuickScoreLockedContext(null); } }}>{teacherQuickScorePanel}</div>, document.body)}
@@ -8174,8 +8166,8 @@ ${lessonBlocks}`;
           </div>
           )}
 
-          {compactTeacherLesson && learningNavigation}
-          <TeacherHeaderActions onHome={resetNavigationWithClean} compact={compactTeacherLesson} teacherName={teacherProfile?.fullName || teacherProfile?.username || 'Giáo viên'} primaryActions={<>{role === 'teacher' && <TeacherQuizManager key={`quizzes-${teacherProfile?.teacherId || teacherProfile?.id || 'teacher'}/${activeSchoolYear}`}
+          {(compactTeacherLesson || mobileTeacher) && learningNavigation}
+          <TeacherHeaderActions onHome={resetNavigationWithClean} onBack={mobileTeacher && selectedLesson ? () => setSelectedLesson(null) : undefined} onLogout={mobileTeacher ? handleLogout : undefined} mobile={mobileTeacher} compact={compactTeacherLesson || mobileTeacher} teacherName={teacherProfile?.fullName || teacherProfile?.username || 'Giáo viên'} primaryActions={<>{role === 'teacher' && <TeacherQuizManager key={`quizzes-${teacherProfile?.teacherId || teacherProfile?.id || 'teacher'}/${activeSchoolYear}`}
               onAiGrade={runAiGradingForSubmission} canAiGrade={canWriteCurrentSchoolYear}
               currentContext={{ grade: selectedGrade, subject: selectedSubject, lesson: selectedLesson }}
               renderEssayReview={(submission, _student, assignment, { inline = false } = {}) => { const Review = inline ? EssayGradingPanel : TeacherEssayReview; return <Review submission={submission} draft={submissionGradeDrafts[submission.id]} busy={reviewPendingId === submission.id || gradingSubmissionId === submission.id} canWrite={canWriteCurrentSchoolYear} onChange={(key, value) => updateSubmissionGradeDraft(submission.id, key, value)} onSave={() => saveTeacherGradeForSubmission(submission)} onSend={() => saveTeacherGradeForSubmission(submission, { send: true })} onAi={() => runAiGradingForSubmission(submission)} onAiStatus={signal => requestEssayWork('status', { id:submission.id }, { signal })} onExternalAi={provider => openEssayExternalAi(submission, assignment, provider)} />; }}
@@ -8187,7 +8179,7 @@ ${lessonBlocks}`;
                 if (action === 'compose') { setQuizTeacherTab('compose'); setShowQuizResults(false); setShowQuizWorkWorkspace(false); setShowQuizComposeWorkspace(true); }
                 else { setShowQuizComposeWorkspace(false); openScoreTeacherTab(); setShowHandwrittenSubmissions(false); }
                 return true;
-              }} />}
+              }} />}</>} primaryTools={<>
             {role === 'teacher' && <TeacherSplitScreen profile={teacherProfile} subscriptionScope={{ user: { uid: user?.uid }, scoped: SCOPED_AUTH_ENABLED, identity: scopedIdentity, isAdmin: adminTeaching.active }} schoolYear={activeSchoolYear} currentContext={{ grade: selectedGrade, subject: selectedSubject, lesson: selectedLesson }} />}
             {role === 'teacher' && <button type="button" className="teacher-scores-trigger" title="Điểm số của lớp và môn đang chọn" disabled={!selectedGrade || !selectedSubject}
               onClick={() => {
@@ -8241,7 +8233,7 @@ ${lessonBlocks}`;
               </>
             ) : null}
             <PwaInstallButton compact />
-            <button onClick={handleLogout} className="text-[10px] sm:text-xs font-black text-slate-400 hover:text-rose-500 transition-colors uppercase tracking-widest">Thoát</button>
+            {!mobileTeacher && <button onClick={handleLogout} className="text-[10px] sm:text-xs font-black text-slate-400 hover:text-rose-500 transition-colors uppercase tracking-widest">Thoát</button>}
           </TeacherHeaderActions>
         </div>
       </header>}
@@ -8314,7 +8306,7 @@ ${lessonBlocks}`;
       
       <main className="learning-main max-w-6xl mx-auto px-4 py-4 sm:py-8 flex-1 w-full relative z-10 flex flex-col">
         {role === 'student' && loginRole !== 'teacher' && <div className="student-mobile-updates mb-2 sm:hidden"><HomeUpdateTicker items={combinedFeedSorted} onOpen={openHomepageFeedItem} grade={activeStudentGrade} error={learningUpdates.error} /></div>}
-        {!compactTeacherLesson && learningNavigation}
+        {!compactTeacherLesson && !mobileTeacher && learningNavigation}
         
         {role && !selectedLesson && !selectedSubject && (
            <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 flex-1 flex flex-col">

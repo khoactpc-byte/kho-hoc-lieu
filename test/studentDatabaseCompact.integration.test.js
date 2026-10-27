@@ -580,6 +580,21 @@ test('compact database loads images on demand, opens the matching profile and pr
     const mobileList = () => body.querySelector('.student-mobile-list');
     assert.equal(body.querySelector('[aria-label="Database học sinh"]'), null);
     assert.equal(mobileList().querySelectorAll('li').length, 3);
+    assert.equal(body.querySelector('[aria-label="Tìm nhanh học sinh"]'), null, 'mobile filters start collapsed');
+    await click(namedButton('Tìm và lọc học sinh'));
+    const selectMobile = async (label, value) => act(async () => {
+      const select = body.querySelector(`[aria-label="${label}"]`); select.value = value;
+      select.dispatchEvent(new windowObject.Event('change', { bubbles: true }));
+    });
+    await selectMobile('Lọc khối học sinh', '6');
+    assert.equal(mobileList().querySelectorAll('li').length, 2);
+    await selectMobile('Lọc lớp học sinh', '6B');
+    assert.equal(mobileList().querySelectorAll('li').length, 1);
+    await selectMobile('Lọc khối học sinh', '7');
+    assert.equal(body.querySelector('[aria-label="Lọc lớp học sinh"]').value, '', 'a new grade clears an incompatible class');
+    assert.match(mobileList().textContent, /Trần Văn Chi/);
+    await selectMobile('Lọc khối học sinh', '');
+    assert.equal(mobileList().querySelectorAll('li').length, 3);
     const quickSearch = body.querySelector('[aria-label="Tìm nhanh học sinh"]');
     await act(async () => {
       Object.getOwnPropertyDescriptor(windowObject.HTMLInputElement.prototype, 'value').set.call(quickSearch, 'le thi binh');
@@ -587,6 +602,10 @@ test('compact database loads images on demand, opens the matching profile and pr
     });
     assert.equal(mobileList().querySelectorAll('li').length, 1);
     assert.match(mobileList().textContent, /Lê Thị Bình/);
+    await click(namedButton('Tìm và lọc học sinh'));
+    assert.equal(body.querySelector('[aria-label="Tìm nhanh học sinh"]'), null);
+    assert.equal(mobileList().querySelectorAll('li').length, 1, 'collapsing search retains the current results');
+    await click(namedButton('Tìm và lọc học sinh'));
     await click(body.querySelector('[aria-label="Chọn Lê Thị Bình"]'));
     await click(namedButton('Mở hồ sơ Lê Thị Bình'));
     assert.match(openedProfile().textContent, /Lê Thị Bình/);

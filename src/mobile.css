@@ -1,6 +1,15 @@
 /* Mobile layout is explicit; desktop worksheets keep their existing controls. */
 .student-mobile-search,.student-mobile-tools-toggle,.student-view-options-trigger { display:none; }
 .student-view-options,.student-view-options-panel { display:contents; }
+.student-mobile-filter-toggle,.teacher-mobile-navigation,.teacher-mobile-logout,.teacher-mobile-menu-label,.teacher-missing-mobile-list { display:none; }
+.home-mobile-headlines { margin:0; padding:0; list-style:none; }
+.home-mobile-headlines li+li { border-top:1px solid #dbeafe; }
+.home-mobile-headlines button { display:flex; align-items:center; justify-content:space-between; gap:12px; width:100%; padding:12px 14px; text-align:left; background:#ffffffb3; }
+.home-mobile-headlines button>span { min-width:0; }
+.home-mobile-headlines strong { display:block; font-size:14px; font-weight:600; line-height:1.5; color:#172554; overflow-wrap:anywhere; }
+.home-mobile-headlines strong svg { display:inline; margin-right:5px; }
+.home-mobile-headlines time { display:block; font-size:11px; color:#64748b; margin-top:3px; }
+.home-mobile-headlines button>svg { flex-shrink:0; color:#64748b; }
 
 @media(max-width:767px) {
   .admin-header-top { gap:4px; padding:2px 6px; height:40px; min-width:0; }
@@ -117,3 +126,88 @@
   .student-profile-panel .student-profile-header { padding:8px; gap:6px; }
   .student-profile-panel .student-profile-header h2 { font-size:15px; }
 }
+
+/* Phone layouts use the available width; keep pinch zoom available for readers. */
+@media(max-width:767px) {
+  html { width:100%; -webkit-text-size-adjust:100%; text-size-adjust:100%; }
+  body,#root { width:100%; min-width:0; max-width:100%; }
+  body { overflow-x:hidden; }
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]),textarea,select { font-size:16px !important; }
+  .home-public-heading { margin-top:8px; margin-bottom:8px; }
+  .home-mobile-dashboard { flex:none; min-height:0; height:auto; }
+  .home-panels-wrap .home-mobile-headlines { max-height:none; }
+  .student-database-actions>.student-mobile-filter-toggle { display:inline-flex; flex:1 1 auto; width:auto; min-width:110px; gap:6px; font-size:13px; padding:6px 10px; justify-content:flex-start; border:1px solid #cbd5e1; background:#fff; color:#334155; }
+  .student-database-actions .student-mobile-filter-toggle b { color:#2563eb; margin-left:auto; }
+  .student-database-actions[data-mobile-filters="false"]>[title="Tìm kiếm nâng cao"] { display:none; }
+  .student-database-actions>.student-mobile-search { order:3; flex:1 0 100%; width:100%; }
+  .student-database-filters[data-mobile-open="false"] { display:none; }
+  .student-database-filter-field select { min-width:0; width:100%; height:36px; padding:4px; border:1px solid #cbd5e1; border-radius:6px; background:#fff; color:#334155; }
+  .student-mobile-portrait { display:grid; place-items:center; flex:0 0 42px; width:42px; height:50px; padding:0; border:1px solid #e2e8f0; background:#f8fafc; border-radius:6px; overflow:hidden; }
+  .student-mobile-portrait img { height:100%; width:100%; object-fit:cover; }
+  .student-portrait-placeholder { display:grid; height:100%; width:100%; place-items:center; color:#94a3b8; }
+  .student-mobile-open { padding:10px 8px; min-height:68px; }
+  .teacher-mobile .student-portal-header { position:sticky; top:0; z-index:45; }
+  .teacher-mobile .student-portal-header>.learning-header-row { display:flex; flex-wrap:wrap; width:100%; max-width:100%; height:auto; min-height:44px; gap:5px; padding:5px 6px; }
+  .teacher-mobile .learning-header-row>.teacher-header-identity,.teacher-mobile .learning-header-row>.student-header-news { display:none; }
+  .teacher-mobile .learning-header-row>.teacher-responsive-actions { display:flex; order:0; flex:1 0 100%; min-width:0; align-items:center; justify-content:space-between; gap:4px; position:relative; margin:0; }
+  .teacher-mobile-navigation { display:flex; gap:4px; align-items:center; }
+  .teacher-mobile-navigation button,.teacher-mobile .teacher-mobile-logout { display:inline-flex; align-items:center; justify-content:center; gap:3px; height:34px; padding:5px 7px; border:1px solid #cbd5e1; border-radius:6px; background:white; color:#334155; font-size:12px; white-space:nowrap; }
+  .teacher-mobile .teacher-mobile-logout { color:#be123c; padding:5px; }
+  .teacher-mobile .teacher-header-primary-actions { min-width:0; gap:0; }
+  .teacher-mobile .teacher-header-primary-actions>.teacher-quiz-manager-trigger { height:34px; min-height:34px; padding:5px 7px; position:relative; }
+  .teacher-mobile .teacher-header-primary-actions>.teacher-quiz-manager-trigger>span { font-size:0; }
+  .teacher-mobile .teacher-header-primary-actions>.teacher-quiz-manager-trigger>span::after { content:'Kiểm tra'; font-size:12px; }
+  .teacher-mobile .teacher-header-primary-actions>.teacher-quiz-manager-trigger>svg { display:none; }
+  .teacher-mobile .teacher-header-primary-actions .teacher-submission-badge { position:absolute; right:-3px; top:-5px; }
+  .teacher-mobile .teacher-header-menu-toggle { display:flex; align-items:center; gap:3px; justify-content:center; flex-shrink:0; width:auto; min-width:32px; height:34px; padding:5px; border:1px solid #cbd5e1; border-radius:6px; background:#fff; }
+  .teacher-mobile .teacher-header-action-items { display:none; position:fixed; top:46px; left:8px; right:8px; width:auto; max-height:calc(100dvh - 64px); overflow-y:auto; padding:8px; z-index:1250; background:white; border:1px solid #cbd5e1; border-radius:10px; box-shadow:0 8px 30px #0f172a33; }
+  .teacher-mobile .teacher-header-action-items[data-open="true"] { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px; align-items:stretch; }
+  .teacher-mobile .teacher-header-action-items .teacher-menu-name { display:block; grid-column:1/-1; font-size:13px; }
+  .teacher-mobile .teacher-header-action-items>.teacher-mobile-home { display:none; }
+  .teacher-mobile .teacher-header-action-items>button,.teacher-mobile .teacher-header-action-items>label { display:flex; align-items:center; min-width:0; width:100%; min-height:40px; padding:6px; gap:5px; font-size:13px; white-space:normal; border-radius:6px; }
+  .teacher-mobile .teacher-header-action-items button span { display:inline; font-size:12px; }
+  .teacher-mobile .learning-header-row>.student-learning-navigation { display:flex; order:1; flex:1 0 100%; min-width:0; width:100%; margin:0; padding:3px; gap:6px; overflow:visible; border:0; border-radius:6px; }
+  .teacher-mobile .student-learning-navigation>svg,.teacher-mobile .student-learning-navigation>button:first-child { display:none; }
+  .teacher-mobile .student-learning-navigation>.teacher-class-navigation,.teacher-mobile .student-learning-navigation>.teacher-subject-select,.teacher-mobile .student-learning-navigation>.learning-week-navigation { display:flex; flex:1 1 0; min-width:0; max-width:none; width:auto; margin:0; }
+  .teacher-mobile .student-learning-navigation .teacher-class-navigation::before { display:none; }
+  .teacher-mobile .student-learning-navigation .teacher-class-navigation select,.teacher-mobile .student-learning-navigation .teacher-subject-select select,.teacher-mobile .student-learning-navigation .learning-week-navigation select { width:100%; min-width:0; max-width:100%; min-height:36px; height:36px; padding:4px 18px 4px 6px; color:#1238a8; background:#eff6ff; }
+  .teacher-mobile .student-learning-navigation .teacher-subject-select select { font-size:16px !important; }
+  .teacher-mobile .student-learning-navigation .learning-week-navigation { padding:0; border:0; }
+  .teacher-mobile .student-learning-navigation .learning-week-navigation button { display:none; }
+  .teacher-mobile .learning-header-row { overflow:visible; }
+  .teacher-class-picker-mobile { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:12px; padding:10px; background:#fff; border:1px solid #e2e8f0; border-radius:8px; font-size:14px; }
+  .teacher-class-picker-mobile select { flex:1; min-width:0; height:36px; border:1px solid #cbd5e1; border-radius:6px; padding:4px 8px; }
+  .teacher-mobile:has(.teacher-class-navigation) .teacher-class-picker-mobile { display:none; }
+  .teacher-mobile .learning-main { width:100%; min-width:0; max-width:100%; padding:6px; }
+  .teacher-mobile :is(.teacher-content,#teacher-editor-box,#teacher-lesson-preview) { min-width:0 !important; width:100% !important; max-width:100%; column-count:1 !important; font-size:16px !important; line-height:1.65; overflow-wrap:anywhere; }
+  .teacher-mobile .teacher-content :is(h1,h2,h3) { font-size:20px !important; line-height:1.45; }
+  .teacher-mobile .teacher-content :is(img,video,iframe) { max-width:100%; }
+  .teacher-mobile mjx-container[display="true"] { max-width:100%; overflow-x:auto; overflow-y:hidden; }
+  .teacher-mobile .lesson-layout-select { display:none; }
+  .teacher-mobile .lesson-toolbar-actions>button { min-width:34px; height:34px; padding:5px; }
+  .teacher-mobile .lesson-toolbar-actions>button>span { display:none; }
+  .teacher-mobile .teacher-editor-footer { padding:6px; }
+  .teacher-split-panes { grid-template-columns:minmax(0,1fr); grid-template-rows:repeat(2,minmax(0,1fr)); }
+  .teacher-split-header { align-items:center; padding:8px; gap:6px; }
+  .teacher-split-header h2 { font-size:15px; }
+  .teacher-split-header p { display:none; }
+  .teacher-split-header button { min-height:36px; }
+  .teacher-split-header .teacher-split-actions>button:first-child { display:none; }
+  .teacher-split-selectors { padding:5px; gap:4px; }
+  .teacher-quiz-tabs { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:4px; }
+  .teacher-quiz-tabs>button { width:100%; min-width:0; padding:8px 4px; font-size:12px; white-space:normal; }
+  .teacher-quiz-manager { width:100%; max-width:100%; }
+  .teacher-quiz-manager .teacher-quiz-filters { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px; }
+  .teacher-quiz-manager select,.teacher-quiz-manager input { min-width:0; max-width:100%; }
+  .teacher-week-missing .teacher-inbox-summary { flex-wrap:wrap; gap:6px; }
+  .teacher-week-missing .teacher-inbox-summary>div { display:flex; flex-wrap:wrap; gap:6px; }
+  .teacher-week-missing .teacher-inbox-summary button { min-height:36px; font-size:12px; }
+  .teacher-week-missing>.teacher-quiz-table-scroll { display:none; }
+  .teacher-missing-mobile-list { display:block; margin-top:10px; }
+  .teacher-missing-mobile-list li { display:flex; flex-direction:column; gap:3px; padding:10px; border:1px solid #e2e8f0; border-radius:8px; margin-bottom:7px; }
+  .teacher-missing-mobile-list strong { font-size:14px; }
+  .teacher-missing-mobile-list span { font-size:12px; color:#64748b; }
+  .teacher-missing-mobile-list b { font-size:12px; color:#be123c; }
+  .teacher-missing-mobile-list p { font-size:12px; line-height:1.6; }
+}
+@media(min-width:360px) and (max-width:767px) { .teacher-mobile-menu-label { display:inline; font-size:11px; } }
