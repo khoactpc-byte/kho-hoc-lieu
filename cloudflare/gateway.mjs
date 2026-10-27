@@ -2,7 +2,7 @@
 // on the existing backend. Never place credentials or student records in this file.
 const UPSTREAM = 'https://phocaptmt.netlify.app';
 const LIMITS = Object.freeze({ identity: 12000, session: 12000, 'remember-login': 12000, quiz: 800000, data: 800000,
-  system: 800000, 'lesson-sync': 1800000, 'essay-work': 12000 });
+  system: 800000, 'lesson-sync': 1800000, 'essay-work': 12000, 'essay-file': 12000 });
 const json = (status, data, headers = {}) => new Response(JSON.stringify(data), { status,
   headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store',
     'X-Content-Type-Options': 'nosniff', ...headers } });

@@ -59,6 +59,15 @@ test('remember login forwards only same-origin bounded JSON, keeping the session
   assert.equal((await worker.fetch(req('remember-login?rememberToken=secret'), {})).status, 404);
   assert.equal(calls.length, 1);
 });
+
+test('file preview forwards the bounded file API without changing authentication or caching private files',async()=>{
+  const calls=[];const worker=createGateway(async(url,options)=>{calls.push({url,options});return Response.json({error:'Cần đăng nhập'},{status:401});});
+  const response=await worker.fetch(req('essay-file',{body:JSON.stringify({action:'file',staffSessionToken:'fixture'})}),{});
+  assert.equal(response.status,401);assert.equal(response.headers.get('cache-control'),'no-store');assert.equal(calls[0].url,'https://phocaptmt.netlify.app/.netlify/functions/essay-file');
+  assert.equal((await worker.fetch(req('essay-file',{body:'x'.repeat(12001)}),{})).status,413);
+  assert.equal((await worker.fetch(req('essay-file',{headers:{origin:'https://other.test'}}),{})).status,403);
+  assert.equal(calls.length,1);
+});
 test('redirects, non-JSON, network failure and timeout fail closed without replay or secret error text', async () => {
   for (const scenario of ['redirect', 'html', 'error', 'timeout']) {
     let count = 0;

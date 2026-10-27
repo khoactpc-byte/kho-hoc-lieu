@@ -7,7 +7,7 @@ export async function requestEssayWork(action, payload, { fetchImpl = fetch, ses
   if (signal?.aborted) { clearTimeout(timer); throw new DOMException('Đã hủy xem bài.', 'AbortError'); }
   signal?.addEventListener('abort', abort, { once: true });
   try {
-    const response = await fetchImpl('/.netlify/functions/essay-work', { method: 'POST', cache: 'no-store', credentials: 'same-origin', keepalive: true, headers: { 'Content-Type': 'application/json' },
+    const response = await fetchImpl(`/.netlify/functions/${action === 'file' ? 'essay-file' : 'essay-work'}`, { method: 'POST', cache: 'no-store', credentials: 'same-origin', keepalive: true, headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ...payload, action, adminSessionToken: sessionStorage.getItem(ADMIN_SERVER_SESSION_STORAGE_KEY) || '', staffSessionToken: sessionStorage.getItem(STAFF_SERVER_SESSION_STORAGE_KEY) || '', studentSessionToken: sessionStorage.getItem('khl-student-server-session-v1') || '' }), signal: controller.signal });
     let result;
     try { result = await response.json(); } catch (error) {

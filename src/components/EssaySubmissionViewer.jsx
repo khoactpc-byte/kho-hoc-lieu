@@ -36,7 +36,7 @@ function PdfPage({ pdf, page, onReady, onError, onDimensions }) {
 }
 
 export default function EssaySubmissionViewer({ submission, value, onChange, disabled = false, loadFile = loadEssaySubmissionFile, toolbarTarget, toolsOpen = true, reviewStamp }) {
-  const [source,setSource]=useState(null),[error,setError]=useState(''),[progress,setProgress]=useState(0),[attempt,setAttempt]=useState(0);
+  const [source,setSource]=useState(null),[error,setError]=useState(''),[notice,setNotice]=useState(''),[progress,setProgress]=useState(0),[attempt,setAttempt]=useState(0);
   const [page,setPage]=useState(1),[zoom,setZoom]=useState('fit'),[ready,setReady]=useState(false);
   const scrollRef=useRef(null),[viewport,setViewport]=useState({width:0,height:0});
   const [rotations,setRotations]=useState({}),[dimensions,setDimensions]=useState({width:1,height:1});
@@ -58,8 +58,8 @@ export default function EssaySubmissionViewer({ submission, value, onChange, dis
   },[toolbarTarget,toolsOpen]);
   useEffect(()=>{
     const controller=new AbortController(); let objectUrl,loadingTask,active=true;
-    setSource(null);setError('');setProgress(0);setReady(false);setPage(1);setRotations({});setDimensions({width:1,height:1});setCrops({});cropAnchor.current=null;setCropping(false);setCropSelection(null);
-    loadFile({id:submission.id,fileId:submission.fileId,submittedAt:submission.submittedAt},{signal:controller.signal,onProgress:n=>{if(active)setProgress(n);}}).then(async blob=>{
+    setSource(null);setError('');setNotice('');setProgress(0);setReady(false);setPage(1);setRotations({});setDimensions({width:1,height:1});setCrops({});cropAnchor.current=null;setCropping(false);setCropSelection(null);
+    loadFile({id:submission.id,fileId:submission.fileId,submittedAt:submission.submittedAt,schoolCode:submission.schoolCode,schoolYear:submission.schoolYear,grade:submission.grade,subject:submission.subject},{signal:controller.signal,onProgress:n=>{if(active)setProgress(n);},onNotice:message=>{if(active)setNotice(message);}}).then(async blob=>{
       if(!active)return;
       if(blob.type==='application/pdf') {
         const [{getDocument,GlobalWorkerOptions},{default:workerSrc}]=await Promise.all([import('pdfjs-dist'),import('pdfjs-dist/build/pdf.worker.min.mjs?url')]);
@@ -74,7 +74,7 @@ export default function EssaySubmissionViewer({ submission, value, onChange, dis
       } else { objectUrl=URL.createObjectURL(blob);setSource({url:objectUrl,count:1}); }
     }).catch(e=>{if(active && e.name!=='AbortError')setError(e.message || 'Chưa tải được bài làm.');});
     return ()=>{active=false;controller.abort();if(objectUrl)URL.revokeObjectURL(objectUrl);loadingTask?.destroy();};
-  },[submission.id,submission.fileId,submission.submittedAt,attempt,loadFile]); // File identity, not incoming grade edits, controls reloading.
+  },[submission.id,submission.fileId,submission.submittedAt,submission.schoolCode,submission.schoolYear,submission.grade,submission.subject,attempt,loadFile]); // File identity, not incoming grade edits, controls reloading.
   useEffect(()=>{
     const container=scrollRef.current;if(!container)return;
     const measure=()=>{const style=window.getComputedStyle(container);setViewport({width:container.clientWidth-parseFloat(style.paddingLeft || 0)-parseFloat(style.paddingRight || 0),height:container.clientHeight-parseFloat(style.paddingTop || 0)-parseFloat(style.paddingBottom || 0)});};
@@ -143,6 +143,7 @@ export default function EssaySubmissionViewer({ submission, value, onChange, dis
     </div>
     {toolbarTarget ? createPortal(controls,toolbarTarget) : controls}
     {markError && <p role="alert">{markError}</p>}
+    {notice && !error && <p role="status" className="teacher-inbox-note">{notice}</p>}
     {value && (value.fileId!==submission.fileId || value.submittedAt!==(Number(submission.submittedAt)||0)) && <p role="alert">Tệp đã thay đổi. Nét chấm của tệp trước chưa được áp dụng lên bài này.</p>}
     {error ? <div className="essay-preview-error" role="alert"><p>{error}</p><button type="button" onClick={()=>setAttempt(n=>n+1)}>Thử tải lại bài</button>{/^https:\/\//i.test(submission.fileUrl || '') && <a href={submission.fileUrl} target="_blank" rel="noopener noreferrer">Mở tệp gốc</a>}</div>
       : !source ? <p role="status">Đang tải bài làm… {progress>0?`${progress}%`:''}</p>
