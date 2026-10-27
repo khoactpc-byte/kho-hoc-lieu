@@ -134,7 +134,7 @@
   body { overflow-x:hidden; }
   input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]),textarea,select { font-size:16px !important; }
   .home-public-heading { margin-top:8px; margin-bottom:8px; }
-  .home-mobile-dashboard { flex:none; min-height:0; height:auto; }
+  .home-mobile-dashboard { flex:none !important; min-height:0 !important; height:auto !important; max-height:none !important; }
   .home-panels-wrap .home-mobile-headlines { max-height:none; }
   .student-database-actions>.student-mobile-filter-toggle { display:inline-flex; flex:1 1 auto; width:auto; min-width:110px; gap:6px; font-size:13px; padding:6px 10px; justify-content:flex-start; border:1px solid #cbd5e1; background:#fff; color:#334155; }
   .student-database-actions .student-mobile-filter-toggle b { color:#2563eb; margin-left:auto; }
