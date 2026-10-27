@@ -55,12 +55,13 @@ export function useWorkspaceCollections(scope, setters, screens, onError) {
   const notesReady = useCollection('lesson_notes', scope, setters.notes, content, onError);
   useCollection('lesson_quizzes', scope, setters.quizzes, content, onError);
   const quizReady = useCollection('quiz_results', scope, setters.quizResults, results, onError);
-  const quickReady = useCollection('quick_quiz_results', scope, setters.quickResults, results, onError);
-  const progressReady = useCollection('lesson_progress', scope, setters.progress, screens.learning || screens.review || !admin && content, onError);
+  const quickReady = useCollection('quick_quiz_results', scope, setters.quickResults, results || screens.weekProgress, onError);
+  const progressReady = useCollection('lesson_progress', scope, setters.progress, screens.learning || screens.review || screens.weekProgress || !admin && content, onError);
   const handwrittenReady = useCollection('handwritten_submissions', scope, setters.handwritten, results, onError);
-  useCollection('students', scope, setters.students, true, onError);
+  const studentsReady = useCollection('students', scope, setters.students, true, onError);
   useCollection('admission_applications', scope, setters.admissions, admin, onError);
   useCollection('class_attendance', scope, setters.attendance, screens.attendance || screens.scorebook || screens.learning, onError);
   useCollection('student_profile_requests', scope, setters.profileRequests, true, onError);
-  return { learningReady: materialsReady && notesReady && quizReady && quickReady && progressReady && handwrittenReady };
+  return { learningReady: materialsReady && notesReady && quizReady && quickReady && progressReady && handwrittenReady,
+    weekProgressReady: studentsReady && materialsReady && quickReady && progressReady };
 }

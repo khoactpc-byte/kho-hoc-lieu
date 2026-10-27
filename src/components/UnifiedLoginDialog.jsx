@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Eye, EyeOff, Lock, X } from 'lucide-react';
 import LoginSubmitButton from './LoginSubmitButton';
 
-export default function UnifiedLoginDialog({ username, password, onUsernameChange, onPasswordChange, onSubmit, onClose, onRegister, pending, error }) {
+export default function UnifiedLoginDialog({ username, password, onUsernameChange, onPasswordChange, onSubmit, onClose, onRegister, pending, error, remember = true, onRememberChange }) {
   const [visible, setVisible] = useState(false);
   return <div className="fixed inset-0 z-[160] flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm">
     <section role="dialog" aria-modal="true" aria-labelledby="unified-login-title" className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-2xl">
@@ -13,15 +13,16 @@ export default function UnifiedLoginDialog({ username, password, onUsernameChang
       <p className="mb-4 text-sm text-slate-500">Dùng tài khoản đã được cấp.</p>
       <form onSubmit={event => { event.preventDefault(); onSubmit(); }} className="space-y-4" aria-busy={pending}>
         <label className="block text-sm font-medium text-slate-700">Tên đăng nhập
-          <input autoFocus required maxLength={40} autoComplete="username" autoCapitalize="none" spellCheck={false} value={username} onChange={event => onUsernameChange(event.target.value)} disabled={pending} className="mt-1 w-full rounded-lg border border-slate-300 p-3" />
+          <input name="username" autoFocus required maxLength={40} autoComplete="username" autoCapitalize="none" spellCheck={false} value={username} onChange={event => onUsernameChange(event.target.value)} disabled={pending} className="mt-1 w-full rounded-lg border border-slate-300 p-3" />
         </label>
         <label className="block text-sm font-medium text-slate-700">Mật khẩu
-          <span className="relative mt-1 block"><input aria-label="Mật khẩu" required maxLength={256} autoComplete="current-password" type={visible ? 'text' : 'password'} value={password} onChange={event => onPasswordChange(event.target.value)} disabled={pending} className="w-full rounded-lg border border-slate-300 p-3 pr-12" />
+          <span className="relative mt-1 block"><input name="password" aria-label="Mật khẩu" required maxLength={256} autoComplete="current-password" type={visible ? 'text' : 'password'} value={password} onChange={event => onPasswordChange(event.target.value)} disabled={pending} className="w-full rounded-lg border border-slate-300 p-3 pr-12" />
             <button type="button" onClick={() => setVisible(!visible)} aria-label={visible ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'} className="absolute inset-y-0 right-0 px-3 text-slate-500">{visible ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}</button>
           </span>
         </label>
+        <div><label className="flex items-center gap-2 text-sm text-slate-700"><input type="checkbox" name="remember" checked={remember} onChange={event => onRememberChange?.(event.target.checked)} disabled={pending} />Nhớ đăng nhập trên thiết bị này</label><p className="mt-1 text-xs text-slate-500">Giữ đăng nhập tối đa 30 ngày. Bỏ chọn nếu dùng máy chung.</p></div>
         {error && <p role="alert" className="text-sm text-rose-600">{error}</p>}
-        <div className="flex"><LoginSubmitButton onClick={onSubmit} pending={pending} /></div>
+        <div className="flex"><LoginSubmitButton type="submit" pending={pending} /></div>
       </form>
       <p className="mt-4 text-xs text-slate-500">Quên tài khoản hoặc mật khẩu? Liên hệ giáo viên hoặc quản trị để được cấp lại.</p>
       <button type="button" onClick={onRegister} disabled={pending} className="mt-4 w-full rounded-lg border border-emerald-200 py-2.5 text-sm font-semibold text-emerald-700">Chưa có hồ sơ? Đăng ký mới</button>

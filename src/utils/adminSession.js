@@ -16,7 +16,8 @@ export const readStoredAdminSession = () => {
       ? Boolean(window.sessionStorage.getItem(STAFF_SERVER_SESSION_STORAGE_KEY))
       : Boolean(window.sessionStorage.getItem(ADMIN_SERVER_SESSION_STORAGE_KEY));
     if (!hasRequiredServerSession) {
-      window.localStorage.removeItem(ADMIN_SESSION_STORAGE_KEY);
+      // A new tab has independent sessionStorage. Do not log out another tab
+      // by deleting its shared metadata while this tab restores its own login.
       return null;
     }
     return session;

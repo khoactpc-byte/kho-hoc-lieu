@@ -1,4 +1,4 @@
-import { browserSessionPersistence, setPersistence, signInAnonymously, signInWithCustomToken, signOut } from 'firebase/auth';
+import { browserLocalPersistence, browserSessionPersistence, setPersistence, signInAnonymously, signInWithCustomToken, signOut } from 'firebase/auth';
 import { auth } from '../config/firebase';
 export const SCOPED_AUTH_ENABLED = import.meta.env?.VITE_SCOPED_AUTH_ENABLED === 'true';
 export const STUDENT_SESSION_KEY = 'khl-student-server-session-v1';
@@ -29,7 +29,7 @@ export function resetScopedIdentity() {
   });
 }
 
-export async function exchangeScopedIdentity(payload, { signal, timeoutMs = 25000 } = {}) {
+export async function exchangeScopedIdentity(payload, { signal, timeoutMs = 25000, remember = false } = {}) {
   const requestRevision = ++revision;
   pendingRequest?.abort();
   const controller = new AbortController();
@@ -46,12 +46,12 @@ export async function exchangeScopedIdentity(payload, { signal, timeoutMs = 2500
       headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), signal: controller.signal });
     const data = await response.json();
     if (!response.ok || !data.firebaseToken) throw new Error(data.error || 'Không xác thực được phiên.');
-    if (payload.kind === 'student' && data.studentPasswordVerified !== true) throw new Error('Máy chủ chưa bật mật khẩu học sinh. Cần cập nhật máy chủ đăng nhập.');
+    if (['student', 'student-session'].includes(payload.kind) && data.studentPasswordVerified !== true) throw new Error('Máy chủ chưa bật mật khẩu học sinh. Cần cập nhật máy chủ đăng nhập.');
     await mutateAuth(async () => {
       requireCurrent();
       let signInStarted = false;
       try {
-        await setPersistence(auth, browserSessionPersistence);
+        await setPersistence(auth, remember ? browserLocalPersistence : browserSessionPersistence);
         requireCurrent();
         signInStarted = true;
         await signInWithCustomToken(auth, data.firebaseToken);

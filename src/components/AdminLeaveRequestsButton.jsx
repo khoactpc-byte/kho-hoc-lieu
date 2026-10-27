@@ -6,6 +6,7 @@ import { reviewLeaveRequests } from '../services/studentLeaveRequests';
 import { leaveDateLabel, leaveReviewDates, LEAVE_STATUS_LABELS } from '../utils/studentLeaveRequests';
 import { getStudentSchoolCode } from '../utils/schoolClasses';
 import { vietnamDateKey } from '../utils/vietnamDate';
+import { leaveRequestErrorMessage } from '../utils/firestoreErrors';
 
 export default function AdminLeaveRequestsButton({ schoolYear, students, anchorDate, reportMode, disabled = false }) {
   const [open, setOpen] = useState(false);
@@ -41,6 +42,8 @@ function AdminLeaveDialog({ schoolYear, anchorDate, reportMode, requests, inbox,
     try {
       const response = await reviewLeaveRequests(targets, decision, value => { if (mounted.current) setProgress(value); }, () => mounted.current);
       if (mounted.current) setResult({ ...response, decision });
+    } catch (error) {
+      if (mounted.current) setResult({ succeeded: [], failed: targets.map(record => ({ record, error })), decision });
     } finally { running.current = false; if (mounted.current) setBusy(false); }
   };
   const changeScope = callback => { if (!busy) { setResult(null); callback(); } };
@@ -63,7 +66,7 @@ function AdminLeaveDialog({ schoolYear, anchorDate, reportMode, requests, inbox,
         <p>Đồng ý đơn sẽ cập nhật Có phép (CP) cho đúng học sinh và ngày nghỉ, kể cả khi lớp trưởng đã ghi Không phép (KP).</p>
         {disabled && <p className="text-amber-700">Đang lưu điểm danh. Chờ lưu xong để duyệt đơn.</p>}
         {busy && <p role="status" className="inline-flex items-center gap-2 text-sky-700"><Loader2 className="h-4 w-4 animate-spin" />Đang xử lý {progress?.completed || 0}/{progress?.total || 0} đơn…</p>}
-        {result && <div role="status" className="space-y-1"><p className="text-emerald-700">Đã {result.decision === 'approved' ? 'đồng ý' : 'từ chối'} {result.succeeded.length} đơn.</p>{result.failed.length > 0 && <><p className="text-rose-700">Còn {result.failed.length} đơn chưa xử lý: {result.failed[0].error.message}</p><button type="button" disabled={busy} onClick={() => act(result.failed.map(item => item.record), result.decision)} className="rounded border border-rose-200 bg-rose-50 px-3 py-2 text-rose-700">Thử lại riêng {result.failed.length} đơn</button></>}</div>}
+        {result && <div role="status" className="space-y-1"><p className="text-emerald-700">Đã {result.decision === 'approved' ? 'đồng ý' : 'từ chối'} {result.succeeded.length} đơn.</p>{result.failed.length > 0 && <><p className="text-rose-700">Còn {result.failed.length} đơn chưa xử lý: {leaveRequestErrorMessage(result.failed[0].error)}</p><button type="button" disabled={busy} onClick={() => act(result.failed.map(item => item.record), result.decision)} className="rounded border border-rose-200 bg-rose-50 px-3 py-2 text-rose-700">Thử lại riêng {result.failed.length} đơn</button></>}</div>}
       </div>
       <div className="min-h-0 flex-1 space-y-2 overflow-y-auto overscroll-contain p-3 pb-16">
         {inbox.status === 'loading' && <p role="status" className="p-3 text-sm text-slate-500">Đang tải đơn xin nghỉ…</p>}

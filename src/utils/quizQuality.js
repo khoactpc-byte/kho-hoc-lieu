@@ -32,6 +32,9 @@ export function formulaIssues(value = '', { allowTrailingEquality = false } = {}
     const part = match[0], width = part.startsWith('$$') || part.startsWith('\\') ? 2 : 1;
     const body = part.slice(width, -width).trim();
     if (!body) issues.push('Công thức rỗng.');
+    // MathJax accepts \/ as italic spacing, so a damaged command such as
+    // \/in silently renders as slash + letters instead of a relation symbol.
+    if (/\\\/(?:in|notin|leq?|geq?|neq?)\b/.test(body)) issues.push('Ký hiệu quan hệ bị viết sai lệnh LaTeX. Dùng ký hiệu ∈, ∉, ≤, ≥, ≠ hoặc lệnh LaTeX đúng.');
     let depth = 0;
     for (const brace of body.matchAll(/\\[\s\S]|[{}]/g)) {
       if (brace[0].startsWith('\\')) continue;

@@ -11,10 +11,14 @@ import { useQuickScorebook } from './hooks/useQuickScorebook';
 import { useQuickScoreActions } from './hooks/useQuickScoreActions';
 import { extractSchoolYearFromText, normalizeAdmissionSchoolYear } from './utils/schoolYearText';
 import { exchangeScopedIdentity, resetScopedIdentity, SCOPED_AUTH_ENABLED, STUDENT_SESSION_KEY } from './services/scopedIdentity';
+import { browserLoginLastCheckedAt, forgetBrowserLogin, rememberBrowserLogin, restoreBrowserLogin } from './services/browserLogin';
+import { loginPreference, readRememberedLogin, REMEMBERED_LOGIN_KEY } from './utils/loginMemory';
 import { saveLessonDraft } from './services/lessonDrafts';
 import { useLessonDelivery } from './hooks/useLessonDelivery';
 import LessonDeliveryPanel from './components/LessonDeliveryPanel';
 import TeacherHeaderActions from './components/TeacherHeaderActions';
+import PwaInstallButton from './components/PwaInstallButton';
+import TeacherSplitScreen from './components/TeacherSplitScreen';
 import { readSupabaseStudentLesson, SUPABASE_LESSONS_ENABLED } from './services/supabaseLessons';
 import { createLessonPdfImportService } from './services/lessonPdfImport';
 import { recordBelongsToStudent, findStudentAttendanceRecord, studentWorkKey } from './utils/studentRecords';
@@ -38,6 +42,7 @@ import { captureSystemSnapshot, restoreAtomicSnapshot } from './services/systemB
 import { completeBackupExport } from './services/serverSystemClient';
 import { observeTeachingAssignments, saveTeachingAssignments, saveSimpleTeachingAssignments } from './services/teachingAssignments';
 import { useTeacherNavigation } from './hooks/useTeacherNavigation';
+import useNarrowScreen from './hooks/useNarrowScreen';
 import useAdminTeaching from './hooks/useAdminTeaching';
 import AdminTeachingToolbar from './components/AdminTeachingToolbar';
 import { useDefaultLearningGrade } from './hooks/useDefaultLearningGrade';
@@ -49,8 +54,14 @@ import TeacherClassPicker from './components/TeacherClassPicker';
 import TeacherIdentity from './components/TeacherIdentity';
 import TeacherQuizManager from './components/TeacherQuizManager';
 import TeacherEssayReview from './components/TeacherEssayReview';
+import EssayGradingPanel from './components/EssayGradingPanel';
+import ReturnedEssayReview from './components/ReturnedEssayReview';
+import StudentEssayMessage from './components/StudentEssayMessage';
+import { sameEssayAnnotations } from './utils/essayAnnotations';
 import { requestEssayWork } from './services/essayWork';
-import { buildEssayGradingPrompt, essayReviewNumberText } from './utils/essayGrading';
+import { buildEssayGradingPrompt, essayReviewNumberText, essayReviewValues } from './utils/essayGrading';
+import {essayDraftStudentComment,studentEssayComment} from './utils/essayFeedback';
+import {essaySaveErrorMessage} from './utils/essayDelivery';
 import TeacherQuizWorkspace, { TeacherQuizPublishPanel } from './components/TeacherQuizWorkspace';
 import { sortTeachingSubjects, teacherClassLabel } from './utils/teacherPresentation';
 import { listDriveFiles } from './services/driveClient';
@@ -63,7 +74,8 @@ import QuizComposerToolbar from './components/QuizComposerToolbar';
 import { lessonReviewPrompt } from './utils/lessonReview';
 import { prepareAiLessonReview } from './utils/aiLessonReview';
 import { lessonReviewBatchPayload } from './utils/lessonReviewBatch';
-import { generateVerifiedLessonReview } from './services/verifiedLessonReview';
+import { generateQuickLessonReview, generateVerifiedLessonReview } from './services/verifiedLessonReview';
+import { validateLessonReviewMath } from './services/lessonReviewMath';
 import { QUIZ_FORMULA_PROMPT, aiCompletionIssue, renderedQuizMathIssue, quizQualityIssues } from './utils/quizQuality';
 import AiQuestionResult, { AiQuestionSaveBar } from './components/AiQuestionResult';
 import LessonReviewChips from './components/LessonReviewChips';
@@ -102,6 +114,8 @@ import UnifiedLoginDialog from './components/UnifiedLoginDialog';
 import StudentAccountManager from './components/StudentAccountManager';
 import { normalizeLoginUsername, isStudentUsername } from './utils/loginAccount';
 import LearningSubjectPanel from './components/LearningSubjectPanel';
+import LearningWeekList from './components/LearningWeekList';
+import { buildClassWeekProgress, studentWeekPercent } from './utils/classWeekProgress';
 import { 
   BookOpen, User, GraduationCap, ChevronRight, ChevronLeft,
   FileText, Link as LinkIcon, MonitorPlay, Plus, Trash2, Home, 
@@ -621,20 +635,21 @@ const syncRegistrationSchoolYearClasses = async (items = [], job, onProgress) =>
 };
 
 function App() {
+  const narrowScreen = useNarrowScreen();
   const [initialAdminSession] = useState(() => readStoredAdminSession());
   const [user, setUser] = useState(null);
   const [scopedIdentity, setScopedIdentity] = useState(null);
-  const [role, setRole] = useState(() => initialAdminSession ? 'admin' : null);
+  const [role, setRole] = useState(null);
   const [loginRole, setLoginRole] = useState(null); 
-  const [isAdmin, setIsAdmin] = useState(() => Boolean(initialAdminSession));
-  const [adminSessionToken, setAdminSessionToken] = useState(() => (
-    typeof window !== 'undefined' ? window.sessionStorage.getItem(ADMIN_SERVER_SESSION_STORAGE_KEY) || '' : ''
-  ));
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [adminSessionToken, setAdminSessionToken] = useState('');
+  const [restoringLogin, setRestoringLogin] = useState(true);
+  const [rememberLogin, setRememberLogin] = useState(() => loginPreference().remember);
   const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
   const [confirmModal, setConfirmModal] = useState({ show: false, message: '', onConfirm: null });
   const [modalMode, setModalMode] = useState('unified');
   const [passwordInput, setPasswordInput] = useState('');
-  const [teacherUsername, setTeacherUsername] = useState('');
+  const [teacherUsername, setTeacherUsername] = useState(() => loginPreference().username);
   const [signedInTeacherProfile, setTeacherProfile] = useState(null);
   const loginSequenceRef = useRef(0);
   const activeLoginRequestRef = useRef(null);
@@ -656,6 +671,7 @@ function App() {
   const [pcResponsibleByYear, setPcResponsibleByYear] = useState({});
   const [extraSchoolYears, setExtraSchoolYears] = useState([]);
   const [inputYearLocks, setInputYearLocks] = useState({});
+  const [transcriptFirstSchoolYear, setTranscriptFirstSchoolYear] = useState('2025-2026');
   const [transcriptStartDates, setTranscriptStartDates] = useState({});
   const [transcriptEndDates, setTranscriptEndDates] = useState({});
   const [transcriptGrade9EndDates, setTranscriptGrade9EndDates] = useState({});
@@ -911,6 +927,7 @@ function App() {
   const [aiContextContent, setAiContextContent] = useState('');
   const [aiPrompt, setAiPrompt] = useState(lessonReviewPrompt());
   const [aiQuestionTemplate, setAiQuestionTemplate] = useState('auto');
+  const [aiReviewMode, setAiReviewMode] = useState('quick');
   const [aiEssayCount, setAiEssayCount] = useState(0);
   const [removingReviewIds, setRemovingReviewIds] = useState([]);
   const removingReviewRef = useRef(new Set());
@@ -966,6 +983,7 @@ function App() {
   const adminTeaching = useAdminTeaching({ isAdmin, accessScope: adminAccessScope, sessionToken: adminSessionToken,
     uid: user?.uid, scoped: SCOPED_AUTH_ENABLED, identity: scopedIdentity, setRole, setLoginRole, resetWorkspace: resetTeachingWorkspace });
   const teacherProfile = adminTeaching.profile || signedInTeacherProfile;
+  useEffect(() => { setSubmissionGradeDrafts({}); }, [role, teacherProfile?.teacherId, teacherProfile?.id, teacherProfile?.username, activeSchoolYear]);
   const { allowed: canOpenAdminTeaching, open: openAdminTeaching } = adminTeaching;
   useEffect(() => {
     setAdminCheckGrade('all');
@@ -1474,7 +1492,7 @@ function App() {
     setIsLoggingIn(true);
     try {
       if (SCOPED_AUTH_ENABLED) {
-        const response = await exchangeScopedIdentity({ kind: 'student', accessCode: code, password: credentials.password || passwordInput }, { signal: controller.signal });
+        const response = await exchangeScopedIdentity({ kind: 'student', accessCode: code, password: credentials.password || passwordInput }, { signal: controller.signal, remember: rememberLogin });
         student = response.student;
       } else {
         const response = await postAppsScript({ action: 'createStudentSession', accessCode: code, password: credentials.password || passwordInput }, { signal: controller.signal });
@@ -1496,6 +1514,7 @@ function App() {
     if (request !== loginSequenceRef.current) return;
     setPasswordInput('');
     openStudentArea(student);
+    await rememberBrowserLogin({ remember: rememberLogin, username: code, signal: controller.signal, isCurrent: () => request === loginSequenceRef.current, notify: showNotification });
   };
 
   const applyStudentProfileImageFile = (key, file) => {
@@ -1637,6 +1656,8 @@ function App() {
   }, [textbookFiles]);
 
   const clearLoginIdentity = useCallback(async () => {
+    forgetBrowserLogin();
+    setRestoringLogin(false);
     loginAbortRef.current?.abort();
     loginAbortRef.current = null;
     loginSequenceRef.current += 1;
@@ -1720,9 +1741,33 @@ function App() {
   }, []);
 
   useEffect(() => {
+    const controller = new AbortController(), sequence = loginSequenceRef.current;
+    loginAbortRef.current = controller;
+    const current = () => !controller.signal.aborted && sequence === loginSequenceRef.current;
     const initAuth = async () => {
       try {
         await auth.authStateReady();
+        if (!current()) return;
+        if (!auth.currentUser) await signInAnonymously(auth);
+        const restored = await restoreBrowserLogin({ signal: controller.signal, isCurrent: current });
+        if (!current()) return;
+        if (restored) {
+          if (restored.claims) setScopedIdentity(restored.claims);
+          if (restored.role === 'student') {
+            setCurrentStudent(restored.student); setStudentName(restored.student.fullName || ''); setStudentQuizName(restored.student.fullName || '');
+            setSelectedGrade(String(restored.student.className || '').match(/^\d+/)?.[0] || String(restored.student.grade || ''));
+            setRole('student'); setLoginRole('student');
+          } else if (restored.role === 'teacher') {
+            setTeacherProfile(restored.teacherProfile); setSelectedGrade(String(restored.teacherProfile.grades?.[0] || ''));
+            setIsTextbookExpanded(false); setRole('teacher'); setLoginRole('teacher');
+          } else {
+            const scope = restored.role === 'thd' ? 'thd' : 'full', module = scope === 'thd' ? 'thd' : initialAdminSession?.scope === 'full' ? initialAdminSession.module : 'notice';
+            if (restored.adminSessionToken) setAdminSessionToken(restored.adminSessionToken);
+            writeStoredAdminSession(module, scope); setAdminAccessScope(scope); setAdminModule(module); setIsAdmin(true); setRole('admin');
+            if (scope === 'thd') { setAdminSettingsInitialPanel('thdTeachingAssignments'); setShowAdminSettingsWorkspace(true); }
+          }
+          return;
+        }
         if (SCOPED_AUTH_ENABLED && auth.currentUser && !auth.currentUser.isAnonymous) {
           const hasSession = [ADMIN_SERVER_SESSION_STORAGE_KEY, STAFF_SERVER_SESSION_STORAGE_KEY, STUDENT_SESSION_KEY].some(key => window.sessionStorage.getItem(key));
           if (hasSession) return;
@@ -1732,8 +1777,11 @@ function App() {
         if (typeof window !== 'undefined' && typeof window.__initial_auth_token !== 'undefined' && window.__initial_auth_token) {
           await signInWithCustomToken(auth, window.__initial_auth_token);
         } else { await signInAnonymously(auth); }
-      } catch {
-        setErrorMsg('Không đăng nhập được. Vui lòng tải lại trang.');
+      } catch (error) {
+        if (current() && error.name !== 'AbortError') showNotification(error.message || 'Chưa khôi phục được đăng nhập. Bạn có thể đăng nhập lại.', 'error');
+      } finally {
+        if (!controller.signal.aborted) setRestoringLogin(false);
+        if (loginAbortRef.current === controller) loginAbortRef.current = null;
       }
     };
     initAuth();
@@ -1745,8 +1793,8 @@ function App() {
         const identity = nextUser ? (await nextUser.getIdTokenResult()).claims : null;
         if (request === revision) setScopedIdentity(identity?.role ? identity : null);
       } catch { if (request === revision) setScopedIdentity(null); }
-    }); return () => { revision += 1; unsubAuth(); };
-  }, []);
+    }); return () => { controller.abort(); revision += 1; unsubAuth(); };
+  }, [initialAdminSession, showNotification]);
 
   useEffect(() => {
     if (!user) return;
@@ -1769,6 +1817,7 @@ function App() {
       if (data.pcResponsibleByYear && typeof data.pcResponsibleByYear === 'object') setPcResponsibleByYear(data.pcResponsibleByYear);
       if (Array.isArray(data.extraSchoolYears)) setExtraSchoolYears(data.extraSchoolYears);
       if (data.inputYearLocks && typeof data.inputYearLocks === 'object') setInputYearLocks(data.inputYearLocks);
+      setTranscriptFirstSchoolYear(data.transcriptFirstSchoolYear || '2025-2026');
       if (data.transcriptStartDates && typeof data.transcriptStartDates === 'object') setTranscriptStartDates(data.transcriptStartDates);
       if (data.transcriptEndDates && typeof data.transcriptEndDates === 'object') setTranscriptEndDates(data.transcriptEndDates);
       if (data.transcriptGrade9EndDates && typeof data.transcriptGrade9EndDates === 'object') setTranscriptGrade9EndDates(data.transcriptGrade9EndDates);
@@ -1798,8 +1847,41 @@ function App() {
     }, error => { setNewsList([]); showNotification('Chưa tải được bản tin: ' + error.message, 'error'); });
   }, [user, showNotification]);
 
-  useSessionLease(user, scopedIdentity, clearLoginIdentity, showNotification);
+  const restoreExpiredLogin = useCallback(async () => {
+    const sequence = loginSequenceRef.current;
+    if (readRememberedLogin()) {
+      try {
+        const restored = await restoreBrowserLogin({ isCurrent: () => sequence === loginSequenceRef.current });
+        if (sequence !== loginSequenceRef.current) return true;
+        if (restored) {
+          setUser(auth.currentUser); if (restored.claims) setScopedIdentity(restored.claims);
+          if (restored.teacherProfile) setTeacherProfile(restored.teacherProfile);
+          if (restored.student) setCurrentStudent(restored.student);
+          if (restored.adminSessionToken) setAdminSessionToken(restored.adminSessionToken);
+          return true;
+        }
+      } catch (error) {
+        if (error.name === 'AbortError' || sequence !== loginSequenceRef.current) return true;
+        if (error.status !== 401) { showNotification('Chưa kết nối được để khôi phục phiên. Nội dung đang làm được giữ lại.', 'error'); return true; }
+      }
+    }
+    await clearLoginIdentity(); return false;
+  }, [clearLoginIdentity, showNotification]);
+  useSessionLease(user, restoringLogin ? null : scopedIdentity, restoreExpiredLogin, showNotification);
+  useEffect(() => {
+    if (!role || restoringLogin) return undefined;
+    let busy = false;
+    const refresh = () => {
+      if (busy || document.visibilityState !== 'visible' || !readRememberedLogin() || Date.now() - browserLoginLastCheckedAt() < 3600000) return;
+      busy = true;
+      void restoreExpiredLogin().finally(() => { busy = false; });
+    };
+    document.addEventListener('visibilitychange', refresh);
+    const timer = setInterval(refresh, 3600000);
+    return () => { document.removeEventListener('visibilitychange', refresh); clearInterval(timer); };
+  }, [role, restoringLogin, restoreExpiredLogin]);
   const learningUpdates = useLearningUpdates({ user, role, isAdmin, notes: allNotes, quizzes: allQuizzes, materials: allMaterials });
+  const teacherWeekOverview = role === 'teacher' && Boolean(selectedGrade && selectedSubject && !selectedLesson);
   const workspaceData = useWorkspaceCollections({ user, scoped: SCOPED_AUTH_ENABLED, identity: scopedIdentity, role, isAdmin, student: currentStudent,
     grade: selectedGrade, subject: selectedSubject, schoolYear: activeSchoolYear, schoolCode: currentContentSchoolCode,
     fullContent: isAdmin && (showAdminCheckWorkspace || showStudentDatabase && studentLearningDataNeeded), includeHistory: showStudentDatabase || Boolean(scorebookGrade) },
@@ -1808,7 +1890,7 @@ function App() {
       students: setAllStudents, admissions: setAdmissionApplications, attendance: setAttendanceDocs, profileRequests: setStudentProfileRequests },
     { content: showAdminCheckWorkspace || showStudentDatabase && studentLearningDataNeeded || Boolean(selectedGrade && selectedSubject && !showStudentDatabase && !scorebookGrade),
       quiz: showQuizComposeWorkspace || showQuizWorkWorkspace || showStudentWorkReview, learning: showLearningResultsWorkspace,
-      review: showAdminCheckWorkspace || showStudentDatabase && studentLearningDataNeeded, attendance: showAttendanceWorkspace, scorebook: Boolean(scorebookGrade) }, showNotification);
+      review: showAdminCheckWorkspace || showStudentDatabase && studentLearningDataNeeded, weekProgress: teacherWeekOverview, attendance: showAttendanceWorkspace, scorebook: Boolean(scorebookGrade) }, showNotification);
 
   useEffect(() => { setStudentProfileRequestCount(studentProfileRequests.filter(item => (item.status || 'pending') === 'pending'
     && belongsToEducationLevel(allStudents.find(student => student.id === item.studentId) || item, adminEducationLevel)).length); }, [studentProfileRequests, allStudents, adminEducationLevel]);
@@ -1822,57 +1904,8 @@ function App() {
     ? 'Chưa cập nhật được số hồ sơ đăng ký mới. Vui lòng mở Đăng ký mới để tải lại.'
     : pendingRegistrationNotice.loaded ? `${pendingRegistrationNotice.count} hồ sơ đăng ký mới chờ duyệt` : 'Đang kiểm tra hồ sơ đăng ký mới';
   const pendingStudentActionCount = pendingRegistrationNotice.count + studentProfileRequestCount;
-  useStudentLearningData(scopedIdentity, `${serverQuizSession?.result?.submittedAt || ''}:${quickMaterialResult?.submittedAt || ''}`,
+  useStudentLearningData(restoringLogin ? null : scopedIdentity, `${serverQuizSession?.result?.submittedAt || ''}:${quickMaterialResult?.submittedAt || ''}`,
     setAllQuizResults, setAllQuickQuizResults, setCurrentSchoolYear, setInputYearLocks, showNotification);
-
-  useEffect(() => {
-    if (!user || !adminSettingsLoaded) return;
-    const session = readStoredAdminSession();
-    const sessionScope = session?.scope === 'thd' ? 'thd' : 'full';
-    const isValidSession = Boolean(session && (sessionScope === 'thd' || adminSessionToken));
-    if (!isValidSession) {
-      if (isAdmin) {
-        void clearLoginIdentity().catch(error => showNotification(error.message, 'error'));
-        closeAdminSessionView();
-      }
-      return;
-    }
-    if (isAdmin) return;
-    setIsAdmin(true);
-    setRole('admin');
-    setLoginRole(null);
-    setAdminAccessScope(sessionScope);
-    if (session.module) setAdminModule(session.module);
-    if (sessionScope === 'thd') {
-      setAdminModule('thd');
-      setAdminSettingsInitialPanel('thdTeachingAssignments');
-      setShowAdminSettingsWorkspace(true);
-      if (typeof window !== 'undefined') {
-        window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}#/admin/tran-hung-dao/assignments`);
-      }
-    }
-  }, [adminSessionToken, adminSettingsLoaded, clearLoginIdentity, closeAdminSessionView, isAdmin, showNotification, user]);
-
-  useEffect(() => {
-    if (!adminSessionToken) return undefined;
-    let active = true;
-    postAppsScript({ action: 'validateAdminSession', adminSessionToken })
-      .then(async (response) => {
-        if (!active) return;
-        if (response.status === 'success') {
-          if (SCOPED_AUTH_ENABLED) await exchangeScopedIdentity({ kind: 'staff', adminSessionToken });
-          return;
-        }
-        await clearLoginIdentity();
-        closeAdminSessionView();
-      })
-      .catch(() => {
-        if (!active) return;
-        void clearLoginIdentity().catch(error => showNotification(error.message, 'error'));
-        closeAdminSessionView();
-      });
-    return () => { active = false; };
-  }, [adminSessionToken, clearLoginIdentity, closeAdminSessionView, showNotification]);
 
   useEffect(() => {
     if (!isAdmin || !adminSettingsLoaded || !adminSessionToken) return;
@@ -1882,6 +1915,10 @@ function App() {
   useEffect(() => {
     if (typeof window === 'undefined') return undefined;
     const handleAdminSessionStorage = (event) => {
+      if (event.key === REMEMBERED_LOGIN_KEY && !event.newValue && role) {
+        void clearLoginIdentity().catch(error => showNotification(error.message, 'error'));
+        return;
+      }
       if (event.key !== ADMIN_SESSION_STORAGE_KEY || event.newValue) return;
       if (!isAdmin) return;
       void clearLoginIdentity().catch(error => showNotification(error.message, 'error'));
@@ -1889,7 +1926,7 @@ function App() {
     };
     window.addEventListener('storage', handleAdminSessionStorage);
     return () => window.removeEventListener('storage', handleAdminSessionStorage);
-  }, [clearLoginIdentity, closeAdminSessionView, isAdmin, showNotification]);
+  }, [clearLoginIdentity, closeAdminSessionView, isAdmin, role, showNotification]);
 
   const getScorebookDocIdForGrade = useCallback((grade, schoolCode = quickScoreSchoolCode) => (
     cleanDocId(`${activeSchoolYear || 'nam-hoc'}_${SCOREBOOK_SOURCE_FILE}_${schoolCode}_khoi_${grade || 'tat-ca'}`)
@@ -2929,13 +2966,13 @@ function App() {
     const hasManualDraft = role === 'student' && (studentName.trim() || submissionFile);
     const warnBeforeLeave = (event) => {
       const hasScoreDraft = hasQuickScoreDrafts() || [...retainedScorebooks.current.documents.values()].some(item => item.pendingSave || Object.keys(draftPatch(item.base, item.edits)).length);
-      if (!hasQuizDraft && !hasManualDraft && !hasScoreDraft) return;
+      if (!hasQuizDraft && !hasManualDraft && !hasScoreDraft && !Object.keys(submissionGradeDrafts).length) return;
       event.preventDefault();
       event.returnValue = '';
     };
     window.addEventListener('beforeunload', warnBeforeLeave);
     return () => window.removeEventListener('beforeunload', warnBeforeLeave);
-  }, [activeSelfQuiz, studentQuizResult, studentQuizName, studentQuizAnswers, role, studentName, submissionFile, hasQuickScoreDrafts]);
+  }, [activeSelfQuiz, studentQuizResult, studentQuizName, studentQuizAnswers, role, studentName, submissionFile, hasQuickScoreDrafts, submissionGradeDrafts]);
   useEffect(() => { if (showAiModal && aiResponse) typesetMath(aiResponseContentRef.current); }, [showAiModal, aiResponse]);
   useEffect(() => {
     const reportMathError = event => showNotification(event.detail, 'error');
@@ -3008,6 +3045,7 @@ function App() {
       if (key === 'pcResponsibleByYear') setPcResponsibleByYear(value && typeof value === 'object' ? value : {});
       if (key === 'extraSchoolYears') setExtraSchoolYears(Array.isArray(value) ? value : []);
       if (key === 'inputYearLocks') setInputYearLocks(value && typeof value === 'object' ? value : {});
+      if (key === 'transcriptFirstSchoolYear') setTranscriptFirstSchoolYear(value);
       if (key === 'transcriptStartDates') setTranscriptStartDates(value && typeof value === 'object' ? value : {});
       if (key === 'transcriptEndDates') setTranscriptEndDates(value && typeof value === 'object' ? value : {});
       if (key === 'transcriptGrade9EndDates') setTranscriptGrade9EndDates(value && typeof value === 'object' ? value : {});
@@ -3750,7 +3788,7 @@ function App() {
       window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
     }
     setModalMode('unified');
-    setTeacherUsername('');
+    setTeacherUsername(loginPreference().username);
     setPasswordInput('');
     setErrorMsg('');
     setShowPasswordModal(true);
@@ -3770,6 +3808,7 @@ function App() {
     loginAbortRef.current = controller;
     setIsLoggingIn(true);
     setErrorMsg('');
+    let loggedIn = false;
     try {
     const accountResponse = modalMode === 'unified'
       ? await postAppsScript({ action: 'loginAccount', username: normalizeLoginUsername(teacherUsername), password: passwordInput }, { signal: controller.signal }) : null;
@@ -3782,7 +3821,7 @@ function App() {
         const response = accountResponse || await postAppsScript({ action: 'createAdminSession', password: passwordInput }, { signal: controller.signal });
         if (request !== loginSequenceRef.current) return;
         if (response.status !== 'success' || !response.adminSessionToken) throw new Error(response.message || 'Không tạo được phiên admin.');
-        if (SCOPED_AUTH_ENABLED) await exchangeScopedIdentity({ kind: 'staff', adminSessionToken: response.adminSessionToken }, { signal: controller.signal });
+        if (SCOPED_AUTH_ENABLED) await exchangeScopedIdentity({ kind: 'staff', adminSessionToken: response.adminSessionToken }, { signal: controller.signal, remember: rememberLogin });
         if (request !== loginSequenceRef.current) return;
         window.sessionStorage.setItem(ADMIN_SERVER_SESSION_STORAGE_KEY, response.adminSessionToken);
         setAdminSessionToken(response.adminSessionToken);
@@ -3798,6 +3837,7 @@ function App() {
         openNoticeHome('list');
         setShowPasswordModal(false);
         showNotification("Đã vào Quản trị");
+        loggedIn = true;
       } catch (error) {
         if (request === loginSequenceRef.current) setErrorMsg(error.message || 'Mật khẩu không chính xác!');
       }
@@ -3806,7 +3846,7 @@ function App() {
         const response = accountResponse || await postAppsScript({ action: 'createStaffSession', role: 'thd', password: passwordInput }, { signal: controller.signal });
         if (request !== loginSequenceRef.current) return;
         if (!response.staffSessionToken) throw new Error(response.message || 'Không tạo được phiên Trần Hưng Đạo.');
-        if (SCOPED_AUTH_ENABLED) await exchangeScopedIdentity({ kind: 'staff', staffSessionToken: response.staffSessionToken }, { signal: controller.signal });
+        if (SCOPED_AUTH_ENABLED) await exchangeScopedIdentity({ kind: 'staff', staffSessionToken: response.staffSessionToken }, { signal: controller.signal, remember: rememberLogin });
         if (request !== loginSequenceRef.current) return;
         window.sessionStorage.setItem(STAFF_SERVER_SESSION_STORAGE_KEY, response.staffSessionToken);
         writeStoredAdminSession('thd', 'thd');
@@ -3820,6 +3860,7 @@ function App() {
         setShowAdminSettingsWorkspace(true);
         if (typeof window !== 'undefined') window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}#/admin/tran-hung-dao/assignments`);
         showNotification("Đã vào Trần Hưng Đạo");
+        loggedIn = true;
       } catch (error) {
         if (request === loginSequenceRef.current) setErrorMsg(error.message || 'Mật khẩu Trần Hưng Đạo không chính xác!');
       }
@@ -3828,7 +3869,7 @@ function App() {
         const response = accountResponse || await postAppsScript({ action: 'createStaffSession', role: 'teacher', username: teacherUsername, password: passwordInput }, { signal: controller.signal });
         if (request !== loginSequenceRef.current) return;
         if (!response.staffSessionToken || !response.teacherProfile) throw new Error(response.message || 'Không tạo được phiên giáo viên.');
-        if (SCOPED_AUTH_ENABLED) await exchangeScopedIdentity({ kind: 'staff', staffSessionToken: response.staffSessionToken }, { signal: controller.signal });
+        if (SCOPED_AUTH_ENABLED) await exchangeScopedIdentity({ kind: 'staff', staffSessionToken: response.staffSessionToken }, { signal: controller.signal, remember: rememberLogin });
         if (request !== loginSequenceRef.current) return;
         window.sessionStorage.setItem(STAFF_SERVER_SESSION_STORAGE_KEY, response.staffSessionToken);
         window.sessionStorage.setItem(TEACHER_PROFILE_STORAGE_KEY, JSON.stringify(response.teacherProfile));
@@ -3841,10 +3882,12 @@ function App() {
         setLoginRole('teacher');
         setShowPasswordModal(false);
         showNotification(`Xin chào ${response.teacherProfile.fullName || 'Giáo viên'}!`);
+        loggedIn = true;
       } catch (error) {
         if (request === loginSequenceRef.current) setErrorMsg(error.message || 'Tên đăng nhập hoặc mật khẩu không chính xác!');
       }
     }
+    if (loggedIn && request === loginSequenceRef.current) await rememberBrowserLogin({ remember: rememberLogin, username: normalizeLoginUsername(teacherUsername), signal: controller.signal, isCurrent: () => request === loginSequenceRef.current, notify: showNotification });
     if (request === loginSequenceRef.current) setPasswordInput('');
     } catch (error) {
       if (request === loginSequenceRef.current) setErrorMsg(error.message || 'Chưa đăng nhập được. Hãy thử lại.');
@@ -4740,6 +4783,8 @@ YEU CAU:
       const data = await postAppsScript({
         action: 'gemini',
         modelId,
+        aiTask: context.aiTask,
+        latencyPreference: context.latencyPreference,
         grade: String(context.grade ?? selectedGrade ?? ''),
         subject: String(context.subject ?? selectedSubject ?? ''),
         lesson: String(context.lesson ?? selectedLesson ?? ''),
@@ -4847,13 +4892,17 @@ YEU CAU:
       if (aiPurpose === 'quick') {
         const structuredPayload = lessonReviewBatchPayload(window, { week: selectedLesson, html: htmlContent },
           { grade: selectedGrade, subject: selectedSubject }, aiQuestionTemplate, aiEssayCount,
-          { sourceText: aiContextContent, imageParts, maxAutoQuestions: 20, teacherRequest: aiPrompt });
-        const checked = await generateVerifiedLessonReview({ windowObject: window, payload: structuredPayload,
+          { sourceText: aiContextContent, imageParts, maxAutoQuestions: 20,
+            teacherRequest: aiPrompt === lessonReviewPrompt(aiQuestionTemplate, aiEssayCount) ? '' : aiPrompt });
+        const independent = repair || aiReviewMode === 'verified';
+        const createReview = independent ? generateVerifiedLessonReview : generateQuickLessonReview;
+        const checked = await createReview({ windowObject: window, payload: structuredPayload,
           count: aiQuestionTemplate, essayCount: aiEssayCount, initialResponse: repair ? aiResponse : '',
+          validateMath: validateLessonReviewMath,
           onProgress: message => { if (aiGenerationRef.current === generation) setAiReviewStatus(message); },
           requestAI: async request => {
             if (aiGenerationRef.current !== generation) throw new Error('Yêu cầu đã đóng hoặc bài học đã thay đổi.');
-            const { data } = await generateWithGeminiFallback(request);
+            const { data } = await generateWithGeminiFallback(request, { aiTask: 'lesson-review', latencyPreference: independent ? 'balanced' : 'fast' });
             if (aiGenerationRef.current !== generation) throw new Error('Yêu cầu đã đóng hoặc bài học đã thay đổi.');
             const issue = aiCompletionIssue(data);
             if (issue) throw new Error(issue);
@@ -4861,7 +4910,9 @@ YEU CAU:
           } });
         if (aiGenerationRef.current !== generation) return;
         setAiResponse(checked.response);
-        setAiReviewStatus(`AI đã giải lại và đối chiếu ${checked.result.quizData.questions.length} câu.${checked.changes.length ? ` Đã sửa đáp án câu ${checked.changes.join(', ')} theo lời giải đối chiếu.` : ''}`);
+        setAiReviewStatus(checked.verified
+          ? `AI đã giải lại và đối chiếu ${checked.result.quizData.questions.length} câu.${checked.changes.length ? ` Đã sửa đáp án câu ${checked.changes.join(', ')} theo lời giải đối chiếu.` : ''}`
+          : `Đã tạo nhanh ${checked.result.quizData.questions.length} câu và kiểm tra hiển thị công thức. Thầy cô xem đáp án, hoặc bấm Nhờ AI kiểm tra / sửa đáp án để giải lại độc lập.`);
         return;
       }
       const { data } = await generateWithGeminiFallback(payload);
@@ -5249,13 +5300,17 @@ ${lessonBlocks}`;
 
   const runAiGradingForSubmission = async (submissionOrId, options = {}) => {
     const submission = typeof submissionOrId === 'string' ? allHandwrittenSubmissions.find(item => item.id === submissionOrId) : submissionOrId;
-    if (!submission?.id || !submission.fileId || !canWriteCurrentSchoolYear || !isContentForCurrentCampus(submission) || !teacherCanUseScope(submission.grade, submission.subject)) return;
-    setGradingSubmissionId(submission.id);
+    const rejected = message => { if (!options.silent) showNotification(message,'error'); return { status:'error',message }; };
+    if (!submission?.id || !submission.fileId) return rejected('Bài này chưa có tệp tự luận để chấm AI.');
+    if (!canWriteCurrentSchoolYear) return rejected('Năm học đang khóa chấm điểm.');
+    if (!isContentForCurrentCampus(submission) || !teacherCanUseScope(submission.grade, submission.subject)) return rejected('Bạn chưa được phân công chấm bài của lớp/môn này.');
+    if(!options.batch)setGradingSubmissionId(submission.id);
     try {
-      const result = await requestEssayWork('queue', { id: submission.id, retry: options.retry !== false });
-      if (!options.silent) showNotification(result.status === 'done' ? 'Bài đã được giáo viên duyệt.' : result.message || 'Đã xếp hàng chấm AI. Thầy cô có thể đóng trang; kết quả sẽ cập nhật sau.', result.status === 'error' ? 'error' : 'success');
-    } catch (error) { if (!options.silent) showNotification(error.message, 'error'); }
-    finally { setGradingSubmissionId(''); }
+      const result = await requestEssayWork('queue', { id: submission.id, retry: options.retry !== false,fileId:submission.fileId,submittedAt:Number(submission.submittedAt)||0 });
+      if (!options.silent) showNotification(result.message || (result.status === 'done' ? 'AI đã xử lý bài. Giáo viên kiểm tra bản nháp.' : 'Máy chủ đã nhận bài để chấm AI.'), result.status === 'error' ? 'error' : 'success');
+      return { ...result, message:result.message || (result.status === 'done' ? 'AI đã xử lý bài; điểm giáo viên đã duyệt được giữ nguyên.' : 'Máy chủ đã nhận bài để chấm AI.') };
+    } catch (error) { return rejected(error.message || 'Chưa kết nối được máy chủ chấm AI.'); }
+    finally { if(!options.batch)setGradingSubmissionId(''); }
   };
   const openEssayExternalAi = async (submission, assignment, provider) => {
     const matchingCurrent = String(submission.grade) === String(selectedGrade) && submission.subject === selectedSubject && String(submission.lesson) === String(selectedLesson);
@@ -5279,10 +5334,13 @@ ${lessonBlocks}`;
     if (!request) return;
     setReviewPendingId(submission.id);
     const draft = submissionGradeDrafts[submission.id] || {};
+    const proposed=essayReviewValues(submission,draft),qualitative=proposed.mode==='qualitative';
     const review = {
-      teacherScore: essayReviewNumberText(draft.teacherScore ?? submission.teacherScore ?? submission.aiScore),
-      teacherMaxScore: essayReviewNumberText(draft.teacherMaxScore ?? submission.teacherMaxScore ?? submission.aiMaxScore ?? '10'),
-      teacherComment: String(draft.teacherComment ?? submission.teacherComment ?? submission.aiComment ?? '').slice(0, 10000).trim()
+      teacherScore: qualitative ? '' : essayReviewNumberText(proposed.score),
+      teacherMaxScore: qualitative ? '' : essayReviewNumberText(proposed.maximum),
+      teacherAssessment: qualitative ? proposed.assessment : '',
+      teacherComment: studentEssayComment(essayDraftStudentComment(submission,draft)),
+      ...(draft.teacherAnnotations === undefined ? {} : { teacherAnnotations: draft.teacherAnnotations })
     };
     const { id, ...expected } = submission;
     const schoolCode = normalizeSchoolCode(submission.schoolCode || currentContentSchoolCode) || DEFAULT_SCHOOL_CODE;
@@ -5296,13 +5354,18 @@ ${lessonBlocks}`;
     } : null;
     let reviewSaved = false;
     try {
-      const unchanged = submission.status === 'teacher_reviewed' && Object.entries(review).every(([key, value]) => value === (key === 'teacherComment' ? String(submission[key] ?? '').trim() : essayReviewNumberText(submission[key])));
+      if(qualitative && !review.teacherAssessment)throw new Error('Chọn mức nhận xét trước khi lưu.');
+      const unchanged = submission.status === 'teacher_reviewed' && Object.entries(review).every(([key, value]) => key === 'teacherAnnotations' ? sameEssayAnnotations(value, submission[key], submission) : value === (key === 'teacherComment' ? studentEssayComment(submission[key]) : essayReviewNumberText(submission[key])));
       const result = unchanged ? { status: submission.scoreSync?.status || 'noTarget' } : await reviewHandwrittenSubmission({ id, expected, review, scorebook, context: {
         grade, schoolCode, schoolYear: activeSchoolYear, subject: submission.subject || selectedSubject,
         lesson: submission.lesson || selectedLesson, authorId: user.uid
       } });
       if (!quizRequestScopeRef.current.isCurrent(request)) return;
       reviewSaved = true;
+      setSubmissionGradeDrafts(current => {
+        if (JSON.stringify(current[id] || {}) !== JSON.stringify(draft)) return current;
+        const next = { ...current }; delete next[id]; return next;
+      });
       if (send) {
         const saved = (await getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'handwritten_submissions', id))).data();
         if (!quizRequestScopeRef.current.isCurrent(request)) return;
@@ -5313,7 +5376,7 @@ ${lessonBlocks}`;
       showNotification(result.status === 'written' ? 'Đã lưu bài chấm và điểm vào sổ.'
         : result.status === 'noTarget' ? 'Đã lưu bài chấm.' : 'Đã lưu bài chấm. Điểm sửa tay hoặc điểm cũ trong sổ được giữ để đối chiếu.');
     } catch (error) {
-      if (quizRequestScopeRef.current.isCurrent(request)) showNotification((send && reviewSaved ? 'Bài chấm đã lưu; chưa xác nhận gửi hộp thư. Có thể bấm gửi lại, hệ thống chống gửi trùng: ' : 'Chưa lưu được điểm: ') + error.message, 'error');
+      if (quizRequestScopeRef.current.isCurrent(request)) showNotification(essaySaveErrorMessage(error,{sending:send,reviewSaved}), 'error');
     } finally { quizRequestScopeRef.current.finish(request); setReviewPendingId(''); }
   };
 
@@ -5324,7 +5387,7 @@ ${lessonBlocks}`;
 
   const isHandwrittenSubmissionLocked = (submission = {}) => {
     if (!submission?.id) return false;
-    return hasHandwrittenScore(submission);
+    return hasHandwrittenScore(submission) || submission.status==='teacher_reviewed' && !!submission.teacherAssessment;
   };
 
   const sendStudentTestResults = useCallback(async (student) => {
@@ -5483,17 +5546,24 @@ ${lessonBlocks}`;
         fileSize: submissionFile.size || 0,
         status: 'queued',
         aiStatus: 'queued',
+        aiQueueState:'unregistered',
         submittedAt: Date.now(),
         submittedBy: user?.uid || ''
       };
       const submissionRef = SCOPED_AUTH_ENABLED
         ? await requestPrivateApi('data', 'submitEssay', { submission: submissionPayload, requestId: globalThis.crypto.randomUUID() }, { signal: request.signal })
         : await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'handwritten_submissions'), submissionPayload);
-      if (!quizRequestScopeRef.current.isCurrent(request)) return;
-      setSubmissionStatus('Đã gửi bài. AI sẽ nhận xét nháp; giáo viên duyệt rồi gửi kết quả vào hộp thư.');
-      setSubmissionFile(null);
-      setStudentName(activeStudentProfile?.fullName || '');
-      void requestEssayWork('queue', { id: submissionRef.id, uploadReceipt: res.uploadReceipt }).catch(error => { if (quizRequestScopeRef.current.isCurrent(request)) setSubmissionStatus('Bài đã lưu. Chưa xếp chấm AI được: ' + error.message); });
+      const queueRequest=requestEssayWork('queue', { id: submissionRef.id, uploadReceipt: res.uploadReceipt,fileId:submissionPayload.fileId,submittedAt:submissionPayload.submittedAt });
+      if(quizRequestScopeRef.current.isCurrent(request)){
+        setSubmissionStatus('Bài đã lưu. Máy chủ đang nhận bài để tự chấm; em không cần chờ kết quả.');
+        setSubmissionFile(null);setStudentName(activeStudentProfile?.fullName || '');
+      }
+      try{
+        const queued=await queueRequest;
+        if(quizRequestScopeRef.current.isCurrent(request))setSubmissionStatus(queued.status==='error'?'Bài đã lưu. Máy chủ đang giữ bài để kiểm tra lại.':'Đã nộp bài và đăng ký chấm tự động. Em có thể đóng trang; giáo viên sẽ duyệt rồi gửi kết quả vào hộp thư.');
+      }catch{
+        if(quizRequestScopeRef.current.isCurrent(request))setSubmissionStatus('Bài đã lưu. Máy chủ sẽ tự xếp chấm lại khi kết nối ổn định; em không cần nộp lại.');
+      }
     } else {
       setSubmissionStatus(res.message || 'Chưa tải được bài làm.');
     }
@@ -5808,9 +5878,7 @@ ${lessonBlocks}`;
         const material = lessonQuickMaterials.find(item => String(item.id) === String(result.materialId));
         return sameLesson && sameMaterial && isCurrentStudentRecord(result) && isQuickQuizResultPassing(result, material);
       });
-      const percent = hasQuickQuiz
-        ? Math.round((theoryRatio * 50) + (quickPassed ? 50 : 0))
-        : Math.round(theoryRatio * 100);
+      const percent = studentWeekPercent(elapsedMs, hasQuickQuiz, quickPassed, LESSON_THEORY_TARGET_MS);
       map[lesson] = {
         percent: Math.min(100, percent),
         hasQuickQuiz,
@@ -5831,6 +5899,12 @@ ${lessonBlocks}`;
     if (!lessonPercents.length) return 0;
     return Math.round(lessonPercents.reduce((sum, value) => sum + value, 0) / lessonPercents.length);
   }, [role, lessonJourneyMap]);
+  const classWeekProgress = useMemo(() => teacherWeekOverview ? buildClassWeekProgress({
+    students: allStudents, progress: allLessonProgress, quickResults: allQuickQuizResults, materials: allMaterials,
+    schoolYear: activeSchoolYear, schoolCode: currentContentSchoolCode, grade: selectedGrade, subject: selectedSubject,
+    className: teacherClassLabel(teacherProfile, selectedGrade).replace(/^Lớp\s+/, ''), totalLessons: TOTAL_LESSONS
+  }) : { studentCount: 0, weeks: {} }, [teacherWeekOverview, allStudents, allLessonProgress, allQuickQuizResults, allMaterials,
+    activeSchoolYear, currentContentSchoolCode, selectedGrade, selectedSubject, teacherProfile]);
   const studentSavedQuizResult = useMemo(() => {
     if (SERVER_QUIZ_ENABLED && serverQuizSession?.quizId === quizId) return serverQuizSession.result || null;
     return [...currentQuizResults].filter(isCurrentStudentRecord).sort((a, b) => (b.submittedAt || 0) - (a.submittedAt || 0))[0] || null;
@@ -6734,6 +6808,7 @@ ${lessonBlocks}`;
         <div className={`flex-1 flex flex-col items-center relative z-10 w-full mx-auto min-h-0 ${isAdmin ? 'max-w-none pt-0 px-0 pb-3' : 'max-w-7xl pt-3 px-4 pb-1 sm:pb-4'}`}>
           {!isAdmin && (
             <nav aria-label="Tài khoản" className="home-account-bar flex w-full shrink-0 items-center justify-end gap-1.5">
+              <PwaInstallButton />
               <button type="button" onClick={openTeacherLogin} className="inline-flex h-8 shrink-0 items-center justify-center gap-1 whitespace-nowrap rounded-md bg-blue-700 px-2.5 text-xs font-semibold text-white shadow-sm hover:bg-blue-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-700"><User aria-hidden="true" className="h-3.5 w-3.5" />Đăng nhập</button>
               <a href="#/dang-ky" className="inline-flex h-8 shrink-0 items-center justify-center whitespace-nowrap rounded-md border border-emerald-200 bg-white px-2.5 text-xs font-semibold text-emerald-700 no-underline hover:bg-emerald-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700">Đăng ký mới</a>
             </nav>
@@ -6756,7 +6831,7 @@ ${lessonBlocks}`;
             <div className="admin-header fixed left-0 right-0 top-0 z-[210] w-full max-w-none border-b border-slate-200 bg-white shadow-lg">
               <div className="admin-header-top min-h-[40px] bg-gradient-to-r from-blue-800 via-indigo-700 to-violet-700 text-white flex items-center gap-1.5 px-2 sm:px-3 py-1">
                 <div className="admin-header-brand flex min-w-0 items-center gap-1.5 sm:gap-2" title="TTHTCĐ Trung Mỹ Tây">
-                  <div className="admin-header-logo h-8 w-8 shrink-0 rounded-md bg-white text-blue-700 flex items-center justify-center font-black">N</div>
+                  <img src="/logo/icon-192.png" alt="Logo Trung tâm" className="admin-header-logo h-8 w-8 shrink-0 rounded-md bg-white object-contain" />
                   <div className="min-w-0 leading-tight">
                     <div className="truncate text-[10px] font-semibold uppercase text-white/90 sm:text-[11px] sm:tracking-wider">TTHTCĐ Trung Mỹ Tây</div>
                   </div>
@@ -6785,11 +6860,11 @@ ${lessonBlocks}`;
                     }}
                     className="h-8 w-full rounded-md border border-slate-300 bg-white pl-9 pr-7 text-sm font-semibold text-slate-800 shadow-sm outline-none"
                   >
-                    {visibleAdminModules.map(item => <option key={item.key} value={item.key}>{item.label}</option>)}
+                    {visibleAdminModules.map(item => <option key={item.key} value={item.key}>{narrowScreen ? ({ primary: 'Tiểu học', thcs: 'THCS', admission: 'Tuyển sinh', notice: 'Thông báo', thd: 'Trần Hưng Đạo' })[item.key] || item.label : item.label}</option>)}
                   </select>
                 </div>
                 <div className="admin-header-school min-w-0 truncate text-sm font-semibold uppercase text-white" title={adminModule === 'thd' ? 'THCS Trần Hưng Đạo' : 'THCS Nguyễn An Ninh'}>{adminModule === 'thd' ? 'THCS Trần Hưng Đạo' : 'THCS Nguyễn An Ninh'}</div>
-                {adminTeaching.allowed && <button type="button" onClick={() => adminTeaching.open()} className="admin-teaching-entry"><GraduationCap className="h-4 w-4" /><span>Hỗ trợ giáo viên</span></button>}
+                {adminTeaching.allowed && <button type="button" onClick={() => adminTeaching.open()} className="admin-teaching-entry" aria-label="Hỗ trợ giáo viên" title="Hỗ trợ giáo viên"><GraduationCap className="h-4 w-4" /><span>Hỗ trợ giáo viên</span></button>}
                 <div className="admin-header-year ml-auto flex shrink-0 items-center gap-1.5 text-xs font-semibold" data-different-year={isAdminViewingDifferentYear}>
                   <span className="admin-header-year-label text-white/80">Năm admin</span>
                   <button type="button" onClick={() => moveAdminSchoolYear(-1)} disabled={schoolYearOptions.findIndex(year => String(year) === String(adminSelectedSchoolYear)) <= 0} className="h-8 w-8 rounded-md border border-white/20 bg-white/10 text-white hover:bg-white/20 disabled:opacity-35" title="Lui nam admin dang xem">
@@ -6834,13 +6909,14 @@ ${lessonBlocks}`;
                           });
                         }}
                       >
-                        <summary className="list-none h-7 cursor-pointer rounded-md border border-blue-100 bg-white px-2 text-[11px] font-semibold text-slate-800 hover:border-blue-300 hover:bg-blue-50 inline-flex items-center gap-1 sm:h-8 sm:px-2.5 sm:text-xs sm:gap-1.5">
+                        <summary aria-label={item.label} title={item.label} className="list-none h-7 cursor-pointer rounded-md border border-blue-100 bg-white px-2 text-[11px] font-semibold text-slate-800 hover:border-blue-300 hover:bg-blue-50 inline-flex items-center gap-1 sm:h-8 sm:px-2.5 sm:text-xs sm:gap-1.5">
                           <ItemIcon className="h-4 w-4 text-blue-600" />
-                          <span className="admin-menu-label">{item.label}</span>
+                          <span className="admin-menu-label" data-mobile-label={({ school: 'Trường', 'student-profile': 'Hồ sơ', academic: 'Học vụ', stats: 'Tiện ích' })[item.key] || item.label}>{item.label}</span>
                           {item.badge && <span title={item.badgeTitle} aria-label={item.badgeTitle} className="rounded-full bg-rose-100 px-1.5 py-0.5 text-[9px] text-rose-600">{item.badge}</span>}
                           <ChevronDown className="h-3.5 w-3.5 text-slate-500" />
                         </summary>
                         <div className="fixed left-3 right-3 top-[76px] z-[300] grid grid-cols-2 gap-1 rounded-lg border border-slate-200 bg-white p-1.5 shadow-xl sm:absolute sm:left-0 sm:right-auto sm:top-full sm:block sm:w-44">
+                          {item.alignRight && <PwaInstallButton />}
                           {item.children.map(child => {
                             const childClassName = "flex w-full items-center justify-between gap-2 rounded-md px-3 py-2 text-left text-xs font-semibold text-slate-700 no-underline hover:bg-blue-50 hover:text-blue-700";
                             const childContent = (
@@ -6877,7 +6953,7 @@ ${lessonBlocks}`;
                   const itemContent = (
                     <>
                       <ItemIcon className={`h-4 w-4 ${item.pending ? 'text-slate-400' : 'text-blue-600'}`} />
-                      {item.label}
+                      <span className="admin-menu-label">{item.label}</span>
                       {item.badge && <span className="rounded-full bg-rose-100 px-1.5 py-0.5 text-[9px] text-rose-600">{item.badge}</span>}
                     </>
                   );
@@ -6908,10 +6984,10 @@ ${lessonBlocks}`;
           {isAdmin && <div className="h-[76px] w-full shrink-0 sm:h-[84px]" />}
 
           {isAdmin && adminModule === 'notice' && (
-            <div className="fixed inset-x-0 top-[76px] sm:top-[84px] bottom-0 z-[85] overflow-y-auto bg-slate-100/95 p-3 sm:p-5 backdrop-blur-md">
+            <div className="admin-notice-workspace fixed inset-x-0 top-[76px] sm:top-[84px] bottom-0 z-[85] overflow-y-auto bg-slate-100/95 p-3 sm:p-5 backdrop-blur-md">
               <div className="mx-auto max-w-6xl space-y-4">
-                <div className="rounded-2xl border border-blue-100 bg-white p-4 shadow-sm">
-                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="admin-notice-heading rounded-2xl border border-blue-100 bg-white p-4 shadow-sm">
+                  <div className="admin-notice-heading-row flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                     <div>
                       <h2 className="flex items-center gap-2 text-xl font-semibold uppercase text-blue-950">
                         <Bell className="h-5 w-5 text-blue-600" />
@@ -6919,22 +6995,26 @@ ${lessonBlocks}`;
                       </h2>
                       <p className="mt-1 text-sm font-medium text-slate-500">Đăng, sửa, ghim và sắp xếp tin hiển thị ở trang chủ.</p>
                     </div>
-                    <div className="flex flex-wrap items-center gap-2">
+                    <div className="admin-notice-actions flex flex-wrap items-center gap-2">
                       <button
                         type="button"
+                        aria-label={showMailboxPanel ? 'Đóng Hộp thư' : 'Hộp thư học sinh'}
+                        title={showMailboxPanel ? 'Đóng Hộp thư' : 'Hộp thư học sinh'}
                         onClick={() => setShowMailboxPanel(prev => !prev)}
                         className={`inline-flex h-10 items-center justify-center gap-2 rounded-xl px-4 text-sm font-semibold text-white shadow-sm transition-all ${showMailboxPanel ? 'bg-emerald-700 hover:bg-emerald-800' : 'bg-emerald-600 hover:bg-emerald-700'}`}
                       >
                         <Mail className="h-4 w-4" />
-                        {showMailboxPanel ? 'Đóng Hộp thư' : 'Hộp thư học sinh'}
+                        <span>{showMailboxPanel ? 'Đóng Hộp thư' : 'Hộp thư học sinh'}</span>
                       </button>
                       <button
                         type="button"
+                        aria-label={showAddNews ? 'Đóng khung soạn' : 'Thêm tin'}
+                        title={showAddNews ? 'Đóng khung soạn' : 'Thêm tin'}
                         onClick={() => showAddNews ? closeNewsForm() : openNewsForm()}
                         className="inline-flex h-10 items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 text-sm font-semibold text-white shadow-sm hover:bg-blue-700"
                       >
                         {showAddNews ? <X className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
-                        {showAddNews ? 'Đóng khung soạn' : 'Thêm tin'}
+                        <span>{showAddNews ? 'Đóng khung soạn' : 'Thêm tin'}</span>
                       </button>
                     </div>
                   </div>
@@ -7115,6 +7195,7 @@ ${lessonBlocks}`;
                 pcResponsibleByYear={pcResponsibleByYear}
                 extraSchoolYears={extraSchoolYears}
                 inputYearLocks={inputYearLocks}
+                transcriptFirstSchoolYear={transcriptFirstSchoolYear}
                 transcriptStartDates={transcriptStartDates}
                 transcriptEndDates={transcriptEndDates}
                 transcriptGrade9EndDates={transcriptGrade9EndDates}
@@ -7200,6 +7281,7 @@ ${lessonBlocks}`;
                 initialSchoolCode={quickScoreSchoolCode}
                 currentSchoolYear={activeSchoolYear}
                 principalName={principalName}
+                transcriptFirstSchoolYear={transcriptFirstSchoolYear}
                 transcriptStartDates={transcriptStartDates}
                 transcriptEndDates={transcriptEndDates}
                 transcriptGrade9EndDates={transcriptGrade9EndDates}
@@ -7662,7 +7744,8 @@ ${lessonBlocks}`;
           {!isAdmin && <div className="home-contact-line shrink-0 text-center text-[10px] font-bold text-blue-950/75 sm:hidden">Liên hệ: 0354.66.7174 (Thầy Khoa)</div>}
         </div>
         
-        {showPasswordModal && <UnifiedLoginDialog username={teacherUsername} password={passwordInput} onUsernameChange={setTeacherUsername} onPasswordChange={setPasswordInput} onSubmit={handleLogin} onClose={cancelLogin} pending={isLoggingIn} error={errorMsg} onRegister={() => { cancelLogin(); window.location.hash = '/dang-ky'; }} />}
+        {restoringLogin && <p role="status" className="fixed bottom-4 left-1/2 z-[170] -translate-x-1/2 rounded-lg bg-white px-4 py-2 text-sm text-blue-800 shadow-lg">Đang kiểm tra phiên đăng nhập…</p>}
+        {showPasswordModal && <UnifiedLoginDialog username={teacherUsername} password={passwordInput} remember={rememberLogin} onRememberChange={setRememberLogin} onUsernameChange={setTeacherUsername} onPasswordChange={setPasswordInput} onSubmit={handleLogin} onClose={cancelLogin} pending={isLoggingIn} error={errorMsg} onRegister={() => { cancelLogin(); window.location.hash = '/dang-ky'; }} />}
         {viewingNews && (
           <Suspense fallback={<div className="fixed inset-0 z-50 flex items-center justify-center bg-white text-sm font-black text-blue-700">Đang mở bản tin...</div>}>
             <NewsViewerModal
@@ -7757,6 +7840,7 @@ ${lessonBlocks}`;
 
   return (
     <div className={`min-h-screen flex flex-col text-slate-800 font-sans relative ${compactTeacherLesson ? 'teacher-lesson-focus ' : ''}${selectedLesson ? 'lesson-reading ' : ''}${role === 'student' ? `student-portal${selectedLesson ? ' student-reading' : ''}` : role === 'teacher' ? 'teacher-portal' : ''}`} style={focusBackgroundStyle}><MainBackground />
+      {restoringLogin && <p role="status" className="fixed bottom-4 left-1/2 z-[170] -translate-x-1/2 rounded-lg bg-white px-4 py-2 text-sm text-blue-800 shadow-lg">Đang kiểm tra phiên đăng nhập…</p>}
       {notificationToast}
       {role === 'teacher' && showTeacherScores && teacherQuickScorePanel && createPortal(<div className="teacher-score-popup" role="dialog" aria-modal="true" aria-label="Điểm số" onKeyDown={event => { if (event.key === 'Escape') { setShowTeacherScores(false); setShowLearningResultsWorkspace(false); setQuickScoreLockedContext(null); } }}>{teacherQuickScorePanel}</div>, document.body)}
       {role === 'teacher' && educationGrades('primary').includes(String(scorebookGrade)) && <WorkspaceErrorBoundary title="Sổ điểm tiểu học" onClose={() => setScorebookGrade(null)}>
@@ -7968,7 +8052,7 @@ ${lessonBlocks}`;
                                 {submission.aiError && submission.aiStatus === 'error' && (
                                   <div className="mt-3 rounded-xl border border-rose-100 bg-rose-50 p-3 text-xs font-black text-rose-700">{submission.aiError}</div>
                                 )}
-                                <TeacherEssayReview submission={submission} draft={draft} busy={reviewPendingId === submission.id || gradingSubmissionId === submission.id} canWrite={canWriteCurrentSchoolYear} onChange={(key,value) => updateSubmissionGradeDraft(submission.id,key,value)} onSave={() => saveTeacherGradeForSubmission(submission)} onSend={() => saveTeacherGradeForSubmission(submission, { send:true })} onAi={() => runAiGradingForSubmission(submission)} onExternalAi={provider => openEssayExternalAi(submission, allQuizzes.find(q => q.id === submission.quizId), provider)} />
+                                <TeacherEssayReview submission={submission} draft={draft} busy={reviewPendingId === submission.id || gradingSubmissionId === submission.id} canWrite={canWriteCurrentSchoolYear} onChange={(key,value) => updateSubmissionGradeDraft(submission.id,key,value)} onSave={() => saveTeacherGradeForSubmission(submission)} onSend={() => saveTeacherGradeForSubmission(submission, { send:true })} onAi={() => runAiGradingForSubmission(submission)} onAiStatus={signal => requestEssayWork('status', { id:submission.id }, { signal })} onExternalAi={provider => openEssayExternalAi(submission, allQuizzes.find(q => q.id === submission.quizId), provider)} />
                               </div>
                             );
                           })}
@@ -8066,7 +8150,6 @@ ${lessonBlocks}`;
             <div className="bg-blue-600 p-2 rounded-xl shadow-md group-hover:bg-blue-700 transition-colors"><Library className="w-5 h-5 text-white" /></div>
             <div className="hidden sm:block leading-tight"><span className="font-black text-lg block tracking-tighter">{SCHOOL_OPTIONS.find(school => school.code === currentContentSchoolCode)?.name || 'Kho Học Liệu Số'}</span><span className="text-[10px] text-blue-600 font-black uppercase tracking-widest">Kho Học Liệu Số</span></div>
           </div>}
-          
           {role !== 'teacher' && loginRole !== 'teacher' && (
           <div className={`student-header-news ${role === 'student' && loginRole !== 'teacher' ? 'has-learning-updates' : ''} flex flex-1 ml-3 sm:ml-6 mr-3 sm:mr-6 items-center overflow-hidden bg-slate-50/80 rounded-full px-3 py-1.5 border border-slate-200/60 shadow-inner`}>
              {role === 'student' && loginRole !== 'teacher' ? <HomeUpdateTicker items={combinedFeedSorted} onOpen={openHomepageFeedItem} grade={activeStudentGrade} error={learningUpdates.error} /> : <>
@@ -8093,8 +8176,9 @@ ${lessonBlocks}`;
 
           {compactTeacherLesson && learningNavigation}
           <TeacherHeaderActions onHome={resetNavigationWithClean} compact={compactTeacherLesson} teacherName={teacherProfile?.fullName || teacherProfile?.username || 'Giáo viên'} primaryActions={<>{role === 'teacher' && <TeacherQuizManager key={`quizzes-${teacherProfile?.teacherId || teacherProfile?.id || 'teacher'}/${activeSchoolYear}`}
+              onAiGrade={runAiGradingForSubmission} canAiGrade={canWriteCurrentSchoolYear}
               currentContext={{ grade: selectedGrade, subject: selectedSubject, lesson: selectedLesson }}
-              renderEssayReview={(submission, _student, assignment) => <TeacherEssayReview submission={submission} draft={submissionGradeDrafts[submission.id]} busy={reviewPendingId === submission.id || gradingSubmissionId === submission.id} canWrite={canWriteCurrentSchoolYear} onChange={(key, value) => updateSubmissionGradeDraft(submission.id, key, value)} onSave={() => saveTeacherGradeForSubmission(submission)} onSend={() => saveTeacherGradeForSubmission(submission, { send: true })} onAi={() => runAiGradingForSubmission(submission)} onExternalAi={provider => openEssayExternalAi(submission, assignment, provider)} />}
+              renderEssayReview={(submission, _student, assignment, { inline = false } = {}) => { const Review = inline ? EssayGradingPanel : TeacherEssayReview; return <Review submission={submission} draft={submissionGradeDrafts[submission.id]} busy={reviewPendingId === submission.id || gradingSubmissionId === submission.id} canWrite={canWriteCurrentSchoolYear} onChange={(key, value) => updateSubmissionGradeDraft(submission.id, key, value)} onSave={() => saveTeacherGradeForSubmission(submission)} onSend={() => saveTeacherGradeForSubmission(submission, { send: true })} onAi={() => runAiGradingForSubmission(submission)} onAiStatus={signal => requestEssayWork('status', { id:submission.id }, { signal })} onExternalAi={provider => openEssayExternalAi(submission, assignment, provider)} />; }}
               profile={teacherProfile} subscriptionScope={{ user: { uid: user?.uid }, scoped: SCOPED_AUTH_ENABLED, identity: scopedIdentity, isAdmin: adminTeaching.active }} schoolYear={activeSchoolYear} isQuizVisible={isQuizVisibleForStudents}
               onOpenQuiz={(quiz, action) => {
                 if (!teacherCanUseScope(quiz.grade, quiz.subject) || !contentBelongsToCampus(quiz, currentContentSchoolCode)) return false;
@@ -8104,6 +8188,7 @@ ${lessonBlocks}`;
                 else { setShowQuizComposeWorkspace(false); openScoreTeacherTab(); setShowHandwrittenSubmissions(false); }
                 return true;
               }} />}
+            {role === 'teacher' && <TeacherSplitScreen profile={teacherProfile} subscriptionScope={{ user: { uid: user?.uid }, scoped: SCOPED_AUTH_ENABLED, identity: scopedIdentity, isAdmin: adminTeaching.active }} schoolYear={activeSchoolYear} currentContext={{ grade: selectedGrade, subject: selectedSubject, lesson: selectedLesson }} />}
             {role === 'teacher' && <button type="button" className="teacher-scores-trigger" title="Điểm số của lớp và môn đang chọn" disabled={!selectedGrade || !selectedSubject}
               onClick={() => {
                 if (!teacherCanUseScope(selectedGrade, selectedSubject)) return;
@@ -8155,6 +8240,7 @@ ${lessonBlocks}`;
                 </button>
               </>
             ) : null}
+            <PwaInstallButton compact />
             <button onClick={handleLogout} className="text-[10px] sm:text-xs font-black text-slate-400 hover:text-rose-500 transition-colors uppercase tracking-widest">Thoát</button>
           </TeacherHeaderActions>
         </div>
@@ -8206,7 +8292,7 @@ ${lessonBlocks}`;
                       <h4 className="mt-1 text-lg font-black text-slate-900 sm:text-2xl">{selectedStudentMailboxMessage.title}</h4>
                       <div className="mt-2 text-[10px] font-bold text-slate-400">{selectedStudentMailboxMessage.createdAt ? new Date(selectedStudentMailboxMessage.createdAt).toLocaleString('vi-VN') : ''}</div>
                     </div>
-                    <div className="whitespace-pre-wrap text-sm font-medium leading-7 text-slate-700 sm:text-base">{selectedStudentMailboxMessage.body}</div>
+                    <StudentEssayMessage key={selectedStudentMailboxMessage.id} message={selectedStudentMailboxMessage}/>
                     {selectedStudentMailboxMessage.source === 'admin' && <button type="button" onClick={() => openConversations(selectedStudentMailboxMessage)} className="mt-4 inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white"><Mail className="h-4 w-4" />Trả lời admin</button>}
                     {selectedStudentMailboxMessage.source === 'auto' && selectedStudentMailboxMessage.targetGrade && (
                       <button type="button" onClick={() => { openStudentMailboxMessage(selectedStudentMailboxMessage); setShowStudentMailbox(false); }} className="mt-5 inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-3 text-xs font-black uppercase text-white shadow-sm">
@@ -8324,42 +8410,18 @@ ${lessonBlocks}`;
 
         {(!role || role === 'student' || role === 'teacher') && selectedGrade && selectedSubject && !selectedLesson && (
           <div className="learning-week-picker animate-in fade-in slide-in-from-bottom-4 duration-500 space-y-4 flex-1 mt-4">
-            <div className="grid grid-cols-4 sm:grid-cols-7 md:grid-cols-9 lg:grid-cols-12 gap-2 pb-2">
-              {Array.from({ length: TOTAL_LESSONS }, (_, i) => i + 1).map(l => {
-                const wData = getWeekData(l);
-                const quizMeta = quizLessonMetaMap[String(l)] || {};
-                const quizBadgeLabel = quizMeta.scoreLabel
-                  ? `${quizMeta.semesterLabel ? `${quizMeta.semesterLabel} ` : ''}${quizMeta.scoreLabel}`
-                  : 'KT';
-                const quizDone = studentCompletedQuizLessonSet.has(String(l));
-                const journey = lessonJourneyMap[String(l)] || null;
-                const journeyPercent = Math.max(0, Math.min(100, Number(journey?.percent || 0)));
-                return (
-                <button key={l} aria-label={getWeekDisplayName(String(l))} onClick={() => setSelectedLesson(String(l))} className={`${wData.bg} border ${wData.border} shadow-sm rounded-xl py-2 sm:py-3 min-h-[50px] sm:min-h-[72px] flex flex-col items-center justify-center group transition-all active:scale-95 relative overflow-hidden`}>
-                    {wData.isExam && <div className="absolute top-0 right-0 bg-white/50 w-full h-full z-0 rotate-45 scale-150 mix-blend-overlay hidden sm:block"></div>}
-                    {quizLessonSet.has(String(l)) && (
-                      <div className={`absolute top-1 left-1 sm:top-1.5 sm:left-1.5 z-20 bg-rose-500 text-white rounded-full w-5 h-5 sm:w-auto sm:h-auto sm:px-1.5 sm:py-1 shadow-md flex items-center justify-center sm:gap-1 ${role === 'student' && !quizDone ? 'animate-pulse ring-2 ring-rose-200' : ''}`} title={`${quizDone ? 'Da lam bai kiem tra' : 'Co bai kiem tra chua lam'}: ${quizBadgeLabel}`} aria-label={`${quizDone ? 'Da lam bai kiem tra' : 'Co bai kiem tra chua lam'}: ${quizBadgeLabel}`}>
-                        <Sparkles className="w-3 h-3" />
-                        <span className="hidden sm:inline text-[8px] sm:text-[9px] font-black leading-none tracking-tight">{quizBadgeLabel}</span>
-                      </div>
-                    )}
-                    <span className="sm:hidden font-black text-[11px] uppercase tracking-wider relative z-10 text-slate-700">
-                       {wData.isExam ? <span className={wData.text}>{wData.main}</span> : `Tuần ${l}`}
-                    </span>
-                    <div className="hidden sm:flex flex-col items-center">
-                       <span className={`text-[9px] font-black ${wData.isExam ? wData.text : 'text-slate-400'} mb-0.5 uppercase tracking-widest relative z-10`}>{wData.top}</span>
-                       <span className={`${wData.isExam ? 'text-[15px]' : 'text-2xl'} font-black ${wData.text} ${wData.textHover} transition-colors tracking-tighter relative z-10`}>{wData.main}</span>
-                    </div>
-                    {role === 'student' && journey && !wData.isExam && (
-                      <div className="absolute bottom-0 left-0 right-0 z-20">
-                        <div className="h-2 overflow-hidden bg-slate-300/90 shadow-inner">
-                          <div className={`h-full rounded-full transition-all ${journeyPercent >= 100 ? 'bg-emerald-500' : journey?.hasQuickQuiz ? 'bg-sky-500' : 'bg-blue-500'}`} style={{ width: `${journeyPercent}%` }} />
-                        </div>
-                      </div>
-                    )}
-                </button>
-              )})}
-            </div>
+            {teacherWeekOverview && <p className="learning-week-context" role="status">{workspaceData.weekProgressReady ? classWeekProgress.studentCount ? `Tiến độ học trung bình · ${teacherClassLabel(teacherProfile, selectedGrade)} · ${classWeekProgress.studentCount} học sinh` : 'Lớp này chưa có học sinh đang học.' : 'Đang tải tiến độ học của lớp…'}</p>}
+            <LearningWeekList onSelect={setSelectedLesson} weeks={Array.from({ length: TOTAL_LESSONS }, (_, i) => {
+              const lesson = String(i + 1), appearance = getWeekData(lesson);
+              const quizMeta = quizLessonMetaMap[lesson] || {};
+              const quizBadgeLabel = quizMeta.scoreLabel ? `${quizMeta.semesterLabel ? `${quizMeta.semesterLabel} ` : ''}${quizMeta.scoreLabel}` : 'KT';
+              const quizDone = studentCompletedQuizLessonSet.has(lesson);
+              return { lesson, appearance, label: getWeekDisplayName(lesson),
+                percent: appearance.isExam ? null : role === 'student' ? lessonJourneyMap[lesson]?.percent ?? 0
+                  : teacherWeekOverview && workspaceData.weekProgressReady ? classWeekProgress.weeks[lesson] : null,
+                quizLabel: quizLessonSet.has(lesson) ? `${quizDone ? 'Đã làm bài kiểm tra' : 'Có bài kiểm tra'}: ${quizBadgeLabel}` : '',
+                quizPending: role === 'student' && !quizDone };
+            })} />
             {role === 'student' && (
               <div className="rounded-2xl border border-white/70 bg-white/85 px-4 py-3 shadow-sm">
                 <div className="mb-2 flex items-center justify-between gap-3">
@@ -8703,7 +8765,7 @@ ${lessonBlocks}`;
                             <h4 className="font-black text-amber-900 text-sm sm:text-base uppercase">Phần tự luận</h4>
                             <span className="text-[10px] font-black text-amber-700 bg-white border border-amber-100 rounded-full px-3 py-1">Nộp tay</span>
                           </div>
-                          <p className="text-sm text-amber-900">Em cần trình bày từng bước giải, không chỉ ghi đáp án. Ảnh phải rõ và đủ các trang.</p><div className="bg-white border border-amber-100 rounded-xl p-4 text-sm sm:text-base font-bold text-slate-800 whitespace-pre-wrap leading-relaxed">{studentEssayText}</div>
+                          <p className="text-sm text-amber-900">Em ghi rõ số câu 1, 2, 3… và các bước làm; không cần chép lại đề. Với câu chỉ yêu cầu điền hoặc liệt kê, ghi đủ kết quả theo yêu cầu. Ảnh phải rõ và đủ các trang.</p><div className="bg-white border border-amber-100 rounded-xl p-4 text-sm sm:text-base font-bold text-slate-800 whitespace-pre-wrap leading-relaxed">{studentEssayText}</div>
                           <button type="button" onClick={() => studentSubmitSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })} className="w-full sm:w-auto px-4 py-2.5 bg-amber-600 text-white rounded-xl text-xs font-black uppercase shadow-sm">Nộp phần tự luận bên dưới</button>
                         </div>
                       )}
@@ -8937,13 +8999,14 @@ ${lessonBlocks}`;
                       </div>
                       <div className="rounded-2xl border border-indigo-100 bg-indigo-50 px-3 py-3 text-center">
                         <div className="text-[10px] font-black uppercase text-indigo-700">Tự luận</div>
-                        <div className="text-lg font-black text-indigo-900">{studentWorkReviewScore.hasEssayScore ? formatPointScore(studentWorkReviewScore.essayScore) : '-'}</div>
+                        <div className="text-lg font-black text-indigo-900">{studentSavedHandwrittenSubmission?.status==='teacher_reviewed' && studentSavedHandwrittenSubmission.teacherAssessment || (studentWorkReviewScore.hasEssayScore ? formatPointScore(studentWorkReviewScore.essayScore) : '-')}</div>
                       </div>
                       <div className="rounded-2xl border border-blue-100 bg-blue-50 px-3 py-3 text-center">
                         <div className="text-[10px] font-black uppercase text-blue-700">Tổng</div>
                         <div className="text-lg font-black text-blue-900">{studentWorkReviewScore.hasTotalScore ? formatPointScore(studentWorkReviewScore.totalScore) : '-'}</div>
                       </div>
                     </div>
+                    {studentSavedHandwrittenSubmission?.status==='teacher_reviewed' && studentSavedHandwrittenSubmission.teacherAssessment && <p className="text-sm text-indigo-700">Tự luận được nhận xét bằng mức chữ, không cộng vào tổng điểm.</p>}
                     {studentReviewQuizResult?.answers?.length > 0 && (
                       <div className="rounded-2xl border border-slate-200 bg-white overflow-hidden">
                         <div className="px-4 py-3 bg-slate-50 border-b border-slate-100 font-black text-slate-800 text-xs uppercase">Phần trắc nghiệm</div>
@@ -8976,10 +9039,11 @@ ${lessonBlocks}`;
                         <iframe src={getEmbedUrl(studentSavedHandwrittenSubmission.fileUrl)} title="Bài tự luận đã nộp" className="w-full h-[320px] sm:h-[520px] bg-white border-0" allowFullScreen />
                       </div>
                     )}
-                    {studentSavedHandwrittenSubmission?.status === 'teacher_reviewed' && studentSavedHandwrittenSubmission?.teacherComment && (
+                    {studentSavedHandwrittenSubmission && <ReturnedEssayReview key={studentSavedHandwrittenSubmission.id} submission={studentSavedHandwrittenSubmission} />}
+                    {studentSavedHandwrittenSubmission?.status === 'teacher_reviewed' && studentSavedHandwrittenSubmission?.teacherComment && !studentSavedHandwrittenSubmission.returnedReview && studentSavedHandwrittenSubmission.feedbackSentReviewAt !== studentSavedHandwrittenSubmission.reviewedAt && (
                       <div className="rounded-2xl border border-blue-100 bg-blue-50 p-4">
                         <div className="text-[10px] font-black uppercase text-blue-700 mb-2">Nhận xét</div>
-                        <div className="text-xs sm:text-sm font-bold text-slate-700 whitespace-pre-wrap">{studentSavedHandwrittenSubmission.teacherComment}</div>
+                        <div className="text-xs sm:text-sm font-bold text-slate-700 whitespace-pre-wrap">{studentEssayComment(studentSavedHandwrittenSubmission.teacherComment)}</div>
                       </div>
                     )}
                   </div>
@@ -9067,7 +9131,7 @@ ${lessonBlocks}`;
             <header className="flex items-center justify-between gap-3 border-b px-5 py-4"><div><h3 id="quiz-ai-title" className="font-bold text-indigo-900">{aiPurpose === 'exam' ? 'Tạo đề kiểm tra bằng AI' : 'Câu hỏi ôn tập'}</h3><p className="mt-1 text-sm text-slate-600">{teacherClassLabel(teacherProfile, selectedGrade)} · {selectedSubject} · {getWeekDisplayName(selectedLesson)}</p></div><button type="button" aria-label={aiPurpose === 'exam' ? 'Đóng tạo đề AI' : 'Đóng câu hỏi ôn tập'} disabled={isSavingQuiz} onClick={() => { aiGenerationRef.current += 1; setShowAiModal(false); setIsAiLoading(false); }} className="workspace-close-button"><X className="h-5 w-5" /><span>Đóng</span></button></header>
             <div className="space-y-4 overflow-y-auto p-5">
               <p className="text-sm">Nguồn: bài học {selectedSubject} · Khối {selectedGrade} · {getWeekDisplayName(selectedLesson)}. Có thể đổi nguồn trong phần nâng cao.</p>
-              {aiPurpose === 'quick' ? <LessonReviewOptions count={aiQuestionTemplate} essayCount={aiEssayCount} disabled={isAiLoading || isSavingQuiz} onChange={changeLessonReviewOptions} /> : <label className="block text-sm font-semibold">Loại câu hỏi <span className="lesson-review-select-hint">Nhấn vào để chọn số lượng</span>
+              {aiPurpose === 'quick' ? <LessonReviewOptions count={aiQuestionTemplate} essayCount={aiEssayCount} disabled={isAiLoading || isSavingQuiz} onChange={changeLessonReviewOptions} mode={aiReviewMode} onModeChange={setAiReviewMode} /> : <label className="block text-sm font-semibold">Loại câu hỏi <span className="lesson-review-select-hint">Nhấn vào để chọn số lượng</span>
                 <select aria-label="Loại câu hỏi AI" value={aiQuestionTemplate} disabled={isAiLoading || isSavingQuiz} onChange={event => {
                   const value = event.target.value; setAiQuestionTemplate(value); setAiResponse(''); setAiError('');
                   handleAiPromptTemplateSelect(value === 'mixed' ? 'Hãy tạo đề gồm 10 câu trắc nghiệm (5 điểm) và 2 câu tự luận (5 điểm), kèm đáp án và biểu điểm từng ý.' : value === 'essay' ? 'Hãy tạo 4 câu tự luận, kèm đáp án và biểu điểm từng ý, tổng 10 điểm.' : `Hãy tạo ${value} câu trắc nghiệm A, B, C, D kèm đáp án và biểu điểm, tổng 10 điểm.`);

@@ -19,6 +19,9 @@ export function normalizeMathDelimiters(value = '') {
   // Fix doubled delimiters only; \\ inside aligned environments is a row break.
   const text = String(value ?? '').replace(/\\\\([()[\]])/g, '\\$1');
   return text.replace(mathParts, part => {
+    // Literal set braces after sizing commands need escaping in TeX.
+    // This only changes delimiter syntax, never the members of the set.
+    part = part.replace(/\\(left|right)\s*([{}])/g, '\\$1\\$2');
     if (part.startsWith('$$')) return `\\[${part.slice(2, -2).trim()}\\]`;
     if (part.startsWith('$')) return `\\(${part.slice(1, -1).trim()}\\)`;
     return part;

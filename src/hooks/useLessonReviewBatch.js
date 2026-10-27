@@ -58,6 +58,7 @@ export default function useLessonReviewBatch({ context, service, requestAI, vali
             const sameOptions = (row.responseCount === undefined || row.responseCount === count) && (row.responseEssays === undefined || row.responseEssays === essayCount);
             const checked = await generateVerifiedLessonReview({ windowObject: window,
               payload: lessonReviewBatchPayload(window, source, scope, count, essayCount), count, essayCount, maxAutoQuestions: 10,
+              validateMath: html => callbacks.current.validateMath(html, signal),
               initialResponse: row.rawResponse && !row.rawMathFailed && sameSource && sameOptions ? row.rawResponse : '',
               requestAI: async payload => {
                 if (!current()) throw new Error('Yêu cầu đã đóng.');

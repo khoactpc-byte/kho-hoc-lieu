@@ -13,32 +13,33 @@ import { buildTeacherQuizManagement } from '../utils/teacherQuizManagement';
 import { sortTeachingSubjects, teacherClassLabel } from '../utils/teacherPresentation';
 import { normalizeMathHtml } from '../utils/quizContent';
 import { typesetMath } from '../utils/mathTypesetting';
+import EssayFeedbackText from './EssayFeedbackText';
 
-function Submission({ row, onClose }) {
-  const root = useRef(null);
-  useEffect(() => { typesetMath(root.current); }, [row]);
+function Submission({ row, onClose, inlineEssay = false, renderEssayReview }) {
+  const root = useRef(null),resultRoot=useRef(null);
+  useEffect(() => { typesetMath(resultRoot.current); }, [row]);
   useEffect(() => { root.current?.scrollIntoView?.({ behavior: 'smooth', block: 'nearest' }); }, [row.key]);
   return <section ref={root} className="teacher-quiz-submission" aria-label={`Bài làm của ${row.student.fullName}`}>
-    <header><h4>Bài làm: {row.student.fullName}</h4><button type="button" onClick={onClose} aria-label="Đóng bài làm"><X className="h-4 w-4" /></button></header>
-    {row.result && <section><h5>Trắc nghiệm: {row.quizScore}</h5>
+    {!inlineEssay && <header><h4>Bài làm: {row.student.fullName}</h4><button type="button" onClick={onClose} aria-label="Đóng bài làm"><X className="h-4 w-4" /></button></header>}
+    {row.result && <section ref={resultRoot}><h5>Trắc nghiệm: {row.quizScore}</h5>
       {!row.result.answers?.length && <p>Chưa có chi tiết đáp án trong lượt nộp này.</p>}
       {(row.result.answers || []).map((answer, i) => <article key={answer.questionId || i}>
         <div className="flex gap-2"><b>Câu {i + 1}.</b><div dangerouslySetInnerHTML={{ __html: normalizeMathHtml(answer.questionText || '') }} /></div>
         <p className={answer.isCorrect ? 'text-emerald-700' : 'text-rose-700'}>Chọn: {String(answer.selectedOptionId || 'Chưa chọn').toUpperCase()} · Đáp án: {String(answer.correctOptionId || '—').toUpperCase()} · {answer.isCorrect ? 'Đúng' : 'Sai'}</p>
       </article>)}
     </section>}
-    {row.essay && <section><h5>Tự luận: {row.essayScore}</h5>
+    {row.essay && inlineEssay && renderEssayReview ? renderEssayReview(row.essay,row.student,row.assignment,{inline:true}) : row.essay && <section><h5>Tự luận: {row.essayScore}</h5>
       {/^https?:\/\//i.test(row.essay.fileUrl || '') && <a href={row.essay.fileUrl} target="_blank" rel="noopener noreferrer">Mở file bài nộp: {row.essay.fileName || 'Bài tự luận'}</a>}
       {row.essay.teacherScore == null && row.essay.aiScore != null && <p>Điểm AI chấm nháp, chờ giáo viên kiểm tra.</p>}
-      {row.essay.teacherComment && <p>Nhận xét giáo viên: {row.essay.teacherComment}</p>}
-      {row.essay.aiComment && <details><summary>Nhận xét AI</summary><p>{row.essay.aiComment}</p></details>}
+      {row.essay.teacherComment && <><h5>Nhận xét giáo viên</h5><EssayFeedbackText text={row.essay.teacherComment}/></>}
+      {row.essay.aiComment && <details><summary>Nhận xét AI</summary><EssayFeedbackText text={row.essay.aiComment}/></details>}
     </section>}
   </section>;
 }
 
-export default function TeacherQuizManager({ profile, subscriptionScope, schoolYear, isQuizVisible, onOpenQuiz, currentContext = {}, renderEssayReview, observe = observeTeacherQuizManagement, observeAlerts = observeTeacherSubmissionAlerts }) {
+export default function TeacherQuizManager({ profile, subscriptionScope, schoolYear, isQuizVisible, onOpenQuiz, currentContext = {}, renderEssayReview, onAiGrade,canAiGrade=true, observe = observeTeacherQuizManagement, observeAlerts = observeTeacherSubmissionAlerts }) {
   const rosterRef = useRef(null), triggerRef = useRef(null);
-  const [tab, setTab] = useState('teacher');
+  const [tab, setTab] = useState('student');
   const [weeks, setWeeks] = useState([String(currentContext.lesson || '1')]);
   const currentGrade = String(currentContext.grade || 'all'), currentSubject = currentContext.subject || 'all', currentWeek = String(currentContext.lesson || '1');
   const [alerts, setAlerts] = useState({ loading: true }), [alertError, setAlertError] = useState('');
@@ -81,7 +82,7 @@ export default function TeacherQuizManager({ profile, subscriptionScope, schoolY
   const choose = (quiz, filter = 'all') => { setSelectedId(quiz.id); setStudentFilter(filter); setSearch(''); setWorkKey(''); };
   const navigate = action => { if (!selected) return; if (onOpenQuiz(selected, action) !== false) setOpen(false); };
   return <>
-    <button ref={triggerRef} type="button" className="teacher-quiz-manager-trigger" aria-label="Danh sách bài kiểm tra" title={alertError || (unreadCount ? `Bài kiểm tra · ${unreadCount} bài nộp chưa xem` : 'Bài kiểm tra')} onClick={() => setOpen(true)}><ClipboardCheck className="h-4 w-4" /><span>Bài kiểm tra</span>{unreadCount > 0 && <b className="teacher-submission-badge" aria-label={`${unreadCount} bài nộp chưa xem`}>{unreadCount > 99 ? '99+' : unreadCount}</b>}{alertError && <b className="teacher-alert-error" aria-label="Lỗi cập nhật thông báo">!</b>}</button>
+    <button ref={triggerRef} type="button" className="teacher-quiz-manager-trigger" aria-label="Danh sách bài kiểm tra" title={alertError || (unreadCount ? `Bài kiểm tra · ${unreadCount} bài nộp chưa xem` : 'Bài kiểm tra')} onClick={() => { setTab('student'); setOpen(true); }}><ClipboardCheck className="h-4 w-4" /><span>Bài kiểm tra</span>{unreadCount > 0 && <b className="teacher-submission-badge" aria-label={`${unreadCount} bài nộp chưa xem`}>{unreadCount > 99 ? '99+' : unreadCount}</b>}{alertError && <b className="teacher-alert-error" aria-label="Lỗi cập nhật thông báo">!</b>}</button>
     {open && createPortal(<div className="learning-week-overlay" onKeyDown={event => { if (event.key === 'Escape') setOpen(false); }}>
       <section role="dialog" aria-modal="true" aria-labelledby="teacher-quiz-manager-title" className="learning-week-preview teacher-quiz-manager admin-check-panel">
         <header><div><h3 id="teacher-quiz-manager-title">Bài kiểm tra · Tuần {weeks.join(', ')} · {schoolYear}</h3><p>{profile?.fullName} · Đề giáo viên và bài học sinh nộp.</p></div><button type="button" autoFocus onClick={() => setOpen(false)} aria-label="Đóng danh sách bài kiểm tra"><X /></button></header>
@@ -97,9 +98,11 @@ export default function TeacherQuizManager({ profile, subscriptionScope, schoolY
           </div>
           <div className="teacher-week-choice"><b>Tuần {weeks.join(', ')}</b><details><summary>Chọn nhiều tuần</summary><div>{Array.from({ length: TOTAL_LESSONS }, (_, i) => String(i + 1)).map(week => <label key={week}><input type="checkbox" checked={weeks.includes(week)} onChange={e => { setWeeks(previous => e.target.checked ? [...previous, week].sort((a,b) => Number(a)-Number(b)) : previous.length > 1 ? previous.filter(w => w !== week) : previous); setSelectedId(''); }} />{week}</label>)}</div></details></div>
           {(alertError || seenError) && <p role="alert" className="my-2 text-amber-700">{alertError || seenError}{alertError && <button type="button" className="teacher-quiz-link ml-2" onClick={() => setAlertRetry(n => n + 1)}>Thử lại thông báo</button>}</p>}
-          {tab === 'student' ? error ? <p role="alert">{error}</p> : data.loading ? <p role="status">Đang tải bài học sinh nộp...</p> : <TeacherSubmissionInbox rows={scopedInbox} profile={profile} seen={seen} onSeen={mark}
-            renderWork={(row, onClose) => <><Submission row={row} onClose={onClose} />{row.essay && renderEssayReview?.(row.essay, row.student, row.assignment)}</>}
-            onGrade={row => { const quiz = quizzes.find(item => item.id === row.assignmentId); if (quiz && onOpenQuiz(quiz, 'scores') !== false) setOpen(false); }} /> : <>
+          {tab === 'student' ? error ? <p role="alert">{error}</p> : data.loading ? <p role="status">Đang tải bài học sinh nộp...</p> : <TeacherSubmissionInbox rows={scopedInbox} profile={profile} seen={seen} onSeen={mark} onAiGrade={onAiGrade} canAiGrade={canAiGrade} batchScope={JSON.stringify([schoolYear,grade,subject,weeks])}
+            renderWork={(row, onClose) => <Submission key={row.key} row={row} onClose={onClose} inlineEssay renderEssayReview={renderEssayReview} />}
+            onGrade={row => { const quiz = quizzes.find(item => item.id === row.assignmentId); if (quiz && onOpenQuiz(quiz, 'scores') !== false) setOpen(false); }}>
+              {missing.some(row=>row.missing.length) && <details className="teacher-inbox-missing"><summary>Học sinh còn thiếu bài đã giao ({missing.filter(row=>row.missing.length).length})</summary><TeacherMissingWeekWork rows={missing} weeks={weeks} /></details>}
+            </TeacherSubmissionInbox> : <>
           {error ? <p role="alert" className="my-3 text-rose-600">{error}</p> : data.loading ? <p role="status" className="my-3 text-slate-500">Đang tải đề, bài nộp và danh sách lớp...</p> : <>
             <div className="teacher-quiz-table-scroll"><table><thead><tr><th>Lớp</th><th>Môn</th><th>Tuần / Đề</th><th>Phát đề</th><th>Đã làm</th><th>Chưa làm</th><th>Chờ chấm</th></tr></thead>
               <tbody>{!filtered.length ? <tr><td colSpan={7}>Chưa có bài kiểm tra theo bộ lọc này.</td></tr> : filtered.map(quiz => <tr key={quiz.id} className={selectedId === quiz.id ? 'is-selected' : ''}>
@@ -121,7 +124,7 @@ export default function TeacherQuizManager({ profile, subscriptionScope, schoolY
             </section>}
           </>}
           </>}
-          {!data.loading && !error && <TeacherMissingWeekWork rows={missing} weeks={weeks} />}
+          {tab === 'teacher' && !data.loading && !error && <TeacherMissingWeekWork rows={missing} weeks={weeks} />}
         </div>
       </section>
     </div>, document.body)}

@@ -27,20 +27,22 @@ export default function StudentFilterDropdown({ label, options, value, onChange,
   useLayoutEffect(() => {
     if (!open) return;
     setSearch('');
-    const rect = trigger.current.getBoundingClientRect();
-    const viewportHeight = window.innerHeight;
-    const width = Math.min(300, window.innerWidth - 16);
-    const below = viewportHeight - rect.bottom - 12;
-    const above = rect.top - 12;
-    const upwards = below < 240 && above > below;
-    const maxHeight = Math.min(360, Math.max(120, upwards ? above : below));
-    setPosition({
-      left: Math.max(8, Math.min(rect.left, window.innerWidth - width - 8)),
-      top: upwards ? undefined : Math.max(8, rect.bottom + 4),
-      bottom: upwards ? Math.max(8, viewportHeight - rect.top + 4) : undefined,
-      width,
-      maxHeight
-    });
+    const measure = () => {
+      const rect = trigger.current.getBoundingClientRect(), viewport = window.visualViewport;
+      const viewportTop = viewport?.offsetTop || 0, viewportBottom = viewportTop + (viewport?.height || window.innerHeight);
+      const width = Math.min(300, window.innerWidth - 16);
+      const below = viewportBottom - rect.bottom - 12, above = rect.top - viewportTop - 12;
+      const upwards = below < 240 && above > below;
+      setPosition({
+        left: Math.max(8, Math.min(rect.left, window.innerWidth - width - 8)),
+        top: upwards ? undefined : Math.max(viewportTop + 8, rect.bottom + 4),
+        bottom: upwards ? Math.max(8, window.innerHeight - rect.top + 4) : undefined,
+        width, maxHeight: Math.min(360, Math.max(120, upwards ? above : below))
+      });
+    };
+    measure();
+    window.addEventListener('resize', measure); window.visualViewport?.addEventListener('resize', measure);
+    return () => { window.removeEventListener('resize', measure); window.visualViewport?.removeEventListener('resize', measure); };
   }, [open]);
 
   useEffect(() => {
@@ -62,7 +64,8 @@ export default function StudentFilterDropdown({ label, options, value, onChange,
     const scroll = event => {
       if (!panel.current?.contains(event.target)) onOpenChange(false);
     };
-    const resize = () => onOpenChange(false);
+    const viewportWidth = window.innerWidth;
+    const resize = () => { if (window.innerWidth !== viewportWidth) onOpenChange(false); };
     document.addEventListener('pointerdown', outside);
     document.addEventListener('keydown', keyboard);
     window.addEventListener('scroll', scroll, true);
@@ -94,7 +97,7 @@ export default function StudentFilterDropdown({ label, options, value, onChange,
     </button>
     {open && position && createPortal(
       <div ref={panel} id={panelId} role="dialog" aria-label={`Lọc ${label}`} style={position}
-        className="fixed z-[100] flex flex-col rounded-lg border border-slate-200 bg-white p-2 text-left text-xs font-normal normal-case text-slate-700 shadow-xl">
+        className="student-filter-panel fixed z-[100] flex flex-col rounded-lg border border-slate-200 bg-white p-2 text-left text-xs font-normal normal-case text-slate-700 shadow-xl">
         <div className="mb-2 flex shrink-0 items-center justify-between gap-2">
           <span className="truncate font-medium">{label}</span>
           <button type="button" aria-label={`Đóng lọc ${label}`} onClick={() => close(true)} className="rounded p-1 hover:bg-slate-100"><X className="h-4 w-4" /></button>

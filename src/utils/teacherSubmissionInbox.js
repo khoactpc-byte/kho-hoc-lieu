@@ -62,7 +62,7 @@ export function buildTeacherSubmissionInbox({ results = [], quickResults = [], h
     if (source !== 'handwritten' && group.kind === 'essay') group.kind = submissionKind(record, assignment, source);
   }
   return [...groups.values()].map(row => {
-    const reviewed = row.essay?.status === 'teacher_reviewed' && row.essay.teacherScore != null && String(row.essay.teacherScore).trim() !== '';
+    const reviewed = row.essay?.status === 'teacher_reviewed' && (!!row.essay.teacherAssessment || row.essay.teacherScore != null && String(row.essay.teacherScore).trim() !== '');
     const pending = !!row.essay && !abandoned(row.essay) && !reviewed;
     const dueAt = submissionTime(row.assignment.dueAt || row.assignment.deadlineAt || row.assignment.submissionDeadline);
     return { ...row, pending, dueAt, late: !!dueAt && row.submittedAt > dueAt, canGrade: row.kind !== 'review' && quizzes.some(q => q.id === row.assignment.id && sameContext(q, row)),
@@ -70,8 +70,8 @@ export function buildTeacherSubmissionInbox({ results = [], quickResults = [], h
       kindLabel: SUBMISSION_KINDS.find(([key]) => key === row.kind)?.[1] || 'Bài làm',
       title: row.title || (row.kind === 'review' ? 'Câu hỏi ôn tập' : row.kind === 'essay' ? 'Bài tự luận chưa phân loại' : 'Bài kiểm tra'),
       quizScore: quizScoreLabel(row.result?.score, row.result?.total),
-      essayScore: quizScoreLabel(row.essay?.teacherScore ?? row.essay?.aiScore, row.essay?.teacherMaxScore ?? row.essay?.aiMaxScore),
-      status: pending ? 'Chờ chấm' : row.result?.needsRetake ? 'Cần làm lại' : row.essay && abandoned(row.essay) && !row.result ? 'Đã thoát trang' : reviewed || row.result ? 'Đã chấm' : 'Đã nộp' };
+      essayScore: row.essay?.teacherAssessment || row.essay?.aiAssessment || quizScoreLabel(row.essay?.teacherScore ?? row.essay?.aiScore, row.essay?.teacherMaxScore ?? row.essay?.aiMaxScore),
+      status: pending ? row.essay.aiStatus==='graded'?'Chờ duyệt':row.essay.aiStatus==='grading'?'AI đang chấm':row.essay.aiStatus==='queued'?'Chờ AI':row.essay.aiStatus==='error'?'AI chưa chấm được':'Chờ chấm' : row.result?.needsRetake ? 'Cần làm lại' : row.essay && abandoned(row.essay) && !row.result ? 'Đã thoát trang' : reviewed || row.result ? 'Đã chấm' : 'Đã nộp' };
   }).sort((a, b) => b.submittedAt - a.submittedAt || a.key.localeCompare(b.key));
 }
 

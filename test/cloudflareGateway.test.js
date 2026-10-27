@@ -44,6 +44,21 @@ test('enforces limits on declared and streamed bodies without sending any bytes 
   assert.equal((await worker.fetch(req('identity', { headers: { 'Content-Length': '12001' } }), {})).status, 413);
   assert.equal(count, 0);
 });
+
+test('remember login forwards only same-origin bounded JSON, keeping the session secret out of URLs and cookies', async () => {
+  const calls = [];
+  const worker = createGateway(async (url, options) => { calls.push({ url, options }); return new Response('{"error":"Phiên không hợp lệ"}', { status: 401, headers: { 'Content-Type': 'application/json' } }); });
+  const response = await worker.fetch(req('remember-login', { body: JSON.stringify({ action: 'restore', rememberToken: 'test-fixture' }) }), {});
+  assert.equal(response.status, 401);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, 'https://phocaptmt.netlify.app/.netlify/functions/remember-login');
+  assert.equal(calls[0].options.headers.has('cookie'), false);
+  assert.equal(response.headers.get('cache-control'), 'no-store');
+  assert.equal((await worker.fetch(req('remember-login', { body: 'x'.repeat(12001) }), {})).status, 413);
+  assert.equal((await worker.fetch(req('remember-login', { headers: { origin: 'https://other.example' } }), {})).status, 403);
+  assert.equal((await worker.fetch(req('remember-login?rememberToken=secret'), {})).status, 404);
+  assert.equal(calls.length, 1);
+});
 test('redirects, non-JSON, network failure and timeout fail closed without replay or secret error text', async () => {
   for (const scenario of ['redirect', 'html', 'error', 'timeout']) {
     let count = 0;

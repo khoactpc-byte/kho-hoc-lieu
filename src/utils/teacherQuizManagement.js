@@ -33,9 +33,9 @@ export function buildTeacherQuizManagement({ quizzes = [], results = [], handwri
       const result = latest(quizResults.filter(record => recordBelongsToStudent(record, student)));
       const essay = latest(essays.filter(record => recordBelongsToStudent(record, student)));
       const submitted = !!result || !!essay;
-      const pending = !!essay && (essay.status !== 'teacher_reviewed' || number(essay.teacherScore) === null);
+      const pending = !!essay && (essay.status !== 'teacher_reviewed' || !essay.teacherAssessment && number(essay.teacherScore) === null);
       return { key: student.id || student.accessCode, student, result, essay, submitted, pending,
-        quizScore: quizScoreLabel(result?.score, result?.total), essayScore: quizScoreLabel(essay?.teacherScore ?? essay?.aiScore, essay?.teacherMaxScore ?? essay?.aiMaxScore),
+        quizScore: quizScoreLabel(result?.score, result?.total), essayScore: essay?.teacherAssessment || essay?.aiAssessment || quizScoreLabel(essay?.teacherScore ?? essay?.aiScore, essay?.teacherMaxScore ?? essay?.aiMaxScore),
         status: pending ? 'Chờ chấm' : submitted ? 'Đã làm' : 'Chưa làm' };
     }).sort((a, b) => String(a.student.fullName || '').localeCompare(String(b.student.fullName || ''), 'vi'));
     return { ...quiz, rows, available: isVisible(quiz), expectedCount: rows.length, submittedCount: rows.filter(row => row.submitted).length,

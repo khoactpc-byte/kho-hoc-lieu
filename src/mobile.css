@@ -1,0 +1,119 @@
+/* Mobile layout is explicit; desktop worksheets keep their existing controls. */
+.student-mobile-search,.student-mobile-tools-toggle,.student-view-options-trigger { display:none; }
+.student-view-options,.student-view-options-panel { display:contents; }
+
+@media(max-width:767px) {
+  .admin-header-top { gap:4px; padding:2px 6px; height:40px; min-width:0; }
+  .admin-header-brand,.admin-header-school { display:none; }
+  .admin-header-module { flex:1 1 150px; min-width:0; }
+  .admin-header-module select { height:36px; padding:4px 18px 4px 8px; font-size:14px; font-weight:600; }
+  .admin-header-top .admin-teaching-entry { display:inline-flex; justify-content:center; align-items:center; flex:0 0 36px; width:36px; height:36px; min-height:36px; padding:0; border-radius:6px; }
+  .admin-header-top .admin-teaching-entry span { display:none; }
+  .admin-header-top .admin-teaching-entry svg { width:19px; height:19px; }
+  .admin-header-year { gap:4px; margin-left:0; }
+  .admin-header-year > button:not(.admin-header-exit) { display:none; }
+  .admin-header-year select { height:36px; width:100px; font-size:12px; padding:4px; }
+  .admin-header-year .admin-header-exit { display:grid; place-items:center; width:36px; height:36px; padding:0; }
+  .admin-navigation { height:36px; padding:0 6px; gap:4px; overflow-x:visible; }
+  .admin-navigation > :is(details,a,button) { flex:1 1 0; min-width:0; }
+  .admin-navigation summary,.admin-navigation > :is(a,button) { display:flex; width:100%; min-width:0; height:32px; padding:0 6px; gap:4px; font-size:11px; justify-content:center; }
+  .admin-navigation summary > svg,.admin-navigation > :is(a,button) > svg { flex-shrink:0; width:15px; height:15px; }
+  .admin-navigation .admin-menu-label { min-width:0; max-width:none; }
+  .admin-navigation .admin-menu-label[data-mobile-label] { font-size:0; }
+  .admin-navigation .admin-menu-label[data-mobile-label]::after { content:attr(data-mobile-label); font-size:11px; }
+  .admin-navigation summary > svg:last-child { display:none; }
+  .admin-navigation .admin-menu-account { flex:0 0 34px; }
+  .admin-menu-account .admin-menu-label,.admin-menu-account summary > svg:last-child { display:none; }
+  .admin-menu-account summary { padding:0; }
+  .admin-navigation details > div { position:fixed; left:8px; right:8px; top:76px; width:auto; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); max-height:calc(100dvh - 90px); overflow:auto; }
+  .admin-navigation details > div :is(a,button) { min-height:40px; font-size:13px; font-weight:500; }
+
+  .admin-notice-workspace { padding:8px; }
+  .admin-notice-workspace > div { gap:10px; }
+  .admin-notice-heading { padding:10px; border-radius:8px; }
+  .admin-notice-heading-row { flex-direction:row; align-items:center; justify-content:space-between; gap:6px; }
+  .admin-notice-heading h2 { font-size:15px; text-transform:none; gap:6px; }
+  .admin-notice-heading h2 svg { width:17px; height:17px; }
+  .admin-notice-heading p { display:none; }
+  .admin-notice-actions { flex-wrap:nowrap; flex-shrink:0; gap:6px; }
+  .admin-notice-actions button { width:36px; height:36px; padding:0; border-radius:6px; }
+  .admin-notice-actions button > span { display:none; }
+  .admin-notice-workspace h3 { font-size:14px; }
+  .admin-notice-workspace .divide-y > div { padding:10px; }
+  .admin-notice-workspace .divide-y h4 { font-size:13px; line-height:1.5; }
+  .admin-notice-workspace .divide-y .text-xs { font-size:11px; }
+  .admin-mailbox-panel { padding:10px; border-radius:8px; }
+  .admin-mailbox-panel :is(button,a) { min-height:36px; height:auto; border-radius:6px; font-size:12px; font-weight:500; }
+  .admin-mailbox-panel :is(input:not([type="checkbox"]),select,textarea) { font-size:16px; border-radius:6px; }
+  .admin-mailbox-panel select { height:36px; }
+  .admin-mailbox-panel details { margin-top:12px; padding-top:8px; }
+  .admin-mailbox-panel summary { min-height:36px; font-size:12px; }
+  .admin-mailbox-panel > div:first-child p { display:none; }
+
+  .student-database-heading { padding:6px 8px; gap:4px; }
+  .student-database-heading-row { gap:4px; }
+  .student-database-heading h3 { font-size:13px; gap:5px; }
+  .student-database-heading h3 > svg { width:17px; height:17px; }
+  .student-database-heading button[title="Đóng database"] { display:flex; width:32px; height:32px; }
+  .student-database-actions > button[title="Đóng database"] { display:none; }
+  .student-database-actions { display:flex; flex-wrap:wrap; overflow:visible; gap:4px; padding-bottom:0; white-space:normal; }
+  .student-mobile-search { display:flex; align-items:center; flex:1 1 calc(100% - 124px); min-width:95px; height:36px; gap:5px; padding:0 7px; border:1px solid #cbd5e1; border-radius:6px; background:white; color:#64748b; order:0; }
+  .student-mobile-search > svg { flex-shrink:0; width:16px; height:16px; }
+  .student-mobile-search input { width:100%; min-width:0; height:100%; outline:none; font-size:16px; color:#0f172a; background:transparent; }
+  .student-database-actions > button,.student-database-actions > div > button { position:relative; flex:0 0 36px; width:36px; height:36px; padding:0; gap:0; font-size:0; border-radius:6px; justify-content:center; order:4; }
+  .student-database-actions > div { order:4; }
+  .student-database-actions > [data-mobile-primary] { order:1; }
+  .student-database-actions > .student-mobile-tools-toggle { display:inline-flex; align-items:center; order:2; border:1px solid #cbd5e1; background:#fff; color:#475569; }
+  .student-database-actions[data-mobile-expanded="false"] > :not(.student-mobile-search):not(.student-mobile-tools-toggle):not([data-mobile-primary]) { display:none; }
+  .student-database-actions[data-mobile-expanded="true"] > button:not([data-mobile-primary]):not(.student-mobile-tools-toggle),.student-database-actions[data-mobile-expanded="true"] > div { flex:1 1 calc(50% - 4px); width:auto; }
+  .student-database-actions[data-mobile-expanded="true"] > button:not([data-mobile-primary]):not(.student-mobile-tools-toggle),.student-database-actions[data-mobile-expanded="true"] > div > button { width:100%; min-height:36px; height:auto; padding:7px 9px; gap:6px; font-size:12px; justify-content:flex-start; white-space:normal; }
+  .student-database-actions button svg { width:17px; height:17px; }
+  .student-database-actions > button > span { position:absolute; top:-4px; right:-3px; font-size:10px; line-height:16px; }
+  .student-database-filters { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); align-items:end; gap:5px 8px; padding:6px 8px; }
+  .student-database-filter-field { min-width:0; grid-column:auto; flex-direction:column; align-items:stretch; gap:2px; font-size:11px; order:0; }
+  .student-database-filter-field > div { width:100%; }
+  .student-database-filter-field > div > button { height:34px; padding:4px 6px; font-size:12px; }
+  .student-database-filter-field > span { white-space:nowrap; }
+  .student-view-options { display:block; position:relative; grid-column:1; order:1; align-self:center; }
+  .student-view-options-trigger { display:flex; align-items:center; justify-content:center; gap:4px; height:32px; width:100%; border:1px solid #cbd5e1; border-radius:5px; background:white; font-size:12px; }
+  .student-view-options-panel { display:none; position:absolute; top:calc(100% + 4px); left:0; z-index:35; width:225px; padding:8px 10px; border:1px solid #cbd5e1; border-radius:7px; background:white; box-shadow:0 8px 24px #0f172a24; }
+  .student-view-options-panel[data-open="true"] { display:flex; flex-direction:column; }
+  .student-view-options-panel label { display:flex; gap:8px; min-height:36px; font-size:13px; }
+  .student-view-options-panel input { width:16px; height:16px; accent-color:#4338ca; }
+  .student-database-filter-actions { display:flex; grid-column:2 / -1; order:1; min-height:32px; gap:5px; align-items:center; }
+  .student-database-filter-actions [aria-label="Số học sinh đang hiển thị"] { margin-left:auto; font-size:11px; }
+  .student-database-filter-actions button { font-size:11px; }
+  .student-filter-panel { z-index:1250; }
+  .student-filter-panel input[type="search"] { height:36px; font-size:16px; }
+  .student-filter-panel :is(button,label) { min-height:36px; font-size:13px; }
+  .student-filter-panel label { align-items:center; }
+  .student-database-workspace .student-database-table { font-size:12px; }
+
+  .student-mobile-list { min-height:0; flex:1; overflow:auto; overscroll-behavior:contain; background:#fff; }
+  .student-mobile-select-all { display:flex; align-items:center; gap:8px; min-height:32px; padding:4px 12px; border-bottom:1px solid #e2e8f0; font-size:11px; color:#64748b; }
+  .student-mobile-select-all span { margin-left:auto; }
+  .student-mobile-list input { width:16px; height:16px; accent-color:#0369a1; }
+  .student-mobile-list li { display:flex; align-items:center; border-bottom:1px solid #e2e8f0; }
+  .student-mobile-list li[data-selected="true"] { background:#eff6ff; }
+  .student-mobile-select { display:flex; align-items:center; justify-content:center; flex:0 0 36px; min-height:56px; cursor:pointer; }
+  .student-mobile-open { display:flex; align-items:center; flex:1; min-width:0; min-height:64px; gap:8px; padding:8px 10px 8px 0; text-align:left; }
+  .student-mobile-open > img { width:36px; height:44px; object-fit:cover; border-radius:4px; }
+  .student-mobile-identity { display:flex; flex:1; min-width:0; flex-direction:column; gap:3px; }
+  .student-mobile-identity strong { font-size:14px; font-weight:600; color:#0f172a; overflow-wrap:anywhere; }
+  .student-mobile-identity > span { font-size:12px; color:#64748b; }
+  .student-mobile-open > svg { flex-shrink:0; color:#94a3b8; }
+
+  #student-database-search { padding:8px; align-items:center; }
+  #student-database-search form { max-height:calc(100dvh - 16px); border-radius:10px; }
+  #student-database-search h2 { font-size:15px; }
+  #student-database-search .student-search-field { grid-template-columns:88px minmax(0,1fr); gap:6px; }
+  #student-database-search .student-search-grid { gap:8px; }
+  #student-database-search :is(input,select) { min-height:36px; font-size:16px; }
+  #student-database-search summary { min-height:36px; padding-block:8px; }
+  #student-database-search form > div:last-child { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:6px; }
+  #student-database-search form > div:last-child p { grid-column:1/-1; }
+  #student-database-search form > div:last-child button { height:36px; padding-inline:6px; justify-content:center; }
+  .student-profile-panel .student-profile-form :is(input:not([type="checkbox"]):not([type="file"]),select,textarea) { font-size:16px; }
+  .student-profile-panel .student-profile-header { padding:8px; gap:6px; }
+  .student-profile-panel .student-profile-header h2 { font-size:15px; }
+}

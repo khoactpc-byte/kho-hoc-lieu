@@ -1,0 +1,17 @@
+{
+  "id": "/",
+  "name": "TTHTCĐ phường Trung Mỹ Tây",
+  "short_name": "TTHTCĐ TMT",
+  "description": "Học liệu, thông báo và học tập tại Trung tâm Học tập cộng đồng phường Trung Mỹ Tây.",
+  "lang": "vi",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "theme_color": "#1238a8",
+  "background_color": "#ffffff",
+  "icons": [
+    { "src": "/logo/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/logo/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/logo/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

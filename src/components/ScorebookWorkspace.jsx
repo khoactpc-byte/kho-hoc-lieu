@@ -11,6 +11,7 @@ import { useScorebookDraft } from '../hooks/useScorebookDraft';
 import { normalizeNumericScore } from '../utils/scoreValues';
 import { parseCalendarDate } from '../utils/calendarDate';
 import { resolveScorebookDocument, scorebookDocumentId } from '../utils/scorebookArchive';
+import { transcriptFirstYear } from '../utils/transcriptSettings';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import { collection, onSnapshot } from 'firebase/firestore';
@@ -21,7 +22,6 @@ import { compareSchoolRosterStudents, DEFAULT_SCHOOL_CODE, getSchoolClassTeacher
 
 const PREFERRED_START_SHEET = 'Bia';
 const TRANSCRIPT_SIGNATURE_SETTINGS_KEY = 'khl-transcript-signature-settings-v1';
-const TRANSCRIPT_START_YEAR_SETTINGS_KEY = 'khl-transcript-start-year-v1';
 const COMMUNITY_CENTER_NAME = 'TT Học tập cộng đồng phường Trung Mỹ Tây';
 const COMMUNITY_CENTER_SHORT_NAME = 'TT HTCĐ phường Trung Mỹ Tây';
 
@@ -719,6 +719,7 @@ export default function ScorebookWorkspace({
   initialSchoolCode = DEFAULT_SCHOOL_CODE,
   currentSchoolYear,
   principalName = '',
+  transcriptFirstSchoolYear,
   transcriptStartDates = {},
   transcriptEndDates = {},
   transcriptGrade9EndDates = {},
@@ -784,15 +785,7 @@ export default function ScorebookWorkspace({
   const [printPageIndex, setPrintPageIndex] = useState(0);
   const [showTeacherPanel, setShowTeacherPanel] = useState(false);
   const [showTranscriptPrintPanel, setShowTranscriptPrintPanel] = useState(false);
-  const [transcriptStartYear, setTranscriptStartYear] = useState(() => {
-    try {
-      const saved = profileSchoolYear(window.localStorage.getItem(TRANSCRIPT_START_YEAR_SETTINGS_KEY));
-      return saved && Number(saved.slice(0, 4)) >= HISTORICAL_FIRST_YEAR ? saved : '2025-2026';
-    } catch { return '2025-2026'; }
-  });
-  useEffect(() => {
-    window.localStorage.setItem(TRANSCRIPT_START_YEAR_SETTINGS_KEY, transcriptStartYear);
-  }, [transcriptStartYear]);
+  const transcriptStartYear = transcriptFirstYear(transcriptFirstSchoolYear);
   const [transcriptSignatureSettings, setTranscriptSignatureSettings] = useState(() => {
     try {
       const saved = JSON.parse(window.localStorage.getItem(TRANSCRIPT_SIGNATURE_SETTINGS_KEY) || '{}');
@@ -2878,38 +2871,6 @@ export default function ScorebookWorkspace({
     () => getTranscriptYearEntriesForStudent(selectedTranscriptStudent),
     [getTranscriptYearEntriesForStudent, selectedTranscriptStudent]
   );
-  const historicalTranscriptYearEntries = selectedTranscriptStudent
-    ? getTranscriptYearEntriesForStudent(selectedTranscriptStudent, `${HISTORICAL_FIRST_YEAR}-${HISTORICAL_FIRST_YEAR + 1}`)
-      .filter(entry => entry.startYear < ROSTER_DIGITAL_START_YEAR)
-    : [];
-  const openHistoricalTranscriptPrint = () => {
-    const year = historicalTranscriptYearEntries[historicalTranscriptYearEntries.length - 1]?.schoolYear;
-    if (!year) {
-      showNotification?.('Học sinh này chưa có năm học trước 2025–2026 trong hồ sơ. Hãy kiểm tra năm nhập học và lịch sử lớp.', 'error');
-      return;
-    }
-    setTranscriptStartYear(`${HISTORICAL_FIRST_YEAR}-${HISTORICAL_FIRST_YEAR + 1}`);
-    setTranscriptPrintDraft({ includeCover: true, mode: 'year', year, duplexBlank: true });
-    setTranscriptPrintStudentIds(previous => {
-      const valid = previous.filter(id => transcriptStudents.some(student => student.id === id));
-      return valid.length ? valid : [selectedTranscriptStudent?.id].filter(Boolean);
-    });
-    setShowTranscriptPrintPanel(true);
-  };
-  const renderTranscriptStartYearSelect = (label) => (
-    <label className="flex flex-wrap items-center gap-2 text-sm text-slate-700">
-      {label}
-      <select aria-label={label} value={transcriptStartYear} onChange={event => {
-        setTranscriptStartYear(event.target.value);
-        setTranscriptPrintDraft(previous => ({ ...previous, year: '', mode: 'all' }));
-      }} className="scorebook-select">
-        {Array.from({ length: Math.max(2025, getSchoolYearStartYear(currentSchoolYear), Number(transcriptStartYear.slice(0, 4))) - HISTORICAL_FIRST_YEAR + 1 }, (_, index) => {
-          const start = HISTORICAL_FIRST_YEAR + index, year = `${start}-${start + 1}`;
-          return <option key={year} value={year}>{year}</option>;
-        })}
-      </select>
-    </label>
-  );
   const sameSchoolYear = (a = '', b = '') => compactSchoolYearLabel(a) === compactSchoolYearLabel(b);
   const getScorebookEditsForYearGrade = (schoolYearLabel = currentSchoolYear, gradeValue = grade, schoolCode = scorebookSchoolCode) => {
     const schoolYearKey = compactSchoolYearLabel(schoolYearLabel);
@@ -3793,12 +3754,6 @@ export default function ScorebookWorkspace({
           </label>}
           {isTranscriptMode ? (
             <div className="scorebook-student-picker min-w-0 space-y-1">
-              {renderTranscriptStartYearSelect('Học bạ từ năm học')}
-              <button type="button" onClick={openHistoricalTranscriptPrint}
-                disabled={!historicalTranscriptYearEntries.length}
-                className="w-full rounded-md border border-amber-300 bg-amber-50 px-2 py-1.5 text-xs font-medium text-amber-900 hover:bg-amber-100 disabled:opacity-50 disabled:cursor-not-allowed">
-                In lại học bạ năm cũ (2023–2025)
-              </button>
               <TranscriptStudentPicker key={`${currentSchoolYear}-${grade}-${scorebookSchoolCode}`}
                 students={transcriptStudents.map(student => ({ ...student, label: titleCaseText(student.fullName), classLabel: displaySchoolClass(student.className) || 'Chưa rõ lớp' }))}
                 selectedId={selectedTranscriptStudent?.id} selectedPrintIds={transcriptDraftStudentIds}
@@ -3892,9 +3847,8 @@ export default function ScorebookWorkspace({
               </div>
               <div className="space-y-3">
                 <div className="rounded-md border border-blue-100 bg-blue-50 p-3">
-                  {renderTranscriptStartYearSelect('In từ năm học')}
-                  <p className="mt-2 text-xs text-slate-600">Có thể in lại học bạ năm 2023–2024, 2024–2025 dù bản gốc đã ghi tay. Điểm đã lưu đúng năm sẽ được điền vào; thông tin chưa có dữ liệu sẽ để trống để nhà trường đối chiếu trước khi ký, đóng dấu xác nhận.</p>
-                  {!transcriptYearEntries.length && <p className="mt-1 text-xs text-amber-800">Không có trang kết quả trong khoảng năm đã chọn của học sinh đang xem.</p>}
+                  <p className="text-xs text-slate-600">Học bạ tự cập nhật điểm đã lưu của từng năm. Muốn in trước năm {transcriptStartYear}, đổi “Năm sớm nhất trong học bạ” ở Cài đặt.</p>
+                  {!transcriptYearEntries.length && <p className="mt-1 text-xs text-amber-800">Chưa có trang kết quả trong phạm vi học bạ đã cài đặt.</p>}
                 </div>
                 <div className="rounded-md border border-emerald-100 bg-emerald-50 p-3 text-sm font-normal text-emerald-950">
                   Đã chọn {transcriptDraftStudentIds.length || 1} học sinh từ mục “Danh sách học sinh” ở thanh bên trái.
@@ -3917,7 +3871,7 @@ export default function ScorebookWorkspace({
                     onChange={() => setTranscriptPrintDraft(prev => ({ ...prev, mode: 'all' }))}
                     className="h-5 w-5 accent-emerald-600"
                   />
-                  In kết quả từ năm đã chọn
+                  In tất cả các năm trong học bạ
                 </label>
                 <div className="rounded-md border border-slate-200 bg-white p-3">
                   <label className="flex items-center gap-3 font-normal text-slate-700">
@@ -3931,6 +3885,7 @@ export default function ScorebookWorkspace({
                     In kết quả một năm học
                   </label>
                   <select
+                    aria-label="Năm học cần in"
                     value={transcriptPrintDraft.year || transcriptYearEntries[transcriptYearEntries.length - 1]?.schoolYear || ''}
                     onChange={(event) => setTranscriptPrintDraft(prev => ({ ...prev, year: event.target.value, mode: 'year' }))}
                     className="mt-3 h-9 w-full rounded border border-slate-200 bg-white px-3 text-sm font-normal text-slate-700 outline-none focus:border-emerald-500"
@@ -4027,6 +3982,7 @@ export default function ScorebookWorkspace({
           {isTranscriptMode ? (
             <div className="scorebook-transcript-layout min-h-full">
               <div className="transcript-print-root min-w-0 flex-1 space-y-5">
+                {selectedTranscriptStudent && !transcriptYearEntries.length && <p role="status" className="scorebook-toolbar rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">Học bạ đang áp dụng từ năm {transcriptStartYear}. Muốn xem hoặc in năm cũ hơn, đổi “Năm sớm nhất trong học bạ” ở Cài đặt.</p>}
                 {selectedTranscriptStudent ? transcriptVisiblePages.map((page, index) => (
                   <ScorebookPageView key={`transcript-page-${page.key || index}`} width={transcriptPageWidth} zoom={viewZoom}>
                   <div className="transcript-page-frame mx-auto bg-white shadow-2xl border border-slate-300" style={{ width: transcriptPageWidth, height: transcriptPageHeight }}>
@@ -4266,3 +4222,4 @@ export default function ScorebookWorkspace({
     </div>
   );
 }
+

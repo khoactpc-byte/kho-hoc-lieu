@@ -20,6 +20,12 @@ export function validateLessonReviewMath(html, signal) {
     const timer = setTimeout(() => done(new Error('Chưa kiểm tra được hiển thị công thức. Tải lại trang rồi thử tiếp.')), 20000);
     if (signal?.aborted) { abort(); return; }
     signal?.addEventListener('abort', abort, { once: true });
-    typesetMath(root, success => done(success ? (renderedQuizMathIssue(root) ? new Error(renderedQuizMathIssue(root)) : null) : new Error('Chưa tải được phần hiển thị công thức. Chưa lưu bộ ôn tập này.')));
+    typesetMath(root, success => {
+      const invalid = root.querySelector('mjx-merror, [data-mjx-error]');
+      const detail = invalid?.getAttribute('data-mjx-error') || invalid?.textContent || '';
+      const error = renderedQuizMathIssue(root);
+      done(success ? (error ? Object.assign(new Error(`${error}${detail ? ` Lỗi LaTeX: ${detail.slice(0, 300)}.` : ''}`), { code: 'math_render_invalid' }) : null)
+        : new Error('Chưa tải được phần hiển thị công thức. Chưa lưu bộ ôn tập này.'));
+    });
   });
 }

@@ -12,6 +12,21 @@ const reviewSchema = { type: 'OBJECT', properties: {
   }, required: ['number', 'wellPosed', 'correctOptions', 'explanation'] } }
 }, required: ['complete', 'checks'] };
 
+function draftPayload(payload) {
+  const schema = payload.generationConfig?.responseSchema;
+  const question = schema?.properties?.questions?.items;
+  if (!question) return payload;
+  // The independent pass supplies these solutions. Writing them twice adds
+  // latency without improving the independent check.
+  const properties = Object.fromEntries(Object.entries(question.properties).filter(([key]) => key !== 'explanation'));
+  return { ...payload, contents: [...payload.contents, { role: 'user', parts: [{ text:
+    'Lượt này chỉ tạo câu hỏi, phương án và khóa đáp án; bỏ explanation của trắc nghiệm theo schema. Lượt giải độc lập tiếp theo sẽ cung cấp lời giải. Vẫn giữ đủ lời giải tự luận nếu có. Với tập hợp, dùng [BS]{ và [BS]} cho ngoặc tập hợp; không cần left/right hay lệnh điều chỉnh vị trí chữ.'
+  }] }], generationConfig: { ...payload.generationConfig, responseSchema: { ...schema, properties: {
+    ...schema.properties, questions: { ...schema.properties.questions, items: { ...question, properties,
+      required: question.required.filter(key => key !== 'explanation') } }
+  } } } };
+}
+
 export function lessonReviewVerificationPayload(payload, result) {
   // Hide the proposed keys and explanations so the second pass solves independently.
   const questions = result.quizData.questions.map((question, index) => ({ number: index + 1, text: question.text,
@@ -43,15 +58,48 @@ function applyIndependentAnswers(data, result, rawCheck) {
   return { data: { ...data, questions: data.questions.map((question, index) => ({ ...question, ...checked.get(index + 1) })) }, changes };
 }
 
+// Quick creation keeps the full answer/solution schema and validates it locally.
+// An independent solution remains available through the explicit review action.
+export async function generateQuickLessonReview({ windowObject, payload, count, essayCount, requestAI,
+  onProgress = () => {}, maxAutoQuestions = 20, validateMath }) {
+  let feedback = '';
+  for (let attempt = 0; attempt < 2; attempt++) {
+    onProgress(attempt ? 'Đang sửa câu chưa đạt…' : 'Đang tạo nhanh câu hỏi, đáp án và lời giải…');
+    const repair = { role: 'user', parts: [{ text: `Bản trước chưa đạt: ${feedback.slice(0, 3000)}. Sửa lỗi, giữ đúng nguồn và số câu; trả toàn bộ JSON đúng schema, đủ đáp án và lời giải.` }] };
+    // Network and quota failures must not regenerate another draft here.
+    const response = await requestAI(attempt ? { ...payload, contents: [...payload.contents, repair] } : payload);
+    let result;
+    try { result = prepareBatchLessonReview(windowObject, response, count, essayCount, { maxAutoQuestions }); }
+    catch (failure) { feedback = failure.message; continue; }
+    try { await validateMath?.(result.content); }
+    catch (failure) {
+      if (failure.code !== 'math_render_invalid') throw failure;
+      feedback = failure.message; continue;
+    }
+    return { response, result, changes: [], verified: false };
+  }
+  throw new Error(`Chưa tạo được bộ câu hỏi hợp lệ sau khi tự sửa: ${feedback}`);
+}
+
 // At most two drafts, each followed by an independent solution pass. Network/quota failures never loop here.
 export async function generateVerifiedLessonReview({ windowObject, payload, count, essayCount, requestAI,
-  initialResponse = '', onProgress = () => {}, maxAutoQuestions = 20 }) {
+  initialResponse = '', onProgress = () => {}, maxAutoQuestions = 20, validateMath }) {
   let response = initialResponse, feedback = '';
+  const validate = async html => {
+    try { await validateMath?.(html); }
+    catch (failure) {
+      // A renderer loading failure or cancellation cannot be repaired by
+      // generating new mathematics. Preserve it instead of spending AI calls.
+      if (failure.code !== 'math_render_invalid') failure.noAutoRepair = true;
+      throw failure;
+    }
+  };
   for (let attempt = 0; attempt < 2; attempt++) {
     if (!response) {
       onProgress(attempt ? 'Đang sửa câu chưa đạt và tạo lại đáp án…' : 'Đang tạo câu hỏi và lời giải…');
       const repair = feedback ? { role: 'user', parts: [{ text: `Bản trước chưa đạt: ${feedback.slice(0, 3000)}. Sửa lỗi này, giữ đúng nguồn và số câu; trả lại toàn bộ JSON đúng schema.` }] } : null;
-      response = await requestAI(repair ? { ...payload, contents: [...payload.contents, repair] } : payload);
+      const draft = draftPayload(payload);
+      response = await requestAI(repair ? { ...draft, contents: [...draft.contents, repair] } : draft);
     }
     let data, result;
     try {
@@ -66,15 +114,19 @@ export async function generateVerifiedLessonReview({ windowObject, payload, coun
       // Missing keys stay empty here. Only an explicit independent solution can supply them.
       result = prepareBatchLessonReview(windowObject, JSON.stringify(data), count, essayCount, { maxAutoQuestions, forVerification: true });
       data = { ...data, warnings: result.warnings };
-    } catch (failure) { feedback = failure.message; response = ''; continue; }
+      // Catch renderer errors before spending a second AI call solving a
+      // draft that cannot be displayed. Syntax failures enter the repair pass.
+      await validate(result.content);
+    } catch (failure) { if (failure.noAutoRepair) throw failure; feedback = failure.message; response = ''; continue; }
     onProgress(`Đang giải lại và đối chiếu ${result.quizData.questions.length} câu…`);
     const rawCheck = await requestAI(lessonReviewVerificationPayload(payload, result));
     try {
       const checked = applyIndependentAnswers(data, result, rawCheck);
       const finalResponse = JSON.stringify(checked.data);
       const finalResult = prepareBatchLessonReview(windowObject, finalResponse, count, essayCount, { maxAutoQuestions });
-      return { response: finalResponse, result: finalResult, changes: checked.changes };
-    } catch (failure) { feedback = failure.message; response = ''; }
+      await validate(finalResult.content);
+      return { response: finalResponse, result: finalResult, changes: checked.changes, verified: true };
+    } catch (failure) { if (failure.noAutoRepair) throw failure; feedback = failure.message; response = ''; }
   }
   throw new Error(`Chưa tạo được bộ câu hỏi đủ điều kiện sau khi tự sửa: ${feedback} Nội dung đang soạn vẫn được giữ.`);
 }

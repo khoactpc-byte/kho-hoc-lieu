@@ -1,4 +1,8 @@
 import useStudentProfileLocations from '../hooks/useStudentProfileLocations';
+import useSingleRowToolbar from '../hooks/useSingleRowToolbar';
+import useNarrowScreen from '../hooks/useNarrowScreen';
+import StudentDisplayOptions from './StudentDisplayOptions';
+import StudentMobileList from './StudentMobileList';
 import StudentProfileAddressSelect from './StudentProfileAddressSelect';
 import StudentProfileAddressFields from './StudentProfileAddressFields';
 import StudentProfileFamilyFields from './StudentProfileFamilyFields';
@@ -52,6 +56,7 @@ import {
   KeyRound,
   Loader2,
   Mail,
+  MoreHorizontal,
   Pencil,
   Plus,
   RefreshCw,
@@ -71,6 +76,8 @@ import scorebookTemplate from '../data/scorebookTemplate.json';
 import StudentProfileSections from './StudentProfileSections';
 import StudentProfileHistory from './StudentProfileHistory';
 import StudentFilterDropdown from './StudentFilterDropdown';
+import StudentSearchDialog from './StudentSearchDialog';
+import { EMPTY_STUDENT_SEARCH, matchesStudentSearch, studentSearchDate } from '../utils/studentSearch';
 import StudentUtilitiesMenu from './StudentUtilitiesMenu';
 import StudentProfileReminderDialog from './StudentProfileReminderDialog';
 import { belongsToEducationLevel, educationGrades, educationLabel } from '../utils/educationLevels';
@@ -194,6 +201,24 @@ const ACADEMIC_RESULT_FIELD_KEYS = new Set([
   'hanhKiemLop9'
 ]);
 const ACADEMIC_RESULT_OPTIONS = ['', 'Tốt', 'Khá', 'Đạt'];
+
+const STUDENT_SEARCH_FIELDS = [
+  ...STUDENT_FIELDS.map(field => ({ ...field,
+    type: field.key === 'birthDate' ? 'date' : ['fatherBirthYear', 'motherBirthYear', 'entryGrade', 'grade'].includes(field.key) ? 'number' : field.type,
+    group: field.type === 'link' ? 'Giấy tờ' : /^(hocLuc|hanhKiem)/.test(field.key) ? 'Kết quả học tập'
+      : /^(father|mother)/.test(field.key) ? 'Phụ huynh' : studentProfileSection(field.key) === 'address' ? 'Địa chỉ' : 'Thông tin học sinh'
+  })),
+  { key: 'birthYear', label: 'Năm sinh', type: 'number', group: 'Thông tin học sinh' },
+  { key: 'accessCode', label: 'Mã học sinh', group: 'Thông tin học sinh' }
+];
+const studentSearchValue = (student, field) => {
+  if (field.key === 'birthYear') {
+    const date = studentSearchDate(student.birthDate);
+    return date == null ? '' : Math.floor(date / 10000);
+  }
+  if (/province$/i.test(field.key)) return provinceFilterLabel(student[field.key]);
+  return fieldValueForExport(student, field);
+};
 
 const STUDENT_LEFT_ALIGNED_FIELDS = new Set([
   'fullName', 'birthPlaceName', 'fatherName', 'motherName',
@@ -1436,8 +1461,14 @@ const fileToBase64Payload = (file, documentItem = {}, student = {}) => new Promi
 
 export default function HocSinhManager({ students = [], educationLevel = '', configuredClassOptions = [], currentSchoolYear, systemSchoolYear = '', initialTab = 'current', initialTabKey = 0, profileOpenRequest, profileOverlayZIndex = 90, onProfileRequestClose, user, showNotification, onBack, onOpenAttendance, onSendTestResults, onSendMailboxMessages, onOpenMailboxHistory, onOpenConversations, conversationUnreadCount = 0, learningProgressRows = [], learningDataReady = true, onLearningDataNeeded, onBeforeDangerousAction, onStartSchoolYearPromotion, schoolYearPromotionState = null, pendingRegistrationSnapshot, profileRequestsSnapshot, onPendingRegistrationsLoaded, onRegistrationsResolved }) {
   const [query, setQuery] = useState('');
+  const narrow = useNarrowScreen();
+  const [mobileToolsOpen, setMobileToolsOpen] = useState(false);
+  const [mobileTableView, setMobileTableView] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
+  const [studentSearch, setStudentSearch] = useState(EMPTY_STUDENT_SEARCH);
+  const studentSearchFields = useMemo(() => STUDENT_SEARCH_FIELDS.filter(field => !(educationLevel === 'primary' && ACADEMIC_RESULT_FIELD_KEYS.has(field.key))), [educationLevel]);
   const searchButtonRef = useRef(null);
+  const toolbarRef = useSingleRowToolbar();
   const [studentTab, setStudentTab] = useState(initialTab === 'countStats' ? 'current' : (initialTab || 'current'));
   const [gradeFilter, setGradeFilter] = useState(null);
   const [classFilter, setClassFilter] = useState(() => {
@@ -2378,15 +2409,17 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
     return Boolean(flags[quickIssueFilter]);
   }, [quickIssueFilter, activeSelectedIds, getStudentIssueFlags]);
 
+  const searchScopeRows = useMemo(() => activeSourceRows
+    .filter(matchesStatusFilter)
+    .filter(matchesClassFilter)
+    .filter(matchesQuickIssueFilter)
+    .filter(student => visibleStudentFields.every(field => matchesColumnFilter(student, field.key, columnFilters[field.key]))),
+  [activeSourceRows, matchesStatusFilter, matchesClassFilter, matchesQuickIssueFilter, visibleStudentFields, columnFilters]);
+
   const filteredStudents = useMemo(() => {
     const needle = normalizeSearch(query);
-    return [...activeSourceRows
-      .filter(matchesStatusFilter)
-      .filter(matchesClassFilter)
-      .filter(matchesQuickIssueFilter)
-      .filter(student => visibleStudentFields.every(field => {
-        return matchesColumnFilter(student, field.key, columnFilters[field.key]);
-      }))
+    return [...searchScopeRows
+      .filter(student => matchesStudentSearch(student, studentSearch, studentSearchFields, studentSearchValue))
       .filter(student => {
         if (!needle) return true;
         return normalizeSearch([
@@ -2404,7 +2437,7 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
         if (statusCompare !== 0) return statusCompare;
         return sortMode === 'fullName' ? compareVietnameseName(a, b) : compareClassThenName(a, b);
       });
-  }, [activeSourceRows, query, visibleStudentFields, columnFilters, sortMode, matchesClassFilter, matchesStatusFilter, matchesQuickIssueFilter]);
+  }, [searchScopeRows, studentSearch, studentSearchFields, query, sortMode]);
 
   const issueStats = useMemo(() => {
     const rows = activeSourceRows
@@ -3975,7 +4008,6 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
   ];
   const closeSearch = () => {
     setShowSearch(false);
-    setQuery('');
     searchButtonRef.current?.focus();
   };
 
@@ -4040,11 +4072,11 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
   const databaseTableWidth = databaseColumnWidths.reduce((total, width) => total + width, 0);
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-white font-normal rounded-lg border border-slate-200 shadow-sm overflow-hidden">
-      <div className="shrink-0 bg-slate-50 p-2 border-b border-slate-200 flex flex-col gap-1.5">
-        <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-3">
-        <div className="flex min-w-0 items-center justify-between gap-2 lg:flex-1 lg:pr-4">
-          <h3 className="font-normal text-slate-800 text-sm sm:text-base flex items-center gap-2">
+    <div className="student-database-workspace flex h-full min-h-0 flex-col bg-white font-normal rounded-lg border border-slate-200 shadow-sm overflow-hidden">
+      <div className="student-database-heading shrink-0 bg-slate-50 p-2 border-b border-slate-200 flex flex-col gap-1.5">
+        <div className="student-database-heading-row flex flex-col lg:flex-row lg:items-start justify-between gap-3">
+        <div className="flex min-w-0 items-center justify-between gap-2 lg:shrink-0 lg:pr-4">
+          <h3 className="whitespace-nowrap font-normal text-slate-800 text-sm sm:text-base flex items-center gap-2">
             <GraduationCap className="w-5 h-5 text-indigo-600" /> Học sinh {educationLabel(educationLevel)} {currentSchoolYear}
           </h3>
           {onBack && (
@@ -4053,7 +4085,9 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
             </button>
           )}
         </div>
-        <div className="flex flex-nowrap items-center justify-start gap-1 overflow-x-auto pb-1 sm:flex-wrap sm:gap-2 lg:pb-0 lg:justify-end lg:shrink-0">
+        <div ref={toolbarRef} data-mobile-expanded={mobileToolsOpen} className="student-database-actions flex flex-nowrap items-center justify-start overflow-x-auto pb-1 lg:min-w-0 lg:flex-1 lg:pb-0">
+          {narrow && studentTab !== 'journey' && studentTab !== 'profileRequests' && <label className="student-mobile-search"><Search size={16} /><input aria-label="Tìm nhanh học sinh" type="search" placeholder="Tên, mã học sinh…" value={query} onChange={event => setQuery(event.target.value)} /></label>}
+          <button type="button" className="student-mobile-tools-toggle" aria-label="Thêm công cụ hồ sơ" title="Thêm công cụ hồ sơ" aria-expanded={mobileToolsOpen} onClick={() => setMobileToolsOpen(value => !value)}><MoreHorizontal size={18} /></button>
           {onBack && (
             <button type="button" onClick={onBack} title="Đóng database" className="hidden sm:flex sm:order-last shrink-0 w-9 h-9 border border-slate-200 bg-white text-slate-500 hover:bg-rose-50 hover:text-rose-600 rounded items-center justify-center transition-colors">
               <X className="w-4 h-4" />
@@ -4068,16 +4102,25 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
               <CalendarDays className="h-4 w-4" /> Điểm danh
             </button>
           )}
+          {pendingSheetSyncCount > 0 && (
+            <button type="button" onClick={retrySheetJobs} disabled={isSaving}
+              title={`${currentSchoolYear}: ${pendingSheetSyncCount} hồ sơ đã lưu trên Web, chờ đồng bộ sang Google Sheet`}
+              className="flex h-7 shrink-0 items-center justify-center gap-1 rounded-md border border-sky-200 bg-sky-50 px-2 text-xs font-normal text-sky-800 hover:bg-sky-100 disabled:opacity-50 sm:h-9 sm:gap-1.5 sm:rounded-lg sm:px-3 sm:text-sm">
+              <RefreshCw className={`h-3.5 w-3.5 ${sheetRetryStatus?.phase === 'running' ? 'animate-spin' : ''}`} /> Đồng bộ sang Sheet ({pendingSheetSyncCount})
+            </button>
+          )}
           {studentTab !== 'journey' && studentTab !== 'profileRequests' && (
             <button
               ref={searchButtonRef}
+              data-mobile-primary
+              title="Tìm kiếm nâng cao"
               type="button"
               onClick={() => showSearch ? closeSearch() : setShowSearch(true)}
               aria-expanded={showSearch}
               aria-controls="student-database-search"
-              className={`flex h-7 shrink-0 items-center gap-1 rounded border px-2 text-xs sm:h-9 sm:px-3 sm:text-sm ${showSearch ? 'border-sky-300 bg-sky-50 text-sky-800' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'}`}
+              className={`flex h-7 shrink-0 items-center gap-1 rounded border px-2 text-xs sm:h-9 sm:px-3 sm:text-sm ${showSearch || studentSearch.rules.length ? 'border-sky-300 bg-sky-50 text-sky-800' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'}`}
             >
-              <Search className="h-4 w-4" /> Tìm kiếm
+              <Search className="h-4 w-4" /> Tìm kiếm{studentSearch.rules.length > 0 ? ` (${studentSearch.rules.length})` : ''}
             </button>
           )}
           {studentTab !== 'journey' && studentTab !== 'profileRequests' && (
@@ -4134,7 +4177,7 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
             )}
           </div>
           {studentTab === 'current' && (
-            <button type="button" onClick={openCreate} className="flex h-7 shrink-0 items-center justify-center gap-1 rounded-md bg-indigo-600 px-2 text-[11px] font-normal text-white shadow-sm hover:bg-indigo-700 sm:h-9 sm:rounded-lg sm:px-3 sm:text-sm sm:font-normal">
+            <button type="button" data-mobile-primary title="Thêm học sinh" onClick={openCreate} className="flex h-7 shrink-0 items-center justify-center gap-1 rounded-md bg-indigo-600 px-2 text-[11px] font-normal text-white shadow-sm hover:bg-indigo-700 sm:h-9 sm:rounded-lg sm:px-3 sm:text-sm sm:font-normal">
               <Plus className="h-3.5 w-3.5 sm:h-4 sm:w-4" /> Thêm
             </button>
           )}
@@ -4332,12 +4375,6 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
         </div>
       )}
 
-      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-slate-200 bg-sky-50 px-3 py-2 text-xs text-slate-700">
-        <span>Hồ sơ lưu trên Web · {currentSchoolYear}: {pendingSheetSyncCount ? `${pendingSheetSyncCount} hồ sơ chờ gửi sang Sheet` : 'Không có hồ sơ chờ gửi sang Sheet'}.</span>
-        <button type="button" onClick={retrySheetJobs} disabled={isSaving || !pendingSheetSyncCount} className="inline-flex items-center gap-1 rounded border border-sky-200 bg-white px-2 py-1 text-sky-800 disabled:opacity-50">
-          <RefreshCw className={`h-3.5 w-3.5 ${sheetRetryStatus?.phase === 'running' ? 'animate-spin' : ''}`} /> Đồng bộ sang Sheet ({pendingSheetSyncCount})
-        </button>
-      </div>
       {sheetRetryStatus && (
         <div role="status" aria-live="polite" className="shrink-0 border-b border-slate-200 bg-slate-50 px-3 py-2 text-xs font-normal text-slate-700">
           {sheetRetryStatus.phase === 'running' ? 'Đang thử lại đồng bộ Sheet: ' + sheetRetryStatus.completed + '/' + sheetRetryStatus.total + ' hồ sơ.' : 'Đồng bộ Sheet: ' + sheetRetryStatus.succeeded + '/' + sheetRetryStatus.total + ' hồ sơ thành công.'}
@@ -4691,7 +4728,8 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
       )}
 
       <>
-      <div className="shrink-0 grid grid-cols-2 items-center gap-2 border-b border-slate-200 bg-slate-50 px-2 py-2 text-sm text-slate-700 sm:flex sm:flex-wrap">
+      <div className="student-database-filters shrink-0 grid grid-cols-2 items-center gap-2 border-b border-slate-200 bg-slate-50 px-2 py-2 text-sm text-slate-700 sm:flex sm:flex-wrap">
+        <StudentDisplayOptions>
         <label className="col-span-2 flex h-8 shrink-0 cursor-pointer items-center gap-2 sm:mr-1">
           <input type="checkbox" checked={showPortraits} onChange={event => setShowPortraits(event.target.checked)} aria-label="Hiện ảnh" className="h-4 w-4 accent-sky-700" />
           <span>Hiện ảnh</span>
@@ -4702,14 +4740,16 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
             <span>Chỉnh sửa</span>
           </label>
         )}
-        <div className="flex min-w-0 items-center gap-2">
+        {narrow && studentTab === 'current' && <label className="flex h-8 cursor-pointer items-center gap-2"><input type="checkbox" checked={mobileTableView} onChange={event => setMobileTableView(event.target.checked)} />Bảng chi tiết</label>}
+        </StudentDisplayOptions>
+        <div className="student-database-filter-field flex min-w-0 items-center gap-2">
           <span className="shrink-0">Khối:</span>
           <div className="min-w-0 flex-1 sm:w-40">
             <StudentFilterDropdown label="Khối" options={gradeOptions.map(grade => ({ value: grade, label: `Khối ${grade}` }))} value={gradeFilter} onChange={changeGradeFilter}
               open={openFilterKey === 'toolbar:grade'} onOpenChange={open => setOpenFilterKey(open ? 'toolbar:grade' : null)} />
           </div>
         </div>
-        <div className="flex min-w-0 items-center gap-2">
+        <div className="student-database-filter-field flex min-w-0 items-center gap-2">
           <span className="shrink-0">Lớp:</span>
           <div className="min-w-0 flex-1 sm:w-40">
             <StudentFilterDropdown label="Lớp" options={filteredClassOptions.map(className => ({ value: className, label: className }))} value={classFilter} onChange={setClassFilter}
@@ -4717,7 +4757,7 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
           </div>
         </div>
         {studentTab === 'current' ? (
-          <div className="col-span-2 flex min-w-0 items-center gap-2 sm:min-w-[260px]">
+          <div className="student-database-filter-field student-database-status col-span-2 flex min-w-0 items-center gap-2 sm:min-w-[260px]">
             <span className="shrink-0">Trạng thái:</span>
             <div className="min-w-0 flex-1">
               <StudentFilterDropdown label="Trạng thái" options={[{ value: 'active', label: 'Đang học' }, { value: 'dropped', label: 'Bỏ học' }, { value: 'completed', label: 'TNTHCS' }]} value={statusFilter} onChange={setStatusFilter}
@@ -4727,7 +4767,7 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
         ) : (
           <span className="col-span-2 text-xs text-slate-500">{duplicateRegistrationCount ? `${duplicateRegistrationCount} hồ sơ cần kiểm tra` : 'Hồ sơ đăng ký mới'}</span>
         )}
-        <div className="col-span-2 flex min-w-0 flex-wrap items-center gap-2 sm:contents">
+        <div className="student-database-filter-actions col-span-2 flex min-w-0 flex-wrap items-center gap-2 sm:contents">
           <button type="button" onClick={filterCheckedStudents} title="Lọc học sinh đã chọn" aria-label="Lọc học sinh đã chọn" className={`flex h-8 w-8 items-center justify-center rounded border ${quickIssueFilter === 'selected' ? 'border-sky-700 bg-sky-700 text-white' : 'border-slate-300 bg-white text-slate-500 hover:bg-slate-100'}`}>
             <Filter className="h-4 w-4" />
           </button>
@@ -4737,7 +4777,7 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
               <span>{activeIssueFilter.label}</span><X className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
             </button>
           )}
-          {(gradeFilter != null || quickIssueFilter !== 'all' || classFilter != null || query || (studentTab === 'current' && (statusFilter?.length !== 1 || statusFilter[0] !== 'active')) || Object.values(columnFilters).some(value => value != null)) && (
+          {(gradeFilter != null || quickIssueFilter !== 'all' || classFilter != null || query || studentSearch.rules.length > 0 || (studentTab === 'current' && (statusFilter?.length !== 1 || statusFilter[0] !== 'active')) || Object.values(columnFilters).some(value => value != null)) && (
             <button type="button" onClick={() => {
               setGradeFilter(null);
               setClassFilter(null);
@@ -4746,6 +4786,7 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
               setColumnFilters({});
               setOpenFilterKey(null);
               setQuery('');
+              setStudentSearch(EMPTY_STUDENT_SEARCH);
             }} className="h-8 rounded border border-slate-300 bg-white px-2 text-xs text-slate-600 hover:bg-slate-100">
               Xóa lọc
             </button>
@@ -4755,15 +4796,12 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
           </span>
         </div>
       </div>
-      {showSearch && (
-        <div id="student-database-search" className="flex shrink-0 items-center gap-2 border-b border-slate-200 px-2 py-2">
-          <div className="relative min-w-0 flex-1 sm:max-w-md">
-            <Search className="absolute left-2 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-            <input autoFocus type="search" aria-label="Tìm học sinh" value={query} onChange={event => setQuery(event.target.value)} onKeyDown={event => { if (event.key === 'Escape') closeSearch(); }} placeholder="Tìm tên, lớp, mã..." className="h-8 w-full rounded border border-slate-300 pl-8 pr-2 text-sm focus:border-sky-500 focus:outline-none" />
-          </div>
-          <button type="button" onClick={closeSearch} aria-label="Đóng tìm kiếm" title="Đóng tìm kiếm" className="flex h-8 w-8 items-center justify-center rounded border border-slate-300 text-slate-500 hover:bg-slate-100">
-            <X className="h-4 w-4" />
-          </button>
+      {showSearch && createPortal(<StudentSearchDialog fields={studentSearchFields} rows={searchScopeRows} value={studentSearch} getValue={studentSearchValue}
+        onClose={closeSearch} onApply={value => { setStudentSearch(value); setQuery(''); closeSearch(); }} />, document.body)}
+      {studentSearch.rules.length > 0 && !showSearch && (
+        <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-sky-100 bg-sky-50 px-3 py-1.5 text-xs text-sky-900">
+          <button type="button" onClick={() => setShowSearch(true)} className="min-h-7 text-left underline underline-offset-2">Đang tìm theo {studentSearch.rules.length} điều kiện ({studentSearch.mode === 'any' ? 'HOẶC' : 'VÀ'}) — xem / sửa</button>
+          <button type="button" aria-label="Bỏ điều kiện tìm kiếm" onClick={() => setStudentSearch(EMPTY_STUDENT_SEARCH)} className="flex min-h-7 items-center gap-1 rounded border border-sky-200 bg-white px-2"><X className="h-3 w-3" />Bỏ tìm kiếm</button>
         </div>
       )}
 
@@ -4793,7 +4831,8 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
         </div>
       )}
 
-      <div className="min-h-0 flex-1 overflow-auto">
+      {narrow && studentTab === 'current' && !mobileTableView && !isImageOnlyView ? <StudentMobileList students={filteredStudents} selectedIds={activeSelectedIds} onToggle={toggleSelectStudent}
+        onOpen={student => quickEditEnabled ? openEdit(student) : openView(student)} showPortraits={showPortraits} allSelected={allFilteredSelected} onToggleAll={toggleSelectAllFiltered} /> : <div className="min-h-0 flex-1 overflow-auto">
         <table className={`student-database-table w-full table-fixed border-collapse text-center text-xs ${showPortraits ? 'student-database-portrait-view' : ''} ${isImageOnlyView ? 'student-database-image-view' : ''}`} style={{ minWidth: databaseTableWidth }} aria-label="Database học sinh">
           <colgroup>
             {databaseColumnWidths.map((width, index) => <col key={index} style={{ width }} />)}
@@ -4967,7 +5006,7 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
             ))}
           </tbody>
         </table>
-      </div>
+      </div>}
       </>
       </div>
       )}

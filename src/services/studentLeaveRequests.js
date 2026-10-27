@@ -6,6 +6,7 @@ import { getStudentSchoolCode } from '../utils/schoolClasses';
 import { processRecords } from '../utils/bulkOperations';
 import { SCOPED_AUTH_ENABLED } from './scopedIdentity';
 import { requestPrivateApi } from './serverQuizClient';
+import { isFirestoreQuotaError } from '../utils/firestoreErrors';
 
 const root = `artifacts/${appId}/public/data`;
 const service = createLeaveRequestService({ root, store: { doc: path => doc(db, path), runTransaction: callback => runTransaction(db, callback) },
@@ -37,5 +38,5 @@ export function reviewLeaveRequests(requests, decision, onProgress, shouldContin
   return processRecords(requests, request => {
     if (!session || auth.currentUser !== session || !shouldContinue()) throw new Error('Màn hình hoặc phiên đăng nhập đã đổi. Chưa duyệt đơn này.');
     return reviewLeaveRequest(request, decision);
-  }, onProgress);
+  }, onProgress, { stopOnError: error => isFirestoreQuotaError(error) || !session || auth.currentUser !== session || !shouldContinue() });
 }

@@ -15,8 +15,8 @@ export function useSessionLease(user, identity, onExpired, notify) {
       try { await requestPrivateApi('session', 'renew', {}, { signal: controller.signal, timeoutMs: 20000 }); }
       catch (error) {
         if (active && [401, 403].includes(error.status)) {
-          active = false; notify('Phiên đã hết hiệu lực. Vui lòng đăng nhập lại.', 'error');
-          await onExpired();
+          const restored = await onExpired();
+          if (!restored) { active = false; notify('Phiên đã hết hiệu lực. Vui lòng đăng nhập lại.', 'error'); }
         }
       } finally { busy = false; }
     };

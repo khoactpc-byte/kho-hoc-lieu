@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAssignmentDraft } from '../hooks/useAssignmentDraft';
+import { transcriptFirstYear, TRANSCRIPT_FIRST_YEAR_OPTIONS } from '../utils/transcriptSettings';
 import { createPortal } from 'react-dom';
 import { CalendarDays, ClipboardPaste, Loader2, Save, Trash2 } from 'lucide-react';
 import NewTeachersModal from '../features/tran-hung-dao/NewTeachersModal';
@@ -2104,6 +2105,7 @@ export default function AdminSettingsWorkspace({
   pcResponsibleByYear = {},
   extraSchoolYears = [],
   inputYearLocks,
+  transcriptFirstSchoolYear,
   transcriptStartDates,
   transcriptEndDates,
   transcriptGrade9EndDates,
@@ -2130,6 +2132,8 @@ export default function AdminSettingsWorkspace({
   const [pcResponsibleDraft, setPcResponsibleDraft] = useState(pcResponsibleName || '');
   const [pcResponsibleByYearDraft, setPcResponsibleByYearDraft] = useState({});
   const [inputLocksDraft, setInputLocksDraft] = useState({});
+  const [transcriptFirstYearDraft, setTranscriptFirstYearDraft] = useState(() => transcriptFirstYear(transcriptFirstSchoolYear));
+  useEffect(() => { setTranscriptFirstYearDraft(transcriptFirstYear(transcriptFirstSchoolYear)); }, [transcriptFirstSchoolYear]);
   const [transcriptStartDatesDraft, setTranscriptStartDatesDraft] = useState({});
   const [transcriptEndDatesDraft, setTranscriptEndDatesDraft] = useState({});
   const [transcriptGrade9EndDatesDraft, setTranscriptGrade9EndDatesDraft] = useState({});
@@ -5032,6 +5036,7 @@ export default function AdminSettingsWorkspace({
     pcResponsibleName: String(pcResponsibleDraft || '').trim() !== String(pcResponsibleName || '').trim(),
     pcResponsibleByYear: !sameJson(pcResponsibleByYearDraft, pcResponsibleByYear && typeof pcResponsibleByYear === 'object' ? pcResponsibleByYear : {}),
     inputYearLocks: !sameJson(inputLocksDraft, inputYearLocks && typeof inputYearLocks === 'object' ? inputYearLocks : {}),
+    transcriptFirstSchoolYear: transcriptFirstYearDraft !== transcriptFirstYear(transcriptFirstSchoolYear),
     transcriptStartDates: !sameJson(transcriptStartDatesDraft, transcriptStartDates && typeof transcriptStartDates === 'object' ? transcriptStartDates : {}),
     transcriptEndDates: !sameJson(transcriptEndDatesDraft, transcriptEndDates && typeof transcriptEndDates === 'object' ? transcriptEndDates : {}),
     transcriptGrade9EndDates: !sameJson(transcriptGrade9EndDatesDraft, transcriptGrade9EndDates && typeof transcriptGrade9EndDates === 'object' ? transcriptGrade9EndDates : {}),
@@ -5057,6 +5062,8 @@ export default function AdminSettingsWorkspace({
     currentSchoolYear,
     inputLocksDraft,
     inputYearLocks,
+    transcriptFirstSchoolYear,
+    transcriptFirstYearDraft,
     nanTeachers,
     tqkTeachers,
     pcResponsibleByYear,
@@ -5466,6 +5473,7 @@ export default function AdminSettingsWorkspace({
     if (changedSettings.pcResponsibleName) saveTasks.push(onSaveSetting('pcResponsibleName', pcResponsibleDraft.trim()));
     if (changedSettings.pcResponsibleByYear) saveTasks.push(onSaveSetting('pcResponsibleByYear', pcResponsibleByYearDraft));
     if (changedSettings.inputYearLocks) saveTasks.push(onSaveSetting('inputYearLocks', inputLocksDraft));
+    if (changedSettings.transcriptFirstSchoolYear) saveTasks.push(onSaveSetting('transcriptFirstSchoolYear', transcriptFirstYearDraft));
     if (changedSettings.transcriptStartDates) saveTasks.push(onSaveSetting('transcriptStartDates', transcriptStartDatesDraft));
     if (changedSettings.transcriptEndDates) saveTasks.push(onSaveSetting('transcriptEndDates', transcriptEndDatesDraft));
     if (changedSettings.transcriptGrade9EndDates) saveTasks.push(onSaveSetting('transcriptGrade9EndDates', transcriptGrade9EndDatesDraft));
@@ -5565,7 +5573,7 @@ export default function AdminSettingsWorkspace({
                   <div className="md:col-span-2 rounded-2xl border border-amber-100 bg-amber-50/40 p-4">
                     <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                       <div className="flex items-center gap-2 font-black uppercase text-amber-900">
-                        <CalendarDays className="w-5 h-5" /> Ngày ký học bạ theo năm học
+                        <CalendarDays className="w-5 h-5" /> Cài đặt học bạ
                       </div>
                       <button
                         type="button"
@@ -5576,6 +5584,13 @@ export default function AdminSettingsWorkspace({
                         <Save className="h-4 w-4" /> Lưu
                       </button>
                     </div>
+                    <label className="mb-3 flex flex-wrap items-center gap-2 text-sm text-slate-700">
+                      Năm sớm nhất trong học bạ
+                      <select aria-label="Năm sớm nhất trong học bạ" value={transcriptFirstYearDraft} onChange={event => setTranscriptFirstYearDraft(event.target.value)} className="h-9 rounded-lg border border-amber-200 bg-white px-3">
+                        {TRANSCRIPT_FIRST_YEAR_OPTIONS.map(year => <option key={year} value={year}>{year}{year === '2025-2026' ? ' (mặc định)' : ''}</option>)}
+                      </select>
+                      <span className="w-full text-xs text-slate-500">Học bạ tự lấy điểm đã có từ mốc này. Chọn năm sớm hơn khi cần in lại học bạ cũ, rồi bấm Lưu.</span>
+                    </label>
                     <div className="overflow-x-auto rounded-2xl border border-amber-100 bg-white">
                       <table className="w-full min-w-[1680px] border-collapse text-sm">
                         <thead>

@@ -5,6 +5,9 @@ import { normalizeNumericScore } from '../utils/scoreValues';
 import { assertScorebookScope, hasScoreValue, inputSettingsRef, scorebookRef, writeScorebookCells } from './scorebookCells';
 import { SCOPED_AUTH_ENABLED } from './scopedIdentity';
 import { requestPrivateApi } from './serverQuizClient';
+import { validateEssayAnnotations } from '../utils/essayAnnotations';
+import { normalizeEssayReview } from '../utils/essayGrading';
+import {studentEssayComment} from '../utils/essayFeedback';
 
 export async function syncQuizScore({ documentId, metadata, key, score, attempt, overwriteExisting = false }) {
   if (!key || /:r\d+(?::|$)/.test(key) || !attempt?.id || !attempt.quizId
@@ -23,6 +26,7 @@ export async function syncQuizScore({ documentId, metadata, key, score, attempt,
       if (submitted[field] && String(submitted[field]) !== String(metadata[field])) throw new Error('Lượt nộp thuộc phạm vi khác.');
     }
     const rawScore = attempt.kind === 'quiz_results' ? submitted.score : (submitted.teacherScore ?? submitted.aiScore);
+    if (attempt.kind === 'handwritten_submissions' && submitted.teacherAssessment) throw new Error('Bài nhận xét bằng mức chữ không quy đổi sang điểm sổ.');
     const maxScore = attempt.kind === 'quiz_results' ? submitted.total : (submitted.teacherMaxScore ?? submitted.aiMaxScore ?? 10);
     const denominator = Number(String(maxScore ?? 10).replace(',', '.'));
     const confirmedScore = denominator > 0 ? normalizeNumericScore(Number(String(rawScore ?? '').replace(',', '.')) / denominator * 10) : null;
@@ -63,10 +67,8 @@ function assertSubmission(data, context) {
 
 export async function reviewHandwrittenSubmission({ id, expected, context, review, scorebook }) {
   if (SCOPED_AUTH_ENABLED) return requestPrivateApi('data', 'reviewEssay', { id, expected, context, review, scorebook });
-  const score = Number(String(review.teacherScore).replace(',', '.'));
-  const maximum = Number(String(review.teacherMaxScore).replace(',', '.'));
-  if (!hasScoreValue(review.teacherScore) || !hasScoreValue(review.teacherMaxScore)
-    || !Number.isFinite(score) || !Number.isFinite(maximum) || maximum <= 0 || score < 0 || score > maximum) throw new Error('Điểm phải từ 0 đến điểm tối đa; điểm tối đa phải lớn hơn 0.');
+  const normalized=normalizeEssayReview(review),score=normalized.teacherScore,maximum=normalized.teacherMaxScore;
+  if(normalized.teacherAssessment)scorebook=null;
   return runTransaction(db, async transaction => {
     const data = (await transaction.get(essayRef(id))).data();
     const settings = (await transaction.get(inputSettingsRef())).data() || {};
@@ -74,6 +76,7 @@ export async function reviewHandwrittenSubmission({ id, expected, context, revie
     assertSubmission(data, context);
     if (settings.inputYearLocks?.[context.schoolYear]) throw new Error('Năm học đang khóa nhập liệu.');
     if (!sameData(data, expected)) throw new Error('Bài nộp vừa thay đổi. Bản nháp điểm được giữ; đối chiếu lại trước khi lưu.');
+    const marks = review.teacherAnnotations === undefined ? {} : { teacherAnnotations: validateEssayAnnotations(review.teacherAnnotations, data) };
     let status = scorebook ? 'existing' : 'noTarget';
     if (scorebook) {
       assertScorebookScope(scoreData, scorebook.metadata, settings);
@@ -88,7 +91,7 @@ export async function reviewHandwrittenSubmission({ id, expected, context, revie
         status = 'written';
       }
     }
-    const payload = { ...review, status: 'teacher_reviewed', reviewedAt: Date.now(), reviewedBy: context.authorId,
+    const payload = { ...normalized, teacherComment: studentEssayComment(review.teacherComment), ...marks, status: 'teacher_reviewed', reviewedAt: Date.now(), reviewedBy: context.authorId,
       scoreSync: { status } };
     transaction.set(essayRef(id), payload, { mergeFields: Object.keys(payload) });
     return { status };

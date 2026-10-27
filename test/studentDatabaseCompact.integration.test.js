@@ -20,7 +20,7 @@ test('compact database loads images on demand, opens the matching profile and pr
         builder.onResolve({ filter: /^firebase\/firestore$|config\/firebase$|utils\/helpers$|services\/(studentMutations|jsonpClient)$/ }, args => ({ path: args.path, namespace: 'fixture' }));
         builder.onLoad({ filter: /.*/, namespace: 'fixture' }, args => {
           let contents;
-          if (args.path === 'firebase/firestore') contents = 'export const collection=(...a)=>a.join("/"); export const doc=collection; export const query=ref=>ref; export const where=(...a)=>a; export const onSnapshot=(ref,next)=>{if(ref.endsWith("class_attendance"))window.profileAttendanceSubscriptions=(window.profileAttendanceSubscriptions||0)+1;next({docs:ref.endsWith("class_attendance")?[{id:"day",data:()=>({schoolYear:"2026-2027",schoolCode:"NAN",date:"2026-09-01",records:{an:{studentId:"an",status:"CP"}}})}]:[]}); return ()=>{};}; export const setDoc=async()=>{throw new Error("Unexpected write");}; export const deleteDoc=setDoc; export const getDocsFromServer=async()=>{throw new Error("Unexpected server read");};';
+          if (args.path === 'firebase/firestore') contents = 'export const collection=(...a)=>a.join("/"); export const doc=collection; export const query=ref=>ref; export const where=(...a)=>a; export const onSnapshot=(ref,next)=>{window.profileFeedNames ||= [];window.profileFeedNames.push(ref.split("/").at(-1));if(ref.endsWith("scorebooks"))window.activeScorebookFeeds=(window.activeScorebookFeeds||0)+1;if(ref.endsWith("class_attendance"))window.profileAttendanceSubscriptions=(window.profileAttendanceSubscriptions||0)+1;next({docs:ref.endsWith("class_attendance")?[{id:"day",data:()=>({schoolYear:"2026-2027",schoolCode:"NAN",date:"2026-09-01",records:{an:{studentId:"an",status:"CP"}}})}]:[]}); return ()=>{if(ref.endsWith("scorebooks"))window.activeScorebookFeeds--;};}; export const setDoc=async()=>{throw new Error("Unexpected write");}; export const deleteDoc=setDoc; export const getDocsFromServer=async()=>{throw new Error("Unexpected server read");};';
           else if (args.path.endsWith('config/firebase')) contents = 'export const db={}; export const appId="fixture";';
           else if (args.path.endsWith('utils/helpers')) contents = 'export const postAppsScript=async()=>{throw new Error("Unexpected Sheet request");}; export const IMAGE_DRIVE_FOLDER_ID="fixture";';
           else if (args.path.endsWith('services/jsonpClient')) contents = 'export const requestJsonp=async()=>({success:true,provinces:[],communes:{}});';
@@ -34,10 +34,12 @@ test('compact database loads images on demand, opens the matching profile and pr
     const students = [
       { id: 'an', fullName: 'Nguyễn Văn An', birthDate: '01/01/2014', className: '6A', gender: 'Nam', birthProvince: 'Tỉnh Bến Tre', accessCode: 'HS001', enrollmentYear: '2024-2025', entryGrade: '4', classHistory: { '2024-2025': '4A', '2025-2026': '5A' }, portraitUrl: 'https://example.com/an.png', transcriptUrl: 'https://example.com/hoc-ba.png', sheetSync: { status: 'failed' } },
       { id: 'binh', fullName: 'Lê Thị Bình', birthDate: '02/01/2014', className: '6B', gender: 'Nữ', birthProvince: 'Bến tre', accessCode: 'HS002', portraitUrl: 'https://example.com/binh.png' },
-      { id: 'chi', fullName: 'Trần Văn Chi', birthDate: '03/01/2014', className: '7A', gender: 'Nam', birthProvince: 'Tỉnh An Giang', accessCode: 'HS003' }
+      { id: 'chi', fullName: 'Trần Văn Chi', birthDate: '03/01/2013', className: '7A', gender: 'Nam', birthProvince: 'Tỉnh An Giang', accessCode: 'HS003' }
     ].map(student => ({ ...student, schoolYear: '2026-2027', schoolCode: 'NAN' }));
     root = createRoot(windowObject.document.getElementById('root'));
-    await act(async () => root.render(React.createElement(Manager, { students, configuredClassOptions: ['6A', '6B', '7A', '8A'], currentSchoolYear: '2026-2027', user: { uid: 'fixture' } })));
+    await act(async () => root.render(React.createElement(Manager, { students, configuredClassOptions: ['6A', '6B', '7A', '8A'], currentSchoolYear: '2026-2027', profileRequestsSnapshot: [], user: { uid: 'fixture' } })));
+    assert.equal(windowObject.profileFeedNames?.includes('scorebooks') || false, false, 'list does not open scorebooks');
+    assert.equal(windowObject.profileFeedNames?.includes('student_profile_requests') || false, false, 'root snapshot is reused without a second request listener');
     const body = windowObject.document;
     const table = () => body.querySelector('table[aria-label="Database học sinh"]');
     const row = name => [...table().querySelectorAll('tbody tr')].find(item => item.textContent.includes(name));
@@ -169,6 +171,9 @@ test('compact database loads images on demand, opens the matching profile and pr
     await openFilter('Lọc Tỉnh nơi sinh');
     assert.equal(body.querySelectorAll('[role="dialog"][aria-label^="Lọc "]').length, 1, 'opening another filter closes the previous one');
     assert.equal(filterPanel().getAttribute('aria-label'), 'Lọc Tỉnh nơi sinh');
+    await act(async () => { windowObject.innerHeight -= 220; windowObject.dispatchEvent(new windowObject.Event('resize')); });
+    assert.ok(filterPanel(), 'opening a phone keyboard changes height without closing the filter');
+    await act(async () => { windowObject.innerHeight += 220; windowObject.dispatchEvent(new windowObject.Event('resize')); });
     await act(async () => filterPanel().querySelector('[role="group"]').dispatchEvent(new windowObject.Event('scroll')));
     assert.ok(filterPanel(), 'scrolling option values keeps the panel open');
     await act(async () => table().parentElement.dispatchEvent(new windowObject.Event('scroll')));
@@ -193,27 +198,58 @@ test('compact database loads images on demand, opens the matching profile and pr
     await act(async () => root.render(React.createElement(Manager, { students, configuredClassOptions: ['6A', '6B', '7A', '8A'], currentSchoolYear: '2026-2027', user: { uid: 'fixture' } })));
 
     await click(buttonWithText('Tìm kiếm'));
-    const searchInput = body.querySelector('input[type="search"]');
+    const searchDialog = () => body.querySelector('#student-database-search');
+    const searchInput = searchDialog().querySelector('input');
     assert.equal(body.activeElement, searchInput);
+    assert.ok(searchDialog().querySelector('select[aria-label="Nghề nghiệp cha"]'), 'hidden profile fields are searchable');
+    assert.deepEqual([...searchDialog().querySelector('select[aria-label="Nơi sinh: tỉnh/thành"]').options].map(option => option.textContent), ['-- Tất cả --', '(Chưa có thông tin)', 'Tỉnh An Giang', 'Tỉnh Bến Tre'], 'province lists are built from real rows and merge legacy spellings');
+    assert.equal(searchDialog().querySelector('[aria-label="Kết hợp điều kiện"]'), null, 'fields appear directly without a rule builder');
     await act(async () => {
       Object.getOwnPropertyDescriptor(windowObject.HTMLInputElement.prototype, 'value').set.call(searchInput, 'le thi binh');
       searchInput.dispatchEvent(new windowObject.Event('input', { bubbles: true }));
     });
+    assert.equal(table().querySelectorAll('tbody tr').length, 3, 'draft does not change the table');
+    assert.match(searchDialog().querySelector('[role="status"]').textContent, /1\/3/);
+    await click(buttonWithText('Lọc'));
     assert.equal(table().querySelectorAll('tbody tr').length, 1);
     assert.ok(row('Lê Thị Bình'), 'search still accepts Vietnamese names without accents');
     await selectFilter('Khối', ['Khối 6']);
     await selectFilter('Lớp', ['6A']);
     assert.ok(table().textContent.includes('Chưa có học sinh'), 'search combines with grade and class');
+    await click(buttonWithText('Tìm kiếm (1)'));
     await click(namedButton('Đóng tìm kiếm'));
-    assert.equal(body.querySelector('input[type="search"]'), null);
+    assert.equal(searchDialog(), null);
+    assert.ok(table().textContent.includes('Chưa có học sinh'), 'closing preserves applied conditions');
+    await click(namedButton('Bỏ điều kiện tìm kiếm'));
     assert.equal(classSelect.textContent.trim(), '6A');
-    assert.ok(row('Nguyễn Văn An'), 'closing search clears its text while keeping grade and class');
+    assert.ok(row('Nguyễn Văn An'), 'clearing search keeps grade and class');
     await click(buttonWithText('Tìm kiếm'));
-    assert.equal(body.querySelector('input[type="search"]').value, '');
+    assert.equal(searchDialog().querySelector('input').value, '');
     await act(async () => body.activeElement.dispatchEvent(new windowObject.KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
-    assert.equal(body.querySelector('input[type="search"]'), null);
+    assert.equal(searchDialog(), null);
     assert.equal(body.activeElement, buttonWithText('Tìm kiếm'));
     await click(buttonWithText('Xóa lọc'));
+
+    await click(buttonWithText('Tìm kiếm'));
+    const setControl = async (label, value) => {
+      const input = searchDialog().querySelector(`[aria-label="${label}"]`);
+      await act(async () => {
+        const prototype = input.tagName === 'SELECT' ? windowObject.HTMLSelectElement.prototype : windowObject.HTMLInputElement.prototype;
+        Object.getOwnPropertyDescriptor(prototype, 'value').set.call(input, value);
+        input.dispatchEvent(new windowObject.Event(input.tagName === 'SELECT' ? 'change' : 'input', { bubbles: true }));
+      });
+    };
+    await setControl('Nghề nghiệp cha', '__SEARCH_MISSING__');
+    await setControl('Năm sinh', '2014');
+    assert.match(searchDialog().querySelector('[role="status"]').textContent, /2\/3/);
+    await click(buttonWithText('Lọc'));
+    assert.equal(table().querySelectorAll('tbody tr').length, 2, 'a hidden parent field combines with derived birth year');
+    await click(buttonWithText('Tìm kiếm (2)'));
+    await setControl('Năm sinh', '2013');
+    await click(buttonWithText('Hủy'));
+    assert.equal(table().querySelectorAll('tbody tr').length, 2, 'cancel does not apply draft edits');
+    await click(buttonWithText('Xóa lọc'));
+    assert.equal(table().querySelectorAll('tbody tr').length, 3, 'reset clears advanced search too');
     const statusSelect = namedButton('Trạng thái');
     await openFilter('Trạng thái');
     assert.equal(filterCheckbox('Chọn tất cả').indeterminate, true, 'opening a partly selected status shows the mixed state immediately');
@@ -272,9 +308,10 @@ test('compact database loads images on demand, opens the matching profile and pr
     assert.equal(profileInput('Họ và tên *').readOnly, true);
     assert.equal(profileInput('Tình trạng').disabled, true);
     assert.equal(buttonWithText('Lưu hồ sơ'), undefined);
-    await click(buttonWithText('Địa chỉ & Gia đình'));
+    await click(buttonWithText('Địa chỉ'));
     await click(buttonWithText('Chỉnh sửa hồ sơ'));
-    assert.equal(dialog.querySelector('[role="tab"][aria-selected="true"]').textContent.trim(), 'Địa chỉ & Gia đình', 'switching to edit keeps the current section');
+    assert.equal(dialog.querySelector('[role="tab"][aria-selected="true"]').textContent.trim(), 'Địa chỉ', 'switching to edit keeps the current section');
+    await click(buttonWithText('Thông tin'));
     assert.equal(profileInput('Tên cha').readOnly, false);
     assert.equal(buttonWithText('Lưu hồ sơ').disabled, false);
     assert.equal(body.querySelector('input[aria-label="Chỉnh sửa nhanh"]').checked, false, 'editing a profile does not turn on quick editing for the table');
@@ -289,7 +326,9 @@ test('compact database loads images on demand, opens the matching profile and pr
     dialog = body.querySelector('[role="dialog"]');
     assert.equal(profileInput('Họ và tên *').value, 'Lê Thị Bình', 'cancel leaves the stored profile unchanged');
     assert.equal(profileInput('Họ và tên *').readOnly, true, 'a newly opened profile still starts in view mode');
+    assert.equal(windowObject.activeScorebookFeeds, 1, 'profile requests academic results on demand');
     await click(namedButton('Đóng hồ sơ'));
+    assert.equal(windowObject.activeScorebookFeeds, 0, 'closing profile releases the scorebook feed');
     assert.equal(table().querySelectorAll('img, iframe').length, 0);
 
     await click(namedButton('Xem ảnh Trần Văn Chi'));
@@ -317,14 +356,14 @@ test('compact database loads images on demand, opens the matching profile and pr
     assert.equal(historyTable.querySelector('details').open, true);
     assert.ok(historyTable.querySelector('details').textContent.includes('01/09/2026'));
     assert.equal(windowObject.profileAttendanceSubscriptions, attendanceSubscriptionsBeforeOpen + 1, 'attendance loads with the information tab');
-    await click(buttonWithText('Địa chỉ & Gia đình'));
     await typeValue(profileInput('Tên cha'), 'Nguyễn Văn Ba');
+    await click(buttonWithText('Địa chỉ'));
     assert.ok(profileInput('Tỉnh nơi sinh'));
     assert.ok(profileInput('Tỉnh / Thành hk'));
     await click(buttonWithText('Học tập & Giấy tờ'));
     assert.deepEqual([...profileInput('Học lực lớp 6').options].map(option => option.value), ['', 'Tốt', 'Khá', 'Đạt']);
     assert.ok([...dialog.querySelectorAll('img')].some(image => image.getAttribute('src') === 'https://example.com/hoc-ba.png'));
-    await click(buttonWithText('Địa chỉ & Gia đình'));
+    await click(buttonWithText('Thông tin'));
     assert.equal(profileInput('Tên cha').value, 'Nguyễn Văn Ba', 'changing sections keeps unsaved edits');
     await click(buttonWithText('Thông tin'));
     assert.ok(dialog.querySelector('table[aria-label="Quá trình học tại trung tâm"]'), 'returning to information also shows history');
@@ -375,9 +414,9 @@ test('compact database loads images on demand, opens the matching profile and pr
       utilityTab('Rà soát hồ sơ').focus();
       body.activeElement.dispatchEvent(new windowObject.KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }));
     });
-    assert.equal(body.activeElement, utilityTab('Web ↔ Sheet'), 'arrow navigation moves focus with the selected group');
-    assert.equal(utilityTab('Web ↔ Sheet').getAttribute('aria-selected'), 'true');
-    assert.ok(utilityTab('Web ↔ Sheet').querySelector('[aria-label="1 hồ sơ chờ đồng bộ"]'));
+    assert.equal(body.activeElement, utilityTab('Web → Sheet'), 'arrow navigation moves focus with the selected group');
+    assert.equal(utilityTab('Web → Sheet').getAttribute('aria-selected'), 'true');
+    assert.ok(utilityTab('Web → Sheet').querySelector('[aria-label="1 hồ sơ chờ đồng bộ"]'));
     const originalViewport = { width: windowObject.innerWidth, height: windowObject.innerHeight };
     await act(async () => {
       windowObject.innerWidth = 390;
@@ -386,14 +425,14 @@ test('compact database loads images on demand, opens the matching profile and pr
     });
     assert.ok(utilities.isConnected, 'resizing keeps the selected group open');
     assert.equal(utilities.style.width, '366px', 'the menu fits a phone viewport with margins');
-    assert.equal(utilityTab('Web ↔ Sheet').getAttribute('aria-selected'), 'true');
+    assert.equal(utilityTab('Web → Sheet').getAttribute('aria-selected'), 'true');
     await act(async () => {
       windowObject.innerWidth = originalViewport.width;
       windowObject.innerHeight = originalViewport.height;
       windowObject.dispatchEvent(new windowObject.Event('resize'));
     });
     assert.match(body.getElementById(namedButton('Web → Sheet: gửi toàn bộ năm').getAttribute('aria-describedby')).textContent, /toàn bộ.*năm đang xem.*ngoài bộ lọc/);
-    assert.match(body.getElementById(namedButton('Sheet → Web: cập nhật hồ sơ').getAttribute('aria-describedby')).textContent, /từ Google Sheet.*trên Web.*chọn thêm hồ sơ thiếu/);
+    assert.match(body.getElementById(namedButton('Nhập từ Sheet (thủ công)').getAttribute('aria-describedby')).textContent, /từ Google Sheet.*trên Web.*chọn thêm hồ sơ thiếu/);
     assert.ok(namedButton('Chỉ đối chiếu Web ↔ Sheet'));
     assert.ok(buttonWithText('Thử lại Web → Sheet (1)'), 'retry stays available after removing the summary banner');
     await click(namedButton('Nhóm tiện ích trước'));
@@ -409,7 +448,7 @@ test('compact database loads images on demand, opens the matching profile and pr
     assert.equal(utilityTab('Sửa dữ liệu cũ').getAttribute('aria-selected'), 'true', 'navigation wraps at the first group');
     await click(namedButton('Nhóm tiện ích tiếp theo'));
     assert.equal(utilityTab('Thường dùng').getAttribute('aria-selected'), 'true');
-    await click(utilityTab('Web ↔ Sheet'));
+    await click(utilityTab('Web → Sheet'));
     await click(namedButton('Nhập danh sách mới'));
     assert.equal(body.querySelector('[aria-label="Tiện ích học sinh"]'), null);
     assert.ok(body.querySelector('textarea[placeholder^="Dán dữ liệu"]'), 'the consolidated Sheet group still opens the new-student importer');
@@ -489,6 +528,82 @@ test('compact database loads images on demand, opens the matching profile and pr
     assert.equal(body.querySelector('[aria-label="Số học sinh đang hiển thị"]').textContent.trim(), '40 học sinh');
     assert.equal(namedButton('Bỏ lọc Thiếu hồ sơ'), null);
     assert.equal(JSON.parse(windowObject.localStorage.getItem('khl-student-db-prefs-v1')).quickIssueFilter, 'all');
+
+    let profileClosed = 0;
+    const renderProfileRequest = (profileOpenRequest, records = students) => act(async () => root.render(React.createElement(Manager, {
+      key: 'conversation-profile', students: records, currentSchoolYear: '2026-2027', user: { uid: 'fixture' },
+      profileOpenRequest, profileOverlayZIndex: 240, onProfileRequestClose: () => { profileClosed++; }
+    })));
+    await renderProfileRequest(null);
+    await selectFilter('Lớp', ['7A']);
+    assert.equal(row('Nguyễn Văn An'), undefined, 'the requested pupil is hidden by the current list filter');
+    const requested = { key: 'open-from-mail', studentId: students[0].id, accessCode: students[0].accessCode, schoolCode: students[0].schoolCode || '' };
+    await renderProfileRequest(requested);
+    const openedProfile = () => body.querySelector('[aria-labelledby="admin-student-profile-title"]');
+    assert.match(openedProfile().textContent, /Nguyễn Văn An/);
+    assert.equal(openedProfile().style.zIndex, '240', 'the profile appears above the message dialog');
+    assert.equal(namedButton('Lớp').textContent.trim(), '7A', 'opening from a conversation preserves list filters');
+    await click(namedButton('Đóng hồ sơ'));
+    assert.equal(profileClosed, 1);
+    await renderProfileRequest(requested, [...students]);
+    assert.equal(openedProfile(), null, 'a roster refresh must not reopen an already closed request');
+    await renderProfileRequest({ ...requested, key: 'open-again' });
+    assert.ok(openedProfile(), 'a fresh double click can reopen the same pupil');
+    await click(buttonWithText('Chỉnh sửa hồ sơ'));
+    const nameInput = [...openedProfile().querySelectorAll('label')].find(label => label.textContent.startsWith('Họ và tên')).querySelector('input');
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(windowObject.HTMLInputElement.prototype, 'value').set.call(nameInput, 'Bản đang sửa');
+      nameInput.dispatchEvent(new windowObject.Event('input', { bubbles: true }));
+    });
+    await renderProfileRequest({ ...requested, key: 'same-pupil-again' });
+    assert.equal(nameInput.value, 'Bản đang sửa', 'reopening the same pupil cannot reset an unfinished profile edit');
+    await click(namedButton('Đóng hồ sơ'));
+
+    const learningRequests = [], sentResults = [];
+    const requestLearning = value => learningRequests.push(value);
+    const sendResult = async student => { sentResults.push(student.id); };
+    const renderLearningMail = ready => act(async () => root.render(React.createElement(Manager, { key: 'lazy-learning-mail', students,
+      currentSchoolYear: '2026-2027', user: { uid: 'fixture' }, onSendTestResults: sendResult,
+      onLearningDataNeeded: requestLearning, learningDataReady: ready })));
+    await renderLearningMail(false);
+    await click(row('Nguyễn Văn An').querySelector('button[title="Gửi kết quả kiểm tra vào hộp thư học sinh"]'));
+    assert.equal(learningRequests.at(-1), true, 'composer asks for results only when needed');
+    assert.equal(buttonWithText('Gửi 1 thư').disabled, true, 'unloaded data cannot produce a false no-results message');
+    assert.deepEqual(sentResults, []);
+    await renderLearningMail(true);
+    await click(buttonWithText('Gửi 1 thư'));
+    assert.deepEqual(sentResults, ['an']);
+    assert.equal(learningRequests.at(-1), false, 'closing composer releases its result feeds');
+
+    // A phone uses the same filtered/selected records in a readable list.
+    await act(async () => { windowObject.innerWidth = 390; windowObject.dispatchEvent(new windowObject.Event('resize')); });
+    const mobileList = () => body.querySelector('.student-mobile-list');
+    assert.equal(body.querySelector('[aria-label="Database học sinh"]'), null);
+    assert.equal(mobileList().querySelectorAll('li').length, 3);
+    const quickSearch = body.querySelector('[aria-label="Tìm nhanh học sinh"]');
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(windowObject.HTMLInputElement.prototype, 'value').set.call(quickSearch, 'le thi binh');
+      quickSearch.dispatchEvent(new windowObject.Event('input', { bubbles: true }));
+    });
+    assert.equal(mobileList().querySelectorAll('li').length, 1);
+    assert.match(mobileList().textContent, /Lê Thị Bình/);
+    await click(body.querySelector('[aria-label="Chọn Lê Thị Bình"]'));
+    await click(namedButton('Mở hồ sơ Lê Thị Bình'));
+    assert.match(openedProfile().textContent, /Lê Thị Bình/);
+    await click(namedButton('Đóng hồ sơ'));
+    await click(buttonWithText('Hiển thị'));
+    await click(buttonWithText('Tìm kiếm'));
+    const mobileSearch = body.querySelector('#student-database-search');
+    assert.equal(mobileSearch.querySelector('.student-search-grid').children.length, 4, 'phone search starts with name, code, grade and class');
+    assert.ok([...mobileSearch.querySelectorAll('summary')].some(item => item.textContent.includes('Ngày sinh')));
+    assert.equal([...mobileSearch.querySelectorAll('summary')].find(item => item.textContent === 'Nơi sinh và địa chỉ').parentElement.open, false);
+    await click(namedButton('Đóng tìm kiếm'));
+    const detailedTable = [...body.querySelectorAll('label')].find(label => label.textContent.trim() === 'Bảng chi tiết').querySelector('input');
+    await click(detailedTable);
+    assert.ok(table()); assert.equal(table().querySelectorAll('tbody tr').length, 1);
+    assert.equal(table().querySelector('[aria-label="Chọn Lê Thị Bình"]').checked, true, 'switching list/table retains selection and search');
+    await act(async () => { windowObject.innerWidth = 1024; windowObject.dispatchEvent(new windowObject.Event('resize')); });
+    assert.ok(table()); assert.equal(body.querySelector('[aria-label="Tìm nhanh học sinh"]'), null);
   } finally {
     if (root) await act(async () => root.unmount());
     windowObject.close();

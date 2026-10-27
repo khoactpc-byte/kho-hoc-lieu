@@ -4,7 +4,8 @@ import { createHash } from 'node:crypto';
 import { zipSync } from 'fflate';
 await copyFile('cloudflare/gateway.mjs', 'dist/_worker.js');
 await writeFile('dist/_routes.json', JSON.stringify({ version: 1, include: ['/.netlify/*', '/.site/*'], exclude: [] }, null, 2));
-await writeFile('dist/_headers', '/*\n  X-Content-Type-Options: nosniff\n  Referrer-Policy: strict-origin-when-cross-origin\n  X-Frame-Options: SAMEORIGIN\n/.netlify/*\n  Cache-Control: no-store\n');
+const pwaHeaders = await readFile('public/_headers', 'utf8').catch(error => { if (error.code === 'ENOENT') return ''; throw error; });
+await writeFile('dist/_headers', '/*\n  X-Content-Type-Options: nosniff\n  Referrer-Policy: strict-origin-when-cross-origin\n  X-Frame-Options: SAMEORIGIN\n/.netlify/*\n  Cache-Control: no-store\n' + pwaHeaders);
 const entries = {}; let count = 0;
 async function visit(dir) { for (const item of await readdir(dir, { withFileTypes: true })) {
   const path = join(dir, item.name), name = relative('dist', path).replaceAll('\\', '/');

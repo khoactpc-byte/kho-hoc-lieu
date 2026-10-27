@@ -30,7 +30,7 @@ export default function RegistrationPage() {
 
   useEffect(() => {
     const previousTitle = document.title;
-    document.title = 'Đăng ký nhập học | Kho học liệu';
+    document.title = 'Đăng ký nhập học | TTHTCĐ phường Trung Mỹ Tây';
     return () => { document.title = previousTitle; };
   }, []);
   useEffect(() => {
@@ -115,7 +115,7 @@ export default function RegistrationPage() {
   const totalSize = visibleFiles.reduce((sum, file) => sum + file.size, 0);
 
   return <div className="registration-page">
-    <header className="reg-topbar"><button className="reg-brand" type="button" disabled={sending} onClick={backToLogin}><span className="reg-brand-icon"><GraduationCap size={23} /></span><span>Kho học liệu<small>CỔNG ĐĂNG KÝ HỌC SINH</small></span></button><button type="button" className="reg-back-link" onClick={backToLogin} disabled={sending}><ArrowLeft size={15} /><span>Về đăng nhập</span></button></header>
+    <header className="reg-topbar"><button className="reg-brand" type="button" disabled={sending} onClick={backToLogin}><span className="reg-brand-icon"><GraduationCap size={23} /></span><span>TTHTCĐ phường Trung Mỹ Tây<small>CỔNG ĐĂNG KÝ HỌC SINH</small></span></button><button type="button" className="reg-back-link" onClick={backToLogin} disabled={sending}><ArrowLeft size={15} /><span>Về đăng nhập</span></button></header>
     <main className="reg-main">
       <div className="reg-intro"><h1>Đăng ký nhập học</h1>{config && <span className="reg-year"><i aria-hidden="true" /><span className="reg-year-label">Năm học</span>{config.currentSchoolYear}</span>}</div>
       {result ? <div className="reg-success" role="status"><div className="reg-success-icon"><CheckCircle2 size={34} /></div><span className="reg-eyebrow">ĐÃ TIẾP NHẬN HỒ SƠ</span><h2>Đăng ký thành công!</h2><p>Hồ sơ của <strong>{values.hoVaTen}</strong> đã được gửi đến nhà trường để xét duyệt.</p><dl><div><dt>Cơ sở</dt><dd>{school?.name}</dd></div><div><dt>Lớp đăng ký</dt><dd>{values.lopHoc}</dd></div><div><dt>Năm học</dt><dd>{result.schoolYear || config.currentSchoolYear}</dd></div></dl><p className="reg-hint">Bạn chưa cần gửi lại hồ sơ. Nhà trường sẽ kiểm tra và hướng dẫn bước tiếp theo.</p><button className="reg-primary" onClick={backToLogin}>Về trang đăng nhập<ArrowRight size={16} /></button></div> : <div className="reg-layout">
@@ -160,7 +160,7 @@ export default function RegistrationPage() {
           </>
         </div>
       </div>}
-      <footer className="reg-page-footer"><span>© {new Date().getFullYear()} Kho học liệu · Cổng đăng ký học sinh</span>{!sending && !result && <a href={REGISTRATION_WEB_APP_URL} target="_blank" rel="noopener noreferrer">Biểu mẫu dự phòng<ArrowRight size={13} /></a>}</footer>
+      <footer className="reg-page-footer"><span>© {new Date().getFullYear()} TTHTCĐ phường Trung Mỹ Tây · Cổng đăng ký học sinh</span>{!sending && !result && <a href={REGISTRATION_WEB_APP_URL} target="_blank" rel="noopener noreferrer">Biểu mẫu dự phòng<ArrowRight size={13} /></a>}</footer>
     </main>
   </div>;
 }
