@@ -9,6 +9,18 @@ const rowView=row=>({id:row.id,schoolCode:row.school_code,schoolYear:row.school_
   review:{version:row.review_version || 0,decisions:JSON.parse(row.decisions_json || '{}'),appliedFields:JSON.parse(row.applied_json || '[]'),updatedAt:row.reviewed_at || 0}});
 const selectRows='SELECT p.*,r.version AS review_version,r.decisions_json,r.applied_json,r.updated_at AS reviewed_at FROM profile_intake p LEFT JOIN profile_intake_reviews r ON r.request_id=p.id';
 const studentView=row=>{const view=rowView(row);view.changes=Object.fromEntries(Object.entries(view.changes).filter(([key])=>view.review.decisions[key]!=='reject' && !view.review.appliedFields.includes(key)));return view;};
+const aggregateOverrides=rows=>{
+  const records=new Map();
+  for(const row of rows){
+    const key=`${row.school_code}|${row.school_year}|${row.access_code}`;
+    const item=records.get(key) || {schoolCode:row.school_code,schoolYear:row.school_year,grade:String(row.grade),accessCode:row.access_code,fields:{},updatedAt:0};
+    const changes=JSON.parse(row.changes_json || '{}'),decisions=JSON.parse(row.decisions_json || '{}'),applied=JSON.parse(row.applied_json || '[]');
+    for(const field of JSON.parse(row.overlay_fields || '[]'))if(decisions[field]==='approve' && applied.includes(field) && Object.hasOwn(changes,field))item.fields[field]=changes[field];
+    item.updatedAt=Math.max(item.updatedAt,Number(row.overlay_created_at)||0);
+    records.set(key,item);
+  }
+  return [...records.values()];
+};
 async function authenticate(payload,admin,fetchImpl){
   const response=await fetchImpl(identityUrl,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:admin?'admin':'student',
     adminSessionToken:payload.adminSessionToken || '',staffSessionToken:payload.staffSessionToken || '',studentSessionToken:payload.studentSessionToken || ''}),signal:AbortSignal.timeout(22000)});
@@ -64,13 +76,6 @@ export async function handleProfileIntake(request,env,{fetchImpl=fetch,now=Date.
         db.prepare('INSERT INTO profile_intake_review_events (id,request_id,version,action,fields_json,created_at) SELECT ?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM profile_intake_reviews WHERE request_id=? AND last_operation=?)')
           .bind(operation,row.id,version,payload.action==='review'?payload.decision:payload.action==='apply'?'cloudflare-applied':'applied',JSON.stringify(keys),stamp,row.id,operation)
       ];
-      if(payload.action==='apply'){
-        const applied=Object.fromEntries(keys.map(key=>[key,row.changes[key]]));
-        statements.splice(2,0,db.prepare(`INSERT INTO student_profile_overrides (school_code,school_year,grade,access_code,fields_json,updated_at)
-          SELECT ?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM profile_intake_reviews WHERE request_id=? AND last_operation=?)
-          ON CONFLICT(school_code,school_year,access_code) DO UPDATE SET grade=excluded.grade,fields_json=json_patch(student_profile_overrides.fields_json,excluded.fields_json),updated_at=excluded.updated_at`)
-          .bind(row.schoolCode,row.schoolYear,Number(row.grade),row.accessCode,JSON.stringify(applied),stamp,row.id,operation));
-      }
       const results=await db.batch(statements);
       fail(results[0]?.meta?.changes===1,409,'Yêu cầu vừa thay đổi. Quyết định hiện có được giữ nguyên; hãy tải lại.');
       return reply(200,{request:rowView(await db.prepare(`${selectRows} WHERE p.id=?`).bind(row.id).first())});
@@ -80,15 +85,16 @@ export async function handleProfileIntake(request,env,{fetchImpl=fetch,now=Date.
       fail(!schoolYear || /^20\d{2}-20\d{2}$/.test(schoolYear),400,'Năm học không hợp lệ.');
       const level=payload.level==='primary'?' AND grade BETWEEN 1 AND 5':payload.level==='thcs'?' AND grade BETWEEN 6 AND 9':'';
       const rows=schoolYear
-        ? await db.prepare(`SELECT school_code,school_year,grade,access_code,fields_json,updated_at FROM student_profile_overrides WHERE school_year=?${level} ORDER BY updated_at DESC LIMIT 5000`).bind(schoolYear).all()
-        : await db.prepare(`SELECT school_code,school_year,grade,access_code,fields_json,updated_at FROM student_profile_overrides WHERE 1=1${level} ORDER BY updated_at DESC LIMIT 5000`).all();
-      return reply(200,{overrides:(rows.results || []).map(row=>({schoolCode:row.school_code,schoolYear:row.school_year,grade:String(row.grade),accessCode:row.access_code,fields:JSON.parse(row.fields_json || '{}'),updatedAt:row.updated_at}))});
+        ? await db.prepare(`SELECT p.school_code,p.school_year,p.grade,p.access_code,p.changes_json,r.decisions_json,r.applied_json,e.fields_json AS overlay_fields,e.created_at AS overlay_created_at FROM profile_intake p JOIN profile_intake_reviews r ON r.request_id=p.id JOIN profile_intake_review_events e ON e.request_id=p.id WHERE p.school_year=? AND e.action='cloudflare-applied'${level} ORDER BY e.created_at ASC LIMIT 5000`).bind(schoolYear).all()
+        : await db.prepare(`SELECT p.school_code,p.school_year,p.grade,p.access_code,p.changes_json,r.decisions_json,r.applied_json,e.fields_json AS overlay_fields,e.created_at AS overlay_created_at FROM profile_intake p JOIN profile_intake_reviews r ON r.request_id=p.id JOIN profile_intake_review_events e ON e.request_id=p.id WHERE e.action='cloudflare-applied'${level} ORDER BY e.created_at ASC LIMIT 5000`).all();
+      return reply(200,{overrides:aggregateOverrides(rows.results || [])});
     }
     if(payload.action==='profile'){
       fail(actor.role==='student',403,'Chỉ học sinh mới xem được hồ sơ của mình.');
-      const row=await db.prepare('SELECT fields_json,updated_at FROM student_profile_overrides WHERE school_code=? AND school_year=? AND access_code=?')
-        .bind(actor.schoolCode,actor.schoolYear,actor.accessCode).first();
-      return reply(200,{fields:JSON.parse(row?.fields_json || '{}'),updatedAt:row?.updated_at || 0});
+      const owner=await hash(JSON.stringify([actor.schoolCode,actor.schoolYear,actor.accessCode]));
+      const rows=await db.prepare(`SELECT p.school_code,p.school_year,p.grade,p.access_code,p.changes_json,r.decisions_json,r.applied_json,e.fields_json AS overlay_fields,e.created_at AS overlay_created_at FROM profile_intake p JOIN profile_intake_reviews r ON r.request_id=p.id JOIN profile_intake_review_events e ON e.request_id=p.id WHERE p.owner_key=? AND e.action='cloudflare-applied' ORDER BY e.created_at ASC LIMIT 500`).bind(owner).all();
+      const override=aggregateOverrides(rows.results || [])[0];
+      return reply(200,{fields:override?.fields || {},updatedAt:override?.updatedAt || 0});
     }
     if(['list','count'].includes(payload.action)){
       fail(/^20\d{2}-20\d{2}$/.test(payload.schoolYear || ''),400,'Chọn năm học cần xem.');

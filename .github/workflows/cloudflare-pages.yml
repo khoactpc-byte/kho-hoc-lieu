@@ -54,13 +54,6 @@ jobs:
           test -n "$VITE_SUPABASE_LESSON_SYNC_ENABLED" || { echo 'Missing VITE_SUPABASE_LESSON_SYNC_ENABLED variable'; exit 1; }
           npm run build
 
-      - name: Apply Cloudflare student-profile storage schema
-        uses: cloudflare/wrangler-action@v4
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: d1 execute khl-profile-intake --remote --file=cloudflare/profile-intake-overrides.sql
-
       - name: Publish the built website to the existing project
         uses: cloudflare/wrangler-action@v4
         with:
