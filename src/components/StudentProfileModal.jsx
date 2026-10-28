@@ -47,6 +47,7 @@ export default function StudentProfileModal({ view }) {
     submitStudentProfileRequest
   } = view;
   const hasPendingRequest = activeStudentPendingProfileRequests.length > 0;
+  const waitingSync = activeStudentPendingProfileRequests.some(row=>Object.entries(row.review?.decisions || {}).some(([key,value])=>value==='approve' && !(row.review?.appliedFields || []).includes(key)));
   const editingBlocked = activeStudentIsReadOnly || hasPendingRequest;
   const provinceOptions = studentProfileProvinceOptions || buildStudentProfileProvinceOptions({ provinces: derivedProvinceOptions, birthProvinces: derivedProvinceOptions });
   const addressFields = studentProfileAddressFields || Object.fromEntries(STUDENT_PROFILE_ADDRESS_GROUPS.flatMap(group => [group.province, group.district, group.ward].filter(Boolean).map(key => [key, { choices: provinceOptions[key] || [], disabled: !(provinceOptions[key]?.length), placeholder: Object.hasOwn(STUDENT_PROFILE_PROVINCE_FIELDS, key) ? 'Chọn tỉnh / thành phố' : 'Chọn cấp trên trước' }])));
@@ -93,7 +94,7 @@ export default function StudentProfileModal({ view }) {
                   <h3 id="student-profile-title" className="font-normal text-slate-900 truncate">Hồ sơ học sinh</h3>
                   {activeStudentPendingProfileRequests.length > 0 && (
                     <span className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-100 px-2.5 py-1 text-[10px] font-normal text-amber-800">
-                      <Clock className="w-3.5 h-3.5" /> Chờ duyệt
+                      <Clock className="w-3.5 h-3.5" /> {waitingSync?'Đã duyệt, chờ cập nhật':'Chờ duyệt'}
                     </span>
                   )}
                 </div>
@@ -102,7 +103,7 @@ export default function StudentProfileModal({ view }) {
               <div className="student-profile-actions flex flex-wrap items-center justify-end gap-2">
                 <button type="button" onClick={() => setShowStudentProfileModal(false)} className="h-8 px-4 rounded border border-slate-200 bg-white text-sm text-slate-700 font-normal">Hủy</button>
                 <button type="button" onClick={submitStudentProfileRequest} disabled={isSubmittingProfileRequest || editingBlocked} className="min-h-8 px-4 py-1 rounded bg-blue-600 text-sm text-white font-normal shadow-lg disabled:opacity-60 disabled:cursor-not-allowed">
-                  {activeStudentIsReadOnly ? 'Chỉ xem hồ sơ' : (hasPendingRequest ? 'Đang chờ duyệt' : (isSubmittingProfileRequest ? 'Đang gửi...' : 'Gửi yêu cầu sửa'))}
+                  {activeStudentIsReadOnly ? 'Chỉ xem hồ sơ' : (hasPendingRequest ? (waitingSync?'Đã duyệt, chờ cập nhật':'Đang chờ duyệt') : (isSubmittingProfileRequest ? 'Đang gửi...' : 'Gửi yêu cầu sửa'))}
                 </button>
               </div>
               <button type="button" autoFocus onClick={() => setShowStudentProfileModal(false)} aria-label="Đóng hồ sơ" className="student-profile-close shrink-0 p-2 rounded-xl bg-white border border-slate-200 text-slate-500 hover:text-rose-600">

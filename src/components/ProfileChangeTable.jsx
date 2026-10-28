@@ -10,7 +10,7 @@ function ChangeValue({ value, isDocument }) {
   return <div className="flex flex-wrap gap-x-3 gap-y-1">{urls.map((url, index) => <a key={`${url}-${index}`} href={url} target="_blank" rel="noreferrer" className="text-sky-700 hover:underline">{urls.length > 1 ? `Mở file ${index + 1}` : 'Mở file/ảnh'}</a>)}</div>;
 }
 
-export default function ProfileChangeTable({ rows, onApprove, onReject, disabled, label = 'Thay đổi hồ sơ' }) {
+export default function ProfileChangeTable({ rows, onApprove, onReject, disabled, allowFileCleanup = true, label = 'Thay đổi hồ sơ' }) {
   return (
     <div className="overflow-x-auto rounded border border-slate-200 bg-white">
       <table aria-label={label} className="w-full min-w-[620px] table-fixed border-collapse text-left text-xs font-normal text-slate-700">
@@ -24,7 +24,7 @@ export default function ProfileChangeTable({ rows, onApprove, onReject, disabled
         </thead>
         <tbody>
           {rows.map(row => {
-            const autoCleanup = row.isDocument && hasNewProfileFiles(row.currentValue, row.nextValue) && replacedProfileFileIds(row.currentValue, row.nextValue).length > 0;
+            const autoCleanup = allowFileCleanup && row.isDocument && hasNewProfileFiles(row.currentValue, row.nextValue) && replacedProfileFileIds(row.currentValue, row.nextValue).length > 0;
             const rejectedFields = profileRequestRejectedFields(Object.fromEntries(rows.map(item => [item.key, item.nextValue])), row.key);
             const rejectTitle = rejectedFields.length > 1 ? 'Từ chối dòng này và các huyện/xã đề nghị phụ thuộc' : 'Từ chối dòng này';
             return (
