@@ -5,7 +5,7 @@ import StudentDisplayOptions from './StudentDisplayOptions';
 import StudentMobileList from './StudentMobileList';
 import StudentPortrait from './StudentPortrait';
 import CloudProfileIntakePanel from './CloudProfileIntakePanel';
-import { applyProfileIntake } from '../services/applyProfileIntake';
+import { applyProfileIntakeToCloud } from '../services/applyProfileIntake';
 import { PROFILE_INTAKE_ENABLED } from '../services/profileIntake';
 import StudentProfileAddressSelect from './StudentProfileAddressSelect';
 import StudentProfileAddressFields from './StudentProfileAddressFields';
@@ -4391,13 +4391,10 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
       )}
       {studentTab === 'profileRequests' ? (
         <div className="min-h-0 flex-1 overflow-y-auto p-2 sm:p-3 bg-white">
-          {PROFILE_INTAKE_ENABLED && <CloudProfileIntakePanel schoolYear={currentSchoolYear} educationLevel={educationLevel} fields={STUDENT_FIELDS} students={safeStudents} onApply={row=>applyProfileIntake(row,{
+          {PROFILE_INTAKE_ENABLED && <CloudProfileIntakePanel schoolYear={currentSchoolYear} educationLevel={educationLevel} fields={STUDENT_FIELDS} students={safeStudents} onApply={(row,current)=>applyProfileIntakeToCloud(row,{
             isReadOnly:isReadOnlyStudentRecord,
-            validate:(draft,before)=>assertStudentProfileAddressChanges({draft,current:before,editableFields:STUDENT_FIELDS}),
-            save:(student,options)=>{
-              if(!belongsToEducationLevel(student,educationLevel))throw new Error('Hồ sơ thuộc cấp học khác. Chưa cập nhật.');
-              return saveStudentRecord(student,{actor:user?.uid || 'Admin',...options});
-            }
+            read:async()=>current,
+            validate:(draft,before)=>assertStudentProfileAddressChanges({draft,current:before,editableFields:STUDENT_FIELDS})
           })} />}
           <ProfileFileCleanupQueue students={safeStudents} educationLevel={educationLevel} disabled={isSaving} syncStudent={syncPersistedStudent} showNotification={showNotification} />
           {(profileRequests.length > 0 || profileBatchStatus) && (

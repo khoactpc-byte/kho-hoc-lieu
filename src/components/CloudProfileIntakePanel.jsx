@@ -20,18 +20,19 @@ export default function CloudProfileIntakePanel({schoolYear,educationLevel,field
   const replace=row=>setState(previous=>({...previous,rows:previous.rows.map(item=>item.id===row.id?row:item)}));
   const apply=async row=>{
     if(!onApply)throw new Error('Chưa kết nối được nơi cập nhật hồ sơ chính.');
-    const result=await onApply(row);
+    const current=students.find(item=>item.accessCode===row.accessCode && item.schoolYear===row.schoolYear && getStudentSchoolCode(item)===row.schoolCode);
+    const result=await onApply(row,current);
     if(!result?.saved)throw new Error('Chưa xác nhận được hồ sơ chính đã lưu.');
+    if(result.request){replace(result.request);return result.request;}
     const response=await requestProfileIntake('applied',{id:row.id,expectedHash:row.payloadHash,fields:result.fields});
-    replace(response.request);
-    return response.request;
+    replace(response.request);return response.request;
   };
   const decide=async(row,decision,field)=>{
     const response=await requestProfileIntake('review',{id:row.id,expectedHash:row.payloadHash,expectedVersion:row.review?.version || 0,decision,field});
     replace(response.request);
     if(decision==='approve'){
-      try{await apply(response.request);return 'Đã duyệt và cập nhật hồ sơ chính.';}
-      catch(error){return `Đã ghi nhận quyết định duyệt, chờ đồng bộ hồ sơ chính. ${error.message}`;}
+      try{await apply(response.request);return 'Đã duyệt và lưu cập nhật hồ sơ trên Cloudflare.';}
+      catch(error){return `Đã ghi nhận quyết định duyệt trên Cloudflare, chưa áp dụng được cập nhật. ${error.message}`;}
     }
     return 'Đã từ chối các mục đã chọn. Hồ sơ chính không bị thay đổi.';
   };
@@ -43,9 +44,9 @@ export default function CloudProfileIntakePanel({schoolYear,educationLevel,field
   const bulkApprove=()=>run(async()=>{
     let count=0,waiting=0;const errors=[];
     for(const row of state.rows.filter(item=>intakeReviewSummary(item).pending.length)){
-      try{const result=await decide(row,'approve');count++;if(result.includes('chờ đồng bộ'))waiting++;}catch(error){errors.push(error.message);}
+      try{const result=await decide(row,'approve');count++;if(result.includes('chưa áp dụng'))waiting++;}catch(error){errors.push(error.message);}
     }
-    return `Đã duyệt ${count} yêu cầu; ${waiting} yêu cầu chờ đồng bộ hồ sơ chính.${errors.length?` Còn ${errors.length} yêu cầu chưa xử lý: ${errors[0]}`:''}`;
+    return `Đã duyệt ${count} yêu cầu; ${waiting} yêu cầu chưa áp dụng được trên Cloudflare.${errors.length?` Còn ${errors.length} yêu cầu chưa xử lý: ${errors[0]}`:''}`;
   });
   const download=()=>{
     const bytes=JSON.stringify({version:2,source:'cloudflare-profile-intake',schoolYear,exportedAt:new Date().toISOString(),pageOffset:cursor,total:state.total,requests:state.rows},null,2);
@@ -57,23 +58,23 @@ export default function CloudProfileIntakePanel({schoolYear,educationLevel,field
       <button type="button" className={`${button} border-emerald-300 text-emerald-800`} disabled={busy || !state.rows.some(row=>intakeReviewSummary(row).pending.length)} onClick={bulkApprove}>Đồng ý tất cả đang hiển thị</button>
       <button type="button" className={button} disabled={busy} onClick={()=>setAttempt(value=>value+1)}>Tải lại</button><button type="button" className={button} disabled={busy || state.loading || !state.rows.length} onClick={download}>Tải danh sách đang xem</button>
     </div></div>
-    <p className="my-2 text-xs leading-relaxed text-slate-600">Học sinh chỉ gửi đề nghị. Thầy cô duyệt từng mục hoặc cả yêu cầu bên dưới. Khi hồ sơ chính chưa ghi được, quyết định duyệt được giữ trên Cloudflare và hiện “Đã duyệt, chờ đồng bộ”.</p>
+    <p className="my-2 text-xs leading-relaxed text-slate-600">Học sinh chỉ gửi đề nghị. Thầy cô duyệt từng mục hoặc cả yêu cầu bên dưới. Mục đã duyệt được lưu trên Cloudflare và gộp vào hồ sơ hiển thị; Firebase vẫn giữ bản dữ liệu cũ trong giai đoạn chuyển đổi.</p>
     {message && <p role="status" className="my-2 rounded border border-amber-200 bg-amber-50 p-2 whitespace-pre-wrap">{message}</p>}
     {state.loading?<p role="status">Đang tải hồ sơ tiếp nhận…</p>:state.error?<p role="alert" className="text-rose-700">{state.error}</p>:!state.rows.length?<p>Chưa có yêu cầu mới trong năm/cấp học đang chọn.</p>:<ul className="space-y-2">{state.rows.map(row=>{
       const review=intakeReviewSummary(row),current=students.find(item=>item.accessCode===row.accessCode && item.schoolYear===row.schoolYear && getStudentSchoolCode(item)===row.schoolCode);
-      const status=review.pending.length?'Chờ thầy cô duyệt':review.approved.length?'Đã duyệt, chờ đồng bộ':review.applied.length?'Đã cập nhật hồ sơ chính':'Đã từ chối';
+      const status=review.pending.length?'Chờ thầy cô duyệt':review.approved.length?'Đã duyệt, chờ cập nhật Cloudflare':review.applied.length?'Đã cập nhật trên Cloudflare':'Đã từ chối';
       return <li key={row.id} className="rounded-lg border bg-white p-3">
         <strong>{row.studentName} · {row.accessCode}</strong><p className="text-xs text-slate-500">{row.schoolCode} · {row.className} · {new Date(row.createdAt).toLocaleString('vi-VN')} · {status}</p>
-        {review.approved.length>0 && <p className="my-2 text-amber-800">{review.approved.length} mục đã duyệt, chờ đồng bộ hồ sơ chính.</p>}
+        {review.approved.length>0 && <p className="my-2 text-amber-800">{review.approved.length} mục đã duyệt, chờ cập nhật Cloudflare.</p>}
         <div className="my-2 flex flex-wrap gap-2">
           {review.pending.length>0 && <><button type="button" className={`${button} border-emerald-300 text-emerald-800`} disabled={busy} onClick={()=>run(()=>decide(row,'approve'))}>Đồng ý yêu cầu này</button><button type="button" className={`${button} border-rose-300 text-rose-700`} disabled={busy} onClick={()=>run(()=>decide(row,'reject'))}>Từ chối các mục chưa duyệt</button></>}
-          {review.approved.length>0 && <button type="button" className={button} disabled={busy} onClick={()=>run(async()=>{await apply(row);return 'Đã cập nhật hồ sơ chính theo các mục thầy cô đã duyệt.';})}>Thử đồng bộ hồ sơ chính</button>}
+          {review.approved.length>0 && <button type="button" className={button} disabled={busy} onClick={()=>run(async()=>{await apply(row);return 'Đã cập nhật hồ sơ trên Cloudflare theo các mục thầy cô đã duyệt.';})}>Cập nhật trên Cloudflare</button>}
         </div>
         {review.pending.length>0 && <details className="mt-2" open><summary>Xem {review.pending.length} thông tin chờ duyệt</summary>
           {!current && <p className="my-2 text-xs text-amber-800">Chưa tải được giá trị hồ sơ chính để đối chiếu. Khi cập nhật, hệ thống sẽ đọc lại hồ sơ chính theo đúng mã, trường và năm học.</p>}
           <ProfileChangeTable label={`Thay đổi của ${row.accessCode}`} disabled={busy} allowFileCleanup={false} rows={review.pending.map(key=>({key,label:labels[key] || key,currentValue:current?String(current[key] ?? ''):'(chưa tải được)',nextValue:row.changes[key],isDocument:PROFILE_DOCUMENT_FIELDS.includes(key)}))} onApprove={key=>run(()=>decide(row,'approve',key))} onReject={key=>run(()=>decide(row,'reject',key))} />
         </details>}
-        {(review.rejected.length>0 || review.approved.length>0 || review.applied.length>0) && <details className="mt-2"><summary>Các mục đã xử lý</summary><dl className="mt-2 space-y-2">{Object.entries(row.review.decisions).map(([key,decision])=><div key={key}><dt className="text-xs font-semibold text-slate-500">{labels[key] || key} · {decision==='reject'?'Đã từ chối':row.review.appliedFields.includes(key)?'Đã cập nhật hồ sơ chính':'Đã duyệt, chờ đồng bộ'}</dt><dd className="whitespace-pre-wrap break-words">{row.changes[key] || '(để trống)'}</dd></div>)}</dl></details>}
+        {(review.rejected.length>0 || review.approved.length>0 || review.applied.length>0) && <details className="mt-2"><summary>Các mục đã xử lý</summary><dl className="mt-2 space-y-2">{Object.entries(row.review.decisions).map(([key,decision])=><div key={key}><dt className="text-xs font-semibold text-slate-500">{labels[key] || key} · {decision==='reject'?'Đã từ chối':row.review.appliedFields.includes(key)?'Đã cập nhật trên Cloudflare':'Đã duyệt, chờ cập nhật Cloudflare'}</dt><dd className="whitespace-pre-wrap break-words">{row.changes[key] || '(để trống)'}</dd></div>)}</dl></details>}
       </li>;
     })}</ul>}
     {!state.loading && !state.error && (cursor>0 || state.nextCursor!=null) && <div className="mt-3 flex gap-2"><button type="button" disabled={busy || !cursor} onClick={()=>setCursor(Math.max(0,cursor-100))}>Trang trước</button><span>{cursor+1}–{cursor+state.rows.length}/{state.total}</span><button type="button" disabled={busy || state.nextCursor==null} onClick={()=>setCursor(state.nextCursor)}>Trang sau</button></div>}
