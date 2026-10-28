@@ -1463,7 +1463,7 @@ const fileToBase64Payload = (file, documentItem = {}, student = {}) => new Promi
   reader.readAsDataURL(file);
 });
 
-export default function HocSinhManager({ students = [], educationLevel = '', configuredClassOptions = [], currentSchoolYear, systemSchoolYear = '', initialTab = 'current', initialTabKey = 0, profileOpenRequest, profileOverlayZIndex = 90, onProfileRequestClose, user, showNotification, onBack, onOpenAttendance, onSendTestResults, onSendMailboxMessages, onOpenMailboxHistory, onOpenConversations, conversationUnreadCount = 0, learningProgressRows = [], learningDataReady = true, onLearningDataNeeded, onBeforeDangerousAction, onStartSchoolYearPromotion, schoolYearPromotionState = null, pendingRegistrationSnapshot, profileRequestsSnapshot, onPendingRegistrationsLoaded, onRegistrationsResolved }) {
+export default function HocSinhManager({ students = [], educationLevel = '', configuredClassOptions = [], currentSchoolYear, systemSchoolYear = '', initialTab = 'current', initialTabKey = 0, profileOpenRequest, profileOverlayZIndex = 90, onProfileRequestClose, user, showNotification, onBack, onOpenAttendance, onSendTestResults, onSendMailboxMessages, onOpenMailboxHistory, onOpenConversations, conversationUnreadCount = 0, learningProgressRows = [], learningDataReady = true, onLearningDataNeeded, onBeforeDangerousAction, onStartSchoolYearPromotion, schoolYearPromotionState = null, pendingRegistrationSnapshot, profileRequestsSnapshot, profileRequestReminder, onOpenProfileRequests, onPendingRegistrationsLoaded, onRegistrationsResolved }) {
   const [query, setQuery] = useState('');
   const narrow = useNarrowScreen();
   const [mobileToolsOpen, setMobileToolsOpen] = useState(false);
@@ -4194,11 +4194,11 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
           )}
         </div>
         </div>
-        {profileRequests.length > 0 && studentTab !== 'profileRequests' && (
+        {(profileRequestReminder?.badge || profileRequests.length > 0) && studentTab !== 'profileRequests' && (
           <div className="flex items-center">
-            <div className="rounded-full bg-rose-100 px-2.5 py-1 text-[10px] font-normal uppercase text-rose-700">
-              {profileRequests.length} yêu cầu sửa
-            </div>
+            <button type="button" onClick={()=>onOpenProfileRequests?onOpenProfileRequests():setStudentTab('profileRequests')} title={profileRequestReminder?.title} className="rounded-full bg-rose-100 px-2.5 py-1 text-[10px] font-normal text-rose-700 hover:bg-rose-200">
+              {profileRequestReminder?.badge || profileRequests.length} yêu cầu sửa · Xem
+            </button>
           </div>
         )}
         {studentTab === 'current' && sheetSyncStatus.phase === 'syncing' && (

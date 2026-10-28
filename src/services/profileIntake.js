@@ -8,6 +8,7 @@ export async function requestProfileIntake(action,payload={}, {signal,fetchImpl=
       body:JSON.stringify({...payload,action,adminSessionToken:storage.getItem(ADMIN_SERVER_SESSION_STORAGE_KEY) || '',staffSessionToken:storage.getItem(STAFF_SERVER_SESSION_STORAGE_KEY) || '',studentSessionToken:storage.getItem('khl-student-server-session-v1') || ''})});
     let result;try{result=await response.json();}catch{throw new Error('Máy chủ tiếp nhận chưa phản hồi đúng. Giữ trang mở để thử lại.');}
     if(!response.ok)throw Object.assign(new Error(result.error || 'Chưa tiếp nhận được hồ sơ. Nội dung đang nhập vẫn được giữ.'),{status:response.status});
+    if(['submit','review','applied'].includes(action) && typeof window!=='undefined')window.dispatchEvent(new window.Event('profile-intake-updated'));
     return result;
   }catch(error){
     if(signal?.aborted)throw new DOMException('Đã đóng hồ sơ.','AbortError');

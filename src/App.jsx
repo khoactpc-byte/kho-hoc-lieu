@@ -1,6 +1,7 @@
 import { useWorkspaceCollections } from './hooks/useWorkspaceCollections';
 import { useSessionLease } from './hooks/useSessionLease';
 import { usePendingRegistrationCount } from './hooks/usePendingRegistrationCount';
+import { useProfileIntakeCount } from './hooks/useProfileIntakeCount';
 import { useQuickQuizSession } from './hooks/useQuickQuizSession';
 import { useStudentLearningData } from './hooks/useStudentLearningData';
 import { QUICK_SCORE_SUBJECTS, SCOREBOOK_SOURCE_FILE } from './config/scorebookDomain';
@@ -853,7 +854,6 @@ function App() {
   const [submissionGradeDrafts, setSubmissionGradeDrafts] = useState({});
   const [reviewPendingId, setReviewPendingId] = useState('');
   const [allStudents, setAllStudents] = useState([]);
-  const [studentProfileRequestCount, setStudentProfileRequestCount] = useState(0);
   const [studentProfileRequests, setStudentProfileRequests] = useState([]);
   const [currentStudent, setCurrentStudent] = useState(null);
   const [showStudentProfileModal, setShowStudentProfileModal] = useState(false);
@@ -1904,8 +1904,18 @@ function App() {
       quiz: showQuizComposeWorkspace || showQuizWorkWorkspace || showStudentWorkReview, learning: showLearningResultsWorkspace,
       review: showAdminCheckWorkspace || showStudentDatabase && studentLearningDataNeeded, weekProgress: teacherWeekOverview, attendance: showAttendanceWorkspace, scorebook: Boolean(scorebookGrade) }, showNotification);
 
-  useEffect(() => { setStudentProfileRequestCount(studentProfileRequests.filter(item => (item.status || 'pending') === 'pending'
-    && belongsToEducationLevel(allStudents.find(student => student.id === item.studentId) || item, adminEducationLevel)).length); }, [studentProfileRequests, allStudents, adminEducationLevel]);
+  const cloudProfileNotice=useProfileIntakeCount(Boolean(user && isAdmin && adminSessionToken && adminAccessScope!=='thd' && ['primary','thcs'].includes(adminModule)),
+    `${user?.uid || ''}:${adminSessionToken}`,activeSchoolYear,adminEducationLevel);
+  const legacyProfileRequestCount=useMemo(()=>studentProfileRequests.filter(item=>{
+    const student=allStudents.find(student=>student.id===item.studentId);
+    return (item.status || 'pending')==='pending' && belongsToEducationLevel(student || item,adminEducationLevel)
+      && (item.schoolYear || student?.schoolYear || activeSchoolYear)===activeSchoolYear;
+  }).length,[studentProfileRequests,allStudents,adminEducationLevel,activeSchoolYear]);
+  const studentProfileRequestCount=legacyProfileRequestCount+cloudProfileNotice.count;
+  const profileRequestBadge=studentProfileRequestCount?String(studentProfileRequestCount):cloudProfileNotice.error?'!':cloudProfileNotice.loaded?'':'…';
+  const profileRequestBadgeTitle=cloudProfileNotice.error
+    ? 'Chưa cập nhật được số yêu cầu sửa mới. Mở Yêu cầu sửa để tải lại; số đã biết được giữ nguyên.'
+    : `${legacyProfileRequestCount+cloudProfileNotice.pendingCount} yêu cầu sửa chờ duyệt${cloudProfileNotice.waitingSyncCount?`; ${cloudProfileNotice.waitingSyncCount} yêu cầu có mục đã duyệt, chờ đồng bộ`:''}${cloudProfileNotice.loaded?'':'; đang kiểm tra yêu cầu mới'}`;
   const pendingRegistrationNotice = usePendingRegistrationCount(
     Boolean(user && isAdmin && adminSettingsLoaded && adminSessionToken && adminAccessScope !== 'thd' && ['primary', 'thcs'].includes(adminModule)),
     `${user?.uid || ''}:${adminSessionToken}`, adminEducationLevel
@@ -2663,14 +2673,14 @@ function App() {
         label: 'Hồ sơ học sinh',
         desc: `Học sinh lớp ${gradeText}.`,
         icon: GraduationCap,
-        badge: pendingStudentActionCount ? String(pendingStudentActionCount) : registrationBadge,
-        badgeTitle: `${registrationBadgeTitle}; ${studentProfileRequestCount} yêu cầu sửa chờ duyệt`,
+        badge: pendingStudentActionCount ? String(pendingStudentActionCount) : profileRequestBadge || registrationBadge,
+        badgeTitle: `${registrationBadgeTitle}; ${profileRequestBadgeTitle}`,
         children: [
           { key: 'student-list', label: 'Danh sách học sinh', href: getAdminRouteHref('/students/current'), action: () => openStudentDatabaseTab('current') },
           { key: 'registrations', label: 'Đăng ký mới', href: getAdminRouteHref('/students/registrations'), action: () => openStudentDatabaseTab('registrations'), badge: registrationBadge, badgeTitle: registrationBadgeTitle },
           { key: 'admissions', label: 'Tuyển sinh', href: getAdminRouteHref('/students/admissions'), action: () => setShowAdmissionWorkspace(true), badge: currentAdmissionApplications.length ? `${currentAdmissionApplications.length}` : '' },
           { key: 'journey', label: 'Quá trình học', href: getAdminRouteHref('/students/journey'), action: () => openStudentDatabaseTab('journey') },
-          { key: 'profile-requests', label: 'Yêu cầu sửa', href: getAdminRouteHref('/students/profile-requests'), action: () => openStudentDatabaseTab('profileRequests'), badge: studentProfileRequestCount ? `${studentProfileRequestCount}` : '' }
+          { key: 'profile-requests', label: 'Yêu cầu sửa', href: getAdminRouteHref('/students/profile-requests'), action: () => openStudentDatabaseTab('profileRequests'), badge: profileRequestBadge, badgeTitle:profileRequestBadgeTitle }
         ]
       },
       {
@@ -2702,7 +2712,7 @@ function App() {
         ]
       }
     ];
-  }, [adminAccessScope, adminModule, currentAdmissionApplications.length, getAdminRouteHref, openAdminQuickScore, openAdminSettingsPanel, openNoticeHome, openScorebookWorkspace, openStudentDatabaseTab, showNotification, studentProfileRequestCount, pendingStudentActionCount, registrationBadge, registrationBadgeTitle, openConversations, conversationInbox.unreadCount, canOpenAdminTeaching, openAdminTeaching]);
+  }, [adminAccessScope, adminModule, currentAdmissionApplications.length, getAdminRouteHref, openAdminQuickScore, openAdminSettingsPanel, openNoticeHome, openScorebookWorkspace, openStudentDatabaseTab, showNotification, profileRequestBadge, profileRequestBadgeTitle, pendingStudentActionCount, registrationBadge, registrationBadgeTitle, openConversations, conversationInbox.unreadCount, canOpenAdminTeaching, openAdminTeaching]);
 
   const { saveQuickScoreValue, fillMissingQuickScores, clearVisibleQuickScores } = useQuickScoreActions({
     user, canWrite: canWriteCurrentSchoolYear, schoolYear: activeSchoolYear || '', grade: quickScoreGrade,
@@ -7250,6 +7260,8 @@ ${lessonBlocks}`;
                     user={user}
                     pendingRegistrationSnapshot={pendingRegistrationNotice.snapshot}
                     profileRequestsSnapshot={studentProfileRequests}
+                    profileRequestReminder={{count:studentProfileRequestCount,badge:profileRequestBadge,title:profileRequestBadgeTitle}}
+                    onOpenProfileRequests={()=>openStudentDatabaseTab('profileRequests')}
                     onPendingRegistrationsLoaded={pendingRegistrationNotice.replaceRegistrations}
                     onRegistrationsResolved={pendingRegistrationNotice.removeRegistrations}
                     showNotification={showNotification}

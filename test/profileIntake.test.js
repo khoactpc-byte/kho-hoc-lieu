@@ -9,7 +9,7 @@ function setup(){
   const env={PROFILE_INTAKE:{prepare(sql){return {bind(...args){return {async first(){return db.prepare(sql).get(...args) || null;},async all(){return {results:db.prepare(sql).all(...args)};},async run(){return {meta:db.prepare(sql).run(...args)};}};}};},async batch(statements){db.exec('BEGIN');try{const results=[];for(const statement of statements)results.push(await statement.run());db.exec('COMMIT');return results;}catch(error){db.exec('ROLLBACK');throw error;}}}};
   const call=async(payload,actor=scope,opts={})=>{
     const response=await handleProfileIntake(new Request('https://site.test/.site/profile-intake',{method:'POST',headers:{'Content-Type':'application/json',Origin:'https://site.test',...opts.headers},body:JSON.stringify(payload)}),env,
-      {fetchImpl:async(url,options)=>{assert.equal(url,'https://phocaptmt.netlify.app/.netlify/functions/profile-intake-identity');assert.equal(JSON.parse(options.body).kind,['list','review','applied'].includes(payload.action)?'admin':'student');return actor?Response.json({identity:actor}):Response.json({error:'expired'},{status:401});}});
+      {fetchImpl:async(url,options)=>{assert.equal(url,'https://phocaptmt.netlify.app/.netlify/functions/profile-intake-identity');assert.equal(JSON.parse(options.body).kind,['list','count','review','applied'].includes(payload.action)?'admin':'student');return actor?Response.json({identity:actor}):Response.json({error:'expired'},{status:401});}});
     return {response,body:await response.json()};
   };
   return {db,env,call};
@@ -27,6 +27,26 @@ test('D1 receives profile changes with server identity, returns the durable pend
 const admin={role:'admin',expiresAt:Date.now()+600000};
 const reviewPayload=(row,extra={})=>({action:'review',id:row.id,expectedHash:row.payloadHash,expectedVersion:row.review.version,decision:'approve',...extra});
 async function firstRequest(call){return (await call({action:'list',schoolYear:scope.schoolYear},admin)).body.requests[0];}
+test('admin notice counts new and staged requests in the selected year/level without returning profile details',async()=>{
+  const {call,db}=setup();try{
+    const count=(year=scope.schoolYear,level='thcs',actor=admin)=>call({action:'count',schoolYear:year,level},actor);
+    assert.deepEqual((await count()).body,{total:0,pendingCount:0,waitingSyncCount:0});
+    await call({action:'submit',changes:{phone:'456',address:'new'}});
+    await call({action:'submit',changes:{phone:'private'}},{...scope,schoolCode:'TQK',className:'3A'});
+    await call({action:'submit',changes:{phone:'private'}},{...scope,schoolYear:'2025-2026'});
+    let result=await count();assert.deepEqual(result.body,{total:1,pendingCount:1,waitingSyncCount:0});assert.match(result.response.headers.get('cache-control'),/no-store/);
+    assert.equal((await count(scope.schoolYear,'primary')).body.total,1);assert.equal((await count('2025-2026')).body.total,1);
+    assert.equal((await count(scope.schoolYear,'thcs',scope)).response.status,401);
+    assert.equal((await count(scope.schoolYear,'thcs',{role:'teacher',expiresAt:scope.expiresAt})).response.status,401);
+    assert.equal((await count('invalid')).response.status,400);
+    let row=await firstRequest(call);row=(await call(reviewPayload(row,{field:'phone'}),admin)).body.request;
+    assert.deepEqual((await count()).body,{total:1,pendingCount:1,waitingSyncCount:1},'partly reviewed request is counted once in the badge');
+    row=(await call(reviewPayload(row,{decision:'reject'}),admin)).body.request;
+    assert.deepEqual((await count()).body,{total:1,pendingCount:0,waitingSyncCount:1},'approved work awaiting official save remains visible');
+    await call({action:'applied',id:row.id,expectedHash:row.payloadHash,fields:['phone']},admin);
+    assert.deepEqual((await count()).body,{total:0,pendingCount:0,waitingSyncCount:0});
+  }finally{db.close();}
+});
 test('intake never approves itself; explicit admin decisions survive until confirmed official save',async()=>{
   const {call,db}=setup();try{
     await call({action:'submit',changes:{phone:'456',address:'new'}});

@@ -15,7 +15,6 @@ export async function assertNoPendingProfileRequest(studentId) {
 export async function createPendingProfileRequest(payload) {
   if(PROFILE_INTAKE_ENABLED){
     const result=await requestProfileIntake('submit',{changes:payload.changes});
-    window.dispatchEvent(new Event('profile-intake-updated'));
     return result.id;
   }
   const target = doc(requests(), `profile-${payload.studentId}`);

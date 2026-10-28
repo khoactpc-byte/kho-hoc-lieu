@@ -31,8 +31,8 @@ export async function handleProfileIntake(request,env,{fetchImpl=fetch,now=Date.
     if(reader){try{for(;;){const {value,done}=await reader.read();if(done)break;size+=value.byteLength;if(size>32000){await reader.cancel();throw Object.assign(new Error('Yêu cầu quá lớn.'),{status:413});}parts.push(value);}}finally{reader.releaseLock();}}
     const bytes=new Uint8Array(size);let at=0;for(const part of parts){bytes.set(part,at);at+=part.length;}
     let payload;try{payload=JSON.parse(new TextDecoder().decode(bytes) || '{}');}catch{return reply(400,{error:'JSON không hợp lệ.'});}
-    fail(payload && typeof payload==='object' && !Array.isArray(payload) && ['check','mine','submit','list','review','applied'].includes(payload.action),400,'Thao tác không hợp lệ.');
-    const actor=await authenticate(payload,['list','review','applied'].includes(payload.action),fetchImpl);
+    fail(payload && typeof payload==='object' && !Array.isArray(payload) && ['check','mine','submit','list','count','review','applied'].includes(payload.action),400,'Thao tác không hợp lệ.');
+    const actor=await authenticate(payload,['list','count','review','applied'].includes(payload.action),fetchImpl);
     fail(env.PROFILE_INTAKE,503,'Nơi tiếp nhận hồ sơ chưa sẵn sàng. Nội dung đang nhập được giữ lại; hãy thử lại sau.');
     const db=env.PROFILE_INTAKE;
     if(['review','applied'].includes(payload.action)){
@@ -61,11 +61,18 @@ export async function handleProfileIntake(request,env,{fetchImpl=fetch,now=Date.
       fail(results[0]?.meta?.changes===1,409,'Yêu cầu vừa thay đổi. Quyết định hiện có được giữ nguyên; hãy tải lại.');
       return reply(200,{request:rowView(await db.prepare(`${selectRows} WHERE p.id=?`).bind(row.id).first())});
     }
-    if(payload.action==='list'){
+    if(['list','count'].includes(payload.action)){
       fail(/^20\d{2}-20\d{2}$/.test(payload.schoolYear || ''),400,'Chọn năm học cần xem.');
       const level=payload.level==='primary'?' AND grade BETWEEN 1 AND 5':payload.level==='thcs'?' AND grade BETWEEN 6 AND 9':'';
       const cursor=payload.cursor || 0;fail(Number.isSafeInteger(cursor) && cursor>=0 && cursor<=100000,400,'Trang không hợp lệ.');
       const filter=`school_year=? AND status='pending'${level}`;
+      if(payload.action==='count'){
+        const counts=await db.prepare(`SELECT COUNT(*) AS total,
+          COALESCE(SUM(CASE WHEN EXISTS (SELECT 1 FROM json_each(p.changes_json) c WHERE json_extract(COALESCE(r.decisions_json,'{}'),'$.' || c.key) IS NULL) THEN 1 ELSE 0 END),0) AS pendingCount,
+          COALESCE(SUM(CASE WHEN EXISTS (SELECT 1 FROM json_each(COALESCE(r.decisions_json,'{}')) d WHERE d.value='approve' AND NOT EXISTS (SELECT 1 FROM json_each(COALESCE(r.applied_json,'[]')) a WHERE a.value=d.key)) THEN 1 ELSE 0 END),0) AS waitingSyncCount
+          FROM profile_intake p LEFT JOIN profile_intake_reviews r ON r.request_id=p.id WHERE p.${filter}`).bind(payload.schoolYear).first();
+        return reply(200,counts);
+      }
       const [items,count]=await Promise.all([db.prepare(`${selectRows} WHERE p.${filter} ORDER BY p.created_at DESC,p.id DESC LIMIT 100 OFFSET ?`).bind(payload.schoolYear,cursor).all(),
         db.prepare(`SELECT COUNT(*) AS count FROM profile_intake WHERE ${filter}`).bind(payload.schoolYear).first()]);
       return reply(200,{requests:(items.results || []).map(rowView),total:count.count,nextCursor:cursor+100<count.count?cursor+100:null});
