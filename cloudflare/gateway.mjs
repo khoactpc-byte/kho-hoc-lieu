@@ -1,5 +1,6 @@
 // Transitional API bridge. Business logic, authorization and background jobs stay
 // on the existing backend. Never place credentials or student records in this file.
+import { handleProfileIntake } from './profile-intake.mjs';
 const UPSTREAM = 'https://phocaptmt.netlify.app';
 const LIMITS = Object.freeze({ identity: 12000, session: 12000, 'remember-login': 12000, quiz: 800000, data: 800000,
   system: 800000, 'lesson-sync': 1800000, 'essay-work': 12000, 'essay-file': 12000 });
@@ -28,9 +29,10 @@ async function readBody(request, max) {
 export function createGateway(fetchImpl = fetch, timeoutMs = 55000) {
   return { async fetch(request, env) {
     const url = new URL(request.url);
+    if(url.pathname==='/.site/profile-intake')return handleProfileIntake(request,env,{fetchImpl});
     if (url.pathname === '/.site/health' && request.method === 'GET') return json(200, {
       status: 'web-ready', frontend: 'cloudflare-pages', backend: 'existing-netlify-services',
-      dataMode: 'existing-cloud-data', build: '2026-10-24-live' });
+      dataMode: 'existing-cloud-data', profileIntake:env.PROFILE_INTAKE?'cloudflare-d1':'unconfigured', build: '2026-10-24-live' });
     if (!url.pathname.startsWith('/.netlify/')) {
       if (url.pathname.startsWith('/.site/') || url.pathname === '/_worker.js') return json(404, { error: 'Không tìm thấy.' });
       return env.ASSETS.fetch(request);

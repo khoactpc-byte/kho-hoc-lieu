@@ -13,6 +13,9 @@ import { extractSchoolYearFromText, normalizeAdmissionSchoolYear } from './utils
 import { exchangeScopedIdentity, resetScopedIdentity, SCOPED_AUTH_ENABLED, STUDENT_SESSION_KEY } from './services/scopedIdentity';
 import { browserLoginLastCheckedAt, forgetBrowserLogin, rememberBrowserLogin, restoreBrowserLogin } from './services/browserLogin';
 import { loginPreference, readRememberedLogin, REMEMBERED_LOGIN_KEY } from './utils/loginMemory';
+import { PROFILE_INTAKE_ENABLED } from './services/profileIntake';
+import { intakeStudentFromVerifiedSession } from './utils/profileIntakeStudent';
+import { isFirestoreQuotaError } from './utils/firestoreErrors';
 import { saveLessonDraft } from './services/lessonDrafts';
 import { useLessonDelivery } from './hooks/useLessonDelivery';
 import LessonDeliveryPanel from './components/LessonDeliveryPanel';
@@ -1043,6 +1046,7 @@ function App() {
     if (currentSchoolYear && (!adminSchoolYear || !adminSchoolYearTouchedRef.current)) setAdminSchoolYear(currentSchoolYear);
   }, [adminSchoolYear, currentSchoolYear]);
   const activeStudentProfile = useMemo(() => {
+    if(currentStudent?.intakeOnly)return currentStudent;
     if (!currentStudent?.id) return currentStudent;
     const identityKey = getStudentYearIdentityKey(currentStudent);
     const sameYearMatch = identityKey
@@ -1501,12 +1505,17 @@ function App() {
         if (!response.studentSessionToken) throw new Error('Máy chủ chưa xác thực được học sinh.');
         if (!Number.isSafeInteger(response.studentProfile?.accountVersion) || response.studentProfile.accountVersion < 0) throw new Error('Máy chủ chưa bật mật khẩu học sinh. Cần cập nhật máy chủ đăng nhập.');
 
-        const matching = await getDocsFromServer(query(collection(db, 'artifacts', appId, 'public', 'data', 'students'), where('accessCode', '==', code)));
-        const candidates = matching.docs.map(item => ({ ...item.data(), id: item.id })).filter(item => item.status !== 'dropped'
-          && String(item.schoolYear || '') === String(response.studentProfile?.schoolYear || currentSchoolYear));
-        if (candidates.length > 1) throw new Error('Có nhiều hồ sơ cùng mã. Liên hệ giáo viên để đối soát.');
-        student = candidates[0];
-        if (!student) throw new Error('Hồ sơ chưa đồng bộ. Liên hệ giáo viên.');
+        try {
+          const matching = await getDocsFromServer(query(collection(db, 'artifacts', appId, 'public', 'data', 'students'), where('accessCode', '==', code)));
+          const candidates = matching.docs.map(item => ({ ...item.data(), id: item.id })).filter(item => item.status !== 'dropped'
+            && String(item.schoolYear || '') === String(response.studentProfile?.schoolYear || currentSchoolYear));
+          if (candidates.length > 1) throw new Error('Có nhiều hồ sơ cùng mã. Liên hệ giáo viên để đối soát.');
+          student = candidates[0];
+          if (!student) throw new Error('Hồ sơ chưa đồng bộ. Liên hệ giáo viên.');
+        } catch(error) {
+          if(!PROFILE_INTAKE_ENABLED || !isFirestoreQuotaError(error))throw error;
+          student=intakeStudentFromVerifiedSession(response.studentProfile,code);
+        }
         if (request !== loginSequenceRef.current) return;
         window.sessionStorage.setItem(STUDENT_SESSION_KEY, response.studentSessionToken);
       }
@@ -1515,6 +1524,7 @@ function App() {
     if (request !== loginSequenceRef.current) return;
     setPasswordInput('');
     openStudentArea(student);
+    if(student.intakeOnly)setShowStudentProfileModal(true);
     await rememberBrowserLogin({ remember: rememberLogin, username: code, signal: controller.signal, isCurrent: () => request === loginSequenceRef.current, notify: showNotification });
   };
 
@@ -1758,6 +1768,7 @@ function App() {
             setCurrentStudent(restored.student); setStudentName(restored.student.fullName || ''); setStudentQuizName(restored.student.fullName || '');
             setSelectedGrade(String(restored.student.className || '').match(/^\d+/)?.[0] || String(restored.student.grade || ''));
             setRole('student'); setLoginRole('student');
+            if(restored.student.intakeOnly)setShowStudentProfileModal(true);
           } else if (restored.role === 'teacher') {
             setTeacherProfile(restored.teacherProfile); setSelectedGrade(String(restored.teacherProfile.grades?.[0] || ''));
             setIsTextbookExpanded(false); setRole('teacher'); setLoginRole('teacher');
@@ -1841,12 +1852,12 @@ function App() {
   }, [user, showNotification, scopedIdentity]);
 
   useEffect(() => {
-    if (!user) return;
+    if (!user || currentStudent?.intakeOnly) return;
     return onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'news'), snapshot => {
       const documents = snapshot.docs.map(item => ({ ...item.data(), id: item.id }));
       documents.sort(sortNewsForDisplay); setNewsList(documents);
     }, error => { setNewsList([]); showNotification('Chưa tải được bản tin: ' + error.message, 'error'); });
-  }, [user, showNotification]);
+  }, [user, showNotification, currentStudent?.intakeOnly]);
 
   const restoreExpiredLogin = useCallback(async () => {
     const sequence = loginSequenceRef.current;
@@ -1881,7 +1892,7 @@ function App() {
     const timer = setInterval(refresh, 3600000);
     return () => { document.removeEventListener('visibilitychange', refresh); clearInterval(timer); };
   }, [role, restoringLogin, restoreExpiredLogin]);
-  const learningUpdates = useLearningUpdates({ user, role, isAdmin, notes: allNotes, quizzes: allQuizzes, materials: allMaterials });
+  const learningUpdates = useLearningUpdates({ user:currentStudent?.intakeOnly?null:user, role, isAdmin, notes: allNotes, quizzes: allQuizzes, materials: allMaterials });
   const teacherWeekOverview = role === 'teacher' && Boolean(selectedGrade && selectedSubject && !selectedLesson);
   const workspaceData = useWorkspaceCollections({ user, scoped: SCOPED_AUTH_ENABLED, identity: scopedIdentity, role, isAdmin, student: currentStudent,
     grade: selectedGrade, subject: selectedSubject, schoolYear: activeSchoolYear, schoolCode: currentContentSchoolCode,
@@ -8305,6 +8316,7 @@ ${lessonBlocks}`;
       )}
       
       <main className="learning-main max-w-6xl mx-auto px-4 py-4 sm:py-8 flex-1 w-full relative z-10 flex flex-col">
+        {role==='student' && activeStudentProfile?.intakeOnly ? <section className="rounded-xl border border-blue-200 bg-white p-5"><h2 className="text-lg font-bold text-blue-900">Bổ sung hồ sơ học sinh</h2><p className="my-3 text-sm leading-relaxed">Chào {activeStudentProfile.fullName}. Hệ thống đang tiếp nhận hồ sơ bổ sung riêng trong lúc dữ liệu chính tạm chạm hạn mức. Thông tin em gửi sẽ chờ nhà trường đối chiếu và cập nhật.</p><button type="button" className="rounded-lg bg-blue-600 px-4 py-3 text-white" onClick={()=>setShowStudentProfileModal(true)}>Mở biểu mẫu hồ sơ</button></section> : <>
         {role === 'student' && loginRole !== 'teacher' && <div className="student-mobile-updates mb-2 sm:hidden"><HomeUpdateTicker items={combinedFeedSorted} onOpen={openHomepageFeedItem} grade={activeStudentGrade} error={learningUpdates.error} /></div>}
         {!compactTeacherLesson && !mobileTeacher && learningNavigation}
         
@@ -9108,6 +9120,7 @@ ${lessonBlocks}`;
             )}
           </div>
         )}
+        </>}
       </main>
 
       <LessonNormalizeDialog normalizer={lessonNormalizer} />

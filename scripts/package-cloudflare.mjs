@@ -1,8 +1,9 @@
-import { readFile, writeFile, readdir, mkdir, copyFile, stat } from 'node:fs/promises';
+import { readFile, writeFile, readdir, mkdir, stat } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 import { createHash } from 'node:crypto';
 import { zipSync } from 'fflate';
-await copyFile('cloudflare/gateway.mjs', 'dist/_worker.js');
+import { build } from 'esbuild';
+await build({entryPoints:['cloudflare/gateway.mjs'],outfile:'dist/_worker.js',bundle:true,format:'esm',platform:'browser',target:'es2022',minify:true});
 await writeFile('dist/_routes.json', JSON.stringify({ version: 1, include: ['/.netlify/*', '/.site/*'], exclude: [] }, null, 2));
 const pwaHeaders = await readFile('public/_headers', 'utf8').catch(error => { if (error.code === 'ENOENT') return ''; throw error; });
 await writeFile('dist/_headers', '/*\n  X-Content-Type-Options: nosniff\n  Referrer-Policy: strict-origin-when-cross-origin\n  X-Frame-Options: SAMEORIGIN\n/.netlify/*\n  Cache-Control: no-store\n' + pwaHeaders);

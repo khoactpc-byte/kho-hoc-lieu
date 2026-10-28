@@ -4,6 +4,8 @@ import useNarrowScreen from '../hooks/useNarrowScreen';
 import StudentDisplayOptions from './StudentDisplayOptions';
 import StudentMobileList from './StudentMobileList';
 import StudentPortrait from './StudentPortrait';
+import CloudProfileIntakePanel from './CloudProfileIntakePanel';
+import { PROFILE_INTAKE_ENABLED } from '../services/profileIntake';
 import StudentProfileAddressSelect from './StudentProfileAddressSelect';
 import StudentProfileAddressFields from './StudentProfileAddressFields';
 import StudentProfileFamilyFields from './StudentProfileFamilyFields';
@@ -4388,6 +4390,7 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
       )}
       {studentTab === 'profileRequests' ? (
         <div className="min-h-0 flex-1 overflow-y-auto p-2 sm:p-3 bg-white">
+          {PROFILE_INTAKE_ENABLED && <CloudProfileIntakePanel schoolYear={currentSchoolYear} educationLevel={educationLevel} fields={STUDENT_FIELDS} />}
           <ProfileFileCleanupQueue students={safeStudents} educationLevel={educationLevel} disabled={isSaving} syncStudent={syncPersistedStudent} showNotification={showNotification} />
           {(profileRequests.length > 0 || profileBatchStatus) && (
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-normal">
@@ -4411,7 +4414,7 @@ export default function HocSinhManager({ students = [], educationLevel = '', con
           )}
           {profileRequests.length === 0 ? (
             <div className="rounded-2xl border border-slate-200 bg-slate-50 p-8 text-center text-slate-400 font-normal">
-              Chưa có yêu cầu sửa hồ sơ nào.
+              {PROFILE_INTAKE_ENABLED ? 'Chưa có dữ liệu yêu cầu cũ từ Firestore. Yêu cầu mới được tiếp nhận ở phần Cloudflare phía trên.' : 'Chưa có yêu cầu sửa hồ sơ nào.'}
             </div>
           ) : (
             <div className="space-y-3">

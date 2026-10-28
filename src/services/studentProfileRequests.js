@@ -6,6 +6,7 @@ import { assertNoPendingProfileRequest, createPendingProfileRequest } from './pr
 import { PROFILE_REQUEST_PENDING_MESSAGE } from '../utils/profileRequestPolicy';
 import { assertStudentProfileProvinceChanges } from '../utils/studentProfileProvinces';
 import { assertStudentProfileAddressChanges } from './studentProfileLocations';
+import { PROFILE_INTAKE_ENABLED } from './profileIntake';
 
 export async function submitStudentProfileChange({ activeStudentProfile, isSubmittingProfileRequest, activeStudentIsReadOnly, showNotification, activeStudentReadOnlyReason, studentRequestScopeRef, setIsSubmittingProfileRequest, STUDENT_PROFILE_IMAGE_FIELDS, studentProfileImages, studentProfileDocumentOverrides, activeStudentPendingProfileChanges, studentProfileImageAppendModes, studentProfileEditableFields, studentProfileProvinceOptions, studentProfileLocationLookup, normalizeStudentResultRating, studentProfileDraft, activeStudentPendingProfileRequests, currentSchoolYear, setShowStudentProfileModal, IMAGE_DRIVE_FOLDER_ID }) {
   const fileToBase64Payload = async (file, field = {}) => {
@@ -113,7 +114,7 @@ export async function submitStudentProfileChange({ activeStudentProfile, isSubmi
         status: 'pending',
         updatedAt: Date.now()
       };
-      if (SCOPED_AUTH_ENABLED) {
+      if (SCOPED_AUTH_ENABLED && !PROFILE_INTAKE_ENABLED) {
         await requestPrivateApi('data', 'profileRequest', { changes: requestPayload.changes }, { signal: request.signal });
       } else {
         await assertNoPendingProfileRequest(activeStudentProfile.id);
@@ -122,7 +123,7 @@ export async function submitStudentProfileChange({ activeStudentProfile, isSubmi
       }
       if (!studentRequestScopeRef.current.isCurrent(request)) return;
       setShowStudentProfileModal(false);
-      showNotification('Đã gửi yêu cầu chỉnh sửa hồ sơ. Vui lòng chờ quản trị viên duyệt trước khi gửi chỉnh sửa mới.');
+      showNotification(PROFILE_INTAKE_ENABLED ? 'Đã tiếp nhận yêu cầu trên Cloudflare. Vui lòng chờ quản trị viên xử lý và cập nhật hồ sơ chính.' : 'Đã gửi yêu cầu chỉnh sửa hồ sơ. Vui lòng chờ quản trị viên duyệt trước khi gửi chỉnh sửa mới.');
     } catch (error) {
       if (studentRequestScopeRef.current.isCurrent(request)) showNotification(`Chưa gửi được yêu cầu sửa: ${error.message}`, 'error');
     } finally {

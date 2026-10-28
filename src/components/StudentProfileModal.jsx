@@ -110,6 +110,7 @@ export default function StudentProfileModal({ view }) {
               </button>
             </div>
 
+            {activeStudentProfile?.intakeOnly && <p className="shrink-0 border-b border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-900">Thông tin hồ sơ cũ chưa tải được. Em chỉ bổ sung những mục cần cập nhật; dữ liệu cũ được giữ nguyên để nhà trường đối chiếu sau khi tiếp nhận.</p>}
             {(activeStudentPendingProfileRequests.length > 0 || activeStudentIsReadOnly) && (
             <div className="max-h-[20dvh] shrink-0 space-y-1.5 overflow-y-auto px-3 py-2 text-xs">
               {activeStudentPendingProfileRequests.length > 0 && (

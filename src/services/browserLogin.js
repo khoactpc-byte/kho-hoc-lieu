@@ -3,6 +3,9 @@ import { appId, auth, db } from '../config/firebase';
 import { ADMIN_SERVER_SESSION_STORAGE_KEY, STAFF_SERVER_SESSION_STORAGE_KEY } from '../config/sessionKeys';
 import { exchangeScopedIdentity, SCOPED_AUTH_ENABLED, STUDENT_SESSION_KEY } from './scopedIdentity';
 import { clearRememberedLogin, readRememberedLogin, saveLoginPreference, storeRememberedLogin } from '../utils/loginMemory';
+import { PROFILE_INTAKE_ENABLED } from './profileIntake';
+import { intakeStudentFromVerifiedSession } from '../utils/profileIntakeStudent';
+import { isFirestoreQuotaError } from '../utils/firestoreErrors';
 
 const keys = { adminSessionToken: ADMIN_SERVER_SESSION_STORAGE_KEY, staffSessionToken: STAFF_SERVER_SESSION_STORAGE_KEY, studentSessionToken: STUDENT_SESSION_KEY };
 const sessionTokens = () => Object.fromEntries(Object.entries(keys).map(([name, key]) => [name, window.sessionStorage.getItem(key) || '']));
@@ -51,10 +54,15 @@ export async function restoreBrowserLogin({ signal, isCurrent = () => true } = {
       const verified = await exchangeScopedIdentity({ kind: 'student-session', accessCode: result.studentProfile.accessCode, studentSessionToken: result.studentSessionToken }, { signal, remember: !!saved });
       student = verified.student;
     } else {
-      const snapshot = await getDocsFromServer(query(collection(db, 'artifacts', appId, 'public', 'data', 'students'), where('accessCode', '==', result.studentProfile.accessCode)));
-      const matches = snapshot.docs.map(item => ({ ...item.data(), id: item.id })).filter(item => item.status !== 'dropped' && item.schoolYear === result.studentProfile.schoolYear);
-      if (matches.length !== 1) throw new Error('Hồ sơ học sinh cần được đối chiếu trước khi khôi phục đăng nhập.');
-      student = matches[0];
+      try {
+        const snapshot = await getDocsFromServer(query(collection(db, 'artifacts', appId, 'public', 'data', 'students'), where('accessCode', '==', result.studentProfile.accessCode)));
+        const matches = snapshot.docs.map(item => ({ ...item.data(), id: item.id })).filter(item => item.status !== 'dropped' && item.schoolYear === result.studentProfile.schoolYear);
+        if (matches.length !== 1) throw new Error('Hồ sơ học sinh cần được đối chiếu trước khi khôi phục đăng nhập.');
+        student = matches[0];
+      }catch(error){
+        if(!PROFILE_INTAKE_ENABLED || !isFirestoreQuotaError(error))throw error;
+        student=intakeStudentFromVerifiedSession(result.studentProfile);
+      }
     }
   } else if (['admin', 'thd', 'teacher'].includes(result.role)) {
     if (SCOPED_AUTH_ENABLED) await exchangeScopedIdentity({ kind: 'staff', adminSessionToken: result.adminSessionToken, staffSessionToken: result.staffSessionToken }, { signal, remember: !!saved });

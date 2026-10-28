@@ -2,11 +2,13 @@ import { useEffect, useState } from 'react';
 import { onSnapshot } from 'firebase/firestore';
 import { collectionForView } from '../services/collectionSubscriptions';
 import { readPublishedLessonIndex, SUPABASE_LESSONS_ENABLED } from '../services/supabaseLessons';
+import { PROFILE_INTAKE_ENABLED, observeOwnProfileIntake } from '../services/profileIntake';
 
 function useCollection(name, scope, setter, enabled, onError) {
   const authUid = scope.user?.uid || '';
   const identity = JSON.stringify(scope.identity || null);
   const { scoped, role, isAdmin } = scope;
+  const intakeOnly=PROFILE_INTAKE_ENABLED && scope.student?.intakeOnly;
   const studentId = scope.student?.id || '', studentCode = scope.student?.accessCode || '';
   const apiOwned = (scoped && scope.identity?.role === 'student' && ['quiz_results', 'quick_quiz_results'].includes(name) && import.meta.env.VITE_SERVER_QUIZ_ENABLED === 'true')
     || (name === 'lesson_notes' && (scope.identity?.role === 'student' || role === 'student') && SUPABASE_LESSONS_ENABLED);
@@ -15,13 +17,15 @@ function useCollection(name, scope, setter, enabled, onError) {
   const schoolCode = scope.schoolCode || scope.student?.schoolCode || scope.identity?.schoolCode || '';
   const subject = content ? scope.subject : '';
   const schoolYear = name === 'students' && scope.includeHistory ? '' : scope.schoolYear;
-  const key = JSON.stringify([name, authUid, identity, scoped, role, isAdmin, studentId, studentCode, grade, subject, schoolYear, schoolCode, enabled, apiOwned]);
+  const key = JSON.stringify([name, authUid, identity, scoped, role, isAdmin, studentId, studentCode, grade, subject, schoolYear, schoolCode, enabled, apiOwned, intakeOnly]);
   const [readyKey, setReadyKey] = useState(null);
   useEffect(() => {
     let active = true;
     setReadyKey(null);
     setter([]);
     if (!authUid || !enabled) return undefined;
+    if(intakeOnly && name!=='student_profile_requests')return undefined;
+    if(PROFILE_INTAKE_ENABLED && name==='student_profile_requests' && role==='student')return observeOwnProfileIntake(rows=>{if(active){setter(rows);setReadyKey(key);}},error=>{if(active){setReadyKey(null);onError('Chưa tải được hồ sơ đã tiếp nhận: '+error.message,'error');}});
     if (apiOwned) {
       if (name !== 'lesson_notes') return undefined;
       const controller = new AbortController();
@@ -42,7 +46,7 @@ function useCollection(name, scope, setter, enabled, onError) {
       setReadyKey(key);
     }, error => { if (active) { setReadyKey(null); setter([]); onError('Chưa tải được ' + name + ': ' + error.message, 'error'); } });
     return () => { active = false; unsubscribe(); };
-  }, [name, authUid, identity, scoped, role, isAdmin, studentId, studentCode, grade, subject, schoolYear, schoolCode, enabled, setter, onError, apiOwned, key]);
+  }, [name, authUid, identity, scoped, role, isAdmin, studentId, studentCode, grade, subject, schoolYear, schoolCode, enabled, setter, onError, apiOwned, intakeOnly, key]);
   return Boolean(authUid && enabled && (apiOwned || readyKey === key));
 }
 
